@@ -11,6 +11,9 @@ namespace Mapping{
 #ifdef _WIN32
 	#define NOMINMAX
 	#include "windows.h"
+#elif defined(__linux__)
+	#include <fstream>
+	#include <iostream>
 #endif
 
 // Usage:
@@ -27,13 +30,13 @@ namespace Mapping{
 struct MappedFile{
 
 	string path;
+	void* data = nullptr;
 
 	#ifdef _WIN32
 		HANDLE h_file;
 		HANDLE h_mapping;
-		void* data = nullptr;
 	#elif defined(__linux__)
-		TODO
+		std::fstream h_file;
 	#endif
 
 	~MappedFile(){
@@ -48,6 +51,9 @@ struct MappedFile{
 				CloseHandle(h_file);
 				data = nullptr;
 			}
+		#elif defined(__linux__)
+			h_file.close();
+			data = nullptr;
 		#endif
 	}
 
@@ -112,7 +118,15 @@ shared_ptr<MappedFile> mapFile(string path){
 		}
 
 	#elif defined(__linux__)
-		TODO
+		file->h_file.open(path);
+		if(!file->h_file.is_open()) {
+			fprintf(stderr, "Failed to open file");
+			exit(642325);
+		}
+		std::streampos size = file->h_file.tellg();
+		file->data = new uint8_t[size];
+		file->h_file.seekg(0, ios::beg);
+		file->h_file.read((char*)(file->data), size);
 	#endif
 
 	return file;

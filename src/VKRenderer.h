@@ -225,7 +225,7 @@ struct VKRenderer {
 		println("ERROR (Vulkan): {}", int(result));
 		println("{}", trace);
 
-		__debugbreak();
+		// __debugbreak();
 	}
 
 private:

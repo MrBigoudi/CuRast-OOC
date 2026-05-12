@@ -195,7 +195,8 @@ struct VulkanCudaSharedMemory {
 		// ----------------------------------------------------------------
 		while (comitted < requested_size) {
 			uint64_t diff             = requested_size - comitted;
-			uint64_t stepSize         = min(diff, 1'000'000'000llu);
+			uint64_t stepSize         = min(diff, uint64_t(1'000'000'000llu));
+			// uint64_t stepSize         = min(diff, 1'000'000'000llu);
 			uint64_t currentRequested = comitted + stepSize;
 			uint64_t padded           = roundUp(currentRequested, granularity);
 			if (padded <= comitted) break;
@@ -365,7 +366,7 @@ struct VulkanCudaSharedMemory {
 			println("    source size:   {:15L}", size);
 
 			println("{}", trace);
-			__debugbreak();
+			// __debugbreak();
 			exit(652345345);
 		}
 

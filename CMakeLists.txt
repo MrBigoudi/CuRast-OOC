@@ -8,7 +8,7 @@ set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 include(cmake/common.cmake)
 
 # Paths to TurboJPEG
-set(TURBOJPEG_LIBRARY "${CMAKE_SOURCE_DIR}/libs/jpg/turbojpeg-static.lib") 
+set(TURBOJPEG_LIBRARY "${CMAKE_SOURCE_DIR}/libs/jpg/turbojpeg-static.lib")
 
 # --------------------------------------------------------
 # Source files (C++ and CUDA)
@@ -60,7 +60,9 @@ ADD_IMGUI(${TARGET_NAME})
 # CUDA configuration
 # --------------------------------------------------------
 # Choose GPU architectures (adjust for your machine)
-set(CMAKE_CUDA_ARCHITECTURES 75 86 89 90)
+# set(CMAKE_CUDA_ARCHITECTURES 75 86 89 90)
+set_property(TARGET ${TARGET_NAME}
+    PROPERTY CUDA_ARCHITECTURES 86)
 
 # Enable separable compilation (for multi-file CUDA builds)
 set_target_properties(${TARGET_NAME} PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
