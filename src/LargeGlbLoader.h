@@ -4,8 +4,11 @@
 #include <stacktrace>
 #include <set>
 
-// #include "jpg/turbojpeg.h"
-#include "turbojpeg.h"
+#ifdef _WIN32
+	#include "jpg/turbojpeg.h"
+#elif defined(__linux__)
+	#include "turbojpeg.h"
+#endif
 
 #include "GLTFLoader.h"
 #include "scene/SceneNode.h"
