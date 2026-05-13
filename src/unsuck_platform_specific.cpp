@@ -662,7 +662,6 @@ shared_ptr<UnbufferedFile> UnbufferedFile::open(string path){
 	shared_ptr<UnbufferedFile> file = make_shared<UnbufferedFile>();
 	file->path = path;
 	file->sectorSize = getPhysicalSectorSize(path);
-	println("sector size for {}: {}", path, file->sectorSize);
 	file->handle = new std::fstream(path, std::ios::binary | std::ios::in);
 	std::fstream* f = static_cast<std::fstream*>(file->handle);
 	if(!f->is_open()){

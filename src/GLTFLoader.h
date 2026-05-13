@@ -350,6 +350,7 @@ GLTF loadMetadata(string path){
 
 		if(buffer.uri != "undefined"){
 			string bufferPath = format("{}/../{}", path, buffer.uri);
+			// string bufferPath = format("{}/{}", path.substr(0, path.find_last_of("/")), buffer.uri);
 			string canonicalPath = fs::canonical(fs::absolute(bufferPath)).string();
 			buffer.uri = bufferPath;
 			buffer.file = Mapping::mapFile(bufferPath);
