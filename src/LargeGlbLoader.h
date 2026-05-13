@@ -4,7 +4,8 @@
 #include <stacktrace>
 #include <set>
 
-#include "jpg/turbojpeg.h"
+// #include "jpg/turbojpeg.h"
+#include "turbojpeg.h"
 
 #include "GLTFLoader.h"
 #include "scene/SceneNode.h"

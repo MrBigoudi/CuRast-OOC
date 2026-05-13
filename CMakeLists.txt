@@ -2,13 +2,33 @@ cmake_minimum_required(VERSION 3.5)
 
 set(TARGET_NAME CuRast) 
 project(${TARGET_NAME} LANGUAGES CXX CUDA)
+
 set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+set(CMAKE_CUDA_STANDARD 20)
+set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+set(CMAKE_CUDA_EXTENSIONS OFF)
+
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 include(cmake/common.cmake)
 
 # Paths to TurboJPEG
-set(TURBOJPEG_LIBRARY "${CMAKE_SOURCE_DIR}/libs/jpg/turbojpeg-static.lib")
+if (WIN32)
+	set(TURBOJPEG_LIBRARY "${CMAKE_SOURCE_DIR}/libs/jpg/turbojpeg-static.lib")
+endif()
+if (LINUX)
+	find_path(TURBOJPEG_INCLUDE_DIR
+		NAMES turbojpeg.h
+	)
+	find_library(TURBOJPEG_LIBRARY
+		NAMES turbojpeg
+	)
+endif()
 
 # --------------------------------------------------------
 # Source files (C++ and CUDA)
@@ -37,6 +57,11 @@ if (WIN32)
 	set_property(TARGET ${TARGET_NAME} PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "$(SolutionDir)..")
 endif()
 
+target_compile_definitions(${TARGET_NAME}
+    PRIVATE
+    PROJECT_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+)
+
 # Include paths
 target_include_directories(${TARGET_NAME} PRIVATE
 	./src
@@ -48,6 +73,7 @@ add_subdirectory(libs/laszip)
 target_link_libraries(${TARGET_NAME} PRIVATE 
 	${TURBOJPEG_LIBRARY}
 	laszip
+	stdc++exp
 )
 
 # Add other third-party libs
@@ -84,8 +110,9 @@ add_executable(PlyToGlb
 	src/tools/PlyToGlb.cpp
 	src/unsuck_platform_specific.cpp
 )
-target_include_directories(PlyToGlb PRIVATE libs/glm)
+# target_include_directories(PlyToGlb PRIVATE libs/glm)
 target_include_directories(PlyToGlb PRIVATE
 	./src
 	./libs
 )
+target_link_libraries(PlyToGlb PRIVATE glfw)

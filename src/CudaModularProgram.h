@@ -99,6 +99,11 @@ struct CudaModule{
 		string cuda_path = cuda_path_env
 			? cuda_path_env
 			: fs::path(CUDA_DEVRTLIB).parent_path().parent_path().parent_path().string();
+
+		#ifdef __linux__
+			cuda_path.append("/x86_64-linux");
+		#endif
+
 		string optInclude = std::format("-I {}", dir).c_str();
 		string cuda_include = std::format("-I {}/include", cuda_path);
 		string cudastd_include = std::format("-I {}/include/cccl/cuda/std", cuda_path);
@@ -116,11 +121,13 @@ struct CudaModule{
 		cuDeviceGetAttribute(&major, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR, device);
 		cuDeviceGetAttribute(&minor, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR, device);
 
-		 string arch = format("--gpu-architecture=compute_{}{}", major, minor);
+		string arch = format("--gpu-architecture=compute_{}{}", major, minor);
 		//string arch = "--gpu-architecture=compute_86";
 
 		nvrtcProgram prog;
 		string source = readFile(path);
+		// println("source: {}", source);
+
 		nvrtcCreateProgram(&prog, source.c_str(), name.c_str(), 0, NULL, NULL);
 		
 		vector<const char*> opts = { 

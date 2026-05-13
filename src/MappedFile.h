@@ -2,6 +2,9 @@
 
 #include <memory>
 #include <string>
+#include <cstring>
+#include <fstream>
+#include <iostream>
 
 using std::shared_ptr;
 using namespace std;
@@ -12,8 +15,6 @@ namespace Mapping{
 	#define NOMINMAX
 	#include "windows.h"
 #elif defined(__linux__)
-	#include <fstream>
-	#include <iostream>
 #endif
 
 // Usage:
@@ -62,7 +63,7 @@ struct MappedFile{
 		uint8_t* buffer_u8 = (uint8_t*)data;
 
 		T value;
-		memcpy(&value, buffer_u8 + byteOffset, sizeof(T));
+		std::memcpy(&value, buffer_u8 + byteOffset, sizeof(T));
 
 		return value;
 	}
@@ -123,9 +124,10 @@ shared_ptr<MappedFile> mapFile(string path){
 			fprintf(stderr, "Failed to open file");
 			exit(642325);
 		}
+		file->h_file.seekg(0, file->h_file.end);
 		std::streampos size = file->h_file.tellg();
 		file->data = new uint8_t[size];
-		file->h_file.seekg(0, ios::beg);
+		file->h_file.seekg(0, file->h_file.beg);
 		file->h_file.read((char*)(file->data), size);
 	#endif
 

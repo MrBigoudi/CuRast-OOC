@@ -387,12 +387,47 @@ void readBinaryFileUnbuffered(string path, uint64_t start, uint64_t size, void* 
 
 // see https://stackoverflow.com/questions/63166/how-to-determine-cpu-and-memory-consumption-from-inside-a-process
 
+
 #include "sys/types.h"
 #include "sys/sysinfo.h"
 
 #include "stdlib.h"
 #include "stdio.h"
 #include "string.h"
+
+#include <GLFW/glfw3.h>
+
+void toClipboard(string str){
+	glfwSetClipboardString(nullptr, str.c_str());
+}
+
+// see https://linuxvox.com/blog/reading-hard-disk-sectors-in-c-on-linux/
+#include <iostream>
+#include <fcntl.h>    // For open()
+#include <unistd.h>   // For read(), lseek(), close()
+#include <sys/ioctl.h> // For ioctl()
+#include <linux/fs.h> // For BLKSSZGET (sector size ioctl)
+#include <cstring>    // For memset()
+#include <cerrno>     // For errno
+#include <iomanip>    // For hex output formatting
+uint64_t getPhysicalSectorSize(string path){
+	int fd = open(path.c_str(), O_RDONLY);
+	if (fd == -1) {
+		printf("Failed to open %s to get the physical sector size", path.c_str());
+		exit(EXIT_FAILURE);
+	}
+	int sector_size = 0;
+	if (ioctl(fd, BLKSSZGET, &sector_size) == -1) {
+		printf("Failed to get the physical sector size");
+		close(fd);
+		exit(EXIT_FAILURE);
+	}
+	return (uint64_t)(sector_size);
+}
+
+void hideConsole(){}
+
+
 
 int parseLine(char* line){
     // This assumes that a digit will be found and the line ends in " Kb".
@@ -592,6 +627,37 @@ CpuData getCpuData() {
 	data.usage = getCpuUsage();
 
 	return data;
+}
+
+#include <fstream>
+shared_ptr<UnbufferedFile> UnbufferedFile::open(string path){
+	shared_ptr<UnbufferedFile> file = make_shared<UnbufferedFile>();
+	file->path = path;
+	file->sectorSize = getPhysicalSectorSize(path);
+	file->handle = (std::fstream*)nullptr;
+	static_cast<std::fstream*>(file->handle)->open(path);
+	if(!static_cast<std::fstream*>(file->handle)->is_open()) {
+		printf("ERROR: failed to CreateFileA");
+		printf("path:  {}", path);
+		exit(6362345);
+	}
+	return file;
+}
+
+void UnbufferedFile::read(uint64_t start, uint64_t size, void* target){
+	target = new uint8_t[size];
+	static_cast<std::fstream*>(handle)->seekg(start, ios::beg);
+	static_cast<std::fstream*>(handle)->read((char*)(target), size);
+}
+
+void UnbufferedFile::close(){
+	static_cast<std::fstream*>(handle)->close();
+}
+
+void readBinaryFileUnbuffered(string path, uint64_t start, uint64_t size, void* target){
+	shared_ptr<UnbufferedFile> unbuffered = UnbufferedFile::open(path);
+	unbuffered->read(start, size, target);
+	unbuffered->close();
 }
 
 
