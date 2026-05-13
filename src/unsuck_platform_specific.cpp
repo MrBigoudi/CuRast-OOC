@@ -410,19 +410,47 @@ void toClipboard(string str){
 #include <cstring>    // For memset()
 #include <cerrno>     // For errno
 #include <iomanip>    // For hex output formatting
+#include <sys/statvfs.h> // For statvfs
 uint64_t getPhysicalSectorSize(string path){
-	int fd = open(path.c_str(), O_RDONLY);
-	if (fd == -1) {
-		printf("Failed to open %s to get the physical sector size", path.c_str());
-		exit(EXIT_FAILURE);
-	}
-	int sector_size = 0;
-	if (ioctl(fd, BLKSSZGET, &sector_size) == -1) {
-		printf("Failed to get the physical sector size");
-		close(fd);
-		exit(EXIT_FAILURE);
-	}
-	return (uint64_t)(sector_size);
+	// int fd = open(path.c_str(), O_RDONLY);
+	// if (fd == -1) {
+	// 	printf("Failed to open %s to get the physical sector size", path.c_str());
+	// 	exit(EXIT_FAILURE);
+	// }
+	// int sector_size = 0;
+	// if (ioctl(fd, BLKSSZGET, &sector_size) == -1) {
+	// 	int err = errno;
+	// 	printf("Failed to get the physical sector size for file %s", path.c_str());
+	// 	switch (err){
+	// 		case ENOTTY:
+	// 			printf("The file descriptor does not support this ioctl");
+	// 			break;
+	// 		case EBADF:
+	// 			printf("Invalid file descriptor");
+	// 			break;
+	// 		case EFAULT:
+	// 			printf("Invalid memory address passed to ioctl");
+	// 			break;
+	// 		case EINVAL:
+	// 			printf("Invalid argument");
+	// 			break;
+	// 		default:
+	// 			break;
+	// 	}
+	// 	close(fd);
+	// 	exit(EXIT_FAILURE);
+	// }
+	// close(fd);
+	// return (uint64_t)(sector_size);
+	struct statvfs fsInfo;
+
+    if (statvfs(path.c_str(), &fsInfo) != 0){
+		println("Failed to get the physical sector size for {}", path);
+        perror("statvfs");
+        exit(EXIT_FAILURE);
+    }
+
+    return fsInfo.f_bsize;
 }
 
 void hideConsole(){}
@@ -634,11 +662,11 @@ shared_ptr<UnbufferedFile> UnbufferedFile::open(string path){
 	shared_ptr<UnbufferedFile> file = make_shared<UnbufferedFile>();
 	file->path = path;
 	file->sectorSize = getPhysicalSectorSize(path);
-	file->handle = (std::fstream*)nullptr;
-	static_cast<std::fstream*>(file->handle)->open(path);
-	if(!static_cast<std::fstream*>(file->handle)->is_open()) {
-		printf("ERROR: failed to CreateFileA");
-		printf("path:  {}", path);
+	println("sector size for {}: {}", path, file->sectorSize);
+	file->handle = new std::fstream(path, std::ios::binary | std::ios::in);
+	std::fstream* f = static_cast<std::fstream*>(file->handle);
+	if(!f->is_open()){
+		println("ERROR: failed to open {}", path);
 		exit(6362345);
 	}
 	return file;
@@ -652,6 +680,7 @@ void UnbufferedFile::read(uint64_t start, uint64_t size, void* target){
 
 void UnbufferedFile::close(){
 	static_cast<std::fstream*>(handle)->close();
+	delete handle;
 }
 
 void readBinaryFileUnbuffered(string path, uint64_t start, uint64_t size, void* target){

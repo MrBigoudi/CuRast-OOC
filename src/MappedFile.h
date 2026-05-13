@@ -119,9 +119,9 @@ shared_ptr<MappedFile> mapFile(string path){
 		}
 
 	#elif defined(__linux__)
-		file->h_file.open(path);
+		file->h_file.open(path, std::ios::binary | std::ios::in);
 		if(!file->h_file.is_open()) {
-			fprintf(stderr, "Failed to open file");
+			printf("Failed to open file %s\n", path.c_str());
 			exit(642325);
 		}
 		file->h_file.seekg(0, file->h_file.end);

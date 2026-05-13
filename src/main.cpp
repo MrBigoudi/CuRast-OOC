@@ -111,9 +111,9 @@ void initScene() {
 	};
 
 	auto loadHakone = [=](){
-		// string file = "./resources/meshes/donaukanal_urania_1M_jpeg80.glb";
+		string file = "./example_donaukanal_urania.glb";
 		// string file = "F:/resources/meshes/hakone_lantern.glb";
-		string file = "F:/resources/meshes/hakone_1M.glb";
+		// string file = "F:/resources/meshes/hakone_1M.glb";
 
 		static auto glb = largeGlb::load(file, context, {.skipUVs = false, .compress = false});
 		editor->scene.world->children.push_back(glb->glbNode);
@@ -126,12 +126,13 @@ void initScene() {
 	};
 
 	auto loadHakoneInstances = [=](){
+		string file = "./example_donaukanal_urania.glb";
 		// string file = "./resources/meshes/donaukanal_urania_1M_jpeg80.glb";
 		// string file = "F:/resources/meshes/hakone_lantern.glb";
 		// string file = "F:/resources/meshes/hakone_lantern_optimized.glb";
 		// string file = "F:/resources/meshes/hakone_lantern_3.glb";
 		// string file = "F:/resources/meshes/hakone_1m.glb";
-		string file = "F:/resources/meshes/hakone_1m_optimized.glb";
+		// string file = "F:/resources/meshes/hakone_1m_optimized.glb";
 
 		static auto glb = largeGlb::load(file, context, {.skipUVs = false, .compress = false});
 
@@ -285,7 +286,7 @@ void initScene() {
 	// createCube();
 	// loadZorah();
 	// loadGraffiti();
-	// loadHakone();
+	loadHakone();
 	// loadHakoneInstances();
 	// loadXyzDragon();
 	// loadSpot();

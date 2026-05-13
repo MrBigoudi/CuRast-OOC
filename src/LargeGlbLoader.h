@@ -289,6 +289,7 @@ namespace largeGlb{
 			// gltf = gltfloader::filter(gltf, 20'000); 
 
 			file = UnbufferedFile::open(gltf.buffers[0].uri);
+			println("unbuffered file open: {}", gltf.buffers[0].uri);
 			mappedFile = Mapping::mapFile(gltf.buffers[0].uri);
 
 			uint64_t totalBytes_uncompressed = 0;
