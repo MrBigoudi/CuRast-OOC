@@ -45,6 +45,8 @@ void kernel_drawPointcloud(
 	int py = ((projected.y / depth) * 0.5f + 0.5f) * target.height;
 	int pixelID = px + py * target.width;
 
+	if(px < 0 || px >= target.width) return;
+	if(py < 0 || py >= target.height) return;
 	if(pixelID < 0 || pixelID >= target.width * target.height) return;
 
 	uint64_t udepth = __float_as_uint(depth);
