@@ -95,6 +95,27 @@ void saveScreenshot(RenderTarget target, View view, CUdeviceptr cptr_ssaoShadebu
 	cuMemFreeHost(screenshot_host);
 }
 
+
+void drawPoints(Scene* scene, View view, RenderTarget& target){
+
+	static CudaModularProgram* prog = new CudaModularProgram({"./src/kernels/points.cu"});
+
+	scene->forEach<SNCPoints>([&](SNCPoints* node){
+
+		CPointcloud cpc;
+		cpc.world     = node->transform_global;
+		cpc.positions = (vec3*)node->cptr_positions;
+		cpc.colors    = (uint32_t*)node->cptr_colors;
+		cpc.numPoints = node->numPoints;
+
+		prog->launch("kernel_drawPointcloud", {&cpc, &target}, cpc.numPoints);
+		
+	});
+
+
+}
+
+
 #include "CuRast_vulkanRender.h"
 
 void drawTrianglesVisbuffer(
@@ -587,6 +608,7 @@ void CuRast::draw(Scene* scene, vector<View> views){
 		// 	Timer::recordDuration("kernel_drawHeightmap", custart, Timer::recordCudaTimestamp());
 		// }
 
+		drawPoints(scene, view, target);
 
 
 		// SCREEN SPACE AMBIENT OCCLUSION
