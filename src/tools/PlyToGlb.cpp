@@ -111,7 +111,7 @@ void writeGltf(
 	uint64_t offset_normal  = offset_index + indexSize;
 
 	// uint64_t binarySize = roundUp(posSize + colorSize + uvSize + indexSize + normalSize, 4llu);
-	uint64_t binarySize = roundUp(posSize + colorSize + uvSize + indexSize + normalSize, 4lu);
+	uint64_t binarySize = roundUp(posSize + colorSize + uvSize + indexSize + normalSize, uint64_t(4));
 	vector<uint8_t> binary(binarySize);
 	memcpy(binary.data() + offset_pos   ,   positions, posSize);
 	memcpy(binary.data() + offset_color ,   colors,    colorSize);
@@ -614,7 +614,7 @@ void convert(string path, string gltfPath){
 	auto mappedFile = Mapping::mapFile(path);
 
 	// string strProbableHeader((const char*)mappedFile->data, min(fs::file_size(path), 10'000llu));
-	string strProbableHeader((const char*)mappedFile->data, min(fs::file_size(path), 10'000lu));
+	string strProbableHeader((const char*)mappedFile->data, min(fs::file_size(path), uintmax_t(10'000)));
 	size_t pos_headerToken = strProbableHeader.find("end_header");
 	if(pos_headerToken == string::npos){
 		println("could not find end of header in ply file");

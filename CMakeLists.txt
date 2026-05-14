@@ -70,11 +70,20 @@ target_include_directories(${TARGET_NAME} PRIVATE
 )
 
 add_subdirectory(libs/laszip)
-target_link_libraries(${TARGET_NAME} PRIVATE 
-	${TURBOJPEG_LIBRARY}
-	laszip
-	stdc++exp
-)
+
+
+if (WIN32)
+	target_link_libraries(${TARGET_NAME} PRIVATE 
+		${TURBOJPEG_LIBRARY}
+		laszip
+	)
+elseif (LINUX)
+	target_link_libraries(${TARGET_NAME} PRIVATE 
+		${TURBOJPEG_LIBRARY}
+		laszip
+		stdc++exp
+	)
+endif()
 
 # Add other third-party libs
 ADD_CUDA(${TARGET_NAME})
