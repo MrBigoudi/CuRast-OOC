@@ -64,6 +64,7 @@ Dependencies:
 * CUDA 13.2
 * GCC 15.2.0
 * G++ 15.2.0
+* turbojpeg
 
 Create a build directory via cmake and build the software:
 

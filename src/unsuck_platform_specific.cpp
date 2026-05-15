@@ -525,7 +525,7 @@ MemoryData getMemoryData() {
 	int64_t totalPhysMem = memInfo.totalram;
 	totalPhysMem *= memInfo.mem_unit;
 	
-	long long physMemUsed = memInfo.totalram - memInfo.freeram;
+	int64_t physMemUsed = memInfo.totalram - memInfo.freeram;
 	physMemUsed *= memInfo.mem_unit;
 
 	int64_t virtualMemUsedByMe = getVirtualMemoryUsedByProcess();
@@ -601,7 +601,7 @@ void launchMemoryChecker(int64_t maxMB, double checkInterval) {
 
 static int numProcessors;
 static bool initialized = false;
-static unsigned long long lastTotalUser, lastTotalUserLow, lastTotalSys, lastTotalIdle;
+static uint64_t  lastTotalUser, lastTotalUserLow, lastTotalSys, lastTotalIdle;
 
 void init() {
 	numProcessors = std::thread::hardware_concurrency();
@@ -616,7 +616,7 @@ void init() {
 double getCpuUsage(){
     double percent;
     FILE* file;
-    unsigned long long totalUser, totalUserLow, totalSys, totalIdle, total;
+    uint64_t  totalUser, totalUserLow, totalSys, totalIdle, total;
 
     file = fopen("/proc/stat", "r");
     fscanf(file, "cpu %llu %llu %llu %llu", &totalUser, &totalUserLow, &totalSys, &totalIdle);

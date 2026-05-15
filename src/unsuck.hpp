@@ -46,7 +46,7 @@ using std::stacktrace;
 
 namespace fs = std::filesystem;
 
-static long long unsuck_start_time = high_resolution_clock::now().time_since_epoch().count();
+static int64_t unsuck_start_time = high_resolution_clock::now().time_since_epoch().count();
 
 // constexpr float Infinity = __builtin_huge_valf();
 
@@ -247,7 +247,7 @@ struct Buffer {
 
 inline double now() {
 	auto now = std::chrono::high_resolution_clock::now();
-	long long nanosSinceStart = now.time_since_epoch().count() - unsuck_start_time;
+	int64_t nanosSinceStart = now.time_since_epoch().count() - unsuck_start_time;
 
 	double secondsSinceStart = double(nanosSinceStart) / 1'000'000'000.0;
 

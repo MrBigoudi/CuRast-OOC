@@ -411,10 +411,8 @@ namespace largeGlb{
 			for(int i = 0; i < pool.numThreads; i++){
 				PinnedBuffer pinnedBuffer;
 				pinnedBuffer.size = roundUp(
-					// max(int64_t(largestIndexbufferSize), 100'000'000ll), 
-					max((long long)(largestIndexbufferSize), 100'000'000ll), 
-					// file->sectorSize) + file->sectorSize;
-					(long long)(file->sectorSize)) + (long long)(file->sectorSize);
+					max(int64_t(largestIndexbufferSize), int64_t(100'000'000)), 
+					int64_t(file->sectorSize)) + int64_t(file->sectorSize);
 
 				auto result = cuMemAllocHost(&pinnedBuffer.buffer, pinnedBuffer.size);
 				CURuntime::assertCudaSuccess(result);
@@ -595,9 +593,9 @@ namespace largeGlb{
 			for(int accessorIndex : accessors_positions){
 				gltfloader::Accessor accessor = gltf.accessors[accessorIndex];
 				if(config.compress){
-					bytesNeeded += roundUp((long long)(accessor.getByteSize()) / 2ll, 12ll);
+					bytesNeeded += roundUp(int64_t(accessor.getByteSize()) / int64_t(2), int64_t(12));
 				}else{
-					bytesNeeded += roundUp((long long)(accessor.getByteSize()), 12ll);
+					bytesNeeded += roundUp(int64_t(accessor.getByteSize()), int64_t(12));
 				}
 			}
 			bytesNeeded += 256;
@@ -605,8 +603,7 @@ namespace largeGlb{
 			loaded->memory->commit(bytesNeeded);
 			
 			// Enforce some alignment for start of next batch of data.
-			// gpu_memory_counter = roundUp(uint64_t(gpu_memory_counter), 16llu);
-			gpu_memory_counter = roundUp((unsigned long long)(gpu_memory_counter), 16llu);
+			gpu_memory_counter = roundUp(uint64_t(gpu_memory_counter), uint64_t(16));
 
 			println("process vertex buffers");
 			atomic_uint64_t size_positions_gltf = 0;
@@ -740,8 +737,7 @@ namespace largeGlb{
 				println("Allocating {:L} bytes of GPU memory", bytesNeeded);
 				loaded->memory->commit(bytesNeeded);
 				// Enforce some alignment for start of next batch of data.
-				// gpu_memory_counter = roundUp(uint64_t(gpu_memory_counter), 16llu);
-				gpu_memory_counter = roundUp((unsigned long long)(gpu_memory_counter), 16llu);
+				gpu_memory_counter = roundUp(uint64_t(gpu_memory_counter), uint64_t(16));
 
 				println("process color buffers");
 				for(int accessorIndex : accessors_colors){
@@ -882,8 +878,7 @@ namespace largeGlb{
 				println("Allocating {:L} bytes of GPU memory", bytesNeeded);
 				loaded->memory->commit(bytesNeeded + 256);
 				// Enforce some alignment for start of next batch of data.
-				// gpu_memory_counter = roundUp(uint64_t(gpu_memory_counter), 16llu);
-				gpu_memory_counter = roundUp((unsigned long long)(gpu_memory_counter), 16llu);
+				gpu_memory_counter = roundUp(uint64_t(gpu_memory_counter), uint64_t(16));
 
 				println("process normal buffers");
 				for(int accessorIndex : accessors_normals){
@@ -968,13 +963,11 @@ namespace largeGlb{
 
 					bytesNeeded += accessor.getByteSize();
 				}
-				// bytesNeeded = roundUp(bytesNeeded, 256llu);
-				bytesNeeded = roundUp((unsigned long long)(bytesNeeded), 256llu);
+				bytesNeeded = roundUp(uint64_t(bytesNeeded), uint64_t(256));
 				println("Allocating {:L} bytes of GPU memory", bytesNeeded);
 				loaded->memory->commit(bytesNeeded);
 				// Enforce some alignment for start of next batch of data.
-				// gpu_memory_counter = roundUp(uint64_t(gpu_memory_counter), 16llu);
-				gpu_memory_counter = roundUp((unsigned long long)(gpu_memory_counter), 16llu);
+				gpu_memory_counter = roundUp(uint64_t(gpu_memory_counter), uint64_t(16));
 				
 				for(int accessorIndex : accessors_uvs){
 
