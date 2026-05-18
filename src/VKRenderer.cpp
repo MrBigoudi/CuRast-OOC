@@ -475,7 +475,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugUtilsCallback(
 
 	println("Vulkan: {}", data->pMessage);
 
-	__debugbreak();
+	// __debugbreak();
 
 	return VK_FALSE;
 }

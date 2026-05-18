@@ -4,7 +4,11 @@
 #include <stacktrace>
 #include <set>
 
-#include "jpg/turbojpeg.h"
+#ifdef _WIN32
+	#include "jpg/turbojpeg.h"
+#elif defined(__linux__)
+	#include "turbojpeg.h"
+#endif
 
 #include "GLTFLoader.h"
 #include "scene/SceneNode.h"
@@ -288,6 +292,7 @@ namespace largeGlb{
 			// gltf = gltfloader::filter(gltf, 20'000); 
 
 			file = UnbufferedFile::open(gltf.buffers[0].uri);
+			println("unbuffered file open: {}", gltf.buffers[0].uri);
 			mappedFile = Mapping::mapFile(gltf.buffers[0].uri);
 
 			uint64_t totalBytes_uncompressed = 0;
@@ -406,8 +411,8 @@ namespace largeGlb{
 			for(int i = 0; i < pool.numThreads; i++){
 				PinnedBuffer pinnedBuffer;
 				pinnedBuffer.size = roundUp(
-					max(int64_t(largestIndexbufferSize), 100'000'000ll), 
-					file->sectorSize) + file->sectorSize;
+					max(int64_t(largestIndexbufferSize), int64_t(100'000'000)), 
+					int64_t(file->sectorSize)) + int64_t(file->sectorSize);
 
 				auto result = cuMemAllocHost(&pinnedBuffer.buffer, pinnedBuffer.size);
 				CURuntime::assertCudaSuccess(result);
@@ -464,7 +469,7 @@ namespace largeGlb{
 							return read<uint32_t>(pinned.buffer, padding + 4 * i);
 						}else{
 							println("unhandled component type: {}", accessor.componentType);
-							__debugbreak();
+							// __debugbreak();
 							exit(2354356);
 						}
 					};
@@ -588,9 +593,9 @@ namespace largeGlb{
 			for(int accessorIndex : accessors_positions){
 				gltfloader::Accessor accessor = gltf.accessors[accessorIndex];
 				if(config.compress){
-					bytesNeeded += roundUp(accessor.getByteSize() / 2ll, 12ll);
+					bytesNeeded += roundUp(int64_t(accessor.getByteSize()) / int64_t(2), int64_t(12));
 				}else{
-					bytesNeeded += roundUp(accessor.getByteSize(), 12ll);
+					bytesNeeded += roundUp(int64_t(accessor.getByteSize()), int64_t(12));
 				}
 			}
 			bytesNeeded += 256;
@@ -598,7 +603,7 @@ namespace largeGlb{
 			loaded->memory->commit(bytesNeeded);
 			
 			// Enforce some alignment for start of next batch of data.
-			gpu_memory_counter = roundUp(uint64_t(gpu_memory_counter), 16llu);
+			gpu_memory_counter = roundUp(uint64_t(gpu_memory_counter), uint64_t(16));
 
 			println("process vertex buffers");
 			atomic_uint64_t size_positions_gltf = 0;
@@ -709,7 +714,7 @@ namespace largeGlb{
 					}else{
 						println("unsupported bytes stride or component format");
 						println("{}", stacktrace::current());
-						__debugbreak();
+						// __debugbreak();
 						exit(12346347);
 					}
 
@@ -732,7 +737,7 @@ namespace largeGlb{
 				println("Allocating {:L} bytes of GPU memory", bytesNeeded);
 				loaded->memory->commit(bytesNeeded);
 				// Enforce some alignment for start of next batch of data.
-				gpu_memory_counter = roundUp(uint64_t(gpu_memory_counter), 16llu);
+				gpu_memory_counter = roundUp(uint64_t(gpu_memory_counter), uint64_t(16));
 
 				println("process color buffers");
 				for(int accessorIndex : accessors_colors){
@@ -819,7 +824,7 @@ namespace largeGlb{
 						}else{
 							println("ERROR: unsupported combination of accessor type and component type");
 							println("{}", stacktrace::current());
-							__debugbreak();
+							// __debugbreak();
 							exit(123572465);
 						}
 						
@@ -873,7 +878,7 @@ namespace largeGlb{
 				println("Allocating {:L} bytes of GPU memory", bytesNeeded);
 				loaded->memory->commit(bytesNeeded + 256);
 				// Enforce some alignment for start of next batch of data.
-				gpu_memory_counter = roundUp(uint64_t(gpu_memory_counter), 16llu);
+				gpu_memory_counter = roundUp(uint64_t(gpu_memory_counter), uint64_t(16));
 
 				println("process normal buffers");
 				for(int accessorIndex : accessors_normals){
@@ -958,11 +963,11 @@ namespace largeGlb{
 
 					bytesNeeded += accessor.getByteSize();
 				}
-				bytesNeeded = roundUp(bytesNeeded, 256llu);
+				bytesNeeded = roundUp(uint64_t(bytesNeeded), uint64_t(256));
 				println("Allocating {:L} bytes of GPU memory", bytesNeeded);
 				loaded->memory->commit(bytesNeeded);
 				// Enforce some alignment for start of next batch of data.
-				gpu_memory_counter = roundUp(uint64_t(gpu_memory_counter), 16llu);
+				gpu_memory_counter = roundUp(uint64_t(gpu_memory_counter), uint64_t(16));
 				
 				for(int accessorIndex : accessors_uvs){
 

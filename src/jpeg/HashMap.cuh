@@ -50,7 +50,8 @@ struct HashMap{
 
 		for(int i = 0; i < MAX_ATTEMPTS; i++){
 			int probeIndex = (hashIndex + i) % capacity;
-			uint64_t old = atomicCAS(&entries[probeIndex], EMPTYENTRY, element);
+			// uint64_t old = atomicCAS(&entries[probeIndex], EMPTYENTRY, element);
+			uint64_t old = atomicCAS((unsigned long long*)(&entries[probeIndex]), (unsigned long long)(EMPTYENTRY), (unsigned long long)(element));
 
 			if(old == EMPTYENTRY){
 				*location = probeIndex;

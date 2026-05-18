@@ -387,12 +387,75 @@ void readBinaryFileUnbuffered(string path, uint64_t start, uint64_t size, void* 
 
 // see https://stackoverflow.com/questions/63166/how-to-determine-cpu-and-memory-consumption-from-inside-a-process
 
+
 #include "sys/types.h"
 #include "sys/sysinfo.h"
 
 #include "stdlib.h"
 #include "stdio.h"
 #include "string.h"
+
+#include <GLFW/glfw3.h>
+
+void toClipboard(string str){
+	glfwSetClipboardString(nullptr, str.c_str());
+}
+
+// see https://linuxvox.com/blog/reading-hard-disk-sectors-in-c-on-linux/
+#include <iostream>
+#include <fcntl.h>    // For open()
+#include <unistd.h>   // For read(), lseek(), close()
+#include <sys/ioctl.h> // For ioctl()
+#include <linux/fs.h> // For BLKSSZGET (sector size ioctl)
+#include <cstring>    // For memset()
+#include <cerrno>     // For errno
+#include <iomanip>    // For hex output formatting
+#include <sys/statvfs.h> // For statvfs
+uint64_t getPhysicalSectorSize(string path){
+	// int fd = open(path.c_str(), O_RDONLY);
+	// if (fd == -1) {
+	// 	printf("Failed to open %s to get the physical sector size", path.c_str());
+	// 	exit(EXIT_FAILURE);
+	// }
+	// int sector_size = 0;
+	// if (ioctl(fd, BLKSSZGET, &sector_size) == -1) {
+	// 	int err = errno;
+	// 	printf("Failed to get the physical sector size for file %s", path.c_str());
+	// 	switch (err){
+	// 		case ENOTTY:
+	// 			printf("The file descriptor does not support this ioctl");
+	// 			break;
+	// 		case EBADF:
+	// 			printf("Invalid file descriptor");
+	// 			break;
+	// 		case EFAULT:
+	// 			printf("Invalid memory address passed to ioctl");
+	// 			break;
+	// 		case EINVAL:
+	// 			printf("Invalid argument");
+	// 			break;
+	// 		default:
+	// 			break;
+	// 	}
+	// 	close(fd);
+	// 	exit(EXIT_FAILURE);
+	// }
+	// close(fd);
+	// return (uint64_t)(sector_size);
+	struct statvfs fsInfo;
+
+    if (statvfs(path.c_str(), &fsInfo) != 0){
+		println("Failed to get the physical sector size for {}", path);
+        perror("statvfs");
+        exit(EXIT_FAILURE);
+    }
+
+    return fsInfo.f_bsize;
+}
+
+void hideConsole(){}
+
+
 
 int parseLine(char* line){
     // This assumes that a digit will be found and the line ends in " Kb".
@@ -462,7 +525,7 @@ MemoryData getMemoryData() {
 	int64_t totalPhysMem = memInfo.totalram;
 	totalPhysMem *= memInfo.mem_unit;
 	
-	long long physMemUsed = memInfo.totalram - memInfo.freeram;
+	int64_t physMemUsed = memInfo.totalram - memInfo.freeram;
 	physMemUsed *= memInfo.mem_unit;
 
 	int64_t virtualMemUsedByMe = getVirtualMemoryUsedByProcess();
@@ -538,7 +601,7 @@ void launchMemoryChecker(int64_t maxMB, double checkInterval) {
 
 static int numProcessors;
 static bool initialized = false;
-static unsigned long long lastTotalUser, lastTotalUserLow, lastTotalSys, lastTotalIdle;
+static uint64_t  lastTotalUser, lastTotalUserLow, lastTotalSys, lastTotalIdle;
 
 void init() {
 	numProcessors = std::thread::hardware_concurrency();
@@ -553,7 +616,7 @@ void init() {
 double getCpuUsage(){
     double percent;
     FILE* file;
-    unsigned long long totalUser, totalUserLow, totalSys, totalIdle, total;
+    uint64_t  totalUser, totalUserLow, totalSys, totalIdle, total;
 
     file = fopen("/proc/stat", "r");
     fscanf(file, "cpu %llu %llu %llu %llu", &totalUser, &totalUserLow, &totalSys, &totalIdle);
@@ -592,6 +655,37 @@ CpuData getCpuData() {
 	data.usage = getCpuUsage();
 
 	return data;
+}
+
+#include <fstream>
+shared_ptr<UnbufferedFile> UnbufferedFile::open(string path){
+	shared_ptr<UnbufferedFile> file = make_shared<UnbufferedFile>();
+	file->path = path;
+	file->sectorSize = getPhysicalSectorSize(path);
+	file->handle = new std::fstream(path, std::ios::binary | std::ios::in);
+	std::fstream* f = static_cast<std::fstream*>(file->handle);
+	if(!f->is_open()){
+		println("ERROR: failed to open {}", path);
+		exit(6362345);
+	}
+	return file;
+}
+
+void UnbufferedFile::read(uint64_t start, uint64_t size, void* target){
+	target = new uint8_t[size];
+	static_cast<std::fstream*>(handle)->seekg(start, ios::beg);
+	static_cast<std::fstream*>(handle)->read((char*)(target), size);
+}
+
+void UnbufferedFile::close(){
+	static_cast<std::fstream*>(handle)->close();
+	delete handle;
+}
+
+void readBinaryFileUnbuffered(string path, uint64_t start, uint64_t size, void* target){
+	shared_ptr<UnbufferedFile> unbuffered = UnbufferedFile::open(path);
+	unbuffered->read(start, size, target);
+	unbuffered->close();
 }
 
 

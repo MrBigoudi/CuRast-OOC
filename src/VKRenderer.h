@@ -218,14 +218,14 @@ struct VKRenderer {
 		fileDropListeners.push_back(callback);
 	}
 
-	static void assertSucces(VkResult result, stacktrace trace = stacktrace::current()){
+	static void assertSucces(VkResult result, std::stacktrace trace = std::stacktrace::current()){
 
 		if(result == VK_SUCCESS) return;
 
-		println("ERROR (Vulkan): {}", int(result));
-		println("{}", trace);
+		std::println("ERROR (Vulkan): {}", int(result));
+		std::println("{}", trace);
 
-		__debugbreak();
+		// __debugbreak();
 	}
 
 private:
@@ -255,7 +255,7 @@ public:
 
 struct VKBuffer {
 
-	string label = "none";
+	std::string label = "none";
 	VkBuffer        buffer        = VK_NULL_HANDLE;
 	VkDeviceMemory  memory        = VK_NULL_HANDLE;
 	VkDeviceAddress deviceAddress = 0;

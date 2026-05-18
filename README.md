@@ -60,7 +60,21 @@ Compile and run with visual Studio 2026. Drag and drop glb or gltf files to load
 
 ### Linux
 
-TODO. 
+Dependencies:
+* CUDA 13.2
+* GCC 15.2.0
+* G++ 15.2.0
+* turbojpeg
+
+Create a build directory via cmake and build the software:
+
+```
+mkdir out
+cd out
+cmake ..
+make
+cd .. && ./out/CuRast
+```
 
 Main challenge: We're using the windows API for [memory mapping](./src/MappedFile.h) (easily read from files) and [unbuffered IO](./src/unsuck_platform_specific.cpp#L242) (efficiently read from files). mmap on linux should be straightforward, but what about fast sequential SSD reads without buffering overhead? io_uring?
 

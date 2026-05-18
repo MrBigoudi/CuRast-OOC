@@ -2,6 +2,9 @@
 
 #include <memory>
 #include <string>
+#include <cstring>
+#include <fstream>
+#include <iostream>
 
 using std::shared_ptr;
 using namespace std;
@@ -11,6 +14,7 @@ namespace Mapping{
 #ifdef _WIN32
 	#define NOMINMAX
 	#include "windows.h"
+#elif defined(__linux__)
 #endif
 
 // Usage:
@@ -27,13 +31,13 @@ namespace Mapping{
 struct MappedFile{
 
 	string path;
+	void* data = nullptr;
 
 	#ifdef _WIN32
 		HANDLE h_file;
 		HANDLE h_mapping;
-		void* data = nullptr;
 	#elif defined(__linux__)
-		TODO
+		std::fstream h_file;
 	#endif
 
 	~MappedFile(){
@@ -48,6 +52,9 @@ struct MappedFile{
 				CloseHandle(h_file);
 				data = nullptr;
 			}
+		#elif defined(__linux__)
+			h_file.close();
+			data = nullptr;
 		#endif
 	}
 
@@ -56,7 +63,7 @@ struct MappedFile{
 		uint8_t* buffer_u8 = (uint8_t*)data;
 
 		T value;
-		memcpy(&value, buffer_u8 + byteOffset, sizeof(T));
+		std::memcpy(&value, buffer_u8 + byteOffset, sizeof(T));
 
 		return value;
 	}
@@ -112,7 +119,16 @@ shared_ptr<MappedFile> mapFile(string path){
 		}
 
 	#elif defined(__linux__)
-		TODO
+		file->h_file.open(path, std::ios::binary | std::ios::in);
+		if(!file->h_file.is_open()) {
+			printf("Failed to open file %s\n", path.c_str());
+			exit(642325);
+		}
+		file->h_file.seekg(0, file->h_file.end);
+		std::streampos size = file->h_file.tellg();
+		file->data = new uint8_t[size];
+		file->h_file.seekg(0, file->h_file.beg);
+		file->h_file.read((char*)(file->data), size);
 	#endif
 
 	return file;

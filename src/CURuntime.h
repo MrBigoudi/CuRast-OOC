@@ -53,7 +53,7 @@ struct CURuntime{
 
 		println("{}", trace);
 
-		__debugbreak();
+		// __debugbreak();
 
 		exit(6123453456);
 	}

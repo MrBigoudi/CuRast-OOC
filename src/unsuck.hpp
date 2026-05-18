@@ -46,7 +46,7 @@ using std::stacktrace;
 
 namespace fs = std::filesystem;
 
-static long long unsuck_start_time = high_resolution_clock::now().time_since_epoch().count();
+static int64_t unsuck_start_time = high_resolution_clock::now().time_since_epoch().count();
 
 // constexpr float Infinity = __builtin_huge_valf();
 
@@ -247,7 +247,7 @@ struct Buffer {
 
 inline double now() {
 	auto now = std::chrono::high_resolution_clock::now();
-	long long nanosSinceStart = now.time_since_epoch().count() - unsuck_start_time;
+	int64_t nanosSinceStart = now.time_since_epoch().count() - unsuck_start_time;
 
 	double secondsSinceStart = double(nanosSinceStart) / 1'000'000'000.0;
 
@@ -635,16 +635,20 @@ inline void writeBinaryFile(string path, uint8_t* data, uint64_t size) {
 inline string readFile(string path) {
 
 	std::ifstream t(path);
-	std::string str;
+	// std::string str;
 
-	t.seekg(0, std::ios::end);
-	str.reserve(t.tellg());
-	t.seekg(0, std::ios::beg);
+	// t.seekg(0, std::ios::end);
+	// str.reserve(t.tellg());
+	// t.seekg(0, std::ios::beg);
 
-	str.assign((std::istreambuf_iterator<char>(t)),
-		std::istreambuf_iterator<char>());
+	// str.assign((std::istreambuf_iterator<char>(t)),
+	// 	std::istreambuf_iterator<char>());
 
-	return str;
+	// return str;
+
+	std::stringstream buffer;
+	buffer << t.rdbuf();
+	return buffer.str();
 }
 
 inline void writeFile(string path, string text) {

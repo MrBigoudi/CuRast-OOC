@@ -20,7 +20,7 @@ struct JpegTextures{
 	CUdeviceptr cptr_TBSlotsCounter  = 0;
 
 	JpegTextures(){
-		prog = new CudaModularProgram({"./src/jpeg/jpeg.cu"});
+		prog = new CudaModularProgram({std::format("{}/src/jpeg/jpeg.cu", PROJECT_SOURCE_DIR)});
 
 		decodedMcuMap = new HashMap();
 		decodedMcuMap->capacity = 1'000'003;
