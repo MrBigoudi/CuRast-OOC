@@ -3,11 +3,23 @@
 #include "laszip/laszip_api.h"
 #include "globals.h"
 
+///////////////////////////////////////////////////////////////////////////////
+////////////////////////////// GLOBAL VARIABLES ///////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
 
 /// The batches that still need to be read
 std::deque<PointBatch> batchesToLoad = {};
 /// The batches that are already loaded
 std::deque<PointBatch> batchesLoaded = {};
+/// The main octree
+std::shared_ptr<OctreeNode> mainOctree = std::make_shared<OctreeNode>(OctreeNode());
+/// The main bounding box
+std::shared_ptr<AABB> mainAABB = std::make_shared<AABB>(AABB());
+
+
+///////////////////////////////////////////////////////////////////////////////
+////////////////////////////// HELPER FUNCTIONS ///////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
 
 void initLoadPointBatches(string file){
 	// Basic checks
@@ -94,7 +106,7 @@ void loadPointsInBatches(){
 
 		uint8_t fmt = batch.header->point_data_format;
 		bool has_rgb = (fmt == 2 || fmt == 3 || fmt == 5 || fmt == 7 || fmt == 8 || fmt == 10);
-		batch.points = std::make_shared<vector<Point>>();
+		batch.points = std::make_shared<vector<Point>>(vector<Point>());
 
 		for (uint64_t i = 0; i < batch.count; i++) {
 			if(laszip_read_point(laszip_reader)){
@@ -153,8 +165,193 @@ void loadBatchesOnGPU(CuRast* editor){
 	}
 }
 
+// TODO: temporary function to load synchronously the point cloud
 void loadPointcloud(string file, CuRast* editor){
+	// println("Init creating point batches for '{}'", file);
 	initLoadPointBatches(file);
+	// println("Load points in batches");
 	loadPointsInBatches();
+
+	// println("Init octree");
+	initOctree(mainOctree, mainAABB, batchesLoaded[0].points);
+
+	// println("Compute max new level");
+	// Compute max new level needed per batch
+	// In parallel
+	uint32_t nb_loaded = batchesLoaded.size();
+	vector<uint32_t> tmp_new_levels = vector<uint32_t>(nb_loaded, 0);
+	for(uint32_t i=0; i < nb_loaded; i++){
+		PointBatch& batch = batchesLoaded[i];
+		tmp_new_levels[i] = growOctree(mainOctree, mainAABB, batch.points);
+	}
+	// In single thread
+	uint32_t nb_new_levels = 0;
+	for(uint32_t& level : tmp_new_levels){
+		nb_new_levels = max(nb_new_levels, level);
+	}
+	println("Max new level: {}", nb_new_levels);
+
+	NodePosition node_position = FIRST_NODE_POSITION;
+	for(uint32_t i=0; i<nb_new_levels; i++){
+		// Create new parent
+		std::shared_ptr<OctreeNode> new_parent = std::make_shared<OctreeNode>(OctreeNode());
+		new_parent->voxels = {};
+		// Create 7 other empty children
+		for(uint32_t j=0; j<8; j++){
+			// Put old main node in correct place in the parent
+			if(j != node_position){
+				std::shared_ptr<OctreeNode> empty_child = std::make_shared<OctreeNode>(OctreeNode());
+				empty_child->is_leaf = true;
+				new_parent->children[j] = empty_child;
+			} else {
+				new_parent->children[j] = mainOctree;
+			}
+		}
+
+		// Sample voxels to fill new occupancy grid
+		std::shared_ptr<Chunk> chunk_list = mainOctree->is_leaf ? mainOctree->points : mainOctree->voxels;
+		while(chunk_list){
+			println("current chunk size: {}", chunk_list->size);
+			for(uint32_t j=0; j<chunk_list->size; j++){
+				Point point = chunk_list->points[j];
+				// Sample voxel occupancy grid at this location
+				vec3 normalized_coordinates = mainAABB->getPointNormalizedCoordinates(point.position);
+				uint32_t grid_x = clamp(uint32_t(floor(GRID_SIZE * normalized_coordinates.x)), 0u, GRID_SIZE - 1u);
+				uint32_t grid_y = clamp(uint32_t(floor(GRID_SIZE * normalized_coordinates.y)), 0u, GRID_SIZE - 1u);
+				uint32_t grid_z = clamp(uint32_t(floor(GRID_SIZE * normalized_coordinates.z)), 0u, GRID_SIZE - 1u);
+				uint32_t index = grid_x + GRID_SIZE * (grid_y + GRID_SIZE * grid_z);
+				uint32_t word_index = index >> 5u;
+				uint32_t bit_index = index & 31u;
+
+				// Fill up occupancy grid
+				bool is_cell_occupied = (new_parent->occupancy->values[word_index] & (1u << bit_index)) != 0;
+				if(!is_cell_occupied){
+					new_parent->occupancy->values[word_index] |= (1u << bit_index);
+					// Create corresponding voxel using this point
+					Point new_voxel = {.position = mainAABB->getCentroid() };
+					new_voxel.color[0] = point.color[0];
+					new_voxel.color[1] = point.color[1];
+					new_voxel.color[2] = point.color[2];
+					new_voxel.color[3] = point.color[3];
+					// Add voxel to voxels chunk list
+					std::shared_ptr<Chunk> empty_voxels_chunk = new_parent->voxels;
+					while(empty_voxels_chunk->next && empty_voxels_chunk->size == POINTS_PER_CHUNK){
+						empty_voxels_chunk = empty_voxels_chunk->next;
+					}
+					if(empty_voxels_chunk->size == POINTS_PER_CHUNK){
+						std::shared_ptr<Chunk> new_chunk = std::make_shared<Chunk>(Chunk());
+						empty_voxels_chunk->next = new_chunk;
+						empty_voxels_chunk = new_chunk;
+					}
+					empty_voxels_chunk->points[empty_voxels_chunk->size] = new_voxel;
+					empty_voxels_chunk->size++;
+				}
+			}
+			chunk_list = chunk_list->next;
+		}
+
+		// println("new root AABB: mins({}, {}, {}), maxs({}, {}, {})", 
+		// 	mainAABB->mins.x, mainAABB->mins.y, mainAABB->mins.z,
+		// 	mainAABB->maxs.x, mainAABB->maxs.y, mainAABB->maxs.z
+		// );
+		mainAABB->extend(node_position);
+		mainOctree = new_parent;
+		updateNodePosition(node_position);
+	}
+
+	// println("new root AABB: mins({}, {}, {}), maxs({}, {}, {})", 
+	// 	mainAABB->mins.x, mainAABB->mins.y, mainAABB->mins.z,
+	// 	mainAABB->maxs.x, mainAABB->maxs.y, mainAABB->maxs.z
+	// );
+
+	// TODO: do original SimLOD octree update from the new root node
+
+
+	// Display octree
+	std::function<void(std::shared_ptr<OctreeNode>, uint32_t, uint32_t)> print_node = [&](std::shared_ptr<OctreeNode> node, uint32_t id, uint32_t level){
+		println("id: {}, level: {}, nbPoints: {}, nbVoxels: {}, children: [{}, {}, {}, {}, {}, {}, {}, {}]",
+			id, level, node->getNbPoints(), node->getNbVoxels(),
+			node->children[0] != nullptr,
+			node->children[1] != nullptr,
+			node->children[2] != nullptr,
+			node->children[3] != nullptr,
+			node->children[4] != nullptr,
+			node->children[5] != nullptr,
+			node->children[6] != nullptr,
+			node->children[7] != nullptr
+		);
+		for(size_t i=0; i<8; i++){
+			if(node->children[i]){
+				print_node(node->children[i], i, level+1);
+			}
+		}
+	};
+	print_node(mainOctree, 0, 0);
+
+
 	loadBatchesOnGPU(editor);
 };
+
+
+void mainLoop(){
+	// Init everything
+	// while true:
+		// CPU side, in parallel:
+			// - Load points on CPU
+			// - Upload points to GPU
+			// - Run render / grow / update kernels
+		// GPU side:
+			// - Render
+			// - Grow, for every thread in parallel, compute nb new levels
+			// - One thread creates the new children
+			// - Update
+}
+
+void initOctree(std::shared_ptr<OctreeNode> main_root, std::shared_ptr<AABB> main_aabb, std::shared_ptr<vector<Point>> points){
+	for(Point& point : *points){
+		main_aabb->maxs.x = std::max(main_aabb->maxs.x, point.position.x);
+		main_aabb->maxs.y = std::max(main_aabb->maxs.y, point.position.y);
+		main_aabb->maxs.z = std::max(main_aabb->maxs.z, point.position.z);
+		main_aabb->mins.x = std::min(main_aabb->mins.x, point.position.x);
+		main_aabb->mins.y = std::min(main_aabb->mins.y, point.position.y);
+		main_aabb->mins.z = std::min(main_aabb->mins.z, point.position.z);
+	}
+	main_root->is_leaf = true;
+}
+
+uint32_t growOctree(std::shared_ptr<OctreeNode> main_root, std::shared_ptr<AABB> main_aabb, std::shared_ptr<vector<Point>> points){
+	uint32_t nb_new_levels = 0;
+	AABB new_aabb = *main_aabb;
+	NodePosition node_position = FIRST_NODE_POSITION;
+	// For each point in a batch check if fits in current AABB
+	for(Point& point : *points){
+		while(!new_aabb.doesPointFit(point.position)){
+			// println("new AABB: mins({}, {}, {}), maxs({}, {}, {})", 
+			// 	new_aabb.mins.x, new_aabb.mins.y, new_aabb.mins.z,
+			// 	new_aabb.maxs.x, new_aabb.maxs.y, new_aabb.maxs.z
+			// );
+			// Create new roots considering main box as successively the 1st, 2nd, ..., 8th child to build octree in spiral
+			vec3 size = new_aabb.getSize();
+			nb_new_levels++;
+			new_aabb.extend(node_position);
+			updateNodePosition(node_position);
+		}
+	}
+	return nb_new_levels;
+}
+
+
+void updateOctree(){
+	// Get root octree:
+		// For each point
+			// if fit in main octree
+				// return main octree
+			// else if fit in one of tmp octree
+				// return index of tmp octree
+			// else
+				// create new roots considering main box as successively 1,2,...,8 children to build octree in spiral
+	
+	// SimLod update:
+		// For each point
+			// add it to the 
+}
