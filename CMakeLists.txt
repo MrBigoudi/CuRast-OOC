@@ -36,6 +36,7 @@ endif()
 file(GLOB PROJECT_SOURCES CONFIGURE_DEPENDS 
 	src/*.[ch]pp
 	src/*.cu
+	src/ooc_structures/*.[ch]pp
 	src/kernels/textureTools.cu
 	src/kernels/lines.cu
 	#src/kernels/rasterization_utils.cu

@@ -32,6 +32,8 @@
 #include "PlyLoader.h"
 #include "laszip/laszip_api.h"
 
+#include "ooc_structures/StructureUpdate.h"
+
 using namespace std; // YOLO
 
 CUcontext context;
@@ -51,109 +53,7 @@ void initCuda() {
 }
 
 
-void loadPointcloud(string file, CuRast* editor){
 
-	// Load pointcloud from file using laszip
-	laszip_POINTER laszip_reader;
-	if(laszip_create(&laszip_reader)){
-		println("ERROR: creating laszip reader");
-		return;
-	}
-
-	laszip_BOOL is_compressed = 0;
-	if(laszip_open_reader(laszip_reader, file.c_str(), &is_compressed)){
-		println("ERROR: opening laszip reader for '{}'", file);
-		laszip_destroy(laszip_reader);
-		return;
-	}
-
-	laszip_header* header;
-	if(laszip_get_header_pointer(laszip_reader, &header)){
-		println("ERROR: getting laszip header pointer");
-		laszip_close_reader(laszip_reader);
-		laszip_destroy(laszip_reader);
-		return;
-	}
-
-	laszip_point* laz_point;
-	if(laszip_get_point_pointer(laszip_reader, &laz_point)){
-		println("ERROR: getting laszip point pointer");
-		laszip_close_reader(laszip_reader);
-		laszip_destroy(laszip_reader);
-		return;
-	}
-
-	laszip_I64 numPoints = header->number_of_point_records
-		? header->number_of_point_records
-		: (laszip_I64)header->extended_number_of_point_records;
-
-	double scale_x = header->x_scale_factor;
-	double scale_y = header->y_scale_factor;
-	double scale_z = header->z_scale_factor;
-	double offset_x = header->x_offset;
-	double offset_y = header->y_offset;
-	double offset_z = header->z_offset;
-
-	// Point formats 2, 3, 5, 7, 8, 10 carry RGB
-	uint8_t fmt = header->point_data_format;
-	bool has_rgb = (fmt == 2 || fmt == 3 || fmt == 5 || fmt == 7 || fmt == 8 || fmt == 10);
-
-	println("loading {} points from '{}'", numPoints, file);
-
-	vector<vec3> positions(numPoints);
-	vector<uint32_t> colors(numPoints);
-
-	for(laszip_I64 i = 0; i < numPoints; i++){
-		if(laszip_read_point(laszip_reader)){
-			println("ERROR: reading point {}", i);
-			break;
-		}
-
-		float x = (float)(laz_point->X * scale_x + offset_x);
-		float y = (float)(laz_point->Y * scale_y + offset_y);
-		float z = (float)(laz_point->Z * scale_z + offset_z);
-
-		uint8_t r, g, b;
-		if(has_rgb){
-			// LAS RGB is 16-bit; many writers use the high byte, some use the low byte
-			r = laz_point->rgb[0] > 255 ? (uint8_t)(laz_point->rgb[0] >> 8) : (uint8_t)laz_point->rgb[0];
-			g = laz_point->rgb[1] > 255 ? (uint8_t)(laz_point->rgb[1] >> 8) : (uint8_t)laz_point->rgb[1];
-			b = laz_point->rgb[2] > 255 ? (uint8_t)(laz_point->rgb[2] >> 8) : (uint8_t)laz_point->rgb[2];
-		} else {
-			uint8_t intensity = (uint8_t)(laz_point->intensity >> 8);
-			r = g = b = intensity;
-		}
-
-		positions[i] = {x, y, z};
-		colors[i] = (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16) | (0xFFu << 24);
-	}
-
-	laszip_close_reader(laszip_reader);
-	laszip_destroy(laszip_reader);
-
-	println("done loading {} points", numPoints);
-
-	// Upload positions and colors to GPU
-	CUdeviceptr cptr_positions, cptr_colors;
-	cuMemAlloc(&cptr_positions, numPoints * sizeof(vec3));
-	cuMemAlloc(&cptr_colors,    numPoints * sizeof(uint32_t));
-	cuMemcpyHtoD(cptr_positions, positions.data(), numPoints * sizeof(vec3));
-	cuMemcpyHtoD(cptr_colors,    colors.data(),    numPoints * sizeof(uint32_t));
-
-	auto node = make_shared<SNCPoints>("pointcloud");
-	node->cptr_positions = cptr_positions;
-	node->cptr_colors    = cptr_colors;
-	node->numPoints      = numPoints;
-
-	editor->scene.world->children.push_back(node);
-
-	// // position: 4.283698075250294, -4.795270477550499, 6.400710991008715 
-	// Runtime::controls->yaw    = -5.582;
-	// Runtime::controls->pitch  = -0.294;
-	// Runtime::controls->radius = 5.584;
-	// Runtime::controls->target = { 0.679, -0.714, 5.163};
-
-};
 
 void initScene() {
 	CuRast* editor = CuRast::instance;
@@ -388,6 +288,14 @@ void initScene() {
 		Runtime::controls->target = { 352.960, -1134.931, -462.529, };
 	};
 
+	auto loadLion = [=]() {
+		loadPointcloud("./lion.laz", editor);
+		// position: 4.283698075250294, -4.795270477550499, 6.400710991008715 
+		Runtime::controls->yaw    = -5.582;
+		Runtime::controls->pitch  = -0.294;
+		Runtime::controls->radius = 5.584;
+		Runtime::controls->target = { 0.679, -0.714, 5.163};
+	};
 	
 
 	// createCube();
@@ -403,8 +311,7 @@ void initScene() {
 	// loadCubeJpeg();
 	// loadPolygraphenewerkLeibzigInstances();
 	// loadVenice();
-	loadPointcloud("./lion.laz", editor);
-
+	loadLion();
 }
 
 void update(){
