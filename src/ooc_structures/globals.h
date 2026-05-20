@@ -61,12 +61,14 @@ struct OccupancyGrid;
 struct AABB {
 	vec3 mins = {INFINITY, INFINITY, INFINITY};
 	vec3 maxs = {-INFINITY, -INFINITY, -INFINITY};
-	bool doesPointFit(const vec3& position) const;
+	bool contains(const vec3& position) const;
 	vec3 getCentroid() const;
 	vec3 getSize() const;
 	void extend(const NodePosition& position);
+	void shrink(const NodePosition& position);
 	vec3 getPointNormalizedCoordinates(const vec3& position) const;
 	vec3 getPointWorldCoordinates(const vec3& normalized_position) const;
+	NodePosition getNextChildIndex(const vec3& position) const;
 };
 
 /// A loaded point
@@ -94,7 +96,7 @@ struct Voxel {
 	/// Position in the voxel grid
 	uint8_t position[3] = {0,0,0};
 	uint8_t padding;
-	uint8_t color[4] = {0,0,0,1};
+	uint8_t color[4] = {0,0,0,0};
 };
 
 struct OccupancyGrid {
@@ -113,6 +115,8 @@ struct OctreeNode {
 
 	uint32_t getNbPoints() const;
 	uint32_t getNbVoxels() const;
+
+	void display(uint32_t id = 0, uint32_t level = 0) const;
 };
 
 /// A chunk linked list in a node

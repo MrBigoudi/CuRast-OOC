@@ -14,7 +14,7 @@ vector<uint32_t> PointBatch::getColors() const {
         uint32_t color = (uint32_t)point.color[0]
             | ((uint32_t)point.color[1] << 8)
             | ((uint32_t)point.color[2] << 16)
-            | ((uint32_t)point.color[3] << 24)
+            | (0xFFu << 24)
         ;
         res.push_back(color);
     }
@@ -39,7 +39,7 @@ vec3 AABB::getPointWorldCoordinates(const vec3& normalized_position) const {
 
 
 
-bool AABB::doesPointFit(const vec3& position) const {
+bool AABB::contains(const vec3& position) const {
     return position.x >= mins.x && position.x <= maxs.x
         && position.y >= mins.y && position.y <= maxs.y
         && position.z >= mins.z && position.z <= maxs.z
@@ -100,6 +100,89 @@ void AABB::extend(const NodePosition& position) {
     }
 }
 
+void AABB::shrink(const NodePosition& position) {
+    vec3 size = getSize()*0.5f;
+    switch (position) {
+        case FrontTopLeft:
+            maxs.x -= size.x;
+            mins.y += size.y;
+            mins.z += size.z;
+            break;
+        case FrontTopRight:
+            mins.x += size.x;
+            mins.y += size.y;
+            mins.z += size.z;
+            break;
+        case FrontBottomLeft:
+            maxs.x -= size.x;
+            maxs.y -= size.y;
+            mins.z += size.z;
+            break;
+        case FrontBottomRight:
+            mins.x += size.x;
+            maxs.y -= size.y;
+            mins.z += size.z;
+            break;
+        case BackTopLeft:
+            maxs.x -= size.x;
+            mins.y += size.y;
+            maxs.z -= size.z;
+            break;
+        case BackTopRight:
+            mins.x += size.x;
+            mins.y += size.y;
+            maxs.z -= size.z;
+            break;
+        case BackBottomLeft:
+            maxs.x -= size.x;
+            maxs.y -= size.y;
+            maxs.z -= size.z;
+            break;
+        case BackBottomRight:
+            mins.x += size.x;
+            maxs.y -= size.y;
+            maxs.z -= size.z;
+            break;
+    }
+}
+
+NodePosition AABB::getNextChildIndex(const vec3& position) const {
+    vec3 normalized_coordinates = getPointNormalizedCoordinates(position);
+    bool is_front = normalized_coordinates.z >= 0.5f;
+    bool is_top = normalized_coordinates.y >= 0.5f;
+    bool is_right = normalized_coordinates.x >= 0.5f;
+    if(is_right){
+        if(is_top){
+            if(is_front){
+                return NodePosition::FrontTopRight;
+            } else {
+                return NodePosition::BackTopRight;
+            }
+        } else {
+            if(is_front){
+                return NodePosition::FrontBottomRight;
+            } else {
+                return NodePosition::BackBottomRight;
+            }
+        }
+    } else {
+        if(is_top){
+            if(is_front){
+                return NodePosition::FrontTopLeft;
+            } else {
+                return NodePosition::BackTopLeft;
+            }
+        } else {
+            if(is_front){
+                return NodePosition::FrontBottomLeft;
+            } else {
+                return NodePosition::BackBottomLeft;
+            }
+        }
+    }
+}
+
+
 void updateNodePosition(NodePosition& position){
     switch(position){
         case FrontTopLeft:
@@ -149,3 +232,14 @@ uint32_t OctreeNode::getNbVoxels() const {
     }
     return res;
 }
+
+void OctreeNode::display(uint32_t id, uint32_t level) const {
+    println("id: {}, level: {}, is_leaf: {}, counter: {}, nbPoints: {}, nbVoxels: {}",
+        id, level, is_leaf, counter, getNbPoints(), getNbVoxels()
+    );
+    for(size_t i=0; i<8; i++){
+        if(children[i]){
+            children[i]->display(i, level+1);
+        }
+    }
+};

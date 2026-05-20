@@ -15,12 +15,48 @@ void loadBatchesOnGPU(CuRast* editor);
 
 /// The main loop of the OOC update / rendering
 void mainLoop();
+
 /// Init the main octree
-void initOctree(std::shared_ptr<OctreeNode> main_root, std::shared_ptr<AABB> main_aabb, std::shared_ptr<vector<Point>> points);
+void initOctree(
+    std::shared_ptr<OctreeNode>& main_root, 
+    std::shared_ptr<AABB>& main_aabb, 
+    std::shared_ptr<vector<Point>>& points
+);
+
 /// Grow the octree
-uint32_t growOctree(std::shared_ptr<OctreeNode> main_root, std::shared_ptr<AABB> main_aabb, std::shared_ptr<vector<Point>> points);
-/// Update the octree
-void updateOctree();
+uint32_t growOctree(
+    std::shared_ptr<OctreeNode>& main_root, 
+    std::shared_ptr<AABB>& main_aabb, 
+    std::shared_ptr<vector<Point>>& points
+);
+
+/// Bottom up update of the octree
+/// Creates nb_new_levels * 8 new nodes:
+///     - (nb_new_levels * 7) empty leaves
+///     - nb_new_levels inner nodes
+void uptadeOctree(
+    std::shared_ptr<OctreeNode>& main_root, 
+    std::shared_ptr<AABB>& main_aabb, 
+    uint32_t nb_new_levels
+);
+
+/// SimLOD octree update
+void simLodUpdate(
+    std::shared_ptr<OctreeNode>& main_root, 
+    std::shared_ptr<AABB>& main_aabb, 
+    std::shared_ptr<vector<Point>>& points
+);
+void simLodCount(
+    std::shared_ptr<OctreeNode>& main_root, 
+    std::shared_ptr<AABB>& main_aabb, 
+    std::shared_ptr<vector<Point>>& points,
+    std::shared_ptr<vector<Point>>& spilled_points,
+    std::shared_ptr<vector<OctreeNode*>>& spilling_nodes
+);
+void simLodSplit(
+    std::shared_ptr<vector<Point>>& spilled_points,
+    std::shared_ptr<vector<OctreeNode*>>& spilling_nodes
+);
 
 // TODO: temporary function to load synchronously the point cloud
 void loadPointcloud(string file, CuRast* editor);
