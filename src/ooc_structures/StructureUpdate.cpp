@@ -16,6 +16,15 @@ std::shared_ptr<OctreeNode> mainOctree = std::make_shared<OctreeNode>(OctreeNode
 /// The main bounding box
 std::shared_ptr<AABB> mainAABB = std::make_shared<AABB>(AABB());
 
+/// The buffer of spilled points
+std::shared_ptr<vector<Point>> spilledPoints = std::make_shared<vector<Point>>(vector<Point>());
+/// The buffer of spilling nodes
+std::shared_ptr<vector<OctreeNode*>> spillingNodes = std::make_shared<vector<OctreeNode*>>(vector<OctreeNode*>());
+/// The backlog buffer for new voxels
+std::shared_ptr<vector<Point>> backlogVoxels = std::make_shared<vector<Point>>(vector<Point>());
+/// The backlog buffer for the nodes corresponding to the new voxels
+std::shared_ptr<vector<OctreeNode*>> backlogVoxelsNodes = std::make_shared<vector<OctreeNode*>>(vector<OctreeNode*>());
+
 
 ///////////////////////////////////////////////////////////////////////////////
 ////////////////////////////// HELPER FUNCTIONS ///////////////////////////////
@@ -188,7 +197,7 @@ void loadPointcloud(string file, CuRast* editor){
 		for(uint32_t& level : tmp_new_levels){
 			nb_new_levels = max(nb_new_levels, level);
 		}
-		println("Max new level: {}", nb_new_levels);
+		// println("Max new level: {}", nb_new_levels);
 
 		uptadeOctree(mainOctree, mainAABB, nb_new_levels);
 	}
@@ -213,8 +222,7 @@ void loadPointcloud(string file, CuRast* editor){
 
 
 
-std::shared_ptr<vector<Point>> spilledPoints = std::make_shared<vector<Point>>(vector<Point>());
-std::shared_ptr<vector<OctreeNode*>> spillingNodes = std::make_shared<vector<OctreeNode*>>(vector<OctreeNode*>());
+
 void simLodCount(
     std::shared_ptr<OctreeNode>& main_root, 
     std::shared_ptr<AABB>& main_aabb, 
@@ -223,7 +231,7 @@ void simLodCount(
     std::shared_ptr<vector<OctreeNode*>>& spilling_nodes
 ){
 	auto countPoint = [&](Point& point){
-		// reach corresponding leaf
+		// Reach corresponding leaf
 		std::shared_ptr<OctreeNode> leaf = main_root;
 		AABB current_aabb = {.mins = main_aabb->mins, .maxs = main_aabb->maxs };
 
@@ -297,6 +305,8 @@ void simLodSplit(
 		}
 		spilling_node->is_leaf = false;
 		spilling_node->counter = 0;
+		spilling_node->occupancy = std::make_shared<OccupancyGrid>(OccupancyGrid());
+
 		// Create 8 empty children
 		for(uint32_t j=0; j<8; j++){
 			std::shared_ptr<OctreeNode> empty_child = std::make_shared<OctreeNode>(OctreeNode());
@@ -327,6 +337,8 @@ void simLodSplit(
 			current_chunk = nullptr;
 			old_chunks[i] = nullptr;
 		}
+
+		spilling_node->points = nullptr;
 	}
 	spilling_nodes->clear();
 }
@@ -340,9 +352,10 @@ void simLodUpdate(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>&
 		simLodSplit(spilledPoints, spillingNodes);
 	}
 
-	simLodCount(main_root, main_aabb, points, spilledPoints, spillingNodes);
-	println("Nb spilledPoints: {}, nb spillingNodes: {}", spilledPoints->size(), spillingNodes->size());
-
+	simLodVoxelSampling(main_root, main_aabb, points, spilledPoints, spillingNodes, backlogVoxels, backlogVoxelsNodes);
+	
+	main_root->display();
+	exit(EXIT_FAILURE);
 }
 
 
@@ -351,7 +364,8 @@ void uptadeOctree(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>&
 	for(uint32_t i=0; i<nb_new_levels; i++){
 		// Create new parent
 		std::shared_ptr<OctreeNode> new_parent = std::make_shared<OctreeNode>(OctreeNode());
-		new_parent->voxels = {};
+		new_parent->occupancy = std::make_shared<OccupancyGrid>(OccupancyGrid());
+
 		// Create 7 other empty children
 		for(uint32_t j=0; j<8; j++){
 			// Put old main node in correct place in the parent
@@ -366,6 +380,7 @@ void uptadeOctree(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>&
 
 		// Sample voxels to fill new occupancy grid
 		std::shared_ptr<Chunk> chunk_list = main_root->is_leaf ? main_root->points : main_root->voxels;
+		
 		// TODO: check if works
 		while(chunk_list){
 			// println("current chunk size: {}", chunk_list->size);
@@ -389,8 +404,10 @@ void uptadeOctree(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>&
 					new_voxel.color[0] = point.color[0];
 					new_voxel.color[1] = point.color[1];
 					new_voxel.color[2] = point.color[2];
-					new_voxel.color[3] = point.color[3];
 					// Add voxel to voxels chunk list
+					if(!new_parent->voxels){
+						new_parent->voxels = {};
+					}
 					std::shared_ptr<Chunk> empty_voxels_chunk = new_parent->voxels;
 					while(empty_voxels_chunk->next && empty_voxels_chunk->size == POINTS_PER_CHUNK){
 						empty_voxels_chunk = empty_voxels_chunk->next;
@@ -402,7 +419,6 @@ void uptadeOctree(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>&
 					}
 					empty_voxels_chunk->points[empty_voxels_chunk->size] = new_voxel;
 					empty_voxels_chunk->size++;
-					new_parent->counter++;
 				}
 			}
 			chunk_list = chunk_list->next;
@@ -413,6 +429,81 @@ void uptadeOctree(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>&
 		updateNodePosition(node_position);
 	}
 
+}
+
+void simLodVoxelSampling(
+    std::shared_ptr<OctreeNode>& main_root, 
+    std::shared_ptr<AABB>& main_aabb, 
+    std::shared_ptr<vector<Point>>& points,
+    std::shared_ptr<vector<Point>>& spilled_points,
+    std::shared_ptr<vector<OctreeNode*>>& spilling_nodes,
+    std::shared_ptr<vector<Point>>& backlog_voxels,
+    std::shared_ptr<vector<OctreeNode*>>& backlog_voxels_nodes
+){
+	auto sampleVoxel = [&](Point& point){
+		// Reach all corresponding inner nodes
+		std::shared_ptr<OctreeNode> node = main_root;
+		AABB current_aabb = {.mins = main_aabb->mins, .maxs = main_aabb->maxs };
+
+		while(true){
+			if(node->is_leaf){return;}
+
+			// Sample voxel occupancy grid at this location
+			vec3 normalized_coordinates = current_aabb.getPointNormalizedCoordinates(point.position);
+			uint32_t grid_x = clamp(uint32_t(floor(GRID_SIZE * normalized_coordinates.x)), 0u, GRID_SIZE - 1u);
+			uint32_t grid_y = clamp(uint32_t(floor(GRID_SIZE * normalized_coordinates.y)), 0u, GRID_SIZE - 1u);
+			uint32_t grid_z = clamp(uint32_t(floor(GRID_SIZE * normalized_coordinates.z)), 0u, GRID_SIZE - 1u);
+			uint32_t index = grid_x + GRID_SIZE * (grid_y + GRID_SIZE * grid_z);
+			uint32_t word_index = index >> 5u;
+			uint32_t bit_index = index & 31u;
+			bool is_cell_occupied = (node->occupancy->values[word_index] & (1u << bit_index)) != 0;
+
+			if(!is_cell_occupied){
+				// Fill up occupancy grid
+				node->occupancy->values[word_index] |= (1u << bit_index);
+				// Create corresponding voxel using this point
+				Point new_voxel = {.position = current_aabb.getCentroid() };
+				new_voxel.color[0] = point.color[0];
+				new_voxel.color[1] = point.color[1];
+				new_voxel.color[2] = point.color[2];
+
+				// Add voxel to backlog buffers
+				node->counter++;
+				backlog_voxels->push_back(new_voxel);
+				backlog_voxels_nodes->push_back(node.get());
+			}
+
+			// Find next child
+			NodePosition child_index = current_aabb.getNextChildIndex(point.position);
+			AABB old_aabb = current_aabb;
+			current_aabb.shrink(child_index);
+
+			if(!current_aabb.contains(point.position)){
+				println("Error: the point should always be contained in the next AABB");
+				println("\tpoint position: ({}, {}, {})", point.position.x, point.position.y, point.position.z);
+				println("\tpoint new index: {}", uint32_t(child_index));
+				println("\told AABB: mins({}, {}, {}), maxs({}, {}, {})", 
+					old_aabb.mins.x, old_aabb.mins.y, old_aabb.mins.z,
+					old_aabb.maxs.x, old_aabb.maxs.y, old_aabb.maxs.z
+				);
+				println("\tnew AABB: mins({}, {}, {}), maxs({}, {}, {})", 
+					current_aabb.mins.x, current_aabb.mins.y, current_aabb.mins.z,
+					current_aabb.maxs.x, current_aabb.maxs.y, current_aabb.maxs.z
+				);
+				println("skipping point...");
+				return;
+			}
+
+			node = node->children[child_index];
+		}
+	};
+
+	for(Point& point : *points){
+		sampleVoxel(point);
+	}
+	for(Point& point : *spilled_points){
+		sampleVoxel(point);		
+	}
 }
 
 void mainLoop(){

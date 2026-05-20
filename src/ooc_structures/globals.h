@@ -74,7 +74,7 @@ struct AABB {
 /// A loaded point
 struct Point {
 	vec3 position = vec3();
-	uint8_t color[4] = {0,0,0,1};
+	uint8_t color[4] = {0,0,0,0};
 };
 
 /// A set of points read from a las / laz file
@@ -101,7 +101,7 @@ struct Voxel {
 
 struct OccupancyGrid {
 	// gridsize^3 occupancy grid; 1 bit per voxel
-	uint32_t values[GRID_NUM_CELLS / 32u];
+	uint32_t values[GRID_NUM_CELLS / 32u] = {0};
 };
 
 /// A node in an octree
@@ -116,7 +116,7 @@ struct OctreeNode {
 	uint32_t getNbPoints() const;
 	uint32_t getNbVoxels() const;
 
-	void display(uint32_t id = 0, uint32_t level = 0) const;
+	void display(uint32_t id = 0, uint32_t level = 0, bool node_only = false) const;
 };
 
 /// A chunk linked list in a node

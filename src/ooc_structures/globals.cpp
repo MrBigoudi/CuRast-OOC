@@ -233,13 +233,15 @@ uint32_t OctreeNode::getNbVoxels() const {
     return res;
 }
 
-void OctreeNode::display(uint32_t id, uint32_t level) const {
+void OctreeNode::display(uint32_t id, uint32_t level, bool node_only) const {
     println("id: {}, level: {}, is_leaf: {}, counter: {}, nbPoints: {}, nbVoxels: {}",
         id, level, is_leaf, counter, getNbPoints(), getNbVoxels()
     );
-    for(size_t i=0; i<8; i++){
-        if(children[i]){
-            children[i]->display(i, level+1);
+    if(!node_only){
+        for(size_t i=0; i<8; i++){
+            if(children[i]){
+                children[i]->display(i, level+1);
+            }
         }
     }
 };

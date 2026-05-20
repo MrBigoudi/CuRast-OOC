@@ -46,6 +46,7 @@ void simLodUpdate(
     std::shared_ptr<AABB>& main_aabb, 
     std::shared_ptr<vector<Point>>& points
 );
+/// SimLOD counting pass
 void simLodCount(
     std::shared_ptr<OctreeNode>& main_root, 
     std::shared_ptr<AABB>& main_aabb, 
@@ -53,9 +54,20 @@ void simLodCount(
     std::shared_ptr<vector<Point>>& spilled_points,
     std::shared_ptr<vector<OctreeNode*>>& spilling_nodes
 );
+/// SimLOD splitting pass
 void simLodSplit(
     std::shared_ptr<vector<Point>>& spilled_points,
     std::shared_ptr<vector<OctreeNode*>>& spilling_nodes
+);
+/// SimLOD voxel sampling pass
+void simLodVoxelSampling(
+    std::shared_ptr<OctreeNode>& main_root, 
+    std::shared_ptr<AABB>& main_aabb, 
+    std::shared_ptr<vector<Point>>& points,
+    std::shared_ptr<vector<Point>>& spilled_points,
+    std::shared_ptr<vector<OctreeNode*>>& spilling_nodes,
+    std::shared_ptr<vector<Point>>& backlog_voxels,
+    std::shared_ptr<vector<OctreeNode*>>& backlog_voxels_nodes
 );
 
 // TODO: temporary function to load synchronously the point cloud
