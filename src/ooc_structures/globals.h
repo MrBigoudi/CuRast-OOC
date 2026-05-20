@@ -108,7 +108,7 @@ struct OccupancyGrid {
 struct OctreeNode {
 	std::shared_ptr<OctreeNode> children[8] = {nullptr};
 	uint32_t counter = 0;
-	bool is_leaf = false;
+	bool is_leaf = true;
 	std::shared_ptr<Chunk> points = nullptr;
 	std::shared_ptr<Chunk> voxels = nullptr;
 	std::shared_ptr<OccupancyGrid> occupancy = nullptr;
