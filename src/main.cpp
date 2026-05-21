@@ -467,5 +467,7 @@ int main(int argc, char** argv){
 		[&]() {CuRast::instance->postFrame();}
 	);
 
+	displayTimings();
+
 	VKRenderer::destroy();
 }

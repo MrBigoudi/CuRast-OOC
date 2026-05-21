@@ -3,6 +3,50 @@
 #include "CuRast.h"
 #include "laszip/laszip_api.h"
 
+///////////////////////////////////////////////////////////////////////////////
+////////////////////////// GLOBAL EXTERNAL VARIABLES //////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+
+/// Tells how many clouds have been loaded
+/// For debug purposes
+extern uint32_t NbLoadedClouds;
+
+/// The hash map to store timings
+struct Timing {
+	bool has_started = false;
+	string name = "";
+	uint32_t level = 0;
+	std::chrono::time_point<std::chrono::system_clock> start = {};
+	std::chrono::time_point<std::chrono::system_clock> stop = {};
+	std::chrono::microseconds duration = {};
+
+	Timing(string name, bool start_now = true, uint32_t level = 0)
+	 : name(name), has_started(start_now), level(level){
+		if(start_now){
+			start = std::chrono::high_resolution_clock::now();
+		}
+	}
+
+	void start_clock(){
+		if(has_started){
+			println("Can't start a timing twice");
+			return;
+		}
+		start = std::chrono::high_resolution_clock::now();
+	}
+
+	void stop_clock(){
+		if(!has_started){
+			println("Can't stop an unstarted timing");
+			return;
+		}
+		stop = std::chrono::high_resolution_clock::now();
+		duration = std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
+	}
+};
+extern vector<Timing> timingsList;
+void displayTimings();
+
 
 ///////////////////////////////////////////////////////////////////////////////
 /////////////////////////// GLOBAL ENUM DECLARATION ///////////////////////////

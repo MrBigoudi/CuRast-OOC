@@ -1,5 +1,29 @@
 #include "globals.h"
 
+uint32_t NbLoadedClouds = 0;
+vector<Timing> timingsList = {};
+
+void displayTimings(){
+	println("///////////////////////////////////////////////////");
+	println("///////////////////// Timings /////////////////////");
+	println("///////////////////////////////////////////////////\n");
+	for (Timing& timing : timingsList){
+		uint64_t us = timing.duration.count();
+		uint64_t s = uint64_t(us / 1'000'000);
+		uint64_t ms = uint64_t((us - (s*1'000'000)) / 1'000);
+		us = us - (s*1'000'000) - (ms*1'000);
+
+        string tab = std::string(4*timing.level, ' ');
+
+		println("{}- {}:{}s, {}ms, {}us",
+			tab, timing.name, s, ms, us 
+		);
+	}
+    println("\n///////////////////////////////////////////////////");
+	println("///////////////////////////////////////////////////");
+	println("///////////////////////////////////////////////////\n");
+};
+
 vector<vec3> PointBatch::getPositions() const {
     vector<vec3> res = {};
     for(Point& point : *points){

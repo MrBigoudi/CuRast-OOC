@@ -26,8 +26,6 @@ std::shared_ptr<vector<Point>> backlogVoxels = std::make_shared<vector<Point>>(v
 std::shared_ptr<vector<OctreeNode*>> backlogVoxelsNodes = std::make_shared<vector<OctreeNode*>>(vector<OctreeNode*>());
 
 
-static bool firstCloudLoaded = false;
-
 ///////////////////////////////////////////////////////////////////////////////
 ////////////////////////////// HELPER FUNCTIONS ///////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
@@ -178,13 +176,28 @@ void loadBatchesOnGPU(CuRast* editor){
 
 // TODO: temporary function to load synchronously the point cloud
 void loadPointcloud(string file, CuRast* editor){
+	uint32_t timing_id = timingsList.size();
+	timingsList.emplace_back(format("init load point batches v{}", NbLoadedClouds), true);
 	initLoadPointBatches(file);
-	loadPointsInBatches();
+	timingsList[timing_id].stop_clock();
+	
 
-	if(!firstCloudLoaded){
+	timing_id = timingsList.size();
+	timingsList.emplace_back(format("load points in batches v{}", NbLoadedClouds), true);
+	loadPointsInBatches();
+	timingsList[timing_id].stop_clock();
+
+
+	timing_id = timingsList.size();
+	timingsList.emplace_back(format("init octree v{}", NbLoadedClouds), true);
+	if(NbLoadedClouds == 0){
 		initOctree(mainOctree, mainAABB, batchesLoaded[0].points);
 	}
+	timingsList[timing_id].stop_clock();
 
+
+	timing_id = timingsList.size();
+	timingsList.emplace_back(format("compute max new level v{}", NbLoadedClouds), true);
 	// Compute max new level needed per batch
 	uint32_t nb_loaded = batchesLoaded.size();
 	vector<uint32_t> tmp_new_levels = vector<uint32_t>(nb_loaded, 0);
@@ -195,7 +208,11 @@ void loadPointcloud(string file, CuRast* editor){
 			tmp_new_levels[i] = growOctree(mainOctree, mainAABB, batch.points);
 		}
 	}
+	timingsList[timing_id].stop_clock();
 
+
+	timing_id = timingsList.size();
+	timingsList.emplace_back(format("update octree bottom up v{}", NbLoadedClouds), true);
 	// In single thread
 	{
 		uint32_t nb_new_levels = 0;
@@ -206,25 +223,33 @@ void loadPointcloud(string file, CuRast* editor){
 
 		uptadeOctree(mainOctree, mainAABB, nb_new_levels);
 	}
+	timingsList[timing_id].stop_clock();
 
+
+	timing_id = timingsList.size();
+	timingsList.emplace_back(format("simlod update v{}", NbLoadedClouds), true);
 	// In parallel
-	// TODO: rework to make it work in parallel
 	{
 		for(uint32_t i=0; i<nb_loaded; i++){
 			PointBatch& batch = batchesLoaded[i];
 			simLodUpdate(mainOctree, mainAABB, batch.points);
 		}
 	}
+	timingsList[timing_id].stop_clock();
 
-	println("//////////////////////////////////////////////////");
-	println("/////////// Octree after simLOD update ///////////");
-	println("//////////////////////////////////////////////////");
-	mainOctree->display();
-	// exit(EXIT_FAILURE);
 
+	// println("//////////////////////////////////////////////////");
+	// println("/////////// Octree after simLOD update ///////////");
+	// println("//////////////////////////////////////////////////");
+	// mainOctree->display();
+
+	timing_id = timingsList.size();
+	timingsList.emplace_back(format("send points to GPU v{}", NbLoadedClouds), true);
 	loadBatchesOnGPU(editor);
+	timingsList[timing_id].stop_clock();
 
-	firstCloudLoaded = true;
+
+	NbLoadedClouds++;
 };
 
 
@@ -350,7 +375,10 @@ void simLodSplit(
 	spilling_nodes->clear();
 }
 
+static uint32_t staticCpt = 0;
 void simLodUpdate(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>& main_aabb, std::shared_ptr<vector<Point>>& points){
+	uint32_t timing_id = timingsList.size();
+	timingsList.emplace_back(format("simlod count/split loop v{}-{}", NbLoadedClouds, staticCpt), true, 1);
 	while(true){
 		simLodCount(main_root, main_aabb, points, spilledPoints, spillingNodes);
 		if(spillingNodes->size() == 0){
@@ -358,15 +386,31 @@ void simLodUpdate(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>&
 		}
 		simLodSplit(spilledPoints, spillingNodes);
 	}
+	timingsList[timing_id].stop_clock();
 
+
+	timing_id = timingsList.size();
+	timingsList.emplace_back(format("simlod voxel sampling v{}-{}", NbLoadedClouds, staticCpt), true, 1);
 	simLodVoxelSampling(main_root, main_aabb, points, spilledPoints, backlogVoxels, backlogVoxelsNodes);
+	timingsList[timing_id].stop_clock();
+	
+
+	timing_id = timingsList.size();
+	timingsList.emplace_back(format("simlod insertion v{}-{}", NbLoadedClouds, staticCpt), true, 1);
 	simLodInsertion(main_root, main_aabb, points, spilledPoints, backlogVoxels, backlogVoxelsNodes);
+	timingsList[timing_id].stop_clock();
+
 
 	// Clean buffers
+	timing_id = timingsList.size();
+	timingsList.emplace_back(format("simlod buffer cleaning v{}-{}", NbLoadedClouds, staticCpt), true, 1);
 	spilledPoints->clear();
 	spillingNodes->clear();
 	backlogVoxels->clear();
 	backlogVoxelsNodes->clear();
+	timingsList[timing_id].stop_clock();
+
+	staticCpt++;
 }
 
 
@@ -638,3 +682,4 @@ uint32_t growOctree(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB
 	}
 	return nb_new_levels;
 }
+
