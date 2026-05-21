@@ -249,6 +249,11 @@ void loadPointcloud(string file, CuRast* editor){
 	timingsList[timing_id].stop_clock();
 
 
+	timing_id = timingsList.size();
+	timingsList.emplace_back(format("send octree to GPU v{}", NbLoadedClouds), true);
+	loadOctree(editor, mainOctree, mainAABB);
+	timingsList[timing_id].stop_clock();
+
 	NbLoadedClouds++;
 };
 
@@ -659,6 +664,15 @@ void initOctree(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>& m
 		main_aabb->mins.y = std::min(main_aabb->mins.y, point.position.y);
 		main_aabb->mins.z = std::min(main_aabb->mins.z, point.position.z);
 	}
+	// // Make it cubic
+	// vec3 size = main_aabb->getSize();
+	// vec3 half_size = 0.5f * size;
+	// if(size.x > size.y){
+	// 	if(size.x > size.z){
+	// 		main_aabb.
+	// 	}
+	// }
+
 	// Adding small 1% delta to avoid floating point issues
 	vec3 size = main_aabb->getSize();
 	vec3 epsilon = size * 0.01f;
@@ -683,3 +697,126 @@ uint32_t growOctree(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB
 	return nb_new_levels;
 }
 
+
+
+// TODO: temporary function
+void loadOctree(CuRast* editor, const std::shared_ptr<OctreeNode>& main_root, const std::shared_ptr<AABB>& main_aabb){
+	// Create cuda memory pointers
+	auto octree = make_shared<SNCOctree>("octree");
+	octree->cptr_nodes = {};
+	octree->cptr_aabbs = {};
+	octree->cptr_chunks = {};
+
+	// Create enough chunks
+	uint32_t chunk_counter = 0;
+	uint32_t nodes_counter = 0;
+	uint32_t max_lod_level = 0;
+
+	std::function<CUdeviceptr(const std::shared_ptr<OctreeNode>&, const std::shared_ptr<AABB>&, uint32_t)> recursive = [&](
+		const std::shared_ptr<OctreeNode>& cur_node, const std::shared_ptr<AABB>& cur_aabb, uint32_t level
+	) -> CUdeviceptr {
+
+		CUdeviceptr child_indices[8] = {0};
+		
+		if(!cur_node->is_leaf){
+			for(uint32_t child = 0; child < 8; child++){
+				std::shared_ptr<AABB> new_aabb = std::make_shared<AABB>(AABB());
+				new_aabb->mins = cur_aabb->mins;
+				new_aabb->maxs = cur_aabb->maxs;
+				new_aabb->shrink((NodePosition)child);
+				child_indices[child] = recursive(cur_node->children[child], new_aabb, level+1);
+			}
+		}
+
+		// Create CChunks
+		vector<Chunk*> chunks = {};
+		Chunk* cur_chunk = nullptr;
+		if(cur_node->is_leaf && cur_node->points){
+			cur_chunk = cur_node->points.get();
+		} else if (!cur_node->is_leaf && cur_node->voxels){
+			cur_chunk = cur_node->voxels.get();
+		}
+		while(cur_chunk){
+			chunks.push_back(cur_chunk);
+			cur_chunk = cur_chunk->next.get();
+		}
+		for(int32_t i=chunks.size()-1; i>=0; i--){
+			CChunk tmp = {};
+			tmp.size = chunks[i]->size;
+			tmp.next = nullptr;
+			for(uint32_t j=0; j<tmp.size; j++){
+				CPoint tmp_point = {
+					.position = chunks[i]->points[j].position, 
+					.color = (uint32_t)chunks[i]->points[j].color[0]
+						| ((uint32_t)chunks[i]->points[j].color[1] << 8)
+						| ((uint32_t)chunks[i]->points[j].color[2] << 16)
+						| (0xFFu << 24)
+				};
+				tmp.points[j] = tmp_point;
+			}
+			if(chunks[i]->next){
+				tmp.next = (CChunk*)octree->cptr_chunks[chunk_counter];
+			}
+			octree->cptr_chunks.emplace_back();
+			cuMemAlloc(&octree->cptr_chunks[chunk_counter], sizeof(CChunk));
+			cuMemcpyHtoD(octree->cptr_chunks[chunk_counter], &tmp, sizeof(CChunk));
+			chunk_counter++;
+		}
+
+		// Create COctreeNode
+		COctreeNode new_node = {};
+		if(!cur_node->is_leaf){
+			for(uint32_t child = 0; child < 8; child++){
+				new_node.children[child] = (COctreeNode*) child_indices[child];
+			}
+		}
+		new_node.counter = cur_node->counter;
+		new_node.is_leaf = cur_node->is_leaf;
+		if(cur_node->is_leaf && !chunks.empty()){
+			new_node.points = (CChunk*)octree->cptr_chunks[chunk_counter-1];
+		}
+		if(!cur_node->is_leaf && !chunks.empty()){
+			new_node.voxels = (CChunk*)octree->cptr_chunks[chunk_counter-1];
+			new_node.occupancy = COccupancyGrid();
+			for(uint32_t i=0; i<C_POINTS_PER_CHUNK; i++){
+				new_node.occupancy.values[i] = cur_node->occupancy->values[i];
+			}
+		}
+		new_node.level = level;
+		if(level > max_lod_level){
+			max_lod_level = level;
+		}
+
+		CAABB new_aabb = {
+			.mins = cur_aabb->mins,
+			.maxs = cur_aabb->maxs,
+		};
+
+		// Create cuda pointers
+		CUdeviceptr cptr_node, cptr_aabb;
+		cuMemAlloc(&cptr_node, sizeof(COctreeNode)); 
+		cuMemAlloc(&cptr_aabb, sizeof(CAABB));
+		cuMemcpyHtoD(cptr_node, &new_node, sizeof(COctreeNode));
+		cuMemcpyHtoD(cptr_aabb, &new_aabb, sizeof(CAABB));
+		
+		octree->cptr_nodes.push_back(cptr_node);
+		octree->cptr_aabbs.push_back(cptr_aabb);
+
+		// if(nodes_counter < 10){
+		// 	println("- HOST: AABB[{}] = mins({}, {}, {}), maxs({}, {}, {})", nodes_counter,
+		// 		new_aabb.mins.x, new_aabb.mins.y, new_aabb.mins.z,
+		// 		new_aabb.maxs.x, new_aabb.maxs.y, new_aabb.maxs.z
+		// 	);
+		// }
+
+		nodes_counter++;
+		return cptr_node;
+	};
+
+	CUdeviceptr cptr_root_node = recursive(main_root, main_aabb, 0);	
+	octree->num_nodes = nodes_counter;
+	octree->max_lod_level = max_lod_level;
+	
+	editor->scene.world->children.push_back(octree);
+
+}

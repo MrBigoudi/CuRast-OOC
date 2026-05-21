@@ -111,8 +111,37 @@ void drawPoints(Scene* scene, View view, RenderTarget& target){
 		prog->launch("kernel_drawPointcloud", {&cpc, &target}, cpc.numPoints);
 		
 	});
+}
 
+void drawOctree(Scene* scene, View view, RenderTarget& target){
+	static CudaModularProgram* prog = new CudaModularProgram({"./src/kernels/octree.cu"});
 
+	scene->forEach<SNCOctree>([&](SNCOctree* octree){
+
+		CFullOctree cfo;
+		cfo.world     = octree->transform_global;
+		cfo.nodes     = (COctreeNode**)(octree->cptr_nodes.data());
+		cfo.aabbs     = (CAABB**)(octree->cptr_aabbs.data());
+		cfo.chunks    = (CChunk**)(octree->cptr_chunks.data());
+		cfo.num_nodes = octree->num_nodes;
+		cfo.max_lod_level = octree->max_lod_level;
+
+		// println("nb nodes: {}, nb aabbs: {}, nb chunks: {}, nb nodes: {}",
+		// 	octree->cptr_nodes.size(), octree->cptr_aabbs.size(), octree->cptr_chunks.size(), octree->num_nodes
+		// );
+
+		// for(uint32_t i=0; i<10; i++){
+		// 	CAABB res = {};
+		// 	cuMemcpyDtoH(&res, octree->cptr_aabbs[i], sizeof(CAABB));
+		// 	println("- DEVICE: AABB[{}] = mins({}, {}, {}), maxs({}, {}, {})", i,
+		// 		res.mins.x, res.mins.y, res.mins.z,
+		// 		res.maxs.x, res.maxs.y, res.maxs.z
+		// 	);
+		// }
+		// exit(EXIT_FAILURE);
+
+		prog->launch("kernel_drawOctree", {&cfo, &target}, cfo.num_nodes);
+	});
 }
 
 
@@ -609,6 +638,7 @@ void CuRast::draw(Scene* scene, vector<View> views){
 		// }
 
 		drawPoints(scene, view, target);
+		drawOctree(scene, view, target);
 
 
 		// SCREEN SPACE AMBIENT OCCLUSION
