@@ -664,20 +664,39 @@ void initOctree(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>& m
 		main_aabb->mins.y = std::min(main_aabb->mins.y, point.position.y);
 		main_aabb->mins.z = std::min(main_aabb->mins.z, point.position.z);
 	}
-	// // Make it cubic
-	// vec3 size = main_aabb->getSize();
-	// vec3 half_size = 0.5f * size;
-	// if(size.x > size.y){
-	// 	if(size.x > size.z){
-	// 		main_aabb.
-	// 	}
-	// }
+	// Make it cubic
+	vec3 size = main_aabb->getSize();
+	vec3 half_size = 0.5f * size;
+	if(size.x > size.y){
+		if(size.x > size.z){
+			main_aabb->mins.y -= half_size.y;
+			main_aabb->maxs.y += half_size.y;
+			main_aabb->mins.z -= half_size.z;
+			main_aabb->maxs.z += half_size.z;
+		} else {
+			main_aabb->mins.y -= half_size.y;
+			main_aabb->maxs.y += half_size.y;
+			main_aabb->mins.x -= half_size.x;
+			main_aabb->maxs.x += half_size.x;
+		}
+	} else {
+		if(size.y > size.z){
+			main_aabb->mins.x -= half_size.x;
+			main_aabb->maxs.x += half_size.x;
+			main_aabb->mins.z -= half_size.z;
+			main_aabb->maxs.z += half_size.z;
+		} else {
+			main_aabb->mins.y -= half_size.y;
+			main_aabb->maxs.y += half_size.y;
+			main_aabb->mins.x -= half_size.x;
+			main_aabb->maxs.x += half_size.x;
+		}
+	}
 
 	// Adding small 1% delta to avoid floating point issues
-	vec3 size = main_aabb->getSize();
-	vec3 epsilon = size * 0.01f;
-	main_aabb->mins -= epsilon;
-	main_aabb->maxs += epsilon;
+	float epsilon = 0.01f;
+	main_aabb->mins -= epsilon * main_aabb->mins;
+	main_aabb->maxs += epsilon * main_aabb->maxs;
 }
 
 uint32_t growOctree(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>& main_aabb, std::shared_ptr<vector<Point>>& points){
