@@ -20,6 +20,7 @@ std::shared_ptr<AABB> mainAABB = std::make_shared<AABB>(AABB());
 std::shared_ptr<vector<Point>> spilledPoints = std::make_shared<vector<Point>>(vector<Point>());
 /// The buffer of spilling nodes
 std::shared_ptr<vector<OctreeNode*>> spillingNodes = std::make_shared<vector<OctreeNode*>>(vector<OctreeNode*>());
+
 /// The backlog buffer for new voxels
 std::shared_ptr<vector<Point>> backlogVoxels = std::make_shared<vector<Point>>(vector<Point>());
 /// The backlog buffer for the nodes corresponding to the new voxels
@@ -210,6 +211,11 @@ void loadPointcloud(string file, CuRast* editor){
 	}
 	timingsList[timing_id].stop_clock();
 
+	// println("//////////////////////////////////////////////////");
+	// println("//////////// Octree after grow octree ////////////");
+	// println("//////////////////////////////////////////////////");
+	// mainOctree->display();
+
 
 	timing_id = timingsList.size();
 	timingsList.emplace_back(format("update octree bottom up v{}", NbLoadedClouds), true);
@@ -224,6 +230,11 @@ void loadPointcloud(string file, CuRast* editor){
 		uptadeOctree(mainOctree, mainAABB, nb_new_levels);
 	}
 	timingsList[timing_id].stop_clock();
+
+	// println("//////////////////////////////////////////////////");
+	// println("/////////// Octree after update octree ///////////");
+	// println("//////////////////////////////////////////////////");
+	// mainOctree->display();
 
 
 	timing_id = timingsList.size();
@@ -279,6 +290,7 @@ void simLodCount(
 			NodePosition child_index = current_aabb.getNextChildIndex(point.position);
 			AABB old_aabb = current_aabb;
 			current_aabb.shrink(child_index);
+			leaf->children_ids |= 0x01 << child_index;
 
 			if(!current_aabb.contains(point.position)){
 				println("Error SimLOD count: the point should always be contained in the next AABB");
@@ -296,8 +308,8 @@ void simLodCount(
 				return;
 			}
 
-			// If leaf update counter
-			if(!leaf->is_leaf){
+			// If not leaf continue
+			if(leaf->children[child_index]){
 				leaf = leaf->children[child_index];
 				// Get node level
 				if(level == UINT8_MAX){
@@ -335,21 +347,40 @@ void simLodSplit(
     std::shared_ptr<vector<Point>>& spilled_points,
     std::shared_ptr<vector<OctreeNode*>>& spilling_nodes
 ){
-	for(OctreeNode*& spilling_node : *spilling_nodes){
-		if(spilling_node->voxels || spilling_node->occupancy){
-			println("An inner node should not be spliteable");
-			exit(EXIT_FAILURE);
-		}
-		spilling_node->is_leaf = false;
-		spilling_node->counter = 0;
-		spilling_node->occupancy = std::make_shared<OccupancyGrid>(OccupancyGrid());
+	for(uint32_t node_id = 0; node_id < spilling_nodes->size(); node_id++){
+		OctreeNode*& spilling_node = (*spilling_nodes)[node_id];
+		uint8_t spilling_node_children = spilling_node->children_ids;
 
-		// Create 8 empty children
+	// for(OctreeNode*& spilling_node : *spilling_nodes){
+		// if(spilling_node->voxels || spilling_node->occupancy){
+		// 	println("An inner node should not be spliteable");
+		// 	exit(EXIT_FAILURE);
+		// }
+		
+		// Check if the node is inner
+		bool is_inner = false;
 		for(uint32_t j=0; j<8; j++){
-			std::shared_ptr<OctreeNode> empty_child = std::make_shared<OctreeNode>(OctreeNode());
-			empty_child->is_leaf = true;
-			spilling_node->children[j] = empty_child;
+			if(spilling_node->children[j]){
+				is_inner = true;
+				break;
+			}
 		}
+
+		// spilling_node->is_leaf = false;
+		spilling_node->counter = 0;
+		if(!spilling_node->occupancy){
+			spilling_node->occupancy = std::make_shared<OccupancyGrid>(OccupancyGrid());
+		}
+
+		for(uint32_t j=0; j<8; j++){
+			// Create necessary empty children
+			if(!spilling_node->children[j] && (0x01 << j) & spilling_node_children){
+				std::shared_ptr<OctreeNode> empty_child = std::make_shared<OctreeNode>(OctreeNode());
+				// empty_child->is_leaf = true;
+				spilling_node->children[j] = empty_child;
+			}
+		}
+
 		// Add former points to spilled points and free memory
 		std::vector<std::shared_ptr<Chunk>> old_chunks = {spilling_node->points};
 		std::shared_ptr<Chunk> current_chunk = spilling_node->points;
@@ -389,21 +420,48 @@ void simLodUpdate(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>&
 		if(spillingNodes->size() == 0){
 			break;
 		}
+		
+		// println("//////////////////////////////////////////////////");
+		// println("////////// Octree after simlod counting //////////");
+		// println("//////////////////////////////////////////////////");
+		// mainOctree->display();
+
 		simLodSplit(spilledPoints, spillingNodes);
+
+		// println("//////////////////////////////////////////////////");
+		// println("////////// Octree after simlod splitting /////////");
+		// println("//////////////////////////////////////////////////");
+		// mainOctree->display();
+
 	}
 	timingsList[timing_id].stop_clock();
+
+	// println("//////////////////////////////////////////////////");
+	// println("//////// Octree after simlod count/splits ////////");
+	// println("//////////////////////////////////////////////////");
+	// mainOctree->display();
 
 
 	timing_id = timingsList.size();
 	timingsList.emplace_back(format("simlod voxel sampling v{}-{}", NbLoadedClouds, staticCpt), true, 1);
 	simLodVoxelSampling(main_root, main_aabb, points, spilledPoints, backlogVoxels, backlogVoxelsNodes);
 	timingsList[timing_id].stop_clock();
+
+	// println("//////////////////////////////////////////////////");
+	// println("//////// Octree after simlod voxel sample ////////");
+	// println("//////////////////////////////////////////////////");
+	// mainOctree->display();
 	
 
 	timing_id = timingsList.size();
 	timingsList.emplace_back(format("simlod insertion v{}-{}", NbLoadedClouds, staticCpt), true, 1);
 	simLodInsertion(main_root, main_aabb, points, spilledPoints, backlogVoxels, backlogVoxelsNodes);
 	timingsList[timing_id].stop_clock();
+
+	// println("//////////////////////////////////////////////////");
+	// println("///////// Octree after simlod insertions /////////");
+	// println("//////////////////////////////////////////////////");
+	// mainOctree->display();
 
 
 	// Clean buffers
@@ -424,62 +482,70 @@ void uptadeOctree(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>&
 	for(uint32_t i=0; i<nb_new_levels; i++){
 		// Create new parent
 		std::shared_ptr<OctreeNode> new_parent = std::make_shared<OctreeNode>(OctreeNode());
-		new_parent->is_leaf = false;
+		// new_parent->is_leaf = false;
 		new_parent->occupancy = std::make_shared<OccupancyGrid>(OccupancyGrid());
 
-		// Create 7 other empty children
-		for(uint32_t j=0; j<8; j++){
-			// Put old main node in correct place in the parent
-			if(j != node_position){
-				std::shared_ptr<OctreeNode> empty_child = std::make_shared<OctreeNode>(OctreeNode());
-				empty_child->is_leaf = true;
-				new_parent->children[j] = empty_child;
-			} else {
-				new_parent->children[j] = main_root;
+		// // Create 7 other empty children
+		// for(uint32_t j=0; j<8; j++){
+		// 	// Put old main node in correct place in the parent
+		// 	if(j != node_position){
+		// 		std::shared_ptr<OctreeNode> empty_child = std::make_shared<OctreeNode>(OctreeNode());
+		// 		// empty_child->is_leaf = true;
+		// 		new_parent->children[j] = empty_child;
+		// 	} else {
+		// 		new_parent->children[j] = main_root;
+		// 	}
+		// }
+		// Create the correct child
+		new_parent->children[node_position] = main_root;
+		new_parent->children_ids |= 0x01 << node_position;
+
+		auto fillOccupancyGrid = [&](std::shared_ptr<Chunk> child_chunk_list){
+			while(child_chunk_list){
+				for(uint32_t j=0; j<child_chunk_list->size; j++){
+					Point point = child_chunk_list->points[j];
+					// Sample voxel occupancy grid at this location
+					vec3 normalized_coordinates = main_aabb->getPointNormalizedCoordinates(point.position);
+					uint32_t grid_x = clamp(uint32_t(floor(GRID_SIZE * normalized_coordinates.x)), 0u, GRID_SIZE - 1u);
+					uint32_t grid_y = clamp(uint32_t(floor(GRID_SIZE * normalized_coordinates.y)), 0u, GRID_SIZE - 1u);
+					uint32_t grid_z = clamp(uint32_t(floor(GRID_SIZE * normalized_coordinates.z)), 0u, GRID_SIZE - 1u);
+					uint32_t index = grid_x + GRID_SIZE * (grid_y + GRID_SIZE * grid_z);
+					uint32_t word_index = index >> 5u;
+					uint32_t bit_index = index & 31u;
+					bool is_cell_occupied = (new_parent->occupancy->values[word_index] & (1u << bit_index)) != 0;
+
+					// Fill up occupancy grid
+					if(!is_cell_occupied){
+						new_parent->occupancy->values[word_index] |= (1u << bit_index);
+						// Create corresponding voxel using this point
+						Point new_voxel = {.position = main_aabb->getCentroid() };
+						new_voxel.color[0] = point.color[0];
+						new_voxel.color[1] = point.color[1];
+						new_voxel.color[2] = point.color[2];
+
+						// Add voxel to voxels chunk list
+						if(!new_parent->voxels){new_parent->voxels = std::make_shared<Chunk>(Chunk());}
+						std::shared_ptr<Chunk> parent_chunk_list = new_parent->voxels;
+						while(parent_chunk_list->next){parent_chunk_list = parent_chunk_list->next;}
+						if(parent_chunk_list->size == POINTS_PER_CHUNK){
+							parent_chunk_list->next = std::make_shared<Chunk>(Chunk());
+							parent_chunk_list = parent_chunk_list->next;
+						}
+						parent_chunk_list->points[parent_chunk_list->size] = new_voxel;
+						parent_chunk_list->size++;
+
+						// // Increase parent counter
+						// new_parent->counter++;			
+					}
+				}
+				child_chunk_list = child_chunk_list->next;
 			}
-		}
+		};
 
 		// Sample voxels to fill new occupancy grid
-		std::shared_ptr<Chunk> child_chunk_list = main_root->is_leaf ? main_root->points : main_root->voxels;
-		
-		while(child_chunk_list){
-			for(uint32_t j=0; j<child_chunk_list->size; j++){
-				Point point = child_chunk_list->points[j];
-				// Sample voxel occupancy grid at this location
-				vec3 normalized_coordinates = main_aabb->getPointNormalizedCoordinates(point.position);
-				uint32_t grid_x = clamp(uint32_t(floor(GRID_SIZE * normalized_coordinates.x)), 0u, GRID_SIZE - 1u);
-				uint32_t grid_y = clamp(uint32_t(floor(GRID_SIZE * normalized_coordinates.y)), 0u, GRID_SIZE - 1u);
-				uint32_t grid_z = clamp(uint32_t(floor(GRID_SIZE * normalized_coordinates.z)), 0u, GRID_SIZE - 1u);
-				uint32_t index = grid_x + GRID_SIZE * (grid_y + GRID_SIZE * grid_z);
-				uint32_t word_index = index >> 5u;
-				uint32_t bit_index = index & 31u;
-				bool is_cell_occupied = (new_parent->occupancy->values[word_index] & (1u << bit_index)) != 0;
-
-				// Fill up occupancy grid
-				if(!is_cell_occupied){
-					new_parent->occupancy->values[word_index] |= (1u << bit_index);
-					// Create corresponding voxel using this point
-					Point new_voxel = {.position = main_aabb->getCentroid() };
-					new_voxel.color[0] = point.color[0];
-					new_voxel.color[1] = point.color[1];
-					new_voxel.color[2] = point.color[2];
-
-					// Add voxel to voxels chunk list
-					if(!new_parent->voxels){new_parent->voxels = std::make_shared<Chunk>(Chunk());}
-					std::shared_ptr<Chunk> parent_chunk_list = new_parent->voxels;
-					while(parent_chunk_list->next){parent_chunk_list = parent_chunk_list->next;}
-					if(parent_chunk_list->size == POINTS_PER_CHUNK){
-						parent_chunk_list->next = std::make_shared<Chunk>(Chunk());
-						parent_chunk_list = parent_chunk_list->next;
-					}
-					parent_chunk_list->points[parent_chunk_list->size] = new_voxel;
-					parent_chunk_list->size++;
-					// Increase parent counter
-					new_parent->counter++;			
-				}
-			}
-			child_chunk_list = child_chunk_list->next;
-		}
+		// std::shared_ptr<Chunk> child_chunk_list = main_root->is_leaf ? main_root->points : main_root->voxels;
+		fillOccupancyGrid(main_root->points);
+		fillOccupancyGrid(main_root->voxels);		
 
 		main_aabb->extend(node_position);
 		main_root = new_parent;
@@ -502,7 +568,8 @@ void simLodVoxelSampling(
 		AABB current_aabb = {.mins = main_aabb->mins, .maxs = main_aabb->maxs };
 
 		while(true){
-			if(node->is_leaf){return;}
+			// if(node->is_leaf){return;}
+			if(!node->occupancy){return;}
 
 			// Sample voxel occupancy grid at this location
 			vec3 normalized_coordinates = current_aabb.getPointNormalizedCoordinates(point.position);
@@ -524,7 +591,7 @@ void simLodVoxelSampling(
 				new_voxel.color[2] = point.color[2];
 
 				// Add voxel to backlog buffers
-				node->counter++;
+				// node->counter++;
 				backlog_voxels->push_back(new_voxel);
 				backlog_voxels_nodes->push_back(node.get());
 			}
@@ -550,6 +617,7 @@ void simLodVoxelSampling(
 				return;
 			}
 
+			if(!node->children[child_index]){return;}
 			node = node->children[child_index];
 		}
 	};
@@ -598,7 +666,7 @@ void simLodInsertion(
 			}
 
 			// If leaf insert point in chunks
-			if(!node->is_leaf){
+			if(node->children[child_index]){
 				node = node->children[child_index];
 			} else {
 				if(!node->points){node->points = std::make_shared<Chunk>(Chunk());}
@@ -737,64 +805,87 @@ void loadOctree(CuRast* editor, const std::shared_ptr<OctreeNode>& main_root, co
 
 		CUdeviceptr child_indices[8] = {0};
 		
-		if(!cur_node->is_leaf){
+		// if(!cur_node->is_leaf){
 			for(uint32_t child = 0; child < 8; child++){
-				std::shared_ptr<AABB> new_aabb = std::make_shared<AABB>(AABB());
-				new_aabb->mins = cur_aabb->mins;
-				new_aabb->maxs = cur_aabb->maxs;
-				new_aabb->shrink((NodePosition)child);
-				child_indices[child] = recursive(cur_node->children[child], new_aabb, level+1);
+				if(cur_node->children[child]){
+					std::shared_ptr<AABB> new_aabb = std::make_shared<AABB>(AABB());
+					new_aabb->mins = cur_aabb->mins;
+					new_aabb->maxs = cur_aabb->maxs;
+					new_aabb->shrink((NodePosition)child);
+					child_indices[child] = recursive(cur_node->children[child], new_aabb, level+1);
+				}
 			}
-		}
+		// }
 
 		// Create CChunks
 		vector<Chunk*> chunks = {};
-		Chunk* cur_chunk = nullptr;
-		if(cur_node->is_leaf && cur_node->points){
-			cur_chunk = cur_node->points.get();
-		} else if (!cur_node->is_leaf && cur_node->voxels){
-			cur_chunk = cur_node->voxels.get();
-		}
-		while(cur_chunk){
-			chunks.push_back(cur_chunk);
-			cur_chunk = cur_chunk->next.get();
-		}
-		for(int32_t i=chunks.size()-1; i>=0; i--){
-			CChunk tmp = {};
-			tmp.size = chunks[i]->size;
-			tmp.next = nullptr;
-			for(uint32_t j=0; j<tmp.size; j++){
-				CPoint tmp_point = {
-					.position = chunks[i]->points[j].position, 
-					.color = (uint32_t)chunks[i]->points[j].color[0]
-						| ((uint32_t)chunks[i]->points[j].color[1] << 8)
-						| ((uint32_t)chunks[i]->points[j].color[2] << 16)
-						| (0xFFu << 24)
-				};
-				tmp.points[j] = tmp_point;
+		// Chunk* cur_chunk = nullptr;
+		auto allocateChunks = [&](Chunk* root) -> std::optional<uint32_t> {
+			uint32_t before_chunk_counter = chunk_counter;
+
+			Chunk* cur_chunk = root;
+			while(cur_chunk){
+				chunks.push_back(cur_chunk);
+				cur_chunk = cur_chunk->next.get();
 			}
-			if(chunks[i]->next){
-				tmp.next = (CChunk*)octree->cptr_chunks[chunk_counter];
+			for(int32_t i=chunks.size()-1; i>=0; i--){
+				CChunk tmp = {};
+				tmp.size = chunks[i]->size;
+				tmp.next = nullptr;
+				for(uint32_t j=0; j<tmp.size; j++){
+					CPoint tmp_point = {
+						.position = chunks[i]->points[j].position, 
+						.color = (uint32_t)chunks[i]->points[j].color[0]
+							| ((uint32_t)chunks[i]->points[j].color[1] << 8)
+							| ((uint32_t)chunks[i]->points[j].color[2] << 16)
+							| (0xFFu << 24)
+					};
+					tmp.points[j] = tmp_point;
+				}
+				if(chunks[i]->next){
+					tmp.next = (CChunk*)octree->cptr_chunks[chunk_counter];
+				}
+				octree->cptr_chunks.emplace_back();
+				cuMemAlloc(&octree->cptr_chunks[chunk_counter], sizeof(CChunk));
+				cuMemcpyHtoD(octree->cptr_chunks[chunk_counter], &tmp, sizeof(CChunk));
+				chunk_counter++;
 			}
-			octree->cptr_chunks.emplace_back();
-			cuMemAlloc(&octree->cptr_chunks[chunk_counter], sizeof(CChunk));
-			cuMemcpyHtoD(octree->cptr_chunks[chunk_counter], &tmp, sizeof(CChunk));
-			chunk_counter++;
+
+			if(chunk_counter > before_chunk_counter){
+				return chunk_counter-1;
+			} else {
+				return nullopt;
+			}
+		};
+		std::optional<uint32_t> chunk_first_points = nullopt;
+		std::optional<uint32_t> chunk_first_voxels = nullopt;
+		if(cur_node->points){
+			chunk_first_points = allocateChunks(cur_node->points.get());
+		} 
+		if(cur_node->voxels){
+			chunk_first_voxels = allocateChunks(cur_node->voxels.get());
 		}
+		
 
 		// Create COctreeNode
 		COctreeNode new_node = {};
-		if(!cur_node->is_leaf){
+		// if(!cur_node->is_leaf){
 			for(uint32_t child = 0; child < 8; child++){
-				new_node.children[child] = (COctreeNode*) child_indices[child];
+				if(cur_node->children[child]){
+					new_node.children[child] = (COctreeNode*) child_indices[child];
+				}
 			}
-		}
+		// }
 		new_node.counter = cur_node->counter;
-		new_node.is_leaf = cur_node->is_leaf;
-		if(cur_node->is_leaf && !chunks.empty()){
-			new_node.points = (CChunk*)octree->cptr_chunks[chunk_counter-1];
+		// new_node.is_leaf = cur_node->is_leaf;
+		new_node.children_ids = cur_node->children_ids;
+
+		// if(cur_node->is_leaf && !chunks.empty()){
+		if(chunk_first_points.has_value()){
+			new_node.points = (CChunk*)octree->cptr_chunks[chunk_first_points.value()];
 		}
-		if(!cur_node->is_leaf && !chunks.empty()){
+		// if(!cur_node->is_leaf && !chunks.empty()){
+		if(chunk_first_voxels.has_value()){
 			new_node.voxels = (CChunk*)octree->cptr_chunks[chunk_counter-1];
 			new_node.occupancy = COccupancyGrid();
 			for(uint32_t i=0; i<C_POINTS_PER_CHUNK; i++){

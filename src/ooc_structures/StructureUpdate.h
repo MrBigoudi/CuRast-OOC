@@ -80,7 +80,11 @@ void simLodInsertion(
 
 
 // TODO: temporary function to load an octree to gpu memory
-void loadOctree(CuRast* editor, const std::shared_ptr<OctreeNode>& main_root, const std::shared_ptr<AABB>& main_aabb);
+void loadOctree(
+    CuRast* editor, 
+    const std::shared_ptr<OctreeNode>& main_root, 
+    const std::shared_ptr<AABB>& main_aabb
+);
 
 // TODO: temporary function to load synchronously the point cloud
 void loadPointcloud(string file, CuRast* editor);
