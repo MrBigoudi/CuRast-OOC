@@ -358,7 +358,7 @@ struct COccupancyGrid {
 };
 struct COctreeNode {
 	COctreeNode* children[8];
-	uint32_t counter;
+	uint16_t counter;
 	// bool is_leaf;
 	uint8_t children_ids;
 	CChunk* points;
