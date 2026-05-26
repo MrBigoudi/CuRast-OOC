@@ -821,11 +821,13 @@ void loadOctree(CuRast* editor, const std::shared_ptr<OctreeNode>& main_root, co
 			}
 		// }
 
-		// Create CChunks
-		vector<Chunk*> chunks = {};
+		
 		// Chunk* cur_chunk = nullptr;
 		auto allocateChunks = [&](Chunk* root) -> std::optional<uint32_t> {
 			uint32_t before_chunk_counter = chunk_counter;
+
+			// Create CChunks
+			vector<Chunk*> chunks = {};
 
 			Chunk* cur_chunk = root;
 			while(cur_chunk){
@@ -847,9 +849,9 @@ void loadOctree(CuRast* editor, const std::shared_ptr<OctreeNode>& main_root, co
 					tmp.points[j] = tmp_point;
 				}
 				if(chunks[i]->next){
-					tmp.next = (CChunk*)octree->cptr_chunks[chunk_counter];
+					tmp.next = (CChunk*)octree->cptr_chunks[chunk_counter-1];
 				}
-				octree->cptr_chunks.emplace_back();
+				octree->cptr_chunks.push_back(CUdeviceptr());
 				cuMemAlloc(&octree->cptr_chunks[chunk_counter], sizeof(CChunk));
 				cuMemcpyHtoD(octree->cptr_chunks[chunk_counter], &tmp, sizeof(CChunk));
 				chunk_counter++;
@@ -891,9 +893,9 @@ void loadOctree(CuRast* editor, const std::shared_ptr<OctreeNode>& main_root, co
 		}
 		// if(!cur_node->is_leaf && !chunks.empty()){
 		if(chunk_first_voxels.has_value()){
-			new_node.voxels = (CChunk*)octree->cptr_chunks[chunk_counter-1];
+			new_node.voxels = (CChunk*)octree->cptr_chunks[chunk_first_voxels.value()];
 			new_node.occupancy = COccupancyGrid();
-			for(uint32_t i=0; i<C_POINTS_PER_CHUNK; i++){
+			for(uint32_t i=0; i<C_GRID_NUM_CELLS; i++){
 				new_node.occupancy.values[i] = cur_node->occupancy->values[i];
 			}
 		}

@@ -329,9 +329,10 @@ extern __constant__ RenderTarget c_target;
 // TODO: test code to remove
 constexpr uint64_t C_MAX_BATCH_SIZE = 1'000'000;
 constexpr uint16_t C_MAX_POINTS_PER_LEAF = 50'000;
-constexpr uint32_t C_POINTS_PER_CHUNK = 1'000;
+constexpr uint32_t C_POINTS_PER_CHUNK = 1'024;
+constexpr uint32_t C_OCTREE_RENDER_BLOCK_SIZE = 256;
 constexpr uint32_t C_GRID_SIZE = 128;
-constexpr uint32_t C_GRID_NUM_CELLS = C_GRID_SIZE * C_GRID_SIZE * C_GRID_SIZE;
+constexpr uint32_t C_GRID_NUM_CELLS = C_GRID_SIZE * C_GRID_SIZE * C_GRID_SIZE / 32u;
 constexpr uint32_t C_MAX_ALLOCATED_CHUNKS = 1'000;
 struct CAABB {
 	vec3 mins = {INFINITY, INFINITY, INFINITY};
@@ -354,7 +355,7 @@ struct CChunk{
 	CChunk* next;
 };
 struct COccupancyGrid {
-	uint32_t values[C_GRID_NUM_CELLS / 32u];
+	uint32_t values[C_GRID_NUM_CELLS];
 };
 struct COctreeNode {
 	COctreeNode* children[8];

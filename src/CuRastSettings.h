@@ -4,6 +4,8 @@
 
 struct CuRastSettings{
 	static inline bool showBoundingBoxes = false;
+	static inline bool bruteForceRendering = false;
+
 	static inline bool enableEDL = true;
 	static inline bool enableFrustumCulling = true;
 	static inline bool hideGUI = false;

@@ -113,8 +113,8 @@ void drawPoints(Scene* scene, View view, RenderTarget& target){
 	});
 }
 
-void drawOctree(Scene* scene, View view, RenderTarget& target){
-	static CudaModularProgram* prog = new CudaModularProgram({"./src/kernels/octree.cu"});
+void drawOctreeAABB(Scene* scene, View view, RenderTarget& target){
+	static CudaModularProgram* prog = new CudaModularProgram({"./src/kernels/octreeAABB.cu"});
 
 	scene->forEach<SNCOctree>([&](SNCOctree* octree){
 
@@ -125,6 +125,22 @@ void drawOctree(Scene* scene, View view, RenderTarget& target){
 		cfo.chunks    = (CChunk**)(octree->cptr_chunks.data());
 		cfo.num_nodes = octree->num_nodes;
 		cfo.max_lod_level = octree->max_lod_level;
+
+		prog->launch("kernel_drawOctreeAABB", {&cfo, &target}, cfo.num_nodes);
+	});
+}
+
+void drawOctree(Scene* scene, View view, RenderTarget& target){
+	static CudaModularProgram* prog = new CudaModularProgram({"./src/kernels/octree.cu"});
+
+    scene->forEach<SNCOctree>([&](SNCOctree* octree){
+        CFullOctree cfo;
+        cfo.world     = octree->transform_global;
+        cfo.nodes     = (COctreeNode**)(octree->cptr_nodes.data());
+        cfo.aabbs     = (CAABB**)(octree->cptr_aabbs.data());
+        cfo.chunks    = (CChunk**)(octree->cptr_chunks.data());
+        cfo.num_nodes = octree->num_nodes;
+        cfo.max_lod_level = octree->max_lod_level;
 
 		// println("nb nodes: {}, nb aabbs: {}, nb chunks: {}, nb nodes: {}",
 		// 	octree->cptr_nodes.size(), octree->cptr_aabbs.size(), octree->cptr_chunks.size(), octree->num_nodes
@@ -139,9 +155,15 @@ void drawOctree(Scene* scene, View view, RenderTarget& target){
 		// 	);
 		// }
 		// exit(EXIT_FAILURE);
-
-		prog->launch("kernel_drawOctree", {&cfo, &target}, cfo.num_nodes);
-	});
+		// prog->launch("kernel_drawOctree", {&cfo, &target}, cfo.num_nodes);
+        
+        uint32_t numThreads = cfo.num_nodes * C_OCTREE_RENDER_BLOCK_SIZE;
+		OptionalLaunchSettings launch_settings = {
+			.gridsize = cfo.num_nodes,
+			.blocksize = C_OCTREE_RENDER_BLOCK_SIZE
+		};
+        prog->launch("kernel_drawOctree", {&cfo, &target}, launch_settings);
+    });
 }
 
 
@@ -458,36 +480,36 @@ void CuRast::draw(Scene* scene, vector<View> views){
 		);
 		
 
-		// DRAW BOUNDING BOXES
-		if(CuRastSettings::showBoundingBoxes){
-			RenderTarget target_lines = target;
-			target_lines.framebuffer = (uint64_t*)cvm_colorbuffer->cptr;
+		// // DRAW BOUNDING BOXES
+		// if(CuRastSettings::showBoundingBoxes){
+		// 	RenderTarget target_lines = target;
+		// 	target_lines.framebuffer = (uint64_t*)cvm_colorbuffer->cptr;
 
-			vector<CMesh> boundingBoxNodes;
-			scene->forEach<SNTriangles>([&](SNTriangles* node){
-				CMesh mesh;
-				mesh.world                    = node->transform_global;
-				mesh.aabb                     = node->aabb;
+		// 	vector<CMesh> boundingBoxNodes;
+		// 	scene->forEach<SNTriangles>([&](SNTriangles* node){
+		// 		CMesh mesh;
+		// 		mesh.world                    = node->transform_global;
+		// 		mesh.aabb                     = node->aabb;
 
-				boundingBoxNodes.push_back(mesh);
-			});
+		// 		boundingBoxNodes.push_back(mesh);
+		// 	});
 			
-			static CUdeviceptr cptr_numProcessedBatches = MemoryManager::alloc(4, "cptr_numProcessedBatches");
-			// static CUdeviceptr cptr_meshes_boxes = MemoryManager::alloc(40'000 * sizeof(CMesh), "cptr_meshes_boxes");
-			static CudaVirtualMemory* cvm_meshes_boxes = MemoryManager::allocVirtualCuda(40'000 * sizeof(CMesh), "boxes");
-			cvm_meshes_boxes->commit(boundingBoxNodes.size() * sizeof(CMesh));
+		// 	static CUdeviceptr cptr_numProcessedBatches = MemoryManager::alloc(4, "cptr_numProcessedBatches");
+		// 	// static CUdeviceptr cptr_meshes_boxes = MemoryManager::alloc(40'000 * sizeof(CMesh), "cptr_meshes_boxes");
+		// 	static CudaVirtualMemory* cvm_meshes_boxes = MemoryManager::allocVirtualCuda(40'000 * sizeof(CMesh), "boxes");
+		// 	cvm_meshes_boxes->commit(boundingBoxNodes.size() * sizeof(CMesh));
 
-			cuMemcpyHtoDAsync(cvm_meshes_boxes->cptr, boundingBoxNodes.data(), boundingBoxNodes.size() * sizeof(CMesh), 0);
-			cuMemsetD8Async(cptr_numProcessedBatches, 0, 4, 0);
+		// 	cuMemcpyHtoDAsync(cvm_meshes_boxes->cptr, boundingBoxNodes.data(), boundingBoxNodes.size() * sizeof(CMesh), 0);
+		// 	cuMemsetD8Async(cptr_numProcessedBatches, 0, 4, 0);
 			
-			uint32_t numMeshes = boundingBoxNodes.size();
-			launch_drawBoundingBoxes(
-				target_lines, 
-				(CMesh*)cvm_meshes_boxes->cptr,
-				numMeshes,
-				(uint32_t*)cptr_numProcessedBatches
-			);
-		}
+		// 	uint32_t numMeshes = boundingBoxNodes.size();
+		// 	launch_drawBoundingBoxes(
+		// 		target_lines, 
+		// 		(CMesh*)cvm_meshes_boxes->cptr,
+		// 		numMeshes,
+		// 		(uint32_t*)cptr_numProcessedBatches
+		// 	);
+		// }
 
 		int mouse_X = Runtime::mousePosition.x;
 		int mouse_Y = target.height - Runtime::mousePosition.y;
@@ -637,8 +659,14 @@ void CuRast::draw(Scene* scene, vector<View> views){
 		// 	Timer::recordDuration("kernel_drawHeightmap", custart, Timer::recordCudaTimestamp());
 		// }
 
-		drawPoints(scene, view, target);
-		drawOctree(scene, view, target);
+		if(CuRastSettings::bruteForceRendering){
+			drawPoints(scene, view, target);
+		} else {
+			drawOctree(scene, view, target);
+		}
+		if(CuRastSettings::showBoundingBoxes){
+			drawOctreeAABB(scene, view, target);
+		}
 
 
 		// SCREEN SPACE AMBIENT OCCLUSION

@@ -146,9 +146,11 @@ void CuRast::makeToolbar(){
 
 				ImGui::Checkbox("bounding boxes", &CuRastSettings::showBoundingBoxes);
 				ImGui::SameLine();
-				ImGui::Checkbox("frustum culling", &CuRastSettings::enableFrustumCulling);
+				ImGui::Checkbox("brute force rendering", &CuRastSettings::bruteForceRendering);
 				ImGui::SameLine();
-				ImGui::Checkbox("freeze frustum", &CuRastSettings::freezeFrustum);
+				ImGui::Checkbox("frustum culling", &CuRastSettings::enableFrustumCulling);
+				// ImGui::SameLine();
+				// ImGui::Checkbox("freeze frustum", &CuRastSettings::freezeFrustum);
 
 				// ImGui::SameLine();
 				ImGui::SetNextItemWidth(200.0f);

@@ -131,7 +131,6 @@ void drawBoundingBox(RenderTarget target, mat4 world, CAABB aabb, uint32_t color
     drawLine(target, {worldMax.x, worldMin.y, worldMax.z}, {worldMax.x, worldMax.y, worldMax.z}, color);
 }
 
-__device__
 uint32_t linearGradient(float factor, uint32_t left_color = 0x00ff00ff, uint32_t right_color = 0xff0000ff){
     // Extract channels
     uint8_t r1 = (left_color >> 24) & 0xFF;
@@ -160,72 +159,60 @@ uint32_t linearGradient(float factor, uint32_t left_color = 0x00ff00ff, uint32_t
     return color;
 }
 
-__device__
-void drawPoint(
-	CPoint point,
-	RenderTarget target,
-    mat4 world
-){
-    vec3 position = point.position;
-    uint32_t color = point.color;
-
-	vec4 projected = target.proj * target.view * world * vec4(position, 1.0f);
-	float depth = projected.w;
-
-	int px = ((projected.x / depth) * 0.5f + 0.5f) * target.width;
-	int py = ((projected.y / depth) * 0.5f + 0.5f) * target.height;
-	int pixelID = px + py * target.width;
-
-	if(px < 0 || px >= target.width) return;
-	if(py < 0 || py >= target.height) return;
-	if(pixelID < 0 || pixelID >= target.width * target.height) return;
-
-	uint64_t udepth = __float_as_uint(depth);
-	uint64_t fragment = (udepth << 32) | color;
-
-	if(fragment < target.colorbuffer[pixelID]){
-		atomicMin(&target.colorbuffer[pixelID], fragment);
-	}
-}
-
-__device__
-void drawPoints(
-	COctreeNode* node,
-	RenderTarget target,
-    mat4 world
-){
-    auto block = cg::this_thread_block();
-    CChunk* cur_points = node->points;
-
-    while(cur_points){
-        // Assign each thread in block a separate starting point.
-        // Advance each thread by block size, e.g. 256, with each iteration.
-        // Might make sense to have a multiple of 256 points per CChunk, e.g. 1024
-        for(
-            uint32_t i = block.thread_rank(); 
-            i < cur_points->size; 
-            i += block.num_threads()
-        ){
-            drawPoint(cur_points->points[i], target, world);
-        }
-        
-        cur_points = cur_points->next;
-    }
-}
-
-
 extern "C" __global__
-void kernel_drawOctree(
+void kernel_drawOctreeAABB(
 	CFullOctree octree,
 	RenderTarget target
 ){
 	auto grid = cg::this_grid();
-    auto block = cg::this_thread_block();
+
+	uint32_t index = grid.thread_rank();
+
+	if(index >= octree.num_nodes) return;
+
+    COctreeNode* node = octree.nodes[index];
+    CAABB* aabb = octree.aabbs[index];
+
+    // if(index == 0){
+    //     printf("\n\n\n\n//////////////////////////////////////////////////\n");
+    //     printf("//////////////////////////////////////////////////\n");
+    //     printf("//////////////////////////////////////////////////\n");
+    //     printf("aabb: mins = (%f, %f, %f), maxs = (%f, %f, %f)\n",
+    //         aabb->mins.x, aabb->mins.y, aabb->mins.z,
+    //         aabb->maxs.x, aabb->maxs.y, aabb->maxs.z
+    //     );
+    //     printf("//////////////////////////////////////////////////\n");
+    //     printf("//////////////////////////////////////////////////\n");
+    //     printf("//////////////////////////////////////////////////\n");
+    // }
+
+    float factor = float(node->level) / float(octree.max_lod_level);
+    factor = clamp(factor, 0.0f, 1.0f);
+    uint32_t min_level_color = 0xff00ff00; // green
+    uint32_t max_level_color = 0xff0000ff; // red
+    uint32_t color = linearGradient(factor, min_level_color, max_level_color);
     
-    // Assign each node to one thread block
-    uint32_t node_index = grid.block_rank();
-    if(node_index >= octree.num_nodes) return;
-    
-    COctreeNode* node = octree.nodes[node_index];
-    drawPoints(node, target, octree.world);
+    drawBoundingBox(target, octree.world, *aabb, color);
+
+	// vec3 position = 0.5f * (aabbs[index].mins + aabbs[index].maxs);
+    // uint32_t color = 0xFF0000FF; // RED
+
+	// vec4 projected = target.proj * target.view * octree.world * vec4(position, 1.0f);
+	// float depth = projected.w;
+
+	// int px = ((projected.x / depth) * 0.5f + 0.5f) * target.width;
+	// int py = ((projected.y / depth) * 0.5f + 0.5f) * target.height;
+	// int pixelID = px + py * target.width;
+
+	// if(px < 0 || px >= target.width) return;
+	// if(py < 0 || py >= target.height) return;
+	// if(pixelID < 0 || pixelID >= target.width * target.height) return;
+
+	// uint64_t udepth = __float_as_uint(depth);
+	// uint64_t fragment = (udepth << 32) | color;
+
+	// if(fragment < target.colorbuffer[pixelID]){
+	// 	atomicMin(&target.colorbuffer[pixelID], fragment);
+	// }
+
 }

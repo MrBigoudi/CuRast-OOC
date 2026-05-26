@@ -75,7 +75,7 @@ constexpr uint64_t MAX_BATCH_SIZE = 1'000'000;
 /// The maximum number of points in a leaf node
 constexpr uint16_t MAX_POINTS_PER_LEAF = 50'000;
 /// The number of points in a chunk
-constexpr uint32_t POINTS_PER_CHUNK = 1'000;
+constexpr uint32_t POINTS_PER_CHUNK = 1'024;
 /// The voxel grid size
 constexpr uint32_t GRID_SIZE = 128;
 /// The number of cells in each grid
