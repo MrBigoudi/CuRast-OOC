@@ -322,7 +322,7 @@ void simLodCount(
 				if(point.color[3] == level){return;}
 
 				uint32_t old_counter = leaf->counter;
-				leaf->counter++;
+				leaf->counter = min(uint16_t(leaf->counter + 1u), uint16_t(MAX_POINTS_PER_LEAF + 1u));
 
 				// Flag point as accepted at this level
 				point.color[3] = level;
@@ -357,14 +357,14 @@ void simLodSplit(
 		// 	exit(EXIT_FAILURE);
 		// }
 		
-		// Check if the node is inner
-		bool is_inner = false;
-		for(uint32_t j=0; j<8; j++){
-			if(spilling_node->children[j]){
-				is_inner = true;
-				break;
-			}
-		}
+		// // Check if the node is inner
+		// bool is_inner = false;
+		// for(uint32_t j=0; j<8; j++){
+		// 	if(spilling_node->children[j]){
+		// 		is_inner = true;
+		// 		break;
+		// 	}
+		// }
 
 		// spilling_node->is_leaf = false;
 		spilling_node->counter = 0;
@@ -800,7 +800,7 @@ void loadOctree(CuRast* editor, const std::shared_ptr<OctreeNode>& main_root, co
 	uint32_t max_lod_level = 0;
 
 	std::function<CUdeviceptr(const std::shared_ptr<OctreeNode>&, const std::shared_ptr<AABB>&, uint32_t)> recursive = [&](
-		const std::shared_ptr<OctreeNode>& cur_node, const std::shared_ptr<AABB>& cur_aabb, uint32_t level
+		const std::shared_ptr<OctreeNode>& cur_node, const std::shared_ptr<AABB>& cur_aabb, uint8_t level
 	) -> CUdeviceptr {
 
 		CUdeviceptr child_indices[8] = {0};
@@ -812,6 +812,10 @@ void loadOctree(CuRast* editor, const std::shared_ptr<OctreeNode>& main_root, co
 					new_aabb->mins = cur_aabb->mins;
 					new_aabb->maxs = cur_aabb->maxs;
 					new_aabb->shrink((NodePosition)child);
+					if(level == UINT8_MAX){
+						println("Can't have a level greater than {}", UINT8_MAX);
+						exit(EXIT_FAILURE);
+					}
 					child_indices[child] = recursive(cur_node->children[child], new_aabb, level+1);
 				}
 			}
@@ -879,6 +883,7 @@ void loadOctree(CuRast* editor, const std::shared_ptr<OctreeNode>& main_root, co
 		new_node.counter = cur_node->counter;
 		// new_node.is_leaf = cur_node->is_leaf;
 		new_node.children_ids = cur_node->children_ids;
+		new_node.level = level;
 
 		// if(cur_node->is_leaf && !chunks.empty()){
 		if(chunk_first_points.has_value()){
@@ -892,7 +897,6 @@ void loadOctree(CuRast* editor, const std::shared_ptr<OctreeNode>& main_root, co
 				new_node.occupancy.values[i] = cur_node->occupancy->values[i];
 			}
 		}
-		new_node.level = level;
 		if(level > max_lod_level){
 			max_lod_level = level;
 		}
@@ -926,6 +930,8 @@ void loadOctree(CuRast* editor, const std::shared_ptr<OctreeNode>& main_root, co
 	CUdeviceptr cptr_root_node = recursive(main_root, main_aabb, 0);	
 	octree->num_nodes = nodes_counter;
 	octree->max_lod_level = max_lod_level;
+
+	println("Final octree: {} nodes, {} max level", nodes_counter, max_lod_level);
 	
 	editor->scene.world->children.push_back(octree);
 

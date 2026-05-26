@@ -73,7 +73,7 @@ void updateNodePosition(NodePosition& position);
 /// The maximum number of points in a batch
 constexpr uint64_t MAX_BATCH_SIZE = 1'000'000;
 /// The maximum number of points in a leaf node
-constexpr uint32_t MAX_POINTS_PER_LEAF = 50'000;
+constexpr uint16_t MAX_POINTS_PER_LEAF = 50'000;
 /// The number of points in a chunk
 constexpr uint32_t POINTS_PER_CHUNK = 1'000;
 /// The voxel grid size

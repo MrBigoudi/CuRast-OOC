@@ -328,7 +328,7 @@ extern __constant__ RenderTarget c_target;
 
 // TODO: test code to remove
 constexpr uint64_t C_MAX_BATCH_SIZE = 1'000'000;
-constexpr uint32_t C_MAX_POINTS_PER_LEAF = 50'000;
+constexpr uint16_t C_MAX_POINTS_PER_LEAF = 50'000;
 constexpr uint32_t C_POINTS_PER_CHUNK = 1'000;
 constexpr uint32_t C_GRID_SIZE = 128;
 constexpr uint32_t C_GRID_NUM_CELLS = C_GRID_SIZE * C_GRID_SIZE * C_GRID_SIZE;
@@ -359,12 +359,12 @@ struct COccupancyGrid {
 struct COctreeNode {
 	COctreeNode* children[8];
 	uint16_t counter;
-	// bool is_leaf;
 	uint8_t children_ids;
+	uint8_t level;
 	CChunk* points;
 	CChunk* voxels;
 	COccupancyGrid occupancy;
-	uint32_t level;
+	// bool is_leaf;
 };
 
 struct CFullOctree {
