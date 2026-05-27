@@ -114,7 +114,7 @@ void drawPoints(Scene* scene, View view, RenderTarget& target){
 }
 
 void drawOctreeAABB(Scene* scene, View view, RenderTarget& target){
-	static CudaModularProgram* prog = new CudaModularProgram({"./src/kernels/octreeAABB.cu"});
+	static CudaModularProgram* prog = new CudaModularProgram({"./src/kernels/octree.cu"});
 
 	scene->forEach<SNCOctree>([&](SNCOctree* octree){
 
@@ -130,7 +130,9 @@ void drawOctreeAABB(Scene* scene, View view, RenderTarget& target){
 	});
 }
 
-void drawOctree(Scene* scene, View view, RenderTarget& target){
+void drawOctree(Scene* scene, View view, RenderTarget& target, 
+	int32_t debug_lod = -1, int32_t voxels_nb_points = 4, float min_pixel_span = 64.
+){
 	static CudaModularProgram* prog = new CudaModularProgram({"./src/kernels/octree.cu"});
 
     scene->forEach<SNCOctree>([&](SNCOctree* octree){
@@ -141,6 +143,9 @@ void drawOctree(Scene* scene, View view, RenderTarget& target){
         cfo.chunks    = (CChunk**)(octree->cptr_chunks.data());
         cfo.num_nodes = octree->num_nodes;
         cfo.max_lod_level = octree->max_lod_level;
+		cfo.debug_lod_to_render = debug_lod;
+		cfo.voxels_half_nb_points_per_axis = uint32_t(voxels_nb_points / 2);
+		cfo.min_pixel_span = min_pixel_span;
 
 		// println("nb nodes: {}, nb aabbs: {}, nb chunks: {}, nb nodes: {}",
 		// 	octree->cptr_nodes.size(), octree->cptr_aabbs.size(), octree->cptr_chunks.size(), octree->num_nodes
@@ -162,7 +167,10 @@ void drawOctree(Scene* scene, View view, RenderTarget& target){
 			.gridsize = cfo.num_nodes,
 			.blocksize = C_OCTREE_RENDER_BLOCK_SIZE
 		};
-        prog->launch("kernel_drawOctree", {&cfo, &target}, launch_settings);
+
+		prog->launch("kernel_visibilityPass", {&cfo, &target}, launch_settings);
+		prog->launch("kernel_drawOctreeLarge", {&cfo, &target}, launch_settings);
+		prog->launch("kernel_drawOctreeSmall", {&cfo, &target}, launch_settings);
     });
 }
 
@@ -662,7 +670,11 @@ void CuRast::draw(Scene* scene, vector<View> views){
 		if(CuRastSettings::bruteForceRendering){
 			drawPoints(scene, view, target);
 		} else {
-			drawOctree(scene, view, target);
+			drawOctree(scene, view, target, 
+				CuRastSettings::debugLodToRender, 
+				CuRastSettings::voxelsPointsPerAxis,
+				CuRastSettings::minPixelSpan
+			);
 		}
 		if(CuRastSettings::showBoundingBoxes){
 			drawOctreeAABB(scene, view, target);

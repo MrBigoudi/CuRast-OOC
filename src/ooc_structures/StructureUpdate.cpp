@@ -518,7 +518,9 @@ void uptadeOctree(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>&
 					if(!is_cell_occupied){
 						new_parent->occupancy->values[word_index] |= (1u << bit_index);
 						// Create corresponding voxel using this point
-						Point new_voxel = {.position = main_aabb->getCentroid() };
+						vec3 world_grid_size = main_aabb->getSize() / float(GRID_SIZE);
+						vec3 voxel_centroid = main_aabb->mins + world_grid_size * vec3(grid_x, grid_y, grid_z);
+						Point new_voxel = {.position = voxel_centroid };
 						new_voxel.color[0] = point.color[0];
 						new_voxel.color[1] = point.color[1];
 						new_voxel.color[2] = point.color[2];
@@ -585,10 +587,15 @@ void simLodVoxelSampling(
 				// Fill up occupancy grid
 				node->occupancy->values[word_index] |= (1u << bit_index);
 				// Create corresponding voxel using this point
-				Point new_voxel = {.position = current_aabb.getCentroid() };
+				vec3 world_grid_size = current_aabb.getSize() / float(GRID_SIZE);
+				vec3 voxel_centroid = current_aabb.mins + world_grid_size * vec3(grid_x, grid_y, grid_z);
+				Point new_voxel = {.position = voxel_centroid };
 				new_voxel.color[0] = point.color[0];
 				new_voxel.color[1] = point.color[1];
 				new_voxel.color[2] = point.color[2];
+				// new_voxel.color[0] = 0x00;
+				// new_voxel.color[1] = 0xff;
+				// new_voxel.color[2] = 0xff;
 
 				// Add voxel to backlog buffers
 				// node->counter++;

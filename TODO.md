@@ -2,11 +2,11 @@
 
 ## Urgent
 
-- Measure structures sizes (before / after improvments)
 - Render points / voxels with simlod method
 
 ## Coding part
 
+- Create uniform structure for better structuring in cuda code / gui
 - Build the loading stream
 - Parallelize in C++
 - Fix Vulkan segfault on quit

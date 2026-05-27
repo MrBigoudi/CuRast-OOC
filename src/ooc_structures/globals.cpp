@@ -75,7 +75,7 @@ vec3 AABB::getCentroid() const {
 }
 
 vec3 AABB::getSize() const {
-    return abs(maxs - mins);
+    return maxs - mins;
 }
 
 void AABB::extend(const NodePosition& position) {

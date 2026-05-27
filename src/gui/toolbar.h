@@ -144,17 +144,22 @@ void CuRast::makeToolbar(){
 
 				startSection("Dev");
 
-				ImGui::Checkbox("bounding boxes", &CuRastSettings::showBoundingBoxes);
+				ImGui::Checkbox("Bounding boxes", &CuRastSettings::showBoundingBoxes);
 				ImGui::SameLine();
-				ImGui::Checkbox("brute force rendering", &CuRastSettings::bruteForceRendering);
+				ImGui::Checkbox("Brute force rendering", &CuRastSettings::bruteForceRendering);
 				ImGui::SameLine();
-				ImGui::Checkbox("frustum culling", &CuRastSettings::enableFrustumCulling);
+				ImGui::Checkbox("Frustum culling", &CuRastSettings::enableFrustumCulling);
 				// ImGui::SameLine();
 				// ImGui::Checkbox("freeze frustum", &CuRastSettings::freezeFrustum);
 
 				// ImGui::SameLine();
 				ImGui::SetNextItemWidth(200.0f);
-				ImGui::SliderFloat("threshold", &CuRastSettings::threshold, 0.0f, 1.0f);
+				// ImGui::SliderFloat("threshold", &CuRastSettings::threshold, 0.0f, 1.0f);
+				ImGui::SliderInt("Points per voxel axis", &CuRastSettings::voxelsPointsPerAxis, 2, 64);
+				ImGui::SetNextItemWidth(200.0f);
+				ImGui::SliderInt("LOD to render", &CuRastSettings::debugLodToRender, -1, 20);
+				ImGui::SetNextItemWidth(200.0f);
+				ImGui::SliderFloat("Min pixel span", &CuRastSettings::minPixelSpan, 32.0f, 1024.0f);
 				
 				ImGui::SameLine();
 				ImGui::Checkbox("Disable Instancing", &CuRastSettings::disableInstancing);

@@ -162,13 +162,11 @@ uint32_t linearGradient(float factor, uint32_t left_color = 0x00ff00ff, uint32_t
 
 __device__
 void drawPoint(
-	CPoint point,
+	vec3 position,
+    uint32_t color,
 	RenderTarget target,
     mat4 world
 ){
-    vec3 position = point.position;
-    uint32_t color = point.color;
-
 	vec4 projected = target.proj * target.view * world * vec4(position, 1.0f);
 	float depth = projected.w;
 
@@ -189,7 +187,7 @@ void drawPoint(
 }
 
 __device__
-void drawPoints(
+void drawAllPoints(
 	COctreeNode* node,
 	RenderTarget target,
     mat4 world
@@ -206,16 +204,186 @@ void drawPoints(
             i < cur_points->size; 
             i += block.num_threads()
         ){
-            drawPoint(cur_points->points[i], target, world);
+            CPoint point = cur_points->points[i];
+            drawPoint(point.position, point.color, target, world);
         }
         
         cur_points = cur_points->next;
     }
 }
 
+__device__
+bool isLargerThanMinSpanning(
+    float min_pixel_span,
+    CAABB* aabb,
+	RenderTarget target,
+    mat4 world
+){
+    // compute node boundaries in screen space
+    vec4 p000 = {aabb->mins.x, aabb->mins.y, aabb->mins.z, 1.0f};
+    vec4 p001 = {aabb->mins.x, aabb->mins.y, aabb->maxs.z, 1.0f};
+    vec4 p010 = {aabb->mins.x, aabb->maxs.y, aabb->mins.z, 1.0f};
+    vec4 p011 = {aabb->mins.x, aabb->maxs.y, aabb->maxs.z, 1.0f};
+    vec4 p100 = {aabb->maxs.x, aabb->mins.y, aabb->mins.z, 1.0f};
+    vec4 p101 = {aabb->maxs.x, aabb->mins.y, aabb->maxs.z, 1.0f};
+    vec4 p110 = {aabb->maxs.x, aabb->maxs.y, aabb->mins.z, 1.0f};
+    vec4 p111 = {aabb->maxs.x, aabb->maxs.y, aabb->maxs.z, 1.0f};
+
+    mat4 transform = target.proj * target.view * world;
+    vec4 ndc000 = transform * p000;
+    vec4 ndc001 = transform * p001;
+    vec4 ndc010 = transform * p010;
+    vec4 ndc011 = transform * p011;
+    vec4 ndc100 = transform * p100;
+    vec4 ndc101 = transform * p101;
+    vec4 ndc110 = transform * p110;
+    vec4 ndc111 = transform * p111;
+
+    float fwidth = target.width;
+    float fheight = target.height;
+    vec4 s000 = ((ndc000 / ndc000.w) * 0.5f + 0.5f) * vec4{fwidth, fheight, 1.0f, 1.0f};
+    vec4 s001 = ((ndc001 / ndc001.w) * 0.5f + 0.5f) * vec4{fwidth, fheight, 1.0f, 1.0f};
+    vec4 s010 = ((ndc010 / ndc010.w) * 0.5f + 0.5f) * vec4{fwidth, fheight, 1.0f, 1.0f};
+    vec4 s011 = ((ndc011 / ndc011.w) * 0.5f + 0.5f) * vec4{fwidth, fheight, 1.0f, 1.0f};
+    vec4 s100 = ((ndc100 / ndc100.w) * 0.5f + 0.5f) * vec4{fwidth, fheight, 1.0f, 1.0f};
+    vec4 s101 = ((ndc101 / ndc101.w) * 0.5f + 0.5f) * vec4{fwidth, fheight, 1.0f, 1.0f};
+    vec4 s110 = ((ndc110 / ndc110.w) * 0.5f + 0.5f) * vec4{fwidth, fheight, 1.0f, 1.0f};
+    vec4 s111 = ((ndc111 / ndc111.w) * 0.5f + 0.5f) * vec4{fwidth, fheight, 1.0f, 1.0f};
+
+    auto min8 = [](float f0, float f1, float f2, float f3, 
+        float f4, float f5, float f6, float f7
+    ){
+		float m0 = min(f0, f1);
+		float m1 = min(f2, f3);
+		float m2 = min(f4, f5);
+		float m3 = min(f6, f7);
+		float n0 = min(m0, m1);
+		float n1 = min(m2, m3);
+		return min(n0, n1);
+	};
+
+	auto max8 = [](float f0, float f1, float f2, float f3, 
+        float f4, float f5, float f6, float f7
+    ){
+		float m0 = max(f0, f1);
+		float m1 = max(f2, f3);
+		float m2 = max(f4, f5);
+		float m3 = max(f6, f7);
+		float n0 = max(m0, m1);
+		float n1 = max(m2, m3);
+		return max(n0, n1);
+	};
+
+    float smin_x = min8(s000.x, s001.x, s010.x, s011.x, s100.x, s101.x, s110.x, s111.x);
+    float smin_y = min8(s000.y, s001.y, s010.y, s011.y, s100.y, s101.y, s110.y, s111.y);
+    float smax_x = max8(s000.x, s001.x, s010.x, s011.x, s100.x, s101.x, s110.x, s111.x);
+    float smax_y = max8(s000.y, s001.y, s010.y, s011.y, s100.y, s101.y, s110.y, s111.y);
+    // screen-space size
+    float dx = smax_x - smin_x;
+    float dy = smax_y - smin_y;
+
+    float threshold = 2. * min_pixel_span;
+    return dx > threshold || dy > threshold;
+}
+
+__device__
+void drawVoxel(
+	CPoint voxel,
+    float voxel_size,
+	RenderTarget target,
+    mat4 world,
+    int32_t half_nb_points,
+    uint32_t node_level,
+    uint32_t max_lod_level
+){
+    float color_factor = float(node_level) / float(max_lod_level);
+    color_factor = clamp(color_factor, 0.0f, 1.0f);
+    uint32_t min_level_color = 0xffffff00; // cyan
+    uint32_t max_level_color = 0xff00ffff; // yellow
+    uint32_t color = linearGradient(color_factor, min_level_color, max_level_color);
+    
+    float nb_points = 2.*half_nb_points;
+    for(int32_t cx = -half_nb_points; cx <= half_nb_points; cx++)
+    for(int32_t cy = -half_nb_points; cy <= half_nb_points; cy++)
+    for(int32_t cz = -half_nb_points; cz <= half_nb_points; cz++){
+        vec3 factor = vec3(cx, cy, cz) / nb_points;
+        vec3 position = voxel.position + factor*voxel_size;
+        // drawPoint(position, voxel.color, target, world);
+        drawPoint(position, color, target, world);
+    }
+}
+
+__device__
+void drawAllVoxels(
+    COctreeNode* node,
+    CAABB* aabb,
+	RenderTarget target,
+    mat4 world,
+    uint32_t half_nb_points,
+    uint32_t max_lod_level
+){
+    auto block = cg::this_thread_block();
+    CChunk* cur_voxels = node->voxels;
+    float voxel_size = glm::length((aabb->maxs - aabb->mins) / float(C_GRID_SIZE)); 
+
+    while(cur_voxels){
+        for(
+            uint32_t i = block.thread_rank(); 
+            i < cur_voxels->size; 
+            i += block.num_threads()
+        ){
+            drawVoxel(
+                cur_voxels->points[i], voxel_size, 
+                target, world, int32_t(half_nb_points),
+                node->level, max_lod_level
+            );
+        }
+        
+        cur_voxels = cur_voxels->next;
+    }
+}
+
 
 extern "C" __global__
-void kernel_drawOctree(
+void kernel_drawOctreeAABB(
+	CFullOctree octree,
+	RenderTarget target
+){
+	auto grid = cg::this_grid();
+
+	uint32_t index = grid.thread_rank();
+
+	if(index >= octree.num_nodes) return;
+
+    COctreeNode* node = octree.nodes[index];
+    CAABB* aabb = octree.aabbs[index];
+
+    // if(index == 0){
+    //     printf("\n\n\n\n//////////////////////////////////////////////////\n");
+    //     printf("//////////////////////////////////////////////////\n");
+    //     printf("//////////////////////////////////////////////////\n");
+    //     printf("aabb: mins = (%f, %f, %f), maxs = (%f, %f, %f)\n",
+    //         aabb->mins.x, aabb->mins.y, aabb->mins.z,
+    //         aabb->maxs.x, aabb->maxs.y, aabb->maxs.z
+    //     );
+    //     printf("//////////////////////////////////////////////////\n");
+    //     printf("//////////////////////////////////////////////////\n");
+    //     printf("//////////////////////////////////////////////////\n");
+    // }
+
+    float factor = float(node->level) / float(octree.max_lod_level);
+    factor = clamp(factor, 0.0f, 1.0f);
+    uint32_t min_level_color = 0xff00ff00; // green
+    uint32_t max_level_color = 0xff0000ff; // red
+    uint32_t color = linearGradient(factor, min_level_color, max_level_color);
+    
+    drawBoundingBox(target, octree.world, *aabb, color);
+
+}
+
+
+extern "C" __global__
+void kernel_visibilityPass(
 	CFullOctree octree,
 	RenderTarget target
 ){
@@ -227,5 +395,86 @@ void kernel_drawOctree(
     if(node_index >= octree.num_nodes) return;
     
     COctreeNode* node = octree.nodes[node_index];
-    drawPoints(node, target, octree.world);
+    CAABB* aabb = octree.aabbs[node_index];
+
+    node->is_visible = true;
+    if(octree.debug_lod_to_render == -1){
+        node->is_large = isLargerThanMinSpanning(octree.min_pixel_span, aabb, target, octree.world);
+
+        bool intersects_frustum = true; // TODO: add frustum culling
+        node->is_visible = intersects_frustum;
+    }
+}
+
+
+extern "C" __global__
+void kernel_drawOctreeLarge(
+	CFullOctree octree,
+	RenderTarget target
+){
+	auto grid = cg::this_grid();
+    auto block = cg::this_thread_block();
+    
+    // Assign each node to one thread block
+    uint32_t node_index = grid.block_rank();
+    if(node_index >= octree.num_nodes) return;
+    
+    COctreeNode* node = octree.nodes[node_index];
+
+    if(octree.debug_lod_to_render == -1){
+        if(!node->is_large){return;}
+
+        bool has_points = node->points && node->points->size > 0;
+        if(has_points && node->is_visible){
+            drawAllPoints(node, target, octree.world);
+        }
+        node->is_visible = false;
+
+        for(uint32_t i=0; i<8; i++){
+            COctreeNode* child = node->children[i];
+            if(!child){continue;}
+            if(child->is_large){continue;}
+            if(!child->is_visible){continue;}
+            child->is_visible = true;
+        }
+    }
+}
+
+extern "C" __global__
+void kernel_drawOctreeSmall(
+	CFullOctree octree,
+	RenderTarget target
+){
+	auto grid = cg::this_grid();
+    auto block = cg::this_thread_block();
+    
+    // Assign each node to one thread block
+    uint32_t node_index = grid.block_rank();
+    if(node_index >= octree.num_nodes) return;
+    
+    COctreeNode* node = octree.nodes[node_index];
+    CAABB* aabb = octree.aabbs[node_index];
+
+    if(octree.debug_lod_to_render != -1){
+        if(node->level == octree.debug_lod_to_render){
+            drawAllVoxels(
+                node, aabb, target, 
+                octree.world, octree.voxels_half_nb_points_per_axis,
+                octree.max_lod_level
+            );
+        }
+        drawAllPoints(node, target, octree.world);
+    } else {
+        if(!node->is_large && node->is_visible){
+            drawAllPoints(node, target, octree.world);
+            drawAllVoxels(
+                node, aabb, target, 
+                octree.world, octree.voxels_half_nb_points_per_axis,
+                octree.max_lod_level
+            );
+        }
+    }
+
+    node->is_visible = false;
+    node->is_large = false;
 }
