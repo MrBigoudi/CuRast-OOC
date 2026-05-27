@@ -213,21 +213,21 @@ void drawAllPoints(
 }
 
 __device__
-bool isLargerThanMinSpanning(
-    float min_pixel_span,
-    CAABB* aabb,
-	RenderTarget target,
-    mat4 world
+void getScreenSpaceSquare(
+    vec3 mins, vec3 maxs,
+    RenderTarget target, mat4 world,
+    float* smin_x, float* smax_x, float* smin_y, float* smax_y,
+    float* depth
 ){
     // compute node boundaries in screen space
-    vec4 p000 = {aabb->mins.x, aabb->mins.y, aabb->mins.z, 1.0f};
-    vec4 p001 = {aabb->mins.x, aabb->mins.y, aabb->maxs.z, 1.0f};
-    vec4 p010 = {aabb->mins.x, aabb->maxs.y, aabb->mins.z, 1.0f};
-    vec4 p011 = {aabb->mins.x, aabb->maxs.y, aabb->maxs.z, 1.0f};
-    vec4 p100 = {aabb->maxs.x, aabb->mins.y, aabb->mins.z, 1.0f};
-    vec4 p101 = {aabb->maxs.x, aabb->mins.y, aabb->maxs.z, 1.0f};
-    vec4 p110 = {aabb->maxs.x, aabb->maxs.y, aabb->mins.z, 1.0f};
-    vec4 p111 = {aabb->maxs.x, aabb->maxs.y, aabb->maxs.z, 1.0f};
+    vec4 p000 = {mins.x, mins.y, mins.z, 1.0f};
+    vec4 p001 = {mins.x, mins.y, maxs.z, 1.0f};
+    vec4 p010 = {mins.x, maxs.y, mins.z, 1.0f};
+    vec4 p011 = {mins.x, maxs.y, maxs.z, 1.0f};
+    vec4 p100 = {maxs.x, mins.y, mins.z, 1.0f};
+    vec4 p101 = {maxs.x, mins.y, maxs.z, 1.0f};
+    vec4 p110 = {maxs.x, maxs.y, mins.z, 1.0f};
+    vec4 p111 = {maxs.x, maxs.y, maxs.z, 1.0f};
 
     mat4 transform = target.proj * target.view * world;
     vec4 ndc000 = transform * p000;
@@ -274,10 +274,30 @@ bool isLargerThanMinSpanning(
 		return max(n0, n1);
 	};
 
-    float smin_x = min8(s000.x, s001.x, s010.x, s011.x, s100.x, s101.x, s110.x, s111.x);
-    float smin_y = min8(s000.y, s001.y, s010.y, s011.y, s100.y, s101.y, s110.y, s111.y);
-    float smax_x = max8(s000.x, s001.x, s010.x, s011.x, s100.x, s101.x, s110.x, s111.x);
-    float smax_y = max8(s000.y, s001.y, s010.y, s011.y, s100.y, s101.y, s110.y, s111.y);
+    *smin_x = min8(s000.x, s001.x, s010.x, s011.x, s100.x, s101.x, s110.x, s111.x);
+    *smin_y = min8(s000.y, s001.y, s010.y, s011.y, s100.y, s101.y, s110.y, s111.y);
+    *smax_x = max8(s000.x, s001.x, s010.x, s011.x, s100.x, s101.x, s110.x, s111.x);
+    *smax_y = max8(s000.y, s001.y, s010.y, s011.y, s100.y, s101.y, s110.y, s111.y);
+    *depth = min8(ndc000.w, ndc001.w, ndc010.w, ndc011.w, ndc100.w, ndc101.w, ndc110.w, ndc111.w);
+}
+
+__device__
+bool isLargerThanMinSpanning(
+    float min_pixel_span,
+    CAABB* aabb,
+	RenderTarget target,
+    mat4 world
+){
+    float smin_x = 0.;
+    float smax_x = 0.;
+    float smin_y = 0.;
+    float smax_y = 0.;
+    float depth = 0.;
+    getScreenSpaceSquare(aabb->mins, aabb->maxs, 
+        target, world, 
+        &smin_x, &smax_x, &smin_y, &smax_y, &depth
+    );
+
     // screen-space size
     float dx = smax_x - smin_x;
     float dy = smax_y - smin_y;
@@ -287,29 +307,70 @@ bool isLargerThanMinSpanning(
 }
 
 __device__
-void drawVoxel(
-	CPoint voxel,
-    float voxel_size,
-	RenderTarget target,
-    mat4 world,
-    int32_t half_nb_points,
-    uint32_t node_level,
-    uint32_t max_lod_level
+void cubeRasterizer(
+    vec3 mins, vec3 maxs,
+    uint32_t cube_color,
+    RenderTarget target,
+    mat4 world
 ){
-    float color_factor = float(node_level) / float(max_lod_level);
-    color_factor = clamp(color_factor, 0.0f, 1.0f);
-    uint32_t min_level_color = 0xffffff00; // cyan
-    uint32_t max_level_color = 0xff00ffff; // yellow
-    uint32_t color = linearGradient(color_factor, min_level_color, max_level_color);
-    
-    float nb_points = 2.*half_nb_points;
-    for(int32_t cx = -half_nb_points; cx <= half_nb_points; cx++)
-    for(int32_t cy = -half_nb_points; cy <= half_nb_points; cy++)
-    for(int32_t cz = -half_nb_points; cz <= half_nb_points; cz++){
-        vec3 factor = vec3(cx, cy, cz) / nb_points;
-        vec3 position = voxel.position + factor*voxel_size;
-        // drawPoint(position, voxel.color, target, world);
-        drawPoint(position, color, target, world);
+	float smin_x = 0.;
+    float smax_x = 0.;
+    float smin_y = 0.;
+    float smax_y = 0.;
+    float depth = 0.;
+    getScreenSpaceSquare(mins, maxs, 
+        target, world, 
+        &smin_x, &smax_x, &smin_y, &smax_y, &depth
+    );
+
+    for(int px = int(smin_x); px < int(smax_x); px++)
+    for(int py = int(smin_y); py < int(smax_y); py++)
+    {
+        int pixelID = px + py * target.width;
+        if(px < 0 || px >= target.width) continue;
+        if(py < 0 || py >= target.height) continue;
+        if(pixelID < 0 || pixelID >= target.width * target.height) continue;
+
+        uint64_t udepth = __float_as_uint(depth);
+        uint64_t fragment = (udepth << 32) | cube_color;
+
+        if(fragment < target.colorbuffer[pixelID]){
+            atomicMin(&target.colorbuffer[pixelID], fragment);
+        }
+    }
+}
+
+__device__
+void drawVoxel(
+	vec3 voxel_position,
+    uint32_t voxel_color,
+    RenderTarget target,
+    mat4 world,
+    vec3 voxel_size,
+    uint32_t nb_points
+){    
+    // vec3 mins = voxel_position - 0.5f*voxel_size;
+    // vec3 maxs = voxel_position + 0.5f*voxel_size;
+    // cubeRasterizer(
+    //     mins, maxs, voxel_color,
+    //     target, world
+    // );
+
+    // Draw the middle point
+    // Usually 1 point is enough to represent a voxel from far away
+    if(nb_points % 2 == 1){
+        drawPoint(voxel_position, voxel_color, target, world);
+    }
+    if(nb_points <= 1){
+        return;
+    }
+
+    float step = 1. / float(nb_points);
+    for(float cx = -0.5; cx <= 0.5; cx+=step)
+    for(float cy = -0.5; cy <= 0.5; cy+=step)
+    for(float cz = -0.5; cz <= 0.5; cz+=step){
+        vec3 position = voxel_position + vec3(cx, cy, cz)*voxel_size;
+        drawPoint(position, voxel_color, target, world);
     }
 }
 
@@ -319,12 +380,19 @@ void drawAllVoxels(
     CAABB* aabb,
 	RenderTarget target,
     mat4 world,
-    uint32_t half_nb_points,
-    uint32_t max_lod_level
+    uint32_t nb_points,
+    uint32_t max_lod_level,
+    bool use_debug_color
 ){
     auto block = cg::this_thread_block();
     CChunk* cur_voxels = node->voxels;
-    float voxel_size = glm::length((aabb->maxs - aabb->mins) / float(C_GRID_SIZE)); 
+    vec3 voxel_size = (aabb->maxs - aabb->mins) / float(C_GRID_SIZE);
+
+    float color_factor = float(node->level) / float(max_lod_level);
+    color_factor = clamp(color_factor, 0.0f, 1.0f);
+    uint32_t min_level_color = 0xffffff00; // cyan
+    uint32_t max_level_color = 0xff00ffff; // yellow
+    uint32_t color = linearGradient(color_factor, min_level_color, max_level_color);
 
     while(cur_voxels){
         for(
@@ -332,10 +400,10 @@ void drawAllVoxels(
             i < cur_voxels->size; 
             i += block.num_threads()
         ){
-            drawVoxel(
-                cur_voxels->points[i], voxel_size, 
-                target, world, int32_t(half_nb_points),
-                node->level, max_lod_level
+            CPoint voxel = cur_voxels->points[i];
+            uint32_t voxel_color = use_debug_color ? color : voxel.color;
+            drawVoxel(voxel.position, voxel_color, target, world,
+                voxel_size, nb_points
             );
         }
         
@@ -459,8 +527,8 @@ void kernel_drawOctreeSmall(
         if(node->level == octree.debug_lod_to_render){
             drawAllVoxels(
                 node, aabb, target, 
-                octree.world, octree.voxels_half_nb_points_per_axis,
-                octree.max_lod_level
+                octree.world, octree.voxels_nb_points_per_axis,
+                octree.max_lod_level, octree.use_voxels_debug_color
             );
         }
         drawAllPoints(node, target, octree.world);
@@ -469,8 +537,8 @@ void kernel_drawOctreeSmall(
             drawAllPoints(node, target, octree.world);
             drawAllVoxels(
                 node, aabb, target, 
-                octree.world, octree.voxels_half_nb_points_per_axis,
-                octree.max_lod_level
+                octree.world, octree.voxels_nb_points_per_axis,
+                octree.max_lod_level, octree.use_voxels_debug_color
             );
         }
     }

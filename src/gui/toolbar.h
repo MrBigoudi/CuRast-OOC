@@ -148,7 +148,8 @@ void CuRast::makeToolbar(){
 				ImGui::SameLine();
 				ImGui::Checkbox("Brute force rendering", &CuRastSettings::bruteForceRendering);
 				ImGui::SameLine();
-				ImGui::Checkbox("Frustum culling", &CuRastSettings::enableFrustumCulling);
+				ImGui::Checkbox("Use voxel debug color", &CuRastSettings::voxelsDebugColor);
+				// ImGui::Checkbox("Frustum culling", &CuRastSettings::enableFrustumCulling);
 				// ImGui::SameLine();
 				// ImGui::Checkbox("freeze frustum", &CuRastSettings::freezeFrustum);
 

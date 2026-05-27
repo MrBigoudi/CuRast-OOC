@@ -6,8 +6,9 @@ struct CuRastSettings{
 	static inline bool showBoundingBoxes = false;
 	static inline bool bruteForceRendering = false;
 	static inline int32_t debugLodToRender = -1;
-	static inline int32_t voxelsPointsPerAxis = 4;
+	static inline int32_t voxelsPointsPerAxis = 1;
 	static inline float minPixelSpan = 64.;
+	static inline bool voxelsDebugColor = false;
 
 	static inline bool enableEDL = true;
 	static inline bool enableFrustumCulling = true;

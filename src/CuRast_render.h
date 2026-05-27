@@ -131,7 +131,8 @@ void drawOctreeAABB(Scene* scene, View view, RenderTarget& target){
 }
 
 void drawOctree(Scene* scene, View view, RenderTarget& target, 
-	int32_t debug_lod = -1, int32_t voxels_nb_points = 4, float min_pixel_span = 64.
+	int32_t debug_lod = -1, int32_t voxels_nb_points = 1, float min_pixel_span = 64.,
+	bool use_voxels_debug_color = false
 ){
 	static CudaModularProgram* prog = new CudaModularProgram({"./src/kernels/octree.cu"});
 
@@ -144,8 +145,9 @@ void drawOctree(Scene* scene, View view, RenderTarget& target,
         cfo.num_nodes = octree->num_nodes;
         cfo.max_lod_level = octree->max_lod_level;
 		cfo.debug_lod_to_render = debug_lod;
-		cfo.voxels_half_nb_points_per_axis = uint32_t(voxels_nb_points / 2);
+		cfo.voxels_nb_points_per_axis = uint32_t(voxels_nb_points);
 		cfo.min_pixel_span = min_pixel_span;
+		cfo.use_voxels_debug_color = use_voxels_debug_color;
 
 		// println("nb nodes: {}, nb aabbs: {}, nb chunks: {}, nb nodes: {}",
 		// 	octree->cptr_nodes.size(), octree->cptr_aabbs.size(), octree->cptr_chunks.size(), octree->num_nodes
@@ -673,7 +675,8 @@ void CuRast::draw(Scene* scene, vector<View> views){
 			drawOctree(scene, view, target, 
 				CuRastSettings::debugLodToRender, 
 				CuRastSettings::voxelsPointsPerAxis,
-				CuRastSettings::minPixelSpan
+				CuRastSettings::minPixelSpan,
+				CuRastSettings::voxelsDebugColor
 			);
 		}
 		if(CuRastSettings::showBoundingBoxes){

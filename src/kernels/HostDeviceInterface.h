@@ -378,6 +378,7 @@ struct CFullOctree {
 	uint32_t max_lod_level;
 	// TODO: put inside uniforms structure
 	int32_t debug_lod_to_render;
-	uint32_t voxels_half_nb_points_per_axis;
+	uint32_t voxels_nb_points_per_axis;
 	float min_pixel_span;
+	bool use_voxels_debug_color;
 };
