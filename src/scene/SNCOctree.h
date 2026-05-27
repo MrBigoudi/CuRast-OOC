@@ -15,6 +15,7 @@ struct SNCOctree : public SceneNode{
 	vector<CUdeviceptr> cptr_nodes;
 	vector<CUdeviceptr> cptr_aabbs;
     vector<CUdeviceptr> cptr_chunks;
+    vector<CUdeviceptr> cptr_occupancy_grids;
 	uint32_t num_nodes = 0;
 	uint32_t max_lod_level = 0;
 	

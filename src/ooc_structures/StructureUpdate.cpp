@@ -800,10 +800,12 @@ void loadOctree(CuRast* editor, const std::shared_ptr<OctreeNode>& main_root, co
 	octree->cptr_nodes = {};
 	octree->cptr_aabbs = {};
 	octree->cptr_chunks = {};
+	octree->cptr_occupancy_grids = {};
 
 	// Create enough chunks
 	uint32_t chunk_counter = 0;
 	uint32_t nodes_counter = 0;
+	uint32_t occupancy_grids_counter = 0;
 	uint32_t max_lod_level = 0;
 
 	std::function<CUdeviceptr(const std::shared_ptr<OctreeNode>&, const std::shared_ptr<AABB>&, uint32_t)> recursive = [&](
@@ -901,10 +903,16 @@ void loadOctree(CuRast* editor, const std::shared_ptr<OctreeNode>& main_root, co
 		// if(!cur_node->is_leaf && !chunks.empty()){
 		if(chunk_first_voxels.has_value()){
 			new_node.voxels = (CChunk*)octree->cptr_chunks[chunk_first_voxels.value()];
-			new_node.occupancy = COccupancyGrid();
+			// Allocate occupancy grid
+			COccupancyGrid tmp = {};
 			for(uint32_t i=0; i<C_GRID_NUM_CELLS; i++){
-				new_node.occupancy.values[i] = cur_node->occupancy->values[i];
+				tmp.values[i] = cur_node->occupancy->values[i];
 			}
+			octree->cptr_occupancy_grids.push_back(CUdeviceptr());
+			cuMemAlloc(&octree->cptr_occupancy_grids[occupancy_grids_counter], sizeof(COccupancyGrid));
+			cuMemcpyHtoD(octree->cptr_occupancy_grids[occupancy_grids_counter], &tmp, sizeof(COccupancyGrid));
+			new_node.occupancy = (COccupancyGrid*)octree->cptr_occupancy_grids[occupancy_grids_counter];
+			occupancy_grids_counter++;
 		}
 		if(level > max_lod_level){
 			max_lod_level = level;
