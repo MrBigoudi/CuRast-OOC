@@ -32,7 +32,9 @@
 #include "PlyLoader.h"
 #include "laszip/laszip_api.h"
 
-#include "ooc_structures/StructureUpdate.h"
+#include "ooc_structures/structureUpdate.h"
+#include "ooc_structures/simLod.h"
+#include "ooc_structures/loader.h"
 
 using namespace std; // YOLO
 
@@ -289,7 +291,7 @@ void initScene() {
 	};
 
 	auto loadLion = [=]() {
-		loadPointcloud("./lion.laz", editor);
+		initLoadPointBatches("./lion.laz");
 		// position: 4.283698075250294, -4.795270477550499, 6.400710991008715 
 		Runtime::controls->yaw    = -5.582;
 		Runtime::controls->pitch  = -0.294;
@@ -420,54 +422,24 @@ int main(int argc, char** argv){
 	CuRast::setup();
 
 	VKRenderer::onFileDrop([](vector<string> files){
-
-
-		if(files.size() != 1) return;
-
-		CuRast* editor = CuRast::instance;
-		Scene& scene = editor->scene;
-
-		string file = files[0];
-
-		static vector<shared_ptr<largeGlb::LoadedGlb>> loadedGlbs;
-
-		if(iEndsWith(file, ".gltf") || iEndsWith(file, ".glb")){
-			Scene& scene = editor->scene;
-
-			auto glb = largeGlb::load(file, context, {.skipUVs = false, .compress = false});
-			scene.world->children.push_back(glb->glbNode);
-			loadedGlbs.push_back(glb);
-
-			scene.updateTransformations();
-
-			Box3 aabb = glb->glbNode->aabb;
-			vec3 extent = aabb.max - aabb.min;
-			vec3 center = (aabb.min + aabb.max) * 0.5f;
-
-			Runtime::controls->yaw    = -7.204;
-			Runtime::controls->pitch  = -0.579;
-			Runtime::controls->radius = length(extent);
-			Runtime::controls->target = { center.x, center.y, center.z};
-		}
-
-
-		if(iEndsWith(file, ".las") || iEndsWith(file, ".laz")){
-			loadPointcloud(file, editor);
-
-			// // TODO: run in another thread
-			// std::thread test_parallel_loader(loadPointcloud, file, editor);
-			// if(test_parallel_loader.joinable()){
-			// 	test_parallel_loader.detach();
-			// } else {
-			// 	println("Failed to detach the parallel point cloud loader thread");
-			// 	exit(EXIT_FAILURE);
-			// }
-		}
-
-
+		std::for_each(std::execution::par, files.begin(), files.end(), 
+			[&](string& file){
+				if(iEndsWith(file, ".las") || iEndsWith(file, ".laz")){
+					initLoadPointBatches(file);
+				}
+			}
+		);
 	});
 
 	initScene();
+
+	// Loading points routine
+	std::thread thread_loading_points(loadPointcloudRoutine);
+	thread_loading_points.detach();
+
+	// Octree update routine
+	std::thread thread_octree_update(updateOctreeRoutine);
+	thread_octree_update.detach();
 
 	VKRenderer::loop(
 		[&]() {
@@ -481,12 +453,18 @@ int main(int argc, char** argv){
 			Runtime::debugValues["stage 1"] = format("{:.3f}", stage1_millies);
 			Runtime::debugValues["stage 2"] = format("{:.3f}", stage2_millies);
 			Runtime::debugValues["stage 3"] = format("{:.3f}", stage3_millies);
+
+			// TODO: check if works
+			// Send things GPU side
+			loadOctreeOnGPU(CuRast::instance);
+			loadBatchesOnGPU(CuRast::instance);
 		},
 		[&]() {CuRast::instance->render();},
 		[&]() {CuRast::instance->postFrame();}
 	);
 
 	displayTimings();
+	displayBuffers();
 
 	VKRenderer::destroy();
 }

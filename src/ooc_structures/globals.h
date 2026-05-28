@@ -3,50 +3,6 @@
 #include "CuRast.h"
 #include "laszip/laszip_api.h"
 
-///////////////////////////////////////////////////////////////////////////////
-////////////////////////// GLOBAL EXTERNAL VARIABLES //////////////////////////
-///////////////////////////////////////////////////////////////////////////////
-
-/// Tells how many clouds have been loaded
-/// For debug purposes
-extern uint32_t NbLoadedClouds;
-
-/// The hash map to store timings
-struct Timing {
-	bool has_started = false;
-	string name = "";
-	uint32_t level = 0;
-	std::chrono::time_point<std::chrono::system_clock> start = {};
-	std::chrono::time_point<std::chrono::system_clock> stop = {};
-	std::chrono::microseconds duration = {};
-
-	Timing(string name, bool start_now = true, uint32_t level = 0)
-	 : name(name), has_started(start_now), level(level){
-		if(start_now){
-			start = std::chrono::high_resolution_clock::now();
-		}
-	}
-
-	void start_clock(){
-		if(has_started){
-			println("Can't start a timing twice");
-			return;
-		}
-		start = std::chrono::high_resolution_clock::now();
-	}
-
-	void stop_clock(){
-		if(!has_started){
-			println("Can't stop an unstarted timing");
-			return;
-		}
-		stop = std::chrono::high_resolution_clock::now();
-		duration = std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
-	}
-};
-extern vector<Timing> timingsList;
-void displayTimings();
-
 
 ///////////////////////////////////////////////////////////////////////////////
 /////////////////////////// GLOBAL ENUM DECLARATION ///////////////////////////
@@ -151,9 +107,7 @@ struct OccupancyGrid {
 /// A node in an octree
 struct OctreeNode {
 	std::shared_ptr<OctreeNode> children[8] = {nullptr};
-	// std::atomic_uint16_t counter = 0;
 	uint16_t counter = 0;
-	// bool is_leaf = true;
 	uint8_t children_ids = 0b00000000;
 	std::shared_ptr<Chunk> points = nullptr;
 	std::shared_ptr<Chunk> voxels = nullptr;
@@ -173,3 +127,77 @@ struct Chunk {
 	/// For the linked list
 	std::shared_ptr<Chunk> next;
 };
+
+
+
+///////////////////////////////////////////////////////////////////////////////
+////////////////////////// GLOBAL EXTERNAL VARIABLES //////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+
+/// Variables tracking when the octree can be sent to GPU
+extern std::binary_semaphore octreeReadyToBeSent;
+extern std::binary_semaphore octreeReadyToBeUpdated;
+
+/// The batches that still need to be read
+extern std::deque<PointBatch> batchesToLoad;
+/// The batches that are already loaded
+extern std::deque<PointBatch> batchesLoaded;
+/// The batches that have already been inserted in the octree
+extern std::deque<PointBatch> batchesInserted;
+
+/// The main octree
+extern std::shared_ptr<OctreeNode> mainOctree;
+/// The main bounding box
+extern std::shared_ptr<AABB> mainAABB;
+
+/// The buffer of spilled points
+extern std::shared_ptr<vector<Point>> spilledPoints;
+/// The buffer of spilling nodes
+extern std::shared_ptr<vector<OctreeNode*>> spillingNodes;
+
+/// The backlog buffer for new voxels
+extern std::shared_ptr<vector<Point>> backlogVoxels;
+/// The backlog buffer for the nodes corresponding to the new voxels
+extern std::shared_ptr<vector<OctreeNode*>> backlogVoxelsNodes;
+
+
+/// The hash map to store timings
+struct Timing {
+	bool has_started = false;
+	string name = "";
+	uint32_t level = 0;
+	std::chrono::time_point<std::chrono::system_clock> start = {};
+	std::chrono::time_point<std::chrono::system_clock> stop = {};
+	std::chrono::microseconds duration = {};
+
+	Timing(string name, bool start_now = true, uint32_t level = 0)
+	 : name(name), has_started(start_now), level(level){
+		if(start_now){
+			start = std::chrono::high_resolution_clock::now();
+		}
+	}
+
+	void start_clock(){
+		if(has_started){
+			println("Can't start a timing twice");
+			return;
+		}
+		start = std::chrono::high_resolution_clock::now();
+	}
+
+	void stop_clock(){
+		if(!has_started){
+			println("Can't stop an unstarted timing");
+			return;
+		}
+		stop = std::chrono::high_resolution_clock::now();
+		duration = std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
+	}
+};
+
+/// The timings list
+extern vector<std::shared_ptr<Timing>> timingsList;
+std::shared_ptr<Timing> addTiming(string name, bool start_now = true, uint32_t level = 0);
+
+void displayTimings();
+void displayBuffers();

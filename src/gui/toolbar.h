@@ -156,7 +156,7 @@ void CuRast::makeToolbar(){
 				// ImGui::SameLine();
 				ImGui::SetNextItemWidth(200.0f);
 				// ImGui::SliderFloat("threshold", &CuRastSettings::threshold, 0.0f, 1.0f);
-				ImGui::SliderInt("Points per voxel axis", &CuRastSettings::voxelsPointsPerAxis, 2, 64);
+				ImGui::SliderInt("Points per voxel axis", &CuRastSettings::voxelsPointsPerAxis, 1, 64);
 				ImGui::SetNextItemWidth(200.0f);
 				ImGui::SliderInt("LOD to render", &CuRastSettings::debugLodToRender, -1, 20);
 				ImGui::SetNextItemWidth(200.0f);

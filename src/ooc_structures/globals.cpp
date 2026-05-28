@@ -1,28 +1,5 @@
 #include "globals.h"
 
-uint32_t NbLoadedClouds = 0;
-vector<Timing> timingsList = {};
-
-void displayTimings(){
-	println("///////////////////////////////////////////////////");
-	println("///////////////////// Timings /////////////////////");
-	println("///////////////////////////////////////////////////\n");
-	for (Timing& timing : timingsList){
-		uint64_t us = timing.duration.count();
-		uint64_t s = uint64_t(us / 1'000'000);
-		uint64_t ms = uint64_t((us - (s*1'000'000)) / 1'000);
-		us = us - (s*1'000'000) - (ms*1'000);
-
-        string tab = std::string(4*timing.level, ' ');
-
-		println("{}- {}: {}s, {}ms, {}us",
-			tab, timing.name, s, ms, us 
-		);
-	}
-    println("\n///////////////////////////////////////////////////");
-	println("///////////////////////////////////////////////////");
-	println("///////////////////////////////////////////////////\n");
-};
 
 vector<vec3> PointBatch::getPositions() const {
     vector<vec3> res = {};
@@ -259,7 +236,6 @@ uint32_t OctreeNode::getNbVoxels() const {
 
 void OctreeNode::display(uint32_t id, uint32_t level, bool node_only) const {
     println("id: {}, level: {}, counter: {}, nbPoints: {}, nbVoxels: {}, children: 0b{}{}{}{}{}{}{}{}",
-        // id, level, counter.load(), getNbPoints(), getNbVoxels(),
         id, level, counter, getNbPoints(), getNbVoxels(),
         uint8_t(bool(children_ids & 0x01 << 0)),
         uint8_t(bool(children_ids & 0x01 << 1)),
@@ -277,4 +253,88 @@ void OctreeNode::display(uint32_t id, uint32_t level, bool node_only) const {
             }
         }
     }
+};
+
+
+
+///////////////////////////////////////////////////////////////////////////////
+////////////////////////////// GLOBAL VARIABLES ///////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+
+vector<std::shared_ptr<Timing>> timingsList = {};
+
+/// Variables tracking when the octree can be sent to GPU
+/// Initialized as not ready to be sent
+std::binary_semaphore octreeReadyToBeSent{0};
+/// Initialized as ready to be updated
+std::binary_semaphore octreeReadyToBeUpdated{1};
+
+/// The batches that still need to be read
+std::deque<PointBatch> batchesToLoad = {};
+/// The batches that are already loaded
+std::deque<PointBatch> batchesLoaded = {};
+/// The batches that have already been inserted in the octree
+std::deque<PointBatch> batchesInserted = {};
+
+/// The main octree
+std::shared_ptr<OctreeNode> mainOctree = std::make_shared<OctreeNode>();
+/// The main bounding box
+std::shared_ptr<AABB> mainAABB = nullptr;
+
+/// The buffer of spilled points
+std::shared_ptr<vector<Point>> spilledPoints = std::make_shared<vector<Point>>(vector<Point>());
+/// The buffer of spilling nodes
+std::shared_ptr<vector<OctreeNode*>> spillingNodes = std::make_shared<vector<OctreeNode*>>(vector<OctreeNode*>());
+
+/// The backlog buffer for new voxels
+std::shared_ptr<vector<Point>> backlogVoxels = std::make_shared<vector<Point>>(vector<Point>());
+/// The backlog buffer for the nodes corresponding to the new voxels
+std::shared_ptr<vector<OctreeNode*>> backlogVoxelsNodes = std::make_shared<vector<OctreeNode*>>(vector<OctreeNode*>());
+
+
+std::shared_ptr<Timing> addTiming(string name, bool start_now, uint32_t level){
+    std::shared_ptr<Timing> new_timing = std::make_shared<Timing>(name, start_now, level);
+    std::mutex mtx;
+    std::lock_guard<std::mutex> lock(mtx);
+    timingsList.push_back(new_timing);
+    return timingsList.back();
+}
+
+void displayTimings(){
+	println("///////////////////////////////////////////////////");
+	println("///////////////////// Timings /////////////////////");
+	println("///////////////////////////////////////////////////\n");
+	for (auto& timing : timingsList){
+		uint64_t us = timing->duration.count();
+		uint64_t s = uint64_t(us / 1'000'000);
+		uint64_t ms = uint64_t((us - (s*1'000'000)) / 1'000);
+		us = us - (s*1'000'000) - (ms*1'000);
+
+        string tab = std::string(4*timing->level, ' ');
+
+		println("{}- {}: {}s, {}ms, {}us",
+			tab, timing->name, s, ms, us 
+		);
+	}
+    println("\n///////////////////////////////////////////////////");
+	println("///////////////////////////////////////////////////");
+	println("///////////////////////////////////////////////////\n");
+};
+
+void displayBuffers(){
+	println("///////////////////////////////////////////////////");
+	println("///////////////////// Buffers /////////////////////");
+	println("///////////////////////////////////////////////////\n");
+	
+    println("- batchesToLoad: {} elements", batchesToLoad.size());
+    println("- batchesLoaded: {} elements", batchesLoaded.size());
+    println("- batchesInserted: {} elements", batchesInserted.size());
+    println("- spilledPoints: {} elements", (*spilledPoints).size());
+    println("- spillingNodes: {} elements", (*spillingNodes).size());
+    println("- backlogVoxels: {} elements", (*backlogVoxels).size());
+    println("- backlogVoxelsNodes: {} elements", (*backlogVoxelsNodes).size());
+
+    println("\n///////////////////////////////////////////////////");
+	println("///////////////////////////////////////////////////");
+	println("///////////////////////////////////////////////////\n");
 };
