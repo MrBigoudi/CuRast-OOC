@@ -25,9 +25,8 @@ void initOctree(
 
 /// Grow the octree
 uint32_t growOctree(
-    std::shared_ptr<OctreeNode>& main_root, 
-    std::shared_ptr<AABB>& main_aabb, 
-    std::shared_ptr<vector<Point>>& points
+    const std::shared_ptr<AABB>& main_aabb, 
+    const std::shared_ptr<vector<Point>>& points
 );
 
 /// Bottom up update of the octree

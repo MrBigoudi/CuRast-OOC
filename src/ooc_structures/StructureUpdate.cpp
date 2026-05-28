@@ -12,7 +12,7 @@ std::deque<PointBatch> batchesToLoad = {};
 /// The batches that are already loaded
 std::deque<PointBatch> batchesLoaded = {};
 /// The main octree
-std::shared_ptr<OctreeNode> mainOctree = std::make_shared<OctreeNode>(OctreeNode());
+std::shared_ptr<OctreeNode> mainOctree = std::make_shared<OctreeNode>();
 /// The main bounding box
 std::shared_ptr<AABB> mainAABB = std::make_shared<AABB>(AABB());
 
@@ -79,9 +79,10 @@ void initLoadPointBatches(string file){
 
 void loadPointsInBatches(){
 	// TODO: in parallel
-	while(!batchesToLoad.empty()){
-		PointBatch& batch = batchesToLoad.front();
-
+	mutex mtx;
+	auto first = batchesToLoad.begin();
+	auto last = batchesToLoad.end();
+	std::for_each(std::execution::par, first, last, [&](PointBatch batch){
 		laszip_POINTER laszip_reader;
 		if(laszip_create(&laszip_reader)){
 			println("ERROR: creating laszip reader for '{}'", *batch.file);
@@ -101,7 +102,7 @@ void loadPointsInBatches(){
 			return;
 		}
 		if(laszip_seek_point(laszip_reader, batch.first)){
-			println("ERROR: seeking laszip point for for '{}'", *batch.file);
+			println("ERROR: seeking laszip point for '{}'", *batch.file);
 			laszip_close_reader(laszip_reader);
 			laszip_destroy(laszip_reader);
 			return;	
@@ -148,9 +149,14 @@ void loadPointsInBatches(){
 		println("done loading a batch of {} points", batch.count);
 
 		laszip_close_reader(laszip_reader);
-		batchesLoaded.push_back(batch);
-		batchesToLoad.pop_front();
-	}
+
+		{
+			std::lock_guard<std::mutex> lock(mtx);
+			batchesLoaded.push_back(batch);
+		}
+	});
+
+	batchesToLoad.erase(first, last);
 }
 
 void loadBatchesOnGPU(CuRast* editor){
@@ -204,10 +210,14 @@ void loadPointcloud(string file, CuRast* editor){
 	vector<uint32_t> tmp_new_levels = vector<uint32_t>(nb_loaded, 0);
 	// In parallel
 	{
-		for(uint32_t i=0; i < nb_loaded; i++){
-			PointBatch& batch = batchesLoaded[i];
-			tmp_new_levels[i] = growOctree(mainOctree, mainAABB, batch.points);
-		}
+		std::vector<uint32_t> indices(nb_loaded);
+		auto first = indices.begin();
+		auto last = indices.end();
+		std::iota(first, last, 0);
+		std::for_each(std::execution::par, first, last, [&](uint32_t index){
+			PointBatch& batch = batchesLoaded[index];
+			tmp_new_levels[index] = growOctree(mainAABB, batch.points);
+		});
 	}
 	timingsList[timing_id].stop_clock();
 
@@ -278,6 +288,9 @@ void simLodCount(
     std::shared_ptr<vector<Point>>& spilled_points,
     std::shared_ptr<vector<OctreeNode*>>& spilling_nodes
 ){
+
+	mutex mtx;
+
 	auto countPoint = [&](Point& point){
 		// Reach corresponding leaf
 		std::shared_ptr<OctreeNode> leaf = main_root;
@@ -321,15 +334,26 @@ void simLodCount(
 				// Skip if the point was already accepted at this level
 				if(point.color[3] == level){return;}
 
-				uint32_t old_counter = leaf->counter;
-				leaf->counter = min(uint16_t(leaf->counter + 1u), uint16_t(MAX_POINTS_PER_LEAF + 1u));
-
 				// Flag point as accepted at this level
 				point.color[3] = level;
 
-				if(leaf->counter > MAX_POINTS_PER_LEAF && old_counter <= MAX_POINTS_PER_LEAF){
-					spilling_nodes->push_back(leaf.get());
+				{
+					// Sync read / write to counter
+					// uint16_t old_counter = leaf->counter.fetch_add(1u);
+					uint16_t old_counter = 0;
+					
+					{
+						std::lock_guard<std::mutex> lock(mtx);
+						old_counter = leaf->counter;
+					}
+					leaf->counter++;
+					if(old_counter == MAX_POINTS_PER_LEAF){
+						// leaf->counter.store(MAX_POINTS_PER_LEAF + 1u);
+						leaf->counter = MAX_POINTS_PER_LEAF + 1u;
+						spilling_nodes->push_back(leaf.get());
+					}
 				}
+
 				return;
 			}
 		}
@@ -341,6 +365,9 @@ void simLodCount(
 	for(Point& point : *spilled_points){
 		countPoint(point);		
 	}
+
+	// std::for_each(std::execution::par, points->begin(), points->end(), countPoint);
+	// std::for_each(std::execution::par, spilled_points->begin(), spilled_points->end(), countPoint);
 }
 
 void simLodSplit(
@@ -375,7 +402,7 @@ void simLodSplit(
 		for(uint32_t j=0; j<8; j++){
 			// Create necessary empty children
 			if(!spilling_node->children[j] && (0x01 << j) & spilling_node_children){
-				std::shared_ptr<OctreeNode> empty_child = std::make_shared<OctreeNode>(OctreeNode());
+				std::shared_ptr<OctreeNode> empty_child = std::make_shared<OctreeNode>();
 				// empty_child->is_leaf = true;
 				spilling_node->children[j] = empty_child;
 			}
@@ -415,8 +442,16 @@ static uint32_t staticCpt = 0;
 void simLodUpdate(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>& main_aabb, std::shared_ptr<vector<Point>>& points){
 	uint32_t timing_id = timingsList.size();
 	timingsList.emplace_back(format("simlod count/split loop v{}-{}", NbLoadedClouds, staticCpt), true, 1);
+	uint32_t count_split_timing_id = timing_id;
+
+	uint32_t inner_cpt = 0;
 	while(true){
+
+		timing_id = timingsList.size();
+		timingsList.emplace_back(format("\tsimlod count v{}-{}", NbLoadedClouds, staticCpt, inner_cpt), true, 1);
 		simLodCount(main_root, main_aabb, points, spilledPoints, spillingNodes);
+		timingsList[timing_id].stop_clock();
+
 		if(spillingNodes->size() == 0){
 			break;
 		}
@@ -426,15 +461,19 @@ void simLodUpdate(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>&
 		// println("//////////////////////////////////////////////////");
 		// mainOctree->display();
 
+		timing_id = timingsList.size();
+		timingsList.emplace_back(format("\tsimlod split v{}-{}", NbLoadedClouds, staticCpt, inner_cpt), true, 1);
 		simLodSplit(spilledPoints, spillingNodes);
+		timingsList[timing_id].stop_clock();
 
 		// println("//////////////////////////////////////////////////");
 		// println("////////// Octree after simlod splitting /////////");
 		// println("//////////////////////////////////////////////////");
 		// mainOctree->display();
-
+		
+		inner_cpt++;
 	}
-	timingsList[timing_id].stop_clock();
+	timingsList[count_split_timing_id].stop_clock();
 
 	// println("//////////////////////////////////////////////////");
 	// println("//////// Octree after simlod count/splits ////////");
@@ -481,7 +520,7 @@ void uptadeOctree(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>&
 	NodePosition node_position = FIRST_NODE_POSITION;
 	for(uint32_t i=0; i<nb_new_levels; i++){
 		// Create new parent
-		std::shared_ptr<OctreeNode> new_parent = std::make_shared<OctreeNode>(OctreeNode());
+		std::shared_ptr<OctreeNode> new_parent = std::make_shared<OctreeNode>();
 		// new_parent->is_leaf = false;
 		new_parent->occupancy = std::make_shared<OccupancyGrid>(OccupancyGrid());
 
@@ -741,40 +780,42 @@ void initOctree(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>& m
 	}
 	// Make it cubic
 	vec3 size = main_aabb->getSize();
-	vec3 half_size = 0.5f * size;
+	vec3 half_sizes_x = 0.5f * (vec3(size.x) - size);
+	vec3 half_sizes_y = 0.5f * (vec3(size.y) - size);
+	vec3 half_sizes_z = 0.5f * (vec3(size.z) - size);
 	if(size.x > size.y){
 		if(size.x > size.z){
-			main_aabb->mins.y -= half_size.y;
-			main_aabb->maxs.y += half_size.y;
-			main_aabb->mins.z -= half_size.z;
-			main_aabb->maxs.z += half_size.z;
+			main_aabb->mins.y -= half_sizes_x.y;
+			main_aabb->maxs.y += half_sizes_x.y;
+			main_aabb->mins.z -= half_sizes_x.z;
+			main_aabb->maxs.z += half_sizes_x.z;
 		} else {
-			main_aabb->mins.y -= half_size.y;
-			main_aabb->maxs.y += half_size.y;
-			main_aabb->mins.x -= half_size.x;
-			main_aabb->maxs.x += half_size.x;
+			main_aabb->mins.y -= half_sizes_z.y;
+			main_aabb->maxs.y += half_sizes_z.y;
+			main_aabb->mins.x -= half_sizes_z.x;
+			main_aabb->maxs.x += half_sizes_z.x;
 		}
 	} else {
 		if(size.y > size.z){
-			main_aabb->mins.x -= half_size.x;
-			main_aabb->maxs.x += half_size.x;
-			main_aabb->mins.z -= half_size.z;
-			main_aabb->maxs.z += half_size.z;
+			main_aabb->mins.x -= half_sizes_y.x;
+			main_aabb->maxs.x += half_sizes_y.x;
+			main_aabb->mins.z -= half_sizes_y.z;
+			main_aabb->maxs.z += half_sizes_y.z;
 		} else {
-			main_aabb->mins.y -= half_size.y;
-			main_aabb->maxs.y += half_size.y;
-			main_aabb->mins.x -= half_size.x;
-			main_aabb->maxs.x += half_size.x;
+			main_aabb->mins.y -= half_sizes_z.y;
+			main_aabb->maxs.y += half_sizes_z.y;
+			main_aabb->mins.x -= half_sizes_z.x;
+			main_aabb->maxs.x += half_sizes_z.x;
 		}
 	}
 
-	// Adding small 1% delta to avoid floating point issues
-	float epsilon = 0.01f;
-	main_aabb->mins -= epsilon * main_aabb->mins;
-	main_aabb->maxs += epsilon * main_aabb->maxs;
+	// // Adding small 1% delta to avoid floating point issues
+	// float epsilon = 0.01f;
+	// main_aabb->mins -= epsilon * main_aabb->mins;
+	// main_aabb->maxs += epsilon * main_aabb->maxs;
 }
 
-uint32_t growOctree(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>& main_aabb, std::shared_ptr<vector<Point>>& points){
+uint32_t growOctree(const std::shared_ptr<AABB>& main_aabb, const std::shared_ptr<vector<Point>>& points){
 	uint32_t nb_new_levels = 0;
 	AABB new_aabb = *main_aabb;
 	NodePosition node_position = FIRST_NODE_POSITION;
@@ -891,6 +932,7 @@ void loadOctree(CuRast* editor, const std::shared_ptr<OctreeNode>& main_root, co
 				}
 			}
 		// }
+		// new_node.counter = cur_node->counter.load();
 		new_node.counter = cur_node->counter;
 		// new_node.is_leaf = cur_node->is_leaf;
 		new_node.children_ids = cur_node->children_ids;

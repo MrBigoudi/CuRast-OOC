@@ -443,6 +443,15 @@ int main(int argc, char** argv){
 
 		if(iEndsWith(file, ".las") || iEndsWith(file, ".laz")){
 			loadPointcloud(file, editor);
+
+			// // TODO: run in another thread
+			// std::thread test_parallel_loader(loadPointcloud, file, editor);
+			// if(test_parallel_loader.joinable()){
+			// 	test_parallel_loader.detach();
+			// } else {
+			// 	println("Failed to detach the parallel point cloud loader thread");
+			// 	exit(EXIT_FAILURE);
+			// }
 		}
 
 

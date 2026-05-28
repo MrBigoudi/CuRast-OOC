@@ -65,6 +65,7 @@ Dependencies:
 * GCC 15.2.0
 * G++ 15.2.0
 * turbojpeg
+* TBB (for cpu parallel execution)
 
 Create a build directory via cmake and build the software:
 

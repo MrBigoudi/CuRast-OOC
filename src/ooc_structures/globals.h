@@ -151,6 +151,7 @@ struct OccupancyGrid {
 /// A node in an octree
 struct OctreeNode {
 	std::shared_ptr<OctreeNode> children[8] = {nullptr};
+	// std::atomic_uint16_t counter = 0;
 	uint16_t counter = 0;
 	// bool is_leaf = true;
 	uint8_t children_ids = 0b00000000;

@@ -28,6 +28,7 @@ if (LINUX)
 	find_library(TURBOJPEG_LIBRARY
 		NAMES turbojpeg
 	)
+	find_package(TBB REQUIRED)
 endif()
 
 # --------------------------------------------------------
@@ -83,6 +84,7 @@ elseif (LINUX)
 		${TURBOJPEG_LIBRARY}
 		laszip
 		stdc++exp
+		TBB::tbb
 	)
 endif()
 
@@ -125,4 +127,8 @@ target_include_directories(PlyToGlb PRIVATE
 	./src
 	./libs
 )
-target_link_libraries(PlyToGlb PRIVATE glfw)
+if (WIN32)
+	target_link_libraries(PlyToGlb PRIVATE glfw)
+elseif (LINUX)
+	target_link_libraries(PlyToGlb PRIVATE glfw TBB::tbb)
+endif()

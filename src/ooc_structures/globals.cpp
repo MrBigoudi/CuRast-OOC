@@ -259,6 +259,7 @@ uint32_t OctreeNode::getNbVoxels() const {
 
 void OctreeNode::display(uint32_t id, uint32_t level, bool node_only) const {
     println("id: {}, level: {}, counter: {}, nbPoints: {}, nbVoxels: {}, children: 0b{}{}{}{}{}{}{}{}",
+        // id, level, counter.load(), getNbPoints(), getNbVoxels(),
         id, level, counter, getNbPoints(), getNbVoxels(),
         uint8_t(bool(children_ids & 0x01 << 0)),
         uint8_t(bool(children_ids & 0x01 << 1)),
