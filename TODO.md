@@ -2,12 +2,12 @@
 
 ## Urgent
 
-- Render points / voxels with simlod method
+- Implement LRU caching
+- Build the loading stream
 
 ## Coding part
 
 - Create uniform structure for better structuring in cuda code / gui
-- Build the loading stream
 - Parallelize in C++
 - Fix Vulkan segfault on quit
 

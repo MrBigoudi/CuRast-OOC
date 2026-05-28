@@ -359,16 +359,35 @@ void simLodCount(
 		}
 	};
 
-	for(Point& point : *points){
-		countPoint(point);
-	}
-	for(Point& point : *spilled_points){
-		countPoint(point);		
-	}
+	// for(Point& point : *points){
+	// 	countPoint(point);
+	// }
+	// for(Point& point : *spilled_points){
+	// 	countPoint(point);		
+	// }
 
 	// std::for_each(std::execution::par, points->begin(), points->end(), countPoint);
 	// std::for_each(std::execution::par, spilled_points->begin(), spilled_points->end(), countPoint);
+
+	vector<uint32_t> first_indices = {};
+	uint32_t step_size = 100'000u;
+	uint32_t nb_points = points->size();
+	uint32_t nb_spilled_points = spilled_points->size();
+	uint32_t max_nb_points = max(nb_points, nb_spilled_points);
+	for(uint32_t i=0; i<max_nb_points; i+=step_size){first_indices.push_back(i);}
+
+	std::for_each(std::execution::seq, first_indices.begin(), first_indices.end(), [&](uint32_t index){
+		for(uint32_t i=0; i<step_size; i++){
+			if((index + i) >= nb_points){break;}
+			countPoint((*points)[index + i]);
+		}
+		for(uint32_t i=0; i<step_size; i++){
+			if((index + i) >= nb_spilled_points){break;}
+			countPoint((*spilled_points)[index + i]);
+		}
+	});
 }
+
 
 void simLodSplit(
     std::shared_ptr<vector<Point>>& spilled_points,
@@ -377,21 +396,6 @@ void simLodSplit(
 	for(uint32_t node_id = 0; node_id < spilling_nodes->size(); node_id++){
 		OctreeNode*& spilling_node = (*spilling_nodes)[node_id];
 		uint8_t spilling_node_children = spilling_node->children_ids;
-
-	// for(OctreeNode*& spilling_node : *spilling_nodes){
-		// if(spilling_node->voxels || spilling_node->occupancy){
-		// 	println("An inner node should not be spliteable");
-		// 	exit(EXIT_FAILURE);
-		// }
-		
-		// // Check if the node is inner
-		// bool is_inner = false;
-		// for(uint32_t j=0; j<8; j++){
-		// 	if(spilling_node->children[j]){
-		// 		is_inner = true;
-		// 		break;
-		// 	}
-		// }
 
 		// spilling_node->is_leaf = false;
 		spilling_node->counter = 0;
@@ -448,7 +452,7 @@ void simLodUpdate(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>&
 	while(true){
 
 		timing_id = timingsList.size();
-		timingsList.emplace_back(format("\tsimlod count v{}-{}", NbLoadedClouds, staticCpt, inner_cpt), true, 1);
+		timingsList.emplace_back(format("simlod count v{}-{}-{}", NbLoadedClouds, staticCpt, inner_cpt), true, 2);
 		simLodCount(main_root, main_aabb, points, spilledPoints, spillingNodes);
 		timingsList[timing_id].stop_clock();
 
@@ -462,7 +466,7 @@ void simLodUpdate(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>&
 		// mainOctree->display();
 
 		timing_id = timingsList.size();
-		timingsList.emplace_back(format("\tsimlod split v{}-{}", NbLoadedClouds, staticCpt, inner_cpt), true, 1);
+		timingsList.emplace_back(format("simlod split v{}-{}-{}", NbLoadedClouds, staticCpt, inner_cpt), true, 2);
 		simLodSplit(spilledPoints, spillingNodes);
 		timingsList[timing_id].stop_clock();
 
@@ -742,6 +746,13 @@ void simLodInsertion(
 		return;
 	};
 
+	std::thread parallel_thread([&](){
+		uint32_t nb_new_voxels = backlog_voxels->size();
+		for(uint32_t i=0; i<nb_new_voxels; i++){
+			insertVoxel((*backlog_voxels)[i], (*backlog_voxels_nodes)[i]);
+		}
+	});
+
 	for(Point& point : *points){
 		insertPoint(point);
 	}
@@ -749,25 +760,10 @@ void simLodInsertion(
 		insertPoint(point);		
 	}
 
-	uint32_t nb_new_voxels = backlog_voxels->size();
-	for(uint32_t i=0; i<nb_new_voxels; i++){
-		insertVoxel((*backlog_voxels)[i], (*backlog_voxels_nodes)[i]);
-	}
+	parallel_thread.join();
 }
 
-void mainLoop(){
-	// Init everything
-	// while true:
-		// CPU side, in parallel:
-			// - Load points on CPU
-			// - Upload points to GPU
-			// - Run render / grow / update kernels
-		// GPU side:
-			// - Render
-			// - Grow, for every thread in parallel, compute nb new levels
-			// - One thread creates the new children
-			// - Update
-}
+
 
 void initOctree(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>& main_aabb, std::shared_ptr<vector<Point>>& points){
 	for(Point& point : *points){
@@ -778,6 +774,12 @@ void initOctree(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>& m
 		main_aabb->mins.y = std::min(main_aabb->mins.y, point.position.y);
 		main_aabb->mins.z = std::min(main_aabb->mins.z, point.position.z);
 	}
+
+	// Adding small 2x delta to avoid floating point issues
+	float epsilon = 0.5f;
+	main_aabb->mins -= epsilon * main_aabb->mins;
+	main_aabb->maxs += epsilon * main_aabb->maxs;
+
 	// Make it cubic
 	vec3 size = main_aabb->getSize();
 	vec3 half_sizes_x = 0.5f * (vec3(size.x) - size);
@@ -808,11 +810,6 @@ void initOctree(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>& m
 			main_aabb->maxs.x += half_sizes_z.x;
 		}
 	}
-
-	// // Adding small 1% delta to avoid floating point issues
-	// float epsilon = 0.01f;
-	// main_aabb->mins -= epsilon * main_aabb->mins;
-	// main_aabb->maxs += epsilon * main_aabb->maxs;
 }
 
 uint32_t growOctree(const std::shared_ptr<AABB>& main_aabb, const std::shared_ptr<vector<Point>>& points){
@@ -994,4 +991,19 @@ void loadOctree(CuRast* editor, const std::shared_ptr<OctreeNode>& main_root, co
 	
 	editor->scene.world->children.push_back(octree);
 
+}
+
+
+void mainLoop(){
+	// Init everything
+	// while true:
+		// CPU side, in parallel:
+			// - Load points on CPU
+			// - Upload points to GPU
+			// - Run render / grow / update kernels
+		// GPU side:
+			// - Render
+			// - Grow, for every thread in parallel, compute nb new levels
+			// - One thread creates the new children
+			// - Update
 }

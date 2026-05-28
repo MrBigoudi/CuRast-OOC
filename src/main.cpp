@@ -296,6 +296,15 @@ void initScene() {
 		Runtime::controls->radius = 5.584;
 		Runtime::controls->target = { 0.679, -0.714, 5.163};
 	};
+
+	// auto loadTemple = [=]() {
+	// 	loadPointcloud("./banyo.las", editor);
+	// 	// position: 4.283698075250294, -4.795270477550499, 6.400710991008715 
+	// 	// Runtime::controls->yaw    = -5.582;
+	// 	// Runtime::controls->pitch  = -0.294;
+	// 	// Runtime::controls->radius = 5.584;
+	// 	// Runtime::controls->target = { 0.679, -0.714, 5.163};
+	// };
 	
 
 	// createCube();
@@ -312,6 +321,7 @@ void initScene() {
 	// loadPolygraphenewerkLeibzigInstances();
 	// loadVenice();
 	loadLion();
+	// loadTemple();
 }
 
 void update(){

@@ -15,7 +15,7 @@ void displayTimings(){
 
         string tab = std::string(4*timing.level, ' ');
 
-		println("{}- {}:{}s, {}ms, {}us",
+		println("{}- {}: {}s, {}ms, {}us",
 			tab, timing.name, s, ms, us 
 		);
 	}
