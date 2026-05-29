@@ -3,13 +3,12 @@
 ## Urgent
 
 - Implement LRU caching
-- Build the loading stream
 
 ## Coding part
 
 - Create uniform structure for better structuring in cuda code / gui
-- Parallelize in C++
 - Fix Vulkan segfault on quit
+- Clean old cuda memory on octree update
 
 ## Research part
 
@@ -17,3 +16,7 @@
 - Add a way to remove nodes
 - Find which node to store
 - Find a way to compress stored nodes
+
+## Writting part
+
+- Write down pipeline / method somewhere in a .md file

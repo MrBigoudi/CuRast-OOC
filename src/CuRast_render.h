@@ -430,17 +430,17 @@ void CuRast::draw(Scene* scene, vector<View> views){
 		Runtime::numTriangles = numTotalTriangles;
 
 		auto& dvlist = Runtime::debugValueList;
-		dvlist.push_back({"#total nodes           ", format("{:40L}", uint64_t(numTotalNodes))});
-		dvlist.push_back({"#total triangles       ", format("{:40L}", uint64_t(numTotalTriangles))});
-		dvlist.push_back({"#visible nodes         ", format("{:40L}", uint64_t(numVisibleNodes))});
-		dvlist.push_back({"#visible triangles     ", format("{:40L}", uint64_t(numVisibleTriangles))});
-		dvlist.push_back({"hovered mesh id        ", format("{:40L}", CuRast::deviceState->hovered_meshId)});
-		dvlist.push_back({"hovered triangle index ", format("{:40L}", CuRast::deviceState->hovered_triangleIndex)});
-		dvlist.push_back({"hovered node name      ", format("{:}", Runtime::hovered_node_name)});
-		dvlist.push_back({"hovered mesh name      ", format("{:}", Runtime::hovered_mesh_name)});
-		dvlist.push_back({"tris in hovered mesh   ", format("{:40L}", hoveredMesh ? hoveredMesh->numTriangles : 0)});
-		dvlist.push_back({"verts in hovered mesh  ", format("{:40L}", hoveredMesh ? hoveredMesh->numVertices : 0)});
-		dvlist.push_back({"CPU draw() duration    ", format("{:40.1f} ms", Runtime::duration_draw * 1000.0)});
+		// dvlist.push_back({"#total nodes           ", format("{:40L}", uint64_t(numTotalNodes))});
+		// dvlist.push_back({"#total triangles       ", format("{:40L}", uint64_t(numTotalTriangles))});
+		// dvlist.push_back({"#visible nodes         ", format("{:40L}", uint64_t(numVisibleNodes))});
+		// dvlist.push_back({"#visible triangles     ", format("{:40L}", uint64_t(numVisibleTriangles))});
+		// dvlist.push_back({"hovered mesh id        ", format("{:40L}", CuRast::deviceState->hovered_meshId)});
+		// dvlist.push_back({"hovered triangle index ", format("{:40L}", CuRast::deviceState->hovered_triangleIndex)});
+		// dvlist.push_back({"hovered node name      ", format("{:}", Runtime::hovered_node_name)});
+		// dvlist.push_back({"hovered mesh name      ", format("{:}", Runtime::hovered_mesh_name)});
+		// dvlist.push_back({"tris in hovered mesh   ", format("{:40L}", hoveredMesh ? hoveredMesh->numTriangles : 0)});
+		// dvlist.push_back({"verts in hovered mesh  ", format("{:40L}", hoveredMesh ? hoveredMesh->numVertices : 0)});
+		// dvlist.push_back({"CPU draw() duration    ", format("{:40.1f} ms", Runtime::duration_draw * 1000.0)});
 
 		// We measure CPU draw time until here, where CPU has finished its stuff and now just invokes cuda kernels.
 		Runtime::duration_draw = now() - t_start;
@@ -682,6 +682,64 @@ void CuRast::draw(Scene* scene, vector<View> views){
 		}
 		if(CuRastSettings::showBoundingBoxes){
 			drawOctreeAABB(scene, view, target);
+		}
+
+
+		{
+			// DEBUG
+			std::vector<SNCOctree*> octrees = {};
+			std::vector<SNCPoints*> batches = {};
+
+			uint64_t nb_octrees = 0;
+			uint64_t nb_batches  = 0;
+			uint64_t nb_points  = 0;
+			uint64_t points_gpu_memory  = 0;
+
+			scene->forEach<SNCOctree>([&](SNCOctree* node){
+				octrees.push_back(node);
+				nb_octrees++;
+			});
+			scene->forEach<SNCPoints>([&](SNCPoints* node){
+				batches.push_back(node);
+				nb_batches++;
+				nb_points += node->numPoints;
+				points_gpu_memory += node->getGpuMemoryUsage();
+			});
+
+			auto formatMemSize = [&](uint64_t size_bits) -> std::string {
+				uint64_t nb_bytes = uint64_t(ceil(size_bits / 8));
+				uint64_t nb_tbs = uint64_t(floor(nb_bytes / 1'000'000'000'000));
+				nb_bytes -= nb_tbs * 1'000'000'000'000;
+				uint64_t nb_gbs = uint64_t(floor(nb_bytes / 1'000'000'000));
+				nb_bytes -= nb_gbs * 1'000'000'000;
+				uint64_t nb_mbs = uint64_t(floor(nb_bytes / 1'000'000));
+				nb_bytes -= nb_mbs * 1'000'000;
+				uint64_t nb_kbs = uint64_t(floor(nb_bytes / 1'000));
+				nb_bytes -= nb_kbs * 1'000;
+
+				if(nb_tbs){return format("{:5} {:3L}T {:3L}G {:3L}M {:3L}k {:3L}b", "", nb_tbs, nb_gbs, nb_mbs, nb_kbs, nb_bytes);}
+				if(nb_gbs){return format("{:10} {:3L}G {:3L}M {:3L}k {:3L}b", "", nb_gbs, nb_mbs, nb_kbs, nb_bytes);}
+				if(nb_mbs){return format("{:15} {:3L}M {:3L}k {:3L}b", "", nb_mbs, nb_kbs, nb_bytes);}
+				if(nb_kbs){return format("{:20} {:3L}k {:3L}b", "", nb_kbs, nb_bytes);}
+				return format("{:25} {:3L}b", "", nb_bytes);
+			};
+
+			// Octree info
+			dvlist.push_back({"# total octrees          ", format("{:30L}", nb_octrees)});
+			for(uint32_t i=0; i<nb_octrees; i++){
+				SNCOctree* node = octrees[i];
+				dvlist.push_back({format("    octree #{}", i), ""});
+				dvlist.push_back({"     - # nodes           ", format("{:30L}", node->cptr_nodes.size())});
+				dvlist.push_back({"     - # chunks          ", format("{:30L}", node->cptr_chunks.size())});
+				dvlist.push_back({"     - # occupancy grids ", format("{:30L}", node->cptr_occupancy_grids.size())});
+				dvlist.push_back({"     - GPU memory usage  ", formatMemSize(node->getGpuMemoryUsage())});
+				// dvlist.push_back({"\t#visible nodes         ", format("{:40L}", uint64_t(numVisibleNodes))});
+			}
+
+			// Batches info
+			dvlist.push_back({"\n# total batches          ", format("{:30L}", nb_batches)});
+			dvlist.push_back({"# total points           ", format("{:30L}", nb_points)});
+			dvlist.push_back({"batches GPU memory usage ", formatMemSize(points_gpu_memory)});			
 		}
 
 

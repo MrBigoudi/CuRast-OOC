@@ -23,8 +23,20 @@ struct SNCOctree : public SceneNode{
 		
 	}
 
-	uint64_t getGpuMemoryUsage(){
-		return 0;
+	~SNCOctree() {
+
 	}
+
+	uint64_t getGpuMemoryUsage() override {
+		uint64_t total = 0;
+		
+		total += cptr_nodes.size() * sizeof(COctreeNode);
+		total += cptr_aabbs.size() * sizeof(CAABB);
+		total += cptr_chunks.size() * sizeof(CChunk);
+		total += cptr_occupancy_grids.size() * sizeof(COccupancyGrid);
+
+		return total;
+	}
+
 
 };

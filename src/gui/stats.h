@@ -263,7 +263,7 @@ void CuRast::makeDirectStats(){
 
 
 		ImVec2 windowSize = {width, height};
-		ImGui::SetNextWindowPos({10, 150}, ImGuiCond_Always);
+		ImGui::SetNextWindowPos({10, 170}, ImGuiCond_Always);
 		ImGui::SetNextWindowSize(windowSize, ImGuiCond_Always);
 		ImGui::SetNextWindowBgAlpha(0.6f);
 		

@@ -149,7 +149,7 @@ void loadOctreeOnGPU(CuRast* editor){
 	std::lock_guard<std::mutex> lock(mtx);
 
 	// Create cuda memory pointers
-	auto octree = make_shared<SNCOctree>("octree");
+	auto octree = make_shared<SNCOctree>(SIMLOD_OCTREE_NAME);
 	octree->cptr_nodes = {};
 	octree->cptr_aabbs = {};
 	octree->cptr_chunks = {};
