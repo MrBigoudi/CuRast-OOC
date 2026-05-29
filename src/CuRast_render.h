@@ -706,8 +706,8 @@ void CuRast::draw(Scene* scene, vector<View> views){
 				points_gpu_memory += node->getGpuMemoryUsage();
 			});
 
-			auto formatMemSize = [&](uint64_t size_bits) -> std::string {
-				uint64_t nb_bytes = uint64_t(ceil(size_bits / 8));
+			auto formatMemSize = [&](uint64_t size_bytes) -> std::string {
+				uint64_t nb_bytes = size_bytes;
 				uint64_t nb_tbs = uint64_t(floor(nb_bytes / 1'000'000'000'000));
 				nb_bytes -= nb_tbs * 1'000'000'000'000;
 				uint64_t nb_gbs = uint64_t(floor(nb_bytes / 1'000'000'000));

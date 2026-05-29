@@ -24,7 +24,58 @@ struct SNCOctree : public SceneNode{
 	}
 
 	~SNCOctree() {
-
+		CUresult cuda_status = CUDA_SUCCESS;
+		const char* name = nullptr;
+		const char* desc = nullptr;
+		
+		for(CUdeviceptr& ptr : cptr_nodes){
+			cuda_status = cuMemFree(ptr);
+			if(cuda_status != CUDA_SUCCESS){
+				cuGetErrorName(cuda_status, &name);
+				cuGetErrorString(cuda_status, &desc);
+				println(stderr, "Error: cuMemFree failed for cptr_nodes, {} ({}): {}\n ",
+					int(cuda_status),
+					name ? name : "unknown",
+					desc ? desc : "unknown"
+				);
+			}
+		}
+		for(CUdeviceptr& ptr : cptr_aabbs){
+			cuda_status = cuMemFree(ptr);
+			if(cuda_status != CUDA_SUCCESS){
+				cuGetErrorName(cuda_status, &name);
+				cuGetErrorString(cuda_status, &desc);
+				println(stderr, "Error: cuMemFree failed for cptr_aabbs, {} ({}): {}\n ",
+					int(cuda_status),
+					name ? name : "unknown",
+					desc ? desc : "unknown"
+				);
+			}
+		}
+		for(CUdeviceptr& ptr : cptr_chunks){
+			cuda_status = cuMemFree(ptr);
+			if(cuda_status != CUDA_SUCCESS){
+				cuGetErrorName(cuda_status, &name);
+				cuGetErrorString(cuda_status, &desc);
+				println(stderr, "Error: cuMemFree failed for cptr_chunks, {} ({}): {}\n ",
+					int(cuda_status),
+					name ? name : "unknown",
+					desc ? desc : "unknown"
+				);
+			}
+		}
+		for(CUdeviceptr& ptr : cptr_occupancy_grids){
+			cuda_status = cuMemFree(ptr);
+			if(cuda_status != CUDA_SUCCESS){
+				cuGetErrorName(cuda_status, &name);
+				cuGetErrorString(cuda_status, &desc);
+				println(stderr, "Error: cuMemFree failed for cptr_occupancy_grids, {} ({}): {}\n ",
+					int(cuda_status),
+					name ? name : "unknown",
+					desc ? desc : "unknown"
+				);
+			}
+		}
 	}
 
 	uint64_t getGpuMemoryUsage() override {

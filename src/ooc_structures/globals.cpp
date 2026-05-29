@@ -256,6 +256,11 @@ void OctreeNode::display(uint32_t id, uint32_t level, bool node_only) const {
 };
 
 
+std::string getSimLodOctreeName(bool generate_new_name){
+    if(generate_new_name){simLodOctreeCounter++;}
+    return format("{}_{}", simLodOctreeName, simLodOctreeCounter);
+}
+
 
 ///////////////////////////////////////////////////////////////////////////////
 ////////////////////////////// GLOBAL VARIABLES ///////////////////////////////

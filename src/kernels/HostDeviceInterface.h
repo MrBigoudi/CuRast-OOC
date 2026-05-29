@@ -358,15 +358,15 @@ struct COccupancyGrid {
 	uint32_t values[C_GRID_NUM_CELLS];
 };
 struct COctreeNode {
-	COctreeNode* children[8];
 	uint16_t counter;
 	uint8_t children_ids;
 	uint8_t level;
+	bool is_large = false;
+	bool is_visible = false;
 	CChunk* points;
 	CChunk* voxels;
 	COccupancyGrid* occupancy;
-	bool is_large = false;
-	bool is_visible = false;
+	COctreeNode* children[8];
 };
 
 struct CFullOctree {

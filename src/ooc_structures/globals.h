@@ -38,8 +38,6 @@ constexpr uint32_t GRID_SIZE = 128;
 constexpr uint32_t GRID_NUM_CELLS = GRID_SIZE * GRID_SIZE * GRID_SIZE;
 /// The first position for a child node on merging
 constexpr NodePosition FIRST_NODE_POSITION = FrontTopLeft;
-/// Name of the main octree node in the scene
-const std::string SIMLOD_OCTREE_NAME = std::string("MainOctreeSimLOD");
 
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -136,6 +134,11 @@ struct Chunk {
 ////////////////////////// GLOBAL EXTERNAL VARIABLES //////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
 
+/// Name of the main octree node in the scene
+const std::string simLodOctreeName = std::string("MainOctreeSimLOD");
+/// Counter for the number of octree created
+static uint64_t simLodOctreeCounter = 0;
+std::string getSimLodOctreeName(bool generate_new_name = false);
 
 /// Variables tracking when the octree can be sent to GPU
 extern std::binary_semaphore octreeReadyToBeSent;

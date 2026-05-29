@@ -135,6 +135,77 @@ void uptadeOctree(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>&
 }
 
 
+void freeOctreesOnGPU(CuRast* editor){
+	if(!CuRastSettings::freeOldOctreeMemoryOnGPU){return;}
+	CuRastSettings::freeOldOctreeMemoryOnGPU = false;
+
+	// https://forums.developer.nvidia.com/t/best-way-to-report-memory-consumption-in-cuda/21042
+	uint64_t free_byte = 0;
+    uint64_t total_byte = 0;
+	double free_db, total_db, used_db = 0.;
+	CUresult cuda_status = CUDA_SUCCESS;
+	const char* name = nullptr;
+	const char* desc = nullptr;
+	// TODO: Debug display to remove
+	{
+		cuda_status = cuMemGetInfo(&free_byte, &total_byte);
+		if(cuda_status != CUDA_SUCCESS){
+			cuGetErrorName(cuda_status, &name);
+			cuGetErrorString(cuda_status, &desc);
+			println(stderr, "Error: cuMemGetInfo failed before, {} ({}): {}\n ",
+				int(cuda_status),
+				name ? name : "unknown",
+				desc ? desc : "unknown"
+			);
+			exit(EXIT_FAILURE);
+		}
+		free_db = (double)free_byte;
+		total_db = (double)total_byte;
+		used_db = total_db - free_db;
+		println("GPU memory usage before cleaning: used = {} Mb, free = {} Mb, total = {} Mb",
+			used_db/1024.0/1024.0, free_db/1024.0/1024.0, total_db/1024.0/1024.0
+		);
+	}
+
+	std::vector<SNCOctree*> octrees = {};
+	editor->scene.forEach<SNCOctree>([&](SNCOctree* node){
+		octrees.push_back(node);
+	});
+	uint32_t nb_octrees = octrees.size();
+	if(nb_octrees <= 1){return;}
+	std::string main_octree_name = getSimLodOctreeName();
+
+	for(uint32_t i=0; i<nb_octrees; i++){
+		SNCOctree* octree = octrees[i];
+		if(octree->name != main_octree_name){
+			editor->scene.world->remove(octree);
+		}
+	}
+
+
+	// TODO: Debug display to remove
+	{
+		cuda_status = cuMemGetInfo(&free_byte, &total_byte);
+		if(cuda_status != CUDA_SUCCESS){
+			cuGetErrorName(cuda_status, &name);
+			cuGetErrorString(cuda_status, &desc);
+			println(stderr, "Error: cuMemGetInfo failed after, {} ({}): {}\n ",
+				int(cuda_status),
+				name ? name : "unknown",
+				desc ? desc : "unknown"
+			);
+			exit(EXIT_FAILURE);
+		}
+		free_db = (double)free_byte;
+		total_db = (double)total_byte;
+		used_db = total_db - free_db;
+		println("GPU memory usage after cleaning: used = {} Mb, free = {} Mb, total = {} Mb",
+			used_db/1024.0/1024.0, free_db/1024.0/1024.0, total_db/1024.0/1024.0
+		);
+	}
+	
+}
+
 
 void loadOctreeOnGPU(CuRast* editor){
 	// If the mainOctree / mainAABB are being updated (see `addPointBatches`)
@@ -142,14 +213,13 @@ void loadOctreeOnGPU(CuRast* editor){
 	// Acquire => semaphore_counter -= 1
 	if(!octreeReadyToBeSent.try_acquire()){return;}
 
-
 	std::shared_ptr<Timing> timing = addTiming("send octree to GPU ", true);
 
 	std::mutex mtx;
 	std::lock_guard<std::mutex> lock(mtx);
 
 	// Create cuda memory pointers
-	auto octree = make_shared<SNCOctree>(SIMLOD_OCTREE_NAME);
+	auto octree = make_shared<SNCOctree>(getSimLodOctreeName(true));
 	octree->cptr_nodes = {};
 	octree->cptr_aabbs = {};
 	octree->cptr_chunks = {};

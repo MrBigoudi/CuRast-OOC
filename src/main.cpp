@@ -455,6 +455,7 @@ int main(int argc, char** argv){
 			Runtime::debugValues["stage 3"] = format("{:.3f}", stage3_millies);
 
 			// Send things GPU side
+			freeOctreesOnGPU(CuRast::instance);
 			loadOctreeOnGPU(CuRast::instance);
 			loadBatchesOnGPU(CuRast::instance);
 		},
