@@ -147,10 +147,14 @@ void CuRast::makeToolbar(){
 				ImGui::Checkbox("Bounding boxes", &CuRastSettings::showBoundingBoxes);
 				ImGui::SameLine();
 				ImGui::Checkbox("Use voxel debug color", &CuRastSettings::voxelsDebugColor);
-
-				ImGui::Checkbox("Brute force rendering", &CuRastSettings::bruteForceRendering);
 				ImGui::SameLine();
-				ImGui::Checkbox("Free unused octree GPU memory", &CuRastSettings::freeOldOctreeMemoryOnGPU);
+				ImGui::Checkbox("Brute force rendering", &CuRastSettings::bruteForceRendering);
+
+				ImGui::Checkbox("Auto-free unused octree GPU memory", &CuRastSettings::autoFreeOldOctreeMemoryOnGPU);
+				ImGui::SameLine();
+				ImGui::BeginDisabled(CuRastSettings::autoFreeOldOctreeMemoryOnGPU);
+					ImGui::Checkbox("Free unused octree GPU memory", &CuRastSettings::freeOldOctreeMemoryOnGPU);
+				ImGui::EndDisabled();
 
 				// ImGui::Checkbox("Frustum culling", &CuRastSettings::enableFrustumCulling);
 				// ImGui::SameLine();

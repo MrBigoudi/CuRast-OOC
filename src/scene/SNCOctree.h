@@ -25,56 +25,37 @@ struct SNCOctree : public SceneNode{
 
 	~SNCOctree() {
 		CUresult cuda_status = CUDA_SUCCESS;
-		const char* name = nullptr;
-		const char* desc = nullptr;
+
+		auto cudaCheck = [&](CUresult result, string struct_name){
+			const char* name = nullptr;
+			const char* desc = nullptr;
+			if(cuda_status != CUDA_SUCCESS){
+				cuGetErrorName(cuda_status, &name);
+				cuGetErrorString(cuda_status, &desc);
+				println(stderr, "Error: cuMemFree failed for {}, {} ({}): {}\n ",
+					struct_name,
+					int(cuda_status),
+					name ? name : "unknown",
+					desc ? desc : "unknown"
+				);
+			}
+		};
 		
 		for(CUdeviceptr& ptr : cptr_nodes){
 			cuda_status = cuMemFree(ptr);
-			if(cuda_status != CUDA_SUCCESS){
-				cuGetErrorName(cuda_status, &name);
-				cuGetErrorString(cuda_status, &desc);
-				println(stderr, "Error: cuMemFree failed for cptr_nodes, {} ({}): {}\n ",
-					int(cuda_status),
-					name ? name : "unknown",
-					desc ? desc : "unknown"
-				);
-			}
+			cudaCheck(cuda_status, "cptr_nodes");
 		}
 		for(CUdeviceptr& ptr : cptr_aabbs){
 			cuda_status = cuMemFree(ptr);
-			if(cuda_status != CUDA_SUCCESS){
-				cuGetErrorName(cuda_status, &name);
-				cuGetErrorString(cuda_status, &desc);
-				println(stderr, "Error: cuMemFree failed for cptr_aabbs, {} ({}): {}\n ",
-					int(cuda_status),
-					name ? name : "unknown",
-					desc ? desc : "unknown"
-				);
-			}
+			cudaCheck(cuda_status, "cptr_aabbs");
 		}
 		for(CUdeviceptr& ptr : cptr_chunks){
 			cuda_status = cuMemFree(ptr);
-			if(cuda_status != CUDA_SUCCESS){
-				cuGetErrorName(cuda_status, &name);
-				cuGetErrorString(cuda_status, &desc);
-				println(stderr, "Error: cuMemFree failed for cptr_chunks, {} ({}): {}\n ",
-					int(cuda_status),
-					name ? name : "unknown",
-					desc ? desc : "unknown"
-				);
-			}
+			cudaCheck(cuda_status, "cptr_chunks");
 		}
 		for(CUdeviceptr& ptr : cptr_occupancy_grids){
 			cuda_status = cuMemFree(ptr);
-			if(cuda_status != CUDA_SUCCESS){
-				cuGetErrorName(cuda_status, &name);
-				cuGetErrorString(cuda_status, &desc);
-				println(stderr, "Error: cuMemFree failed for cptr_occupancy_grids, {} ({}): {}\n ",
-					int(cuda_status),
-					name ? name : "unknown",
-					desc ? desc : "unknown"
-				);
-			}
+			cudaCheck(cuda_status, "cptr_occupancy_grids");
 		}
 	}
 

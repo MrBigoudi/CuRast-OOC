@@ -135,8 +135,8 @@ void uptadeOctree(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>&
 }
 
 
-void freeOctreesOnGPU(CuRast* editor){
-	if(!CuRastSettings::freeOldOctreeMemoryOnGPU){return;}
+void freeOctreesOnGPU(CuRast* editor, bool force_free){
+	if(!force_free && !CuRastSettings::freeOldOctreeMemoryOnGPU){return;}
 	CuRastSettings::freeOldOctreeMemoryOnGPU = false;
 
 	// https://forums.developer.nvidia.com/t/best-way-to-report-memory-consumption-in-cuda/21042
@@ -144,21 +144,11 @@ void freeOctreesOnGPU(CuRast* editor){
     uint64_t total_byte = 0;
 	double free_db, total_db, used_db = 0.;
 	CUresult cuda_status = CUDA_SUCCESS;
-	const char* name = nullptr;
-	const char* desc = nullptr;
+
 	// TODO: Debug display to remove
 	{
 		cuda_status = cuMemGetInfo(&free_byte, &total_byte);
-		if(cuda_status != CUDA_SUCCESS){
-			cuGetErrorName(cuda_status, &name);
-			cuGetErrorString(cuda_status, &desc);
-			println(stderr, "Error: cuMemGetInfo failed before, {} ({}): {}\n ",
-				int(cuda_status),
-				name ? name : "unknown",
-				desc ? desc : "unknown"
-			);
-			exit(EXIT_FAILURE);
-		}
+		CURuntime::assertCudaSuccess(cuda_status);
 		free_db = (double)free_byte;
 		total_db = (double)total_byte;
 		used_db = total_db - free_db;
@@ -186,16 +176,7 @@ void freeOctreesOnGPU(CuRast* editor){
 	// TODO: Debug display to remove
 	{
 		cuda_status = cuMemGetInfo(&free_byte, &total_byte);
-		if(cuda_status != CUDA_SUCCESS){
-			cuGetErrorName(cuda_status, &name);
-			cuGetErrorString(cuda_status, &desc);
-			println(stderr, "Error: cuMemGetInfo failed after, {} ({}): {}\n ",
-				int(cuda_status),
-				name ? name : "unknown",
-				desc ? desc : "unknown"
-			);
-			exit(EXIT_FAILURE);
-		}
+		CURuntime::assertCudaSuccess(cuda_status);
 		free_db = (double)free_byte;
 		total_db = (double)total_byte;
 		used_db = total_db - free_db;
@@ -357,16 +338,19 @@ void loadOctreeOnGPU(CuRast* editor){
 
 	CUdeviceptr cptr_root_node = recursive(mainOctree, mainAABB, 0);
 
+	octree->num_nodes = nodes_counter;
+	octree->max_lod_level = max_lod_level;
+	
+	editor->scene.world->children.push_back(octree);
+
 	// Release the semaphore when every GPU side structures is done being built
 	// Rlease => semaphore_counter += 1
 	octreeReadyToBeUpdated.release();
 
-	octree->num_nodes = nodes_counter;
-	octree->max_lod_level = max_lod_level;
-
+	if(CuRastSettings::autoFreeOldOctreeMemoryOnGPU){
+		freeOctreesOnGPU(editor, true);
+	}
 	println("Final octree: {} nodes, {} max level", nodes_counter, max_lod_level);
-	
-	editor->scene.world->children.push_back(octree);
 
 	timing->stop_clock();
 }

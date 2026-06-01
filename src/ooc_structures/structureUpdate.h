@@ -30,7 +30,7 @@ void uptadeOctree(
 void loadOctreeOnGPU(CuRast* editor);
 /// TODO: temporary function
 /// Frees the unused octrees on gpu memory
-void freeOctreesOnGPU(CuRast* editor);
+void freeOctreesOnGPU(CuRast* editor, bool force_free = false);
 
 
 /// Add new batches to the octree
