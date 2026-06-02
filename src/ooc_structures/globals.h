@@ -2,6 +2,7 @@
 
 #include "CuRast.h"
 #include "laszip/laszip_api.h"
+#include <semaphore>
 
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -185,8 +186,8 @@ struct Timing {
 	bool has_started = false;
 	string name = "";
 	uint32_t level = 0;
-	std::chrono::time_point<std::chrono::system_clock> start = {};
-	std::chrono::time_point<std::chrono::system_clock> stop = {};
+	std::chrono::time_point<std::chrono::high_resolution_clock> start = {};
+	std::chrono::time_point<std::chrono::high_resolution_clock> stop = {};
 	std::chrono::microseconds duration = {};
 
 	Timing(string name, bool start_now = true, uint32_t level = 0)

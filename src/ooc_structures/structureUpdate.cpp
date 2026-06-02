@@ -390,11 +390,14 @@ void addPointBatches(){
 	// Acquire => semaphore_counter -= 1
 	octreeReadyToBeUpdated.acquire();
 
+	// [MS]: Locking for rest of function because we use first and last later in this function, 
+	// and modifying batchesLoaded by another thread in between may invalidate the iterators.
+	std::lock_guard<std::mutex> lock(batchesLoadedMutex);
+	
 	uint32_t nb_loaded = 0;
 	auto first = batchesLoaded.begin();
 	auto last = first;
 	{
-		std::lock_guard<std::mutex> lock(batchesLoadedMutex);
 		nb_loaded = batchesLoaded.size();
 		first = batchesLoaded.begin();
         last = batchesLoaded.end();
@@ -479,7 +482,7 @@ void addPointBatches(){
 			batchesInserted.push_back(batch);
 		});
 
-        std::lock_guard<std::mutex> lock(batchesLoadedMutex);
+        // std::lock_guard<std::mutex> lock(batchesLoadedMutex);
         batchesLoaded.erase(first, last);
 	}
 };
