@@ -79,6 +79,8 @@ struct AABB {
 struct Point {
 	vec3 position = vec3();
 	uint8_t color[4] = {0,0,0,0};
+
+	bool operator==(const Point& rhs) const;
 };
 
 /// A set of points read from a las / laz file
@@ -121,6 +123,8 @@ struct OctreeNode {
 	uint32_t getNbVoxels() const;
 
 	void display(uint32_t id = 0, uint32_t level = 0, bool node_only = false) const;
+
+	bool operator==(const OctreeNode& rhs) const;
 };
 
 /// A chunk linked list in a node
@@ -130,6 +134,8 @@ struct Chunk {
 	uint32_t size = 0;
 	/// For the linked list
 	std::shared_ptr<Chunk> next = nullptr;
+
+	bool operator==(const Chunk& rhs) const;
 };
 
 
@@ -150,10 +156,13 @@ extern std::binary_semaphore octreeReadyToBeUpdated;
 
 /// The batches that still need to be read
 extern std::deque<PointBatch> batchesToLoad;
+extern mutex batchesToLoadMutex;
 /// The batches that are already loaded
 extern std::deque<PointBatch> batchesLoaded;
+extern mutex batchesLoadedMutex;
 /// The batches that have already been inserted in the octree
 extern std::deque<PointBatch> batchesInserted;
+extern mutex batchesInsertedMutex;
 
 /// The main octree
 extern std::shared_ptr<OctreeNode> mainOctree;
@@ -181,7 +190,7 @@ struct Timing {
 	std::chrono::microseconds duration = {};
 
 	Timing(string name, bool start_now = true, uint32_t level = 0)
-	 : name(name), has_started(start_now), level(level){
+	 : has_started(start_now), name(name), level(level){
 		if(start_now){
 			start = std::chrono::high_resolution_clock::now();
 		}

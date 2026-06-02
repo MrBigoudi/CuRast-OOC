@@ -88,6 +88,12 @@ elseif (LINUX)
 	)
 endif()
 
+# https://stackoverflow.com/questions/2368811/how-to-set-warning-level-in-cmake
+target_compile_options(${TARGET_NAME} PRIVATE
+  $<$<CXX_COMPILER_ID:MSVC>:/W4 /WX>
+  $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall -Wextra -Wpedantic>
+)
+
 # Add other third-party libs
 ADD_CUDA(${TARGET_NAME})
 ADD_VULKAN(${TARGET_NAME})

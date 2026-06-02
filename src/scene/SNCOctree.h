@@ -16,6 +16,12 @@ struct SNCOctree : public SceneNode{
 	vector<CUdeviceptr> cptr_aabbs;
     vector<CUdeviceptr> cptr_chunks;
     vector<CUdeviceptr> cptr_occupancy_grids;
+
+	CUdeviceptr nodes;
+	CUdeviceptr aabbs;
+	CUdeviceptr chunks;
+	CUdeviceptr occupancy_grids;
+
 	uint32_t num_nodes = 0;
 	uint32_t max_lod_level = 0;
 	
@@ -26,15 +32,15 @@ struct SNCOctree : public SceneNode{
 	~SNCOctree() {
 		CUresult cuda_status = CUDA_SUCCESS;
 
-		auto cudaCheck = [&](CUresult result, string struct_name){
+		auto cudaCheck = [](CUresult result, string struct_name){
 			const char* name = nullptr;
 			const char* desc = nullptr;
-			if(cuda_status != CUDA_SUCCESS){
-				cuGetErrorName(cuda_status, &name);
-				cuGetErrorString(cuda_status, &desc);
+			if(result != CUDA_SUCCESS){
+				cuGetErrorName(result, &name);
+				cuGetErrorString(result, &desc);
 				println(stderr, "Error: cuMemFree failed for {}, {} ({}): {}\n ",
 					struct_name,
-					int(cuda_status),
+					int(result),
 					name ? name : "unknown",
 					desc ? desc : "unknown"
 				);
@@ -57,6 +63,18 @@ struct SNCOctree : public SceneNode{
 			cuda_status = cuMemFree(ptr);
 			cudaCheck(cuda_status, "cptr_occupancy_grids");
 		}
+
+		cuda_status = cuMemFree(nodes);
+		cudaCheck(cuda_status, "nodes");
+
+		cuda_status = cuMemFree(aabbs);
+		cudaCheck(cuda_status, "aabbs");
+
+		cuda_status = cuMemFree(chunks);
+		cudaCheck(cuda_status, "chunks");
+
+		cuda_status = cuMemFree(occupancy_grids);
+		cudaCheck(cuda_status, "occupancy_grids");
 	}
 
 	uint64_t getGpuMemoryUsage() override {

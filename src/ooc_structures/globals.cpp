@@ -1,5 +1,12 @@
 #include "globals.h"
 
+bool Point::operator==(const Point& rhs) const {
+    if(position != rhs.position){return false;}
+    for(uint32_t channel = 0; channel < 4; channel++){
+        if(color[channel] != rhs.color[channel]){return false;}
+    }
+    return true;
+}
 
 vector<vec3> PointBatch::getPositions() const {
     vector<vec3> res = {};
@@ -263,6 +270,48 @@ void OctreeNode::display(uint32_t id, uint32_t level, bool node_only) const {
     }
 };
 
+bool OctreeNode::operator==(const OctreeNode& rhs) const {
+
+    std::function<bool(const OctreeNode&, const OctreeNode&)> recursion = [&](const OctreeNode& cur_lhs, const OctreeNode& cur_rhs) -> bool{
+        // if(!)
+        
+        if(cur_lhs.counter != cur_rhs.counter){return false;}
+        if(cur_lhs.children_ids != cur_rhs.children_ids){return false;}
+        
+        const Chunk& lhs_points = *cur_lhs.points.get();
+        const Chunk& rhs_points = *cur_rhs.points.get();
+        if(lhs_points != rhs_points){return false;}
+
+        const Chunk& lhs_voxels = *cur_lhs.voxels.get();
+        const Chunk& rhs_voxels = *cur_rhs.voxels.get();
+        if(lhs_voxels != rhs_voxels){return false;}
+
+        return true;
+    };
+
+    return recursion(*this, rhs);
+}
+
+
+bool Chunk::operator==(const Chunk& rhs) const{
+    const Chunk* lhs_chunk = this;
+    const Chunk* rhs_chunk = &rhs;
+    while(lhs_chunk){
+        if(!rhs_chunk){return false;}
+        if(lhs_chunk->size != rhs_chunk->size){return false;}
+        for(uint32_t i=0; i<lhs_chunk->size; i++){
+            const Point& lhs_point = lhs_chunk->points[i];
+            const Point& rhs_point = rhs_chunk->points[i];
+            if(lhs_point != rhs_point){return false;}
+        }
+        lhs_chunk = lhs_chunk->next.get();
+        rhs_chunk = rhs_chunk->next.get();
+    }
+    if(rhs_chunk){return false;}
+    return true;
+}
+
+
 
 std::string getSimLodOctreeName(bool generate_new_name){
     if(generate_new_name){simLodOctreeCounter++;}
@@ -284,10 +333,13 @@ std::binary_semaphore octreeReadyToBeUpdated{1};
 
 /// The batches that still need to be read
 std::deque<PointBatch> batchesToLoad = {};
+mutex batchesToLoadMutex;
 /// The batches that are already loaded
 std::deque<PointBatch> batchesLoaded = {};
+mutex batchesLoadedMutex;
 /// The batches that have already been inserted in the octree
 std::deque<PointBatch> batchesInserted = {};
+mutex batchesInsertedMutex;
 
 /// The main octree
 std::shared_ptr<OctreeNode> mainOctree = std::make_shared<OctreeNode>();

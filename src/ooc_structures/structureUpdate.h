@@ -5,7 +5,6 @@
 
 /// Init the main octree
 void initOctree(
-    std::shared_ptr<OctreeNode>& main_root, 
     std::shared_ptr<AABB>& main_aabb, 
     std::shared_ptr<vector<Point>>& points
 );

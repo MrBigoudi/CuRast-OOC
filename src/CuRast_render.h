@@ -120,9 +120,9 @@ void drawOctreeAABB(Scene* scene, View view, RenderTarget& target){
 
 		CFullOctree cfo;
 		cfo.world     = octree->transform_global;
-		cfo.nodes     = (COctreeNode**)(octree->cptr_nodes.data());
-		cfo.aabbs     = (CAABB**)(octree->cptr_aabbs.data());
-		cfo.chunks    = (CChunk**)(octree->cptr_chunks.data());
+		cfo.nodes     = (COctreeNode**)(octree->nodes);
+		cfo.aabbs     = (CAABB**)(octree->aabbs);
+		cfo.chunks    = (CChunk**)(octree->chunks);
 		cfo.num_nodes = octree->num_nodes;
 		cfo.max_lod_level = octree->max_lod_level;
 
@@ -139,10 +139,10 @@ void drawOctree(Scene* scene, View view, RenderTarget& target,
     scene->forEach<SNCOctree>([&](SNCOctree* octree){
         CFullOctree cfo;
         cfo.world     = octree->transform_global;
-        cfo.nodes     = (COctreeNode**)(octree->cptr_nodes.data());
-        cfo.aabbs     = (CAABB**)(octree->cptr_aabbs.data());
-        cfo.chunks    = (CChunk**)(octree->cptr_chunks.data());
-        cfo.occupancy_grids = (COccupancyGrid**)(octree->cptr_occupancy_grids.data());
+        cfo.nodes     = (COctreeNode**)(octree->nodes);
+        cfo.aabbs     = (CAABB**)(octree->aabbs);
+        cfo.chunks    = (CChunk**)(octree->chunks);
+        cfo.occupancy_grids = (COccupancyGrid**)(octree->occupancy_grids);
         cfo.num_nodes = octree->num_nodes;
         cfo.max_lod_level = octree->max_lod_level;
 		cfo.debug_lod_to_render = debug_lod;

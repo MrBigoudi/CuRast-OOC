@@ -48,8 +48,7 @@ void initLoadPointBatches(string file){
 		new_batch.first = first_point;
 		new_batch.count = std::min(num_points - first_point, MAX_BATCH_SIZE);
         {
-            std::mutex mtx;
-            std::lock_guard<std::mutex> lock(mtx);
+            std::lock_guard<std::mutex> lock(batchesToLoadMutex);
             batchesToLoad.push_back(new_batch);
         }
 	}
@@ -65,11 +64,10 @@ void loadPointsInBatches(){
 
     std::shared_ptr<Timing> timing = addTiming("load points in batches", true);
 
-	mutex mtx;
 	auto first = batchesToLoad.begin();
 	auto last = first;
     {
-        std::lock_guard<std::mutex> lock(mtx);
+        std::lock_guard<std::mutex> lock(batchesToLoadMutex);
         first = batchesToLoad.begin();
         last = batchesToLoad.end();
     }
@@ -143,13 +141,13 @@ void loadPointsInBatches(){
 		laszip_close_reader(laszip_reader);
 
 		{
-			std::lock_guard<std::mutex> lock(mtx);
+			std::lock_guard<std::mutex> lock(batchesLoadedMutex);
 			batchesLoaded.push_back(batch);
 		}
 	});
 
     {
-        std::lock_guard<std::mutex> lock(mtx);
+        std::lock_guard<std::mutex> lock(batchesToLoadMutex);
         batchesToLoad.erase(first, last);
     }
 
@@ -162,11 +160,10 @@ void loadBatchesOnGPU(CuRast* editor){
 
     std::shared_ptr<Timing> timing = addTiming("send points to GPU memory", true);
 
-    mutex mtx;
     auto first = batchesInserted.begin();
     auto last = first;
     {
-        std::lock_guard<std::mutex> lock(mtx);
+        std::lock_guard<std::mutex> lock(batchesInsertedMutex);
         first = batchesInserted.begin();
         last = batchesInserted.end();
     }
@@ -188,7 +185,7 @@ void loadBatchesOnGPU(CuRast* editor){
     });
 
     {
-        std::lock_guard<std::mutex> lock(mtx);
+        std::lock_guard<std::mutex> lock(batchesInsertedMutex);
         batchesInserted.erase(first, last);
     }
 
