@@ -11,6 +11,8 @@ struct CuRastSettings{
 	static inline bool voxelsDebugColor = false;
 	static inline bool freeOldOctreeMemoryOnGPU = false;
 	static inline bool autoFreeOldOctreeMemoryOnGPU = true;
+	static inline bool storeOctree = false;
+	static inline bool loadOctree = false;
 
 	static inline bool enableEDL = true;
 	static inline bool enableFrustumCulling = true;

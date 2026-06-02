@@ -235,7 +235,7 @@ uint32_t OctreeNode::getNbVoxels() const {
 }
 
 void OctreeNode::display(uint32_t id, uint32_t level, bool node_only) const {
-    println("id: {}, level: {}, counter: {}, nbPoints: {}, nbVoxels: {}, children: 0b{}{}{}{}{}{}{}{}",
+    println("id: {}, level: {}, counter: {}, nbPoints: {}, nbVoxels: {}, points location: 0b{}{}{}{}{}{}{}{}, children: 0b{}{}{}{}{}{}{}{}",
         id, level, counter, getNbPoints(), getNbVoxels(),
         uint8_t(bool(children_ids & 0x01 << 0)),
         uint8_t(bool(children_ids & 0x01 << 1)),
@@ -244,7 +244,15 @@ void OctreeNode::display(uint32_t id, uint32_t level, bool node_only) const {
         uint8_t(bool(children_ids & 0x01 << 4)),
         uint8_t(bool(children_ids & 0x01 << 5)),
         uint8_t(bool(children_ids & 0x01 << 6)),
-        uint8_t(bool(children_ids & 0x01 << 7))
+        uint8_t(bool(children_ids & 0x01 << 7)),
+        uint8_t(children[0] != nullptr), 
+        uint8_t(children[1] != nullptr), 
+        uint8_t(children[2] != nullptr), 
+        uint8_t(children[3] != nullptr),
+        uint8_t(children[4] != nullptr), 
+        uint8_t(children[5] != nullptr), 
+        uint8_t(children[6] != nullptr), 
+        uint8_t(children[7] != nullptr)
     );
     if(!node_only){
         for(size_t i=0; i<8; i++){

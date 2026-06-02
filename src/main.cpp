@@ -35,6 +35,7 @@
 #include "ooc_structures/structureUpdate.h"
 #include "ooc_structures/simLod.h"
 #include "ooc_structures/loader.h"
+#include "ooc_structures/outOfCore.h"
 
 using namespace std; // YOLO
 
@@ -431,6 +432,9 @@ int main(int argc, char** argv){
 		);
 	});
 
+	// Create temporary folder
+	std::filesystem::create_directories(TEMPORARY_DIRECTORY);
+
 	initScene();
 
 	// Loading points routine
@@ -458,6 +462,38 @@ int main(int argc, char** argv){
 			freeOctreesOnGPU(CuRast::instance);
 			loadOctreeOnGPU(CuRast::instance);
 			loadBatchesOnGPU(CuRast::instance);
+
+			// TODO to remove
+			{
+				// Testing stuff
+				if(CuRastSettings::storeOctree){
+					AABB test_aabb = {.mins = mainAABB.get()->mins, .maxs = mainAABB.get()->maxs};
+					storeOctree(test_aabb, mainOctree);
+					CuRastSettings::storeOctree = false;
+				}
+				if(CuRastSettings::loadOctree){
+					AABB test_aabb = {.mins = mainAABB.get()->mins, .maxs = mainAABB.get()->maxs};
+					std::shared_ptr<OctreeNode> octree = loadOctree(test_aabb);
+
+					println("///////////////////////////////////////////////////");
+					println("///////////////////// Loaded //////////////////////");
+					println("///////////////////////////////////////////////////\n");
+					octree->display(0,0);
+					println("\n///////////////////////////////////////////////////");
+					println("///////////////////////////////////////////////////");
+					println("///////////////////////////////////////////////////\n");
+
+					println("///////////////////////////////////////////////////");
+					println("////////////////////// Real ///////////////////////");
+					println("///////////////////////////////////////////////////\n");
+					mainOctree->display(0,0);
+					println("\n///////////////////////////////////////////////////");
+					println("///////////////////////////////////////////////////");
+					println("///////////////////////////////////////////////////\n");
+					
+					CuRastSettings::loadOctree = false;
+				}
+			}
 		},
 		[&]() {CuRast::instance->render();},
 		[&]() {CuRast::instance->postFrame();}
@@ -465,6 +501,9 @@ int main(int argc, char** argv){
 
 	displayTimings();
 	displayBuffers();
+
+	// Destroy temporary folder
+	std::filesystem::remove_all(TEMPORARY_DIRECTORY);
 
 	VKRenderer::destroy();
 }

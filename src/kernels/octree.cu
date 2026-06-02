@@ -465,12 +465,11 @@ void kernel_visibilityPass(
     COctreeNode* node = octree.nodes[node_index];
     CAABB* aabb = octree.aabbs[node_index];
 
-    node->is_visible = true;
+    bool intersects_frustum = true; // TODO: add frustum culling
+    node->is_visible = intersects_frustum;
+    
     if(octree.debug_lod_to_render == -1){
         node->is_large = isLargerThanMinSpanning(octree.min_pixel_span, aabb, target, octree.world);
-
-        bool intersects_frustum = true; // TODO: add frustum culling
-        node->is_visible = intersects_frustum;
     }
 }
 

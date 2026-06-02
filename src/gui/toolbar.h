@@ -156,6 +156,10 @@ void CuRast::makeToolbar(){
 					ImGui::Checkbox("Free unused octree GPU memory", &CuRastSettings::freeOldOctreeMemoryOnGPU);
 				ImGui::EndDisabled();
 
+				ImGui::Checkbox("Store octree on disk", &CuRastSettings::storeOctree);
+				ImGui::SameLine();
+				ImGui::Checkbox("Load octree from disk", &CuRastSettings::loadOctree);
+
 				// ImGui::Checkbox("Frustum culling", &CuRastSettings::enableFrustumCulling);
 				// ImGui::SameLine();
 				// ImGui::Checkbox("freeze frustum", &CuRastSettings::freezeFrustum);

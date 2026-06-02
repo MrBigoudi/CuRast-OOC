@@ -152,7 +152,7 @@ void freeOctreesOnGPU(CuRast* editor, bool force_free){
 		free_db = (double)free_byte;
 		total_db = (double)total_byte;
 		used_db = total_db - free_db;
-		println("GPU memory usage before cleaning: used = {} Mb, free = {} Mb, total = {} Mb",
+		println("GPU memory usage before cleaning: used = {:L} Mb, free = {:L} Mb, total = {:L} Mb",
 			used_db/1024.0/1024.0, free_db/1024.0/1024.0, total_db/1024.0/1024.0
 		);
 	}
@@ -162,7 +162,10 @@ void freeOctreesOnGPU(CuRast* editor, bool force_free){
 		octrees.push_back(node);
 	});
 	uint32_t nb_octrees = octrees.size();
-	if(nb_octrees <= 1){return;}
+	if(nb_octrees <= 1){
+		println("No cleaning necessary");
+		return;
+	}
 	std::string main_octree_name = getSimLodOctreeName();
 
 	for(uint32_t i=0; i<nb_octrees; i++){
@@ -180,7 +183,7 @@ void freeOctreesOnGPU(CuRast* editor, bool force_free){
 		free_db = (double)free_byte;
 		total_db = (double)total_byte;
 		used_db = total_db - free_db;
-		println("GPU memory usage after cleaning: used = {} Mb, free = {} Mb, total = {} Mb",
+		println("GPU memory usage after cleaning: used = {:L} Mb, free = {:L} Mb, total = {:L} Mb",
 			used_db/1024.0/1024.0, free_db/1024.0/1024.0, total_db/1024.0/1024.0
 		);
 	}
@@ -321,6 +324,12 @@ void loadOctreeOnGPU(CuRast* editor){
 			.mins = cur_aabb->mins,
 			.maxs = cur_aabb->maxs,
 		};
+
+		// cur_node->display(0, level, true);
+		// println("\tAABB: .mins = ({}, {}, {}), .maxs = ({}, {}, {})",
+		// 	new_aabb.mins.x, new_aabb.mins.y, new_aabb.mins.z,
+		// 	new_aabb.maxs.x, new_aabb.maxs.y, new_aabb.maxs.z
+		// );
 
 		// Create cuda pointers
 		CUdeviceptr cptr_node, cptr_aabb;

@@ -38,6 +38,8 @@ constexpr uint32_t GRID_SIZE = 128;
 constexpr uint32_t GRID_NUM_CELLS = GRID_SIZE * GRID_SIZE * GRID_SIZE;
 /// The first position for a child node on merging
 constexpr NodePosition FIRST_NODE_POSITION = FrontTopLeft;
+/// The temporary files directory to store nodes in disk
+const std::string TEMPORARY_DIRECTORY = format("{}/build/tmp", PROJECT_SOURCE_DIR);
 
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -125,7 +127,7 @@ struct Chunk {
 	Point points[POINTS_PER_CHUNK];
 	uint32_t size = 0;
 	/// For the linked list
-	std::shared_ptr<Chunk> next;
+	std::shared_ptr<Chunk> next = nullptr;
 };
 
 
