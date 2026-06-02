@@ -389,6 +389,9 @@ void addPointBatches(){
 		first = batchesLoaded.begin();
         last = batchesLoaded.end();
 	}
+	if(std::distance(first, last) > MAX_BATCHES_PER_UPDATE){
+		last = first + MAX_BATCHES_PER_UPDATE;
+	}
 
 	std::shared_ptr<Timing> timing = addTiming("init octree", true);
 	if(!mainAABB){

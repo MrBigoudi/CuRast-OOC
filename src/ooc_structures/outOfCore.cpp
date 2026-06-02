@@ -170,6 +170,8 @@ void OctreeNodeSerializable::init(
                 ChunkSerializable serializable = ChunkSerializable(cur_node->voxels);
                 serializable.serialize(new_node.voxels);
             }
+
+            // TODO: recreate occupancy grid
             // if(cur_node->occupancy){
             //     new_node.occupancy = getOccupancyFilePath(cur_aabb);
             //     // TODO: occupancy grid

@@ -26,6 +26,8 @@ void updateNodePosition(NodePosition& position);
 ////////////////////////////// GLOBAL CONSTANTS ///////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
 
+/// The maximum number of batches that should be used per octree update
+constexpr uint8_t MAX_BATCHES_PER_UPDATE = 1;
 /// The maximum number of points in a batch
 constexpr uint64_t MAX_BATCH_SIZE = 1'000'000;
 /// The maximum number of points in a leaf node
