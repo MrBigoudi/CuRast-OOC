@@ -144,6 +144,12 @@ struct OccupancyGrid {
 			values[i] = cpy.values[i];
 		}
 	}
+	bool operator==(const OccupancyGrid& rhs) const {
+		for(uint32_t i=0; i<GRID_NUM_CELLS / 32u; i++){
+			if(values[i] != rhs.values[i]){return false;};
+		}
+		return true;
+	}
 };
 
 /// A node in an octree

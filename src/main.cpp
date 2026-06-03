@@ -569,6 +569,7 @@ int main(int argc, char** argv){
 				if(CuRastSettings::loadOctree){
 					AABB test_aabb = {.mins = mainAABB.get()->mins, .maxs = mainAABB.get()->maxs};
 					std::shared_ptr<OctreeNode> octree = loadOctree(test_aabb);
+					CuRastSettings::loadOctree = false;
 
 					println("///////////////////////////////////////////////////");
 					println("///////////////////// Loaded //////////////////////");
@@ -586,7 +587,11 @@ int main(int argc, char** argv){
 					println("///////////////////////////////////////////////////");
 					println("///////////////////////////////////////////////////\n");
 					
-					CuRastSettings::loadOctree = false;
+					if(*octree.get() == *mainOctree.get()){
+						println("loaded == original, serialisation / deserialisation worked");
+					} else {
+						println("ERROR: loaded != original, serialisation / deserialisation failed");
+					}
 				}
 			}
 		},
