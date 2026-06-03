@@ -163,7 +163,6 @@ void freeOctreesOnGPU(CuRast* editor, bool force_free){
 	});
 	uint32_t nb_octrees = octrees.size();
 	if(nb_octrees <= 1){
-		println("No cleaning necessary");
 		return;
 	}
 	std::string main_octree_name = getSimLodOctreeName();
@@ -192,7 +191,7 @@ void freeOctreesOnGPU(CuRast* editor, bool force_free){
 
 
 void loadOctreeOnGPU(CuRast* editor){
-	if(CPU_PARALLELIZED){
+	if(CPU_PARALLELISED){
 		// If the mainOctree / mainAABB are being updated (see `addPointBatches`)
 		// Do not block but do not send data to the GPU
 		// Acquire => semaphore_counter -= 1
@@ -364,7 +363,7 @@ void loadOctreeOnGPU(CuRast* editor){
 	std::lock_guard<std::mutex> lock_scene(updateSceneMutex);
 	editor->scene.world->children.push_back(octree);
 
-	if(CPU_PARALLELIZED){
+	if(CPU_PARALLELISED){
 		// Release the semaphore when every GPU side structures is done being built
 		// Rlease => semaphore_counter += 1
 		octreeReadyToBeUpdated.release();
@@ -430,7 +429,7 @@ void addPointBatches(){
 		auto first_of_indices = indices.begin();
 		auto last_of_indices = indices.end();
 		std::iota(first_of_indices, last_of_indices, 0);
-		if(CPU_PARALLELIZED){
+		if(CPU_PARALLELISED){
 			std::for_each(std::execution::par, first_of_indices, last_of_indices, [&](uint32_t index){
 				std::shared_ptr<PointBatch> batch = batchesQueue[batches_indices[index]];
 				std::lock_guard<std::mutex> lock(batchesQueueMutexes[batches_indices[index]]);
@@ -487,7 +486,7 @@ void addPointBatches(){
 	// temporary_octree->display();
 
 	{
-		if(CPU_PARALLELIZED){
+		if(CPU_PARALLELISED){
 			std::for_each(std::execution::par, first, last, [&](uint32_t index){
 				std::lock_guard<std::mutex> lock(batchesQueueMutexes[index]);
 				batchesQueue[index]->state = BatchState::Inserted;
@@ -500,7 +499,7 @@ void addPointBatches(){
 		}
 	}
 
-	if(CPU_PARALLELIZED){
+	if(CPU_PARALLELISED){
 		// Block if the mainOctree / mainAABB are being send to the GPU (see `loadOctreeOnGPU`)
 		// Acquire => semaphore_counter -= 1
 		octreeReadyToBeUpdated.acquire();
@@ -509,7 +508,7 @@ void addPointBatches(){
 	mainAABB = temporary_aabb;
 	mainOctree = temporary_octree;
 	
-	if(CPU_PARALLELIZED){
+	if(CPU_PARALLELISED){
 		// Release the semaphore when not using mainOctree / mainAABB anymore
 		// Rlease => semaphore_counter += 1
 		octreeReadyToBeSent.release();

@@ -58,7 +58,7 @@ void initLoadPointBatches(string file){
 			}
 			if(found){break;}
 
-			if(!CPU_PARALLELIZED){
+			if(!CPU_PARALLELISED){
 				uint32_t old_queue_size = BATCHES_QUEUE_SIZE;
 				BATCHES_QUEUE_SIZE *= 2;
 				batchesQueue.resize(BATCHES_QUEUE_SIZE);
@@ -173,7 +173,7 @@ void loadPointsInBatches(){
 
 	auto first = batches_indices.begin();
 	auto last = first + last_index;
-	if(CPU_PARALLELIZED){
+	if(CPU_PARALLELISED){
 		std::for_each(std::execution::par, first, last, lambda);
 	} else {
 		std::for_each(std::execution::seq, first, last, lambda);
@@ -207,7 +207,7 @@ void loadBatchesOnGPU(CuRast* editor, CUcontext* ctx){
         // Upload positions and colors to GPU
         CUdeviceptr cptr_positions, cptr_colors;
 
-		if(CPU_PARALLELIZED){
+		if(CPU_PARALLELISED){
 			cuCtxSetCurrent(*ctx);
 		}
 
@@ -228,7 +228,7 @@ void loadBatchesOnGPU(CuRast* editor, CUcontext* ctx){
 
 	auto first = batches_indices.begin();
 	auto last = first + last_index;
-	if(CPU_PARALLELIZED){
+	if(CPU_PARALLELISED){
 		std::for_each(std::execution::par, first, last, lambda);
 	} else {
 		std::for_each(std::execution::seq, first, last, lambda);

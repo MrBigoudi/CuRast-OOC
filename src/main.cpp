@@ -292,21 +292,54 @@ void initScene() {
 	};
 
 	auto loadLion = [=]() {
-		initLoadPointBatches("./lion.laz");
-		// position: 4.283698075250294, -4.795270477550499, 6.400710991008715 
-		Runtime::controls->yaw    = -5.582;
-		Runtime::controls->pitch  = -0.294;
-		Runtime::controls->radius = 5.584;
-		Runtime::controls->target = { 0.679, -0.714, 5.163};
-	};
+		std::string file = "./lion.laz";
 
-	auto loadTemple = [=]() {
-		initLoadPointBatches("./banyo.las");
 		// position: 4.283698075250294, -4.795270477550499, 6.400710991008715 
 		Runtime::controls->yaw    = -5.582;
 		Runtime::controls->pitch  = -0.294;
 		Runtime::controls->radius = 5.584;
 		Runtime::controls->target = { 0.679, -0.714, 5.163};
+
+		if(!CPU_PARALLELISED){
+			initLoadPointBatches(file);
+			while(true){
+				loadPointsInBatches();
+				bool done = true;
+				for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
+					if(batchesQueue[i] && batchesQueue[i]->state != BatchState::Loaded){
+						done = false;
+					}
+				}
+				if(done){break;}
+			}
+			while(true){
+				addPointBatches();
+				bool done = true;
+				for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
+					if(batchesQueue[i] && batchesQueue[i]->state != BatchState::Inserted){
+						done = false;
+					}
+				}
+				if(done){break;}
+			}
+			while(true){
+				loadBatchesOnGPU(CuRast::instance);
+				bool done = true;
+				for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
+					if(batchesQueue[i] && batchesQueue[i]->state != BatchState::ToRemove){
+						done = false;
+					}
+				}
+				if(done){break;}
+			}
+			clearUnusedBatches();
+			loadOctreeOnGPU(CuRast::instance);
+		} else {
+			std::thread thread_loadLion([&](std::string file){
+				initLoadPointBatches(file);
+			}, file);
+			thread_loadLion.detach();
+		}
 	};
 	
 
@@ -323,13 +356,7 @@ void initScene() {
 	// loadCubeJpeg();
 	// loadPolygraphenewerkLeibzigInstances();
 	// loadVenice();
-	if(CPU_PARALLELIZED){
-		std::thread thread_loadLion([&]{
-			loadLion();
-			// loadTemple();
-		});
-		thread_loadLion.detach();
-	}
+	loadLion();
 	// loadTemple();
 }
 
@@ -470,7 +497,7 @@ int main(int argc, char** argv){
 	};
 
 	VKRenderer::onFileDrop([&](vector<string> files){
-		if(CPU_PARALLELIZED){
+		if(CPU_PARALLELISED){
 			std::for_each(std::execution::par, files.begin(), files.end(), 
 				[&](string& file){
 					if(iEndsWith(file, ".las") || iEndsWith(file, ".laz")){
@@ -491,7 +518,7 @@ int main(int argc, char** argv){
 
 	initScene();
 
-	if(CPU_PARALLELIZED){
+	if(CPU_PARALLELISED){
 		// Loading points routine
 		std::thread thread_loading_points(loadPointcloudRoutine);
 		thread_loading_points.detach();
@@ -525,7 +552,7 @@ int main(int argc, char** argv){
 			Runtime::debugValues["stage 2"] = format("{:.3f}", stage2_millies);
 			Runtime::debugValues["stage 3"] = format("{:.3f}", stage3_millies);
 
-			if(CPU_PARALLELIZED){
+			if(CPU_PARALLELISED){
 				// Send things GPU side
 				loadOctreeOnGPU(CuRast::instance);
 			}
