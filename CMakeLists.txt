@@ -71,7 +71,9 @@ target_include_directories(${TARGET_NAME} PRIVATE
 	${TURBOJPEG_INCLUDE_DIR}
 )
 
+set(MY_BUILD_TYPE "${CMAKE_BUILD_TYPE}")
 add_subdirectory(libs/laszip)
+set(CMAKE_BUILD_TYPE "${MY_BUILD_TYPE}" CACHE STRING "" FORCE)
 
 
 if (WIN32)
@@ -87,12 +89,6 @@ elseif (LINUX)
 		TBB::tbb
 	)
 endif()
-
-# https://stackoverflow.com/questions/2368811/how-to-set-warning-level-in-cmake
-target_compile_options(${TARGET_NAME} PRIVATE
-  $<$<CXX_COMPILER_ID:MSVC>:/W4 /WX>
-  $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall -Wextra -Wpedantic>
-)
 
 # Add other third-party libs
 ADD_CUDA(${TARGET_NAME})

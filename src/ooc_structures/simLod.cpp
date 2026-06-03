@@ -17,7 +17,7 @@ void simLodUpdate(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>&
 		// println("//////////////////////////////////////////////////");
 		// println("////////// Octree after simlod counting //////////");
 		// println("//////////////////////////////////////////////////");
-		// mainOctree->display();
+		// main_root->display();
 
 		timing = addTiming("simlod split", true, 2);
 		simLodSplit(spilledPoints, spillingNodes);
@@ -26,7 +26,7 @@ void simLodUpdate(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>&
 		// println("//////////////////////////////////////////////////");
 		// println("////////// Octree after simlod splitting /////////");
 		// println("//////////////////////////////////////////////////");
-		// mainOctree->display();
+		// main_root->display();
 		
 		inner_cpt++;
 	}
@@ -35,7 +35,7 @@ void simLodUpdate(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>&
 	// println("//////////////////////////////////////////////////");
 	// println("//////// Octree after simlod count/splits ////////");
 	// println("//////////////////////////////////////////////////");
-	// mainOctree->display();
+	// main_root->display();
 
 
 	std::shared_ptr<Timing> timing = addTiming("simlod voxel sampling", true, 1);
@@ -45,7 +45,7 @@ void simLodUpdate(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>&
 	// println("//////////////////////////////////////////////////");
 	// println("//////// Octree after simlod voxel sample ////////");
 	// println("//////////////////////////////////////////////////");
-	// mainOctree->display();
+	// main_root->display();
 	
 
 	timing = addTiming("simlod insertion", true, 1);
@@ -55,7 +55,7 @@ void simLodUpdate(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>&
 	// println("//////////////////////////////////////////////////");
 	// println("///////// Octree after simlod insertions /////////");
 	// println("//////////////////////////////////////////////////");
-	// mainOctree->display();
+	// main_root->display();
 
 
 	// Clean buffers
@@ -269,7 +269,8 @@ void simLodVoxelSampling(
 				// Create corresponding voxel using this point
 				vec3 world_grid_size = current_aabb.getSize() / float(GRID_SIZE);
 				vec3 voxel_centroid = current_aabb.mins + world_grid_size * vec3(grid_x, grid_y, grid_z);
-				Point new_voxel = {.position = voxel_centroid };
+				Point new_voxel = {};
+				new_voxel.position = voxel_centroid;
 				new_voxel.color[0] = point.color[0];
 				new_voxel.color[1] = point.color[1];
 				new_voxel.color[2] = point.color[2];

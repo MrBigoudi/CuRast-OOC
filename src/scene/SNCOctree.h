@@ -85,6 +85,11 @@ struct SNCOctree : public SceneNode{
 		total += cptr_chunks.size() * sizeof(CChunk);
 		total += cptr_occupancy_grids.size() * sizeof(COccupancyGrid);
 
+		total += sizeof(nodes);
+		total += sizeof(aabbs);
+		total += sizeof(chunks);
+		total += sizeof(occupancy_grids);
+
 		return total;
 	}
 

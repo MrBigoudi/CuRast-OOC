@@ -327,7 +327,6 @@ extern __constant__ RenderTarget c_target;
 
 
 // TODO: test code to remove
-constexpr uint64_t C_MAX_BATCH_SIZE = 1'000'000;
 constexpr uint16_t C_MAX_POINTS_PER_LEAF = 50'000;
 constexpr uint32_t C_POINTS_PER_CHUNK = 1'024;
 constexpr uint32_t C_OCTREE_RENDER_BLOCK_SIZE = 256;

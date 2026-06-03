@@ -7,6 +7,7 @@
 - Rebuild occupancy grid on load
 - Implement frustum culling
 - Create uniform structure for better structuring in cuda code / gui
+- supress warnings
 
 ## Next big steps
 

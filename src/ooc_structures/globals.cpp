@@ -325,21 +325,19 @@ std::string getSimLodOctreeName(bool generate_new_name){
 
 vector<std::shared_ptr<Timing>> timingsList = {};
 
+uint32_t BATCHES_QUEUE_SIZE = 1000;
+
+
 /// Variables tracking when the octree can be sent to GPU
 /// Initialized as not ready to be sent
 std::binary_semaphore octreeReadyToBeSent{0};
 /// Initialized as ready to be updated
 std::binary_semaphore octreeReadyToBeUpdated{1};
 
-/// The batches that still need to be read
-std::deque<PointBatch> batchesToLoad = {};
-mutex batchesToLoadMutex;
-/// The batches that are already loaded
-std::deque<PointBatch> batchesLoaded = {};
-mutex batchesLoadedMutex;
-/// The batches that have already been inserted in the octree
-std::deque<PointBatch> batchesInserted = {};
-mutex batchesInsertedMutex;
+/// The queue of batches
+std::deque<std::shared_ptr<PointBatch>> batchesQueue(BATCHES_QUEUE_SIZE, nullptr);
+std::deque<std::mutex> batchesQueueMutexes(BATCHES_QUEUE_SIZE);
+std::mutex updateSceneMutex;
 
 /// The main octree
 std::shared_ptr<OctreeNode> mainOctree = std::make_shared<OctreeNode>();
@@ -391,9 +389,36 @@ void displayBuffers(){
 	println("///////////////////// Buffers /////////////////////");
 	println("///////////////////////////////////////////////////\n");
 	
-    println("- batchesToLoad: {} elements", batchesToLoad.size());
-    println("- batchesLoaded: {} elements", batchesLoaded.size());
-    println("- batchesInserted: {} elements", batchesInserted.size());
+    uint32_t nb_empty = 0;
+    uint32_t nb_to_load = 0;
+    uint32_t nb_loaded = 0;
+    uint32_t nb_inserted = 0;
+    uint32_t nb_to_remove = 0;
+    for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
+        if(!batchesQueue[i]){
+            nb_empty++;
+            continue;
+        }
+        switch(batchesQueue[i]->state){
+            case Empty:
+                println("Error: there should not be a batch with an Empty state...");
+                break;
+            case ToLoad:
+                nb_to_load++;
+                break;
+            case Loaded:
+                nb_loaded++;
+                break;
+            case Inserted:
+                nb_inserted++;
+                break;
+            case ToRemove:
+                nb_to_remove++;
+                break;
+            break;
+        }
+    }
+    println("- batches: {} empty, {} to load, {} loaded, {} inserted, {} to remove", nb_empty, nb_to_load, nb_loaded, nb_inserted, nb_to_remove);
     println("- spilledPoints: {} elements", (*spilledPoints).size());
     println("- spillingNodes: {} elements", (*spillingNodes).size());
     println("- backlogVoxels: {} elements", (*backlogVoxels).size());

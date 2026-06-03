@@ -300,14 +300,14 @@ void initScene() {
 		Runtime::controls->target = { 0.679, -0.714, 5.163};
 	};
 
-	// auto loadTemple = [=]() {
-	// 	loadPointcloud("./banyo.las", editor);
-	// 	// position: 4.283698075250294, -4.795270477550499, 6.400710991008715 
-	// 	// Runtime::controls->yaw    = -5.582;
-	// 	// Runtime::controls->pitch  = -0.294;
-	// 	// Runtime::controls->radius = 5.584;
-	// 	// Runtime::controls->target = { 0.679, -0.714, 5.163};
-	// };
+	auto loadTemple = [=]() {
+		initLoadPointBatches("./banyo.las");
+		// position: 4.283698075250294, -4.795270477550499, 6.400710991008715 
+		Runtime::controls->yaw    = -5.582;
+		Runtime::controls->pitch  = -0.294;
+		Runtime::controls->radius = 5.584;
+		Runtime::controls->target = { 0.679, -0.714, 5.163};
+	};
 	
 
 	// createCube();
@@ -323,7 +323,13 @@ void initScene() {
 	// loadCubeJpeg();
 	// loadPolygraphenewerkLeibzigInstances();
 	// loadVenice();
-	loadLion();
+	if(CPU_PARALLELIZED){
+		std::thread thread_loadLion([&]{
+			loadLion();
+			// loadTemple();
+		});
+		thread_loadLion.detach();
+	}
 	// loadTemple();
 }
 
@@ -422,14 +428,62 @@ int main(int argc, char** argv){
 	VKRenderer::init();
 	CuRast::setup();
 
-	VKRenderer::onFileDrop([](vector<string> files){
-		std::for_each(std::execution::par, files.begin(), files.end(), 
-			[&](string& file){
-				if(iEndsWith(file, ".las") || iEndsWith(file, ".laz")){
-					initLoadPointBatches(file);
+	// temporary function
+	auto sequential = [&](vector<string> files){
+		std::for_each(std::execution::seq, files.begin(), files.end(), [&](string& file){
+			if(iEndsWith(file, ".las") || iEndsWith(file, ".laz")){
+				initLoadPointBatches(file);
+				while(true){
+					loadPointsInBatches();
+					bool done = true;
+					for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
+						if(batchesQueue[i] && batchesQueue[i]->state != BatchState::Loaded){
+							done = false;
+						}
+					}
+					if(done){break;}
 				}
+				while(true){
+					addPointBatches();
+					bool done = true;
+					for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
+						if(batchesQueue[i] && batchesQueue[i]->state != BatchState::Inserted){
+							done = false;
+						}
+					}
+					if(done){break;}
+				}
+				while(true){
+					loadBatchesOnGPU(CuRast::instance);
+					bool done = true;
+					for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
+						if(batchesQueue[i] && batchesQueue[i]->state != BatchState::ToRemove){
+							done = false;
+						}
+					}
+					if(done){break;}
+				}
+				clearUnusedBatches();
+				loadOctreeOnGPU(CuRast::instance);
 			}
-		);
+		});
+	};
+
+	VKRenderer::onFileDrop([&](vector<string> files){
+		if(CPU_PARALLELIZED){
+			std::for_each(std::execution::par, files.begin(), files.end(), 
+				[&](string& file){
+					if(iEndsWith(file, ".las") || iEndsWith(file, ".laz")){
+						std::thread thread_init_batch([&](std::string file){
+							initLoadPointBatches(file);
+						}, file);
+						thread_init_batch.detach();
+					}
+				}
+			);
+		} else {
+			sequential(files);
+		}
 	});
 
 	// Create temporary folder
@@ -437,13 +491,26 @@ int main(int argc, char** argv){
 
 	initScene();
 
-	// Loading points routine
-	std::thread thread_loading_points(loadPointcloudRoutine);
-	thread_loading_points.detach();
+	if(CPU_PARALLELIZED){
+		// Loading points routine
+		std::thread thread_loading_points(loadPointcloudRoutine);
+		thread_loading_points.detach();
 
-	// Octree update routine
-	std::thread thread_octree_update(updateOctreeRoutine);
-	thread_octree_update.detach();
+		// Octree update routine
+		std::thread thread_octree_update(updateOctreeRoutine);
+		thread_octree_update.detach();
+
+		// Clear unused batches routine
+		std::thread thread_clear_batches(clearUnusedBatchesRoutine);
+		thread_clear_batches.detach();
+
+		std::thread thread_load_points_on_gpu([&](CuRast* editor){
+			while(true){
+				loadBatchesOnGPU(editor, &context);
+			}
+		}, CuRast::instance);
+		thread_load_points_on_gpu.detach();
+	}
 
 	VKRenderer::loop(
 		[&]() {
@@ -458,10 +525,11 @@ int main(int argc, char** argv){
 			Runtime::debugValues["stage 2"] = format("{:.3f}", stage2_millies);
 			Runtime::debugValues["stage 3"] = format("{:.3f}", stage3_millies);
 
-			// Send things GPU side
+			if(CPU_PARALLELIZED){
+				// Send things GPU side
+				loadOctreeOnGPU(CuRast::instance);
+			}
 			freeOctreesOnGPU(CuRast::instance);
-			loadOctreeOnGPU(CuRast::instance);
-			loadBatchesOnGPU(CuRast::instance);
 
 			// TODO to remove
 			{

@@ -2,6 +2,7 @@
 
 #include "CuRast.h"
 #include "laszip/laszip_api.h"
+#include <semaphore>
 
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -21,15 +22,28 @@ enum NodePosition {
 };
 void updateNodePosition(NodePosition& position);
 
+/// The state of a batch
+enum BatchState {
+	Empty,
+	ToLoad,
+	Loaded,
+	Inserted,
+	ToRemove
+};
+
 
 ///////////////////////////////////////////////////////////////////////////////
 ////////////////////////////// GLOBAL CONSTANTS ///////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
 
-/// The maximum number of batches that should be used per octree update
-constexpr uint8_t MAX_BATCHES_PER_UPDATE = 1;
-/// The maximum number of points in a batch
-constexpr uint64_t MAX_BATCH_SIZE = 1'000'000;
+/// The maximum number of batches that should be load from disk at once
+constexpr uint8_t MAX_BATCHES_PER_LOAD = 100;
+/// The maximum number of batches that should be loaded to the GPU at once
+constexpr uint8_t MAX_BATCHES_PER_GPU_LOAD = 50;
+// /// The maximum number of batches that should be used per octree update
+// constexpr uint8_t MAX_BATCHES_PER_UPDATE = 1;
+// /// The maximum number of points in a batch
+// constexpr uint64_t MAX_BATCH_SIZE = 1'000'000;
 /// The maximum number of points in a leaf node
 constexpr uint16_t MAX_POINTS_PER_LEAF = 50'000;
 /// The number of points in a chunk
@@ -42,6 +56,12 @@ constexpr uint32_t GRID_NUM_CELLS = GRID_SIZE * GRID_SIZE * GRID_SIZE;
 constexpr NodePosition FIRST_NODE_POSITION = FrontTopLeft;
 /// The temporary files directory to store nodes in disk
 const std::string TEMPORARY_DIRECTORY = format("{}/build/tmp", PROJECT_SOURCE_DIR);
+
+constexpr bool CPU_PARALLELIZED = true;
+// constexpr bool CPU_PARALLELIZED = false;
+
+/// The maximum size for the batches vectors
+extern uint32_t BATCHES_QUEUE_SIZE;
 
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -65,6 +85,7 @@ struct OccupancyGrid;
 struct AABB {
 	vec3 mins = {INFINITY, INFINITY, INFINITY};
 	vec3 maxs = {-INFINITY, -INFINITY, -INFINITY};
+
 	bool contains(const vec3& position) const;
 	vec3 getCentroid() const;
 	vec3 getSize() const;
@@ -80,6 +101,13 @@ struct Point {
 	vec3 position = vec3();
 	uint8_t color[4] = {0,0,0,0};
 
+	Point(const Point& cpy) : position(cpy.position),
+		color{
+			cpy.color[0], cpy.color[1], 
+			cpy.color[2], cpy.color[3]
+	}{}
+
+	Point(){}
 	bool operator==(const Point& rhs) const;
 };
 
@@ -90,6 +118,7 @@ struct PointBatch {
 	shared_ptr<string> file = nullptr;
 	shared_ptr<vector<Point>> points = nullptr;
 	shared_ptr<laszip_header> header = nullptr;
+	BatchState state = BatchState::Empty;
 
 	// TODO: rethink that
 	/// Helpers for CUDA memory transfer
@@ -108,6 +137,13 @@ struct Voxel {
 struct OccupancyGrid {
 	// gridsize^3 occupancy grid; 1 bit per voxel
 	uint32_t values[GRID_NUM_CELLS / 32u] = {0};
+
+	OccupancyGrid(){}
+	OccupancyGrid(const OccupancyGrid& cpy){
+		for(uint32_t i=0; i<GRID_NUM_CELLS / 32u; i++){
+			values[i] = cpy.values[i];
+		}
+	}
 };
 
 /// A node in an octree
@@ -125,17 +161,41 @@ struct OctreeNode {
 	void display(uint32_t id = 0, uint32_t level = 0, bool node_only = false) const;
 
 	bool operator==(const OctreeNode& rhs) const;
+
+	OctreeNode(){}
+	OctreeNode(const OctreeNode& cpy) : counter(cpy.counter), children_ids(cpy.children_ids){
+		points = cpy.points ? std::make_shared<Chunk>(*cpy.points) : nullptr;
+		voxels = cpy.voxels ? std::make_shared<Chunk>(*cpy.voxels) : nullptr;
+		occupancy = cpy.occupancy ? std::make_shared<OccupancyGrid>(*cpy.occupancy) : nullptr;
+
+		for(uint32_t child = 0; child < 8; child++){
+			if(cpy.children[child]){
+				children[child] = std::make_shared<OctreeNode>(*cpy.children[child]);
+			}
+		}
+	}
 };
 
 /// A chunk linked list in a node
 struct Chunk {
 	/// All chunk have the same physical size even if empty
-	Point points[POINTS_PER_CHUNK];
+	Point points[POINTS_PER_CHUNK] = {Point()};
 	uint32_t size = 0;
 	/// For the linked list
 	std::shared_ptr<Chunk> next = nullptr;
 
 	bool operator==(const Chunk& rhs) const;
+
+	Chunk(){}
+	Chunk(const Chunk& cpy): size(cpy.size) {
+		for(uint32_t i=0; i<POINTS_PER_CHUNK; i++){
+			points[i] = cpy.points[i];
+		}
+
+		if(cpy.next){
+			next = std::make_shared<Chunk>(*cpy.next);
+		}
+	}
 };
 
 
@@ -154,15 +214,10 @@ std::string getSimLodOctreeName(bool generate_new_name = false);
 extern std::binary_semaphore octreeReadyToBeSent;
 extern std::binary_semaphore octreeReadyToBeUpdated;
 
-/// The batches that still need to be read
-extern std::deque<PointBatch> batchesToLoad;
-extern mutex batchesToLoadMutex;
-/// The batches that are already loaded
-extern std::deque<PointBatch> batchesLoaded;
-extern mutex batchesLoadedMutex;
-/// The batches that have already been inserted in the octree
-extern std::deque<PointBatch> batchesInserted;
-extern mutex batchesInsertedMutex;
+/// The queue of batches
+extern std::deque<std::shared_ptr<PointBatch>> batchesQueue;
+extern std::deque<std::mutex> batchesQueueMutexes;
+extern std::mutex updateSceneMutex;
 
 /// The main octree
 extern std::shared_ptr<OctreeNode> mainOctree;
@@ -185,8 +240,8 @@ struct Timing {
 	bool has_started = false;
 	string name = "";
 	uint32_t level = 0;
-	std::chrono::time_point<std::chrono::system_clock> start = {};
-	std::chrono::time_point<std::chrono::system_clock> stop = {};
+	std::chrono::time_point<std::chrono::high_resolution_clock> start = {};
+	std::chrono::time_point<std::chrono::high_resolution_clock> stop = {};
 	std::chrono::microseconds duration = {};
 
 	Timing(string name, bool start_now = true, uint32_t level = 0)

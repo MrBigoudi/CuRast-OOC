@@ -15,4 +15,9 @@ void loadPointcloudRoutine();
 /// TODO: temporary function
 /// Send points to CUDA memory
 /// Used to get baseline timings but consumes a lot of memory
-void loadBatchesOnGPU(CuRast* editor);
+void loadBatchesOnGPU(CuRast* editor, CUcontext* ctx = nullptr);
+
+/// Clear the unused batches
+void clearUnusedBatches();
+/// Asynchronously clear the unused batches
+void clearUnusedBatchesRoutine();

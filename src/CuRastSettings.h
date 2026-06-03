@@ -14,6 +14,11 @@ struct CuRastSettings{
 	static inline bool storeOctree = false;
 	static inline bool loadOctree = false;
 
+	/// The maximum number of batches that should be used per octree update
+	static inline int32_t maxBatchesPerUpdate = 10;
+	/// The maximum number of points in a batch
+	static inline int32_t maxBatchSize = 100'000;
+
 	static inline bool enableEDL = true;
 	static inline bool enableFrustumCulling = true;
 	static inline bool hideGUI = false;

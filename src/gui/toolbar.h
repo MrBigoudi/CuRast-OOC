@@ -156,6 +156,12 @@ void CuRast::makeToolbar(){
 					ImGui::Checkbox("Free unused octree GPU memory", &CuRastSettings::freeOldOctreeMemoryOnGPU);
 				ImGui::EndDisabled();
 
+				ImGui::SetNextItemWidth(200.0f);
+				ImGui::SliderInt("Max batches per update", &CuRastSettings::maxBatchesPerUpdate, 1, 64);
+				ImGui::SameLine();
+				ImGui::SetNextItemWidth(200.0f);
+				ImGui::SliderInt("Max batch size", &CuRastSettings::maxBatchSize, 10'000, 1'000'000'000);
+
 				ImGui::Checkbox("Store octree on disk", &CuRastSettings::storeOctree);
 				ImGui::SameLine();
 				ImGui::Checkbox("Load octree from disk", &CuRastSettings::loadOctree);
@@ -168,6 +174,7 @@ void CuRast::makeToolbar(){
 				ImGui::SetNextItemWidth(200.0f);
 				// ImGui::SliderFloat("threshold", &CuRastSettings::threshold, 0.0f, 1.0f);
 				ImGui::SliderInt("Points per voxel axis", &CuRastSettings::voxelsPointsPerAxis, 1, 64);
+				ImGui::SameLine();
 				ImGui::SetNextItemWidth(200.0f);
 				ImGui::SliderInt("LOD to render", &CuRastSettings::debugLodToRender, -1, 20);
 
