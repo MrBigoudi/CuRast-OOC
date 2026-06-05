@@ -68,6 +68,7 @@ target_compile_definitions(${TARGET_NAME}
 target_include_directories(${TARGET_NAME} PRIVATE
 	./src
 	./libs
+	./libs/container_hash/include
 	${TURBOJPEG_INCLUDE_DIR}
 )
 

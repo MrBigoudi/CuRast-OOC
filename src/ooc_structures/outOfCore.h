@@ -44,8 +44,8 @@ struct OctreeNodeSerializable {
 
     /// Serializes all points, voxels and grids
     static void init(
-        const AABB& root_aabb, 
-        const std::shared_ptr<OctreeNode>& root_node
+        const std::shared_ptr<OctreeNode>& full_octree, 
+        const AABB& node_aabb, bool node_only
     );
 
     static std::shared_ptr<OctreeNode> toOctreeNodes(
@@ -83,9 +83,15 @@ std::string getChunkFilePath(const AABB& aabb, bool is_voxel);
 ////////////////////////////// MAIN FUNCTIONS /////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
 
-/// Store an octree given its root node
-void storeOctree(const AABB& root_aabb, const std::shared_ptr<OctreeNode>& root_node);
+/// Store an octree node given it's AABB and the main octree
+void storeOctree(const std::shared_ptr<OctreeNode>& full_octree, 
+    const std::shared_ptr<AABB>& node_aabb,
+    bool node_only = false
+);
 
 /// Load an octree from a file
 /// Recursively loads all root node's children
-std::shared_ptr<OctreeNode> loadOctree(const AABB& root_aabb);
+std::shared_ptr<OctreeNode> loadOctree(const std::shared_ptr<AABB>& root_aabb);
+
+/// Add nodes to cache after octree update
+void updateCache(std::shared_ptr<OctreeNode>& root_octree, std::shared_ptr<AABB>& root_aabb);

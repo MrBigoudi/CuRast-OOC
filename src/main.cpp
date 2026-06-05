@@ -524,7 +524,9 @@ int main(int argc, char** argv){
 		thread_loading_points.detach();
 
 		// Octree update routine
-		std::thread thread_octree_update([&](){updateOctreeRoutine(mainOctree, mainAABB);});
+		std::thread thread_octree_update([&](){
+			updateOctreeRoutine(mainOctree, mainAABB);
+		});
 		thread_octree_update.detach();
 
 		// Clear unused batches routine
@@ -554,13 +556,12 @@ int main(int argc, char** argv){
 
 			// TODO to remove
 			{
-				static AABB test_stored_aabb;
+				static std::shared_ptr<AABB> test_stored_aabb = nullptr;
 
 				// Testing stuff
 				if(CuRastSettings::storeOctree){
-					AABB test_aabb = {.mins = mainAABB.get()->mins, .maxs = mainAABB.get()->maxs};
-					storeOctree(test_aabb, mainOctree);
-					test_stored_aabb = test_aabb;
+					test_stored_aabb = std::make_shared<AABB>(*mainAABB);
+					storeOctree(mainOctree, test_stored_aabb);
 					CuRastSettings::storeOctree = false;
 				}
 				if(CuRastSettings::loadOctree){
@@ -574,7 +575,7 @@ int main(int argc, char** argv){
 					}
 
 					mainOctree = octree;
-					mainAABB = std::make_shared<AABB>(test_stored_aabb);
+					mainAABB = test_stored_aabb;
 
 					cuCtxSetCurrent(context);
 					loadOctreeOnGPU(mainOctree, mainAABB, CuRast::instance, true);

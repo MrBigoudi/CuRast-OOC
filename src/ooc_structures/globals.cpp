@@ -242,8 +242,8 @@ uint32_t OctreeNode::getNbVoxels() const {
 }
 
 void OctreeNode::display(uint32_t id, uint32_t level, bool node_only) const {
-    println("id: {}, level: {}, counter: {}, nbPoints: {}, nbVoxels: {}, points location: 0b{}{}{}{}{}{}{}{}, children: 0b{}{}{}{}{}{}{}{}",
-        id, level, counter, getNbPoints(), getNbVoxels(),
+    println("id: {}, level: {}, counter: {}, updated: {}, nbPoints: {}, nbVoxels: {}, points location: 0b{}{}{}{}{}{}{}{}, children: 0b{}{}{}{}{}{}{}{}",
+        id, level, counter, updated, getNbPoints(), getNbVoxels(),
         uint8_t(bool(children_ids & 0x01 << 0)),
         uint8_t(bool(children_ids & 0x01 << 1)),
         uint8_t(bool(children_ids & 0x01 << 2)),
@@ -377,6 +377,13 @@ std::shared_ptr<vector<Point>> backlogVoxels = std::make_shared<vector<Point>>(v
 /// The backlog buffer for the nodes corresponding to the new voxels
 std::shared_ptr<vector<OctreeNode*>> backlogVoxelsNodes = std::make_shared<vector<OctreeNode*>>(vector<OctreeNode*>());
 
+/// The LRU cache for the nodes
+std::array<std::optional<CacheEntry>, LRU_CACHE_SIZE> lruCache = {nullopt};
+uint64_t lruCounter = 0;
+
+
+
+
 
 std::shared_ptr<Timing> addTiming(string name, bool start_now, uint32_t level){
     std::shared_ptr<Timing> new_timing = std::make_shared<Timing>(name, start_now, level);
@@ -405,7 +412,7 @@ void displayTimings(){
     println("\n///////////////////////////////////////////////////");
 	println("///////////////////////////////////////////////////");
 	println("///////////////////////////////////////////////////\n");
-};
+}
 
 void displayBuffers(){
 	println("///////////////////////////////////////////////////");
@@ -450,4 +457,91 @@ void displayBuffers(){
     println("\n///////////////////////////////////////////////////");
 	println("///////////////////////////////////////////////////");
 	println("///////////////////////////////////////////////////\n");
-};
+}
+
+void displayCache(){
+    println("\n///////////////////////////////////////////////////");
+	println("////////////////////// Cache //////////////////////");
+	println("///////////////////////////////////////////////////\n");
+	for(std::optional<CacheEntry>& entry : lruCache){
+        if(entry.has_value()){
+            std::string output = format("mins = ({}, {}, {}), maxs = ({}, {}, {})",
+                entry->second->mins.x, 
+                entry->second->mins.y, 
+                entry->second->mins.z, 
+                entry->second->maxs.x, 
+                entry->second->maxs.y, 
+                entry->second->maxs.z
+            );
+            println("- [ {} ]: {}", entry->first, output);
+        } else {
+            println("- [ null ]");
+        }
+    }
+    println("\n///////////////////////////////////////////////////");
+	println("///////////////////////////////////////////////////");
+	println("///////////////////////////////////////////////////\n");
+}
+
+
+std::optional<std::shared_ptr<AABB>> addToCache(const std::shared_ptr<AABB>& aabb){
+    bool already_in_cache = false;
+
+    // Reset every counters if needed
+    if(lruCounter == UINT64_MAX){
+        for(uint32_t cache_id = 0; cache_id < LRU_CACHE_SIZE; cache_id++){
+            if(lruCache[cache_id]){
+                CacheEntry& entry = lruCache[cache_id].value();
+                entry.first = 0;
+                if(*entry.second == *aabb){
+                    entry.first = 1;
+                    already_in_cache = true;
+                }
+            }
+        }
+        lruCounter = 0;
+    }
+    lruCounter++;
+    if(already_in_cache){return nullopt;}
+
+    // Check if already in cache
+    uint32_t new_id = 0;
+    uint32_t min_counter = UINT64_MAX;
+    for(uint32_t cache_id = 0; cache_id < LRU_CACHE_SIZE; cache_id++){
+        if(lruCache[cache_id]){
+            CacheEntry& entry = lruCache[cache_id].value();
+
+            // Check if already in cache
+            if(*entry.second == *aabb){
+                entry.first = lruCounter;
+                return nullopt;
+            }
+
+            // Check if smallest counter
+            if(entry.first < min_counter){
+                min_counter = entry.first;
+                new_id = cache_id;
+            }
+        } else {
+            // Found empty space
+            lruCache[cache_id] = {lruCounter, aabb};
+            return nullopt;
+        }
+    }
+
+    // If not in cache, create new entry
+    std::shared_ptr<AABB> old_entry = lruCache[new_id]->second;
+    CacheEntry new_entry = {lruCounter, aabb};
+    lruCache[new_id] = new_entry;
+
+    return std::optional<std::shared_ptr<AABB>>(old_entry);
+}
+
+bool isInCache(const std::shared_ptr<AABB>& aabb){
+    for(uint32_t cache_id = 0; cache_id < LRU_CACHE_SIZE; cache_id++){
+        if(lruCache[cache_id] && *lruCache[cache_id]->second == *aabb){
+            return true;
+        }
+    }
+    return false;
+}

@@ -83,7 +83,7 @@ void simLodCount(
 	auto countPoint = [&](Point& point){
 		// Reach corresponding leaf
 		std::shared_ptr<OctreeNode> leaf = main_root;
-		AABB current_aabb = {.mins = main_aabb->mins, .maxs = main_aabb->maxs };
+		AABB current_aabb = AABB(*main_aabb);
 
 		uint8_t level = 1;
 
@@ -246,7 +246,7 @@ void simLodVoxelSampling(
 	auto sampleVoxel = [&](Point& point){
 		// Reach all corresponding inner nodes
 		std::shared_ptr<OctreeNode> node = main_root;
-		AABB current_aabb = {.mins = main_aabb->mins, .maxs = main_aabb->maxs };
+		AABB current_aabb = AABB(*main_aabb);
 
 		while(true){
 			// if(node->is_leaf){return;}
@@ -328,9 +328,11 @@ void simLodInsertion(
 	auto insertPoint = [&](Point& point){
 		// Reach all corresponding leaves
 		std::shared_ptr<OctreeNode> node = main_root;
-		AABB current_aabb = {.mins = main_aabb->mins, .maxs = main_aabb->maxs };
+		AABB current_aabb = AABB(*main_aabb);
 
 		while(true){
+			node->updated = true;
+
 			// Find next child
 			NodePosition child_index = current_aabb.getNextChildIndex(point.position);
 			AABB old_aabb = current_aabb;
@@ -371,6 +373,8 @@ void simLodInsertion(
 	};
 
 	auto insertVoxel = [&](Point& voxel, OctreeNode* node){
+		node->updated = true;
+
 		if(!node->voxels){node->voxels = std::make_shared<Chunk>();}
 		std::shared_ptr<Chunk> chunk_list = node->voxels;
 		while(chunk_list->next){chunk_list = chunk_list->next;}

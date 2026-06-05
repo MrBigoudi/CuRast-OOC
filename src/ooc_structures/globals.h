@@ -56,9 +56,11 @@ constexpr uint32_t GRID_NUM_CELLS = GRID_SIZE * GRID_SIZE * GRID_SIZE;
 constexpr NodePosition FIRST_NODE_POSITION = FrontTopLeft;
 /// The temporary files directory to store nodes in disk
 const std::string TEMPORARY_DIRECTORY = format("{}/build/tmp", PROJECT_SOURCE_DIR);
+/// The size of the LRU cache
+constexpr uint32_t LRU_CACHE_SIZE = 16;
 
-constexpr bool CPU_PARALLELISED = true;
-// constexpr bool CPU_PARALLELISED = false;
+// constexpr bool CPU_PARALLELISED = true;
+constexpr bool CPU_PARALLELISED = false;
 
 /// The maximum size for the batches vectors
 extern uint32_t BATCHES_QUEUE_SIZE;
@@ -94,6 +96,23 @@ struct AABB {
 	vec3 getPointNormalizedCoordinates(const vec3& position) const;
 	vec3 getPointWorldCoordinates(const vec3& normalized_position) const;
 	NodePosition getNextChildIndex(const vec3& position) const;
+
+	bool operator==(const AABB& rhs) const{
+		return rhs.mins == mins && rhs.maxs == maxs;
+	}
+	bool operator==(const AABB& rhs){
+		return rhs.mins == mins && rhs.maxs == maxs;
+	}
+	bool operator==(AABB& rhs) const{
+		return rhs.mins == mins && rhs.maxs == maxs;
+	}
+	bool operator==(AABB& rhs){
+		return rhs.mins == mins && rhs.maxs == maxs;
+	}
+
+	AABB(){}
+	AABB(const AABB& cpy) : mins(cpy.mins), maxs(cpy.maxs){}
+	AABB(AABB& cpy) : mins(cpy.mins), maxs(cpy.maxs){}
 };
 
 /// A loaded point
@@ -160,6 +179,8 @@ struct OctreeNode {
 	std::shared_ptr<Chunk> points = nullptr;
 	std::shared_ptr<Chunk> voxels = nullptr;
 	std::shared_ptr<OccupancyGrid> occupancy = nullptr;
+
+	bool updated = false;
 
 	uint32_t getNbPoints() const;
 	uint32_t getNbVoxels() const;
@@ -239,6 +260,19 @@ extern std::shared_ptr<vector<OctreeNode*>> spillingNodes;
 extern std::shared_ptr<vector<Point>> backlogVoxels;
 /// The backlog buffer for the nodes corresponding to the new voxels
 extern std::shared_ptr<vector<OctreeNode*>> backlogVoxelsNodes;
+
+/// The LRU cache for the nodes
+extern uint64_t lruCounter;
+typedef std::pair<uint64_t, std::shared_ptr<AABB>> CacheEntry; 
+extern std::array<std::optional<CacheEntry>, LRU_CACHE_SIZE> lruCache;
+
+/// Add a node to the cache and return the id of a node if it has been removed from the cache
+/// The id of a node is it's AABB
+std::optional<std::shared_ptr<AABB>> addToCache(const std::shared_ptr<AABB>& aabb);
+/// Check if a node is already in cache
+bool isInCache(const std::shared_ptr<AABB>& aabb);
+/// Display the LRU cache
+void displayCache();
 
 
 /// The hash map to store timings

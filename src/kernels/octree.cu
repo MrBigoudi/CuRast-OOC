@@ -388,7 +388,7 @@ void drawAllVoxels(
     CChunk* cur_voxels = node->voxels;
     vec3 voxel_size = (aabb->maxs - aabb->mins) / float(C_GRID_SIZE);
 
-    float color_factor = float(node->level) / float(max_lod_level);
+    float color_factor = float(node->level) / float(max(max_lod_level, 1));
     color_factor = clamp(color_factor, 0.0f, 1.0f);
     uint32_t min_level_color = 0xffffff00; // cyan
     uint32_t max_level_color = 0xff00ffff; // yellow
@@ -439,7 +439,7 @@ void kernel_drawOctreeAABB(
     //     printf("//////////////////////////////////////////////////\n");
     // }
 
-    float factor = float(node->level) / float(octree.max_lod_level);
+    float factor = float(node->level) / float(max(octree.max_lod_level, 1));
     factor = clamp(factor, 0.0f, 1.0f);
     uint32_t min_level_color = 0xff00ff00; // green
     uint32_t max_level_color = 0xff0000ff; // red

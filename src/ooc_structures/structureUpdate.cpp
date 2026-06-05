@@ -1,6 +1,7 @@
 #include "structureUpdate.h"
 
 #include "simLod.h"
+#include "outOfCore.h"
 
 
 void initOctree(std::shared_ptr<AABB>& main_aabb, std::shared_ptr<vector<Point>>& points){
@@ -76,6 +77,9 @@ void uptadeOctree(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>&
 		// Create new parent
 		std::shared_ptr<OctreeNode> new_parent = std::make_shared<OctreeNode>();
 		new_parent->occupancy = std::make_shared<OccupancyGrid>();
+
+		new_parent->updated = true;
+		main_root->updated = true;
 
 		// Create the correct child
 		new_parent->children[node_position] = main_root;
@@ -483,10 +487,21 @@ void addPointBatches(std::shared_ptr<OctreeNode>& main_octree, std::shared_ptr<A
 	}
 	timing->stop_clock();
 
+	timing = addTiming("update cache", true);
+	updateCache(temporary_octree, temporary_aabb);
+	timing->stop_clock();
+	displayCache();
+
 	// println("//////////////////////////////////////////////////");
 	// println("/////////// Octree after simLOD update ///////////");
 	// println("//////////////////////////////////////////////////");
 	// temporary_octree->display();
+
+	if(CPU_PARALLELISED){
+		// Block if the mainOctree / mainAABB are being send to the GPU (see `loadOctreeOnGPU`)
+		// Acquire => semaphore_counter -= 1
+		octreeReadyToBeUpdated.acquire();
+	}
 
 	{
 		if(CPU_PARALLELISED){
@@ -500,12 +515,6 @@ void addPointBatches(std::shared_ptr<OctreeNode>& main_octree, std::shared_ptr<A
 				batchesQueue[index]->state = BatchState::Inserted;
 			});
 		}
-	}
-
-	if(CPU_PARALLELISED){
-		// Block if the mainOctree / mainAABB are being send to the GPU (see `loadOctreeOnGPU`)
-		// Acquire => semaphore_counter -= 1
-		octreeReadyToBeUpdated.acquire();
 	}
 
 	main_aabb = temporary_aabb;
