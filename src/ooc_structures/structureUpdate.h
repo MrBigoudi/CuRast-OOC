@@ -26,13 +26,15 @@ void uptadeOctree(
 
 /// TODO: temporary function
 /// Load an octree to gpu memory
-void loadOctreeOnGPU(CuRast* editor);
+void loadOctreeOnGPU(std::shared_ptr<OctreeNode>& main_octree, std::shared_ptr<AABB>& main_aabb,
+    CuRast* editor, bool bypass_semaphore = false
+);
 /// TODO: temporary function
 /// Frees the unused octrees on gpu memory
 void freeOctreesOnGPU(CuRast* editor, bool force_free = false);
 
 
 /// Add new batches to the octree
-void addPointBatches();
+void addPointBatches(std::shared_ptr<OctreeNode>& main_octree, std::shared_ptr<AABB>& main_aabb);
 /// Asynchronously update the octree
-void updateOctreeRoutine();
+void updateOctreeRoutine(std::shared_ptr<OctreeNode>& main_octree, std::shared_ptr<AABB>& main_aabb);

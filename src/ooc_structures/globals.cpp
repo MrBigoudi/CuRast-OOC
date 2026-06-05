@@ -276,6 +276,7 @@ bool OctreeNode::operator==(const OctreeNode& rhs) const {
         if(cur_lhs.counter != cur_rhs.counter){return false;}
         if(cur_lhs.children_ids != cur_rhs.children_ids){return false;}
         
+        if(!cur_lhs.points && cur_rhs.points){return false;}
         if(cur_lhs.points){
             if(!cur_rhs.points){return false;}
             const Chunk& lhs_points = *cur_lhs.points.get();
@@ -283,6 +284,7 @@ bool OctreeNode::operator==(const OctreeNode& rhs) const {
             if(lhs_points != rhs_points){return false;}
         }
         
+        if(!cur_lhs.voxels && cur_rhs.voxels){return false;}
         if(cur_lhs.voxels){
             if(!cur_rhs.voxels){return false;}
             const Chunk& lhs_voxels = *cur_lhs.voxels.get();
@@ -290,6 +292,7 @@ bool OctreeNode::operator==(const OctreeNode& rhs) const {
             if(lhs_voxels != rhs_voxels){return false;}
         }
 
+        if(!cur_lhs.occupancy && cur_rhs.occupancy){return false;}
         if(cur_lhs.occupancy){
             if(!cur_rhs.occupancy){return false;}
             const OccupancyGrid& lhs_grid = *cur_lhs.occupancy.get();

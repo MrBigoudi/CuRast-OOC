@@ -2,9 +2,8 @@
 
 ## Next small steps
 
-- Compare octrees before / after load
+- Add a way to (manually ?) select the node to store / load
 - Add parameters to the UI (max nb batches, points per batches, etc...)
-- Rebuild occupancy grid on load
 - Implement frustum culling
 - Create uniform structure for better structuring in cuda code / gui
 - supress warnings
@@ -16,14 +15,14 @@
 ## Coding part
 
 - Fix Vulkan segfault on quit
-- Add a way to load / store nodes synchronously
+- Rebuild occupancy grid on load
 
 ## Research part
 
 - Find a way to only send the delta
 - Find which node to store (is LRU best strategy)
 - Find a way to compress stored nodes
-- Color-filtering
+- Improve Color-filtering
 - Find a way to not use occupancy grid
 - Find a way to load closest batches first
 - Improve on linked-list approach ?

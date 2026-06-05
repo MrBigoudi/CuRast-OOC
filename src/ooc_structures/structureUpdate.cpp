@@ -190,8 +190,10 @@ void freeOctreesOnGPU(CuRast* editor, bool force_free){
 }
 
 
-void loadOctreeOnGPU(CuRast* editor){
-	if(CPU_PARALLELISED){
+void loadOctreeOnGPU(std::shared_ptr<OctreeNode>& main_octree, std::shared_ptr<AABB>& main_aabb,
+	CuRast* editor, bool bypass_semaphore
+){
+	if(CPU_PARALLELISED && !bypass_semaphore){
 		// If the mainOctree / mainAABB are being updated (see `addPointBatches`)
 		// Do not block but do not send data to the GPU
 		// Acquire => semaphore_counter -= 1
@@ -301,6 +303,8 @@ void loadOctreeOnGPU(CuRast* editor){
 		}
 		if(chunk_first_voxels.has_value()){
 			new_node.voxels = (CChunk*)octree->cptr_chunks[chunk_first_voxels.value()];
+		}
+		if(cur_node->occupancy){
 			// Allocate occupancy grid
 			std::shared_ptr<COccupancyGrid> tmp = std::make_shared<COccupancyGrid>();
 			for(uint32_t i=0; i<C_GRID_NUM_CELLS; i++){
@@ -341,8 +345,7 @@ void loadOctreeOnGPU(CuRast* editor){
 		return cptr_node;
 	};
 
-	// CUdeviceptr cptr_root_node = recursive(mainOctree, mainAABB, 0);
-	recursive(mainOctree, mainAABB, 0);
+	recursive(main_octree, main_aabb, 0);
 
 	octree->num_nodes = nodes_counter;
 	octree->max_lod_level = max_lod_level;
@@ -363,7 +366,7 @@ void loadOctreeOnGPU(CuRast* editor){
 	std::lock_guard<std::mutex> lock_scene(updateSceneMutex);
 	editor->scene.world->children.push_back(octree);
 
-	if(CPU_PARALLELISED){
+	if(CPU_PARALLELISED && !bypass_semaphore){
 		// Release the semaphore when every GPU side structures is done being built
 		// Rlease => semaphore_counter += 1
 		octreeReadyToBeUpdated.release();
@@ -385,7 +388,7 @@ void loadOctreeOnGPU(CuRast* editor){
 
 
 
-void addPointBatches(){
+void addPointBatches(std::shared_ptr<OctreeNode>& main_octree, std::shared_ptr<AABB>& main_aabb){
 	std::vector<uint32_t> batches_indices(CuRastSettings::maxBatchesPerUpdate, 0);
 	uint32_t last_index = 0;
 
@@ -403,18 +406,18 @@ void addPointBatches(){
 	auto last = first + last_index;
 
 	std::shared_ptr<Timing> timing = addTiming("init octree", true);
-	if(!mainAABB){
-		mainAABB = std::make_shared<AABB>();
+	if(!main_aabb){
+		main_aabb = std::make_shared<AABB>();
 		uint32_t batch_index = batches_indices[0];
 		std::lock_guard<std::mutex> lock(batchesQueueMutexes[batch_index]);
-		initOctree(mainAABB, batchesQueue[batch_index]->points);
+		initOctree(main_aabb, batchesQueue[batch_index]->points);
 	}
 	timing->stop_clock();
 
 	// Copy octree before update
 	timing = addTiming("copy octree", true);
-	std::shared_ptr<AABB> temporary_aabb = std::make_shared<AABB>(*mainAABB);
-	std::shared_ptr<OctreeNode> temporary_octree = std::make_shared<OctreeNode>(*mainOctree);
+	std::shared_ptr<AABB> temporary_aabb = std::make_shared<AABB>(*main_aabb);
+	std::shared_ptr<OctreeNode> temporary_octree = std::make_shared<OctreeNode>(*main_octree);
 	timing->stop_clock();
 
 
@@ -436,7 +439,7 @@ void addPointBatches(){
 				tmp_new_levels[index] = growOctree(temporary_aabb, batch->points);
 			});
 		} else {
-			std::for_each(std::execution::seq, first_of_indices, last_of_indices, [&](uint32_t index){
+			std::for_each(first_of_indices, last_of_indices, [&](uint32_t index){
 				std::shared_ptr<PointBatch> batch = batchesQueue[batches_indices[index]];
 				std::lock_guard<std::mutex> lock(batchesQueueMutexes[batches_indices[index]]);
 				tmp_new_levels[index] = growOctree(temporary_aabb, batch->points);
@@ -470,9 +473,9 @@ void addPointBatches(){
 
 
 	timing = addTiming("simlod update", true);
-	// In parallel
+	// TODO: In parallel
 	{
-		std::for_each(std::execution::seq, first, last, [&](uint32_t index){
+		std::for_each(first, last, [&](uint32_t index){
 			std::lock_guard<std::mutex> lock(batchesQueueMutexes[index]);
 			std::shared_ptr<PointBatch> batch = batchesQueue[index];
 			simLodUpdate(temporary_octree, temporary_aabb, batch->points);
@@ -492,7 +495,7 @@ void addPointBatches(){
 				batchesQueue[index]->state = BatchState::Inserted;
 			});
 		} else {
-			std::for_each(std::execution::seq, first, last, [&](uint32_t index){
+			std::for_each(first, last, [&](uint32_t index){
 				std::lock_guard<std::mutex> lock(batchesQueueMutexes[index]);
 				batchesQueue[index]->state = BatchState::Inserted;
 			});
@@ -505,8 +508,8 @@ void addPointBatches(){
 		octreeReadyToBeUpdated.acquire();
 	}
 
-	mainAABB = temporary_aabb;
-	mainOctree = temporary_octree;
+	main_aabb = temporary_aabb;
+	main_octree = temporary_octree;
 	
 	if(CPU_PARALLELISED){
 		// Release the semaphore when not using mainOctree / mainAABB anymore
@@ -516,9 +519,9 @@ void addPointBatches(){
 };
 
 
-void updateOctreeRoutine(){
+void updateOctreeRoutine(std::shared_ptr<OctreeNode>& main_octree, std::shared_ptr<AABB>& main_aabb){
 	while(true){
-		addPointBatches();
+		addPointBatches(main_octree, main_aabb);
 	}
 }
 

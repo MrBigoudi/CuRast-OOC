@@ -148,33 +148,32 @@ void simLodCount(
 		}
 	};
 
-	// for(Point& point : *points){
-	// 	countPoint(point);
-	// }
-	// for(Point& point : *spilled_points){
-	// 	countPoint(point);		
-	// }
-
-	// std::for_each(std::execution::par, points->begin(), points->end(), countPoint);
-	// std::for_each(std::execution::par, spilled_points->begin(), spilled_points->end(), countPoint);
-
-	vector<uint32_t> first_indices = {};
-	uint32_t step_size = 100'000u;
-	uint32_t nb_points = points->size();
-	uint32_t nb_spilled_points = spilled_points->size();
-	uint32_t max_nb_points = max(nb_points, nb_spilled_points);
-	for(uint32_t i=0; i<max_nb_points; i+=step_size){first_indices.push_back(i);}
-
-	std::for_each(std::execution::seq, first_indices.begin(), first_indices.end(), [&](uint32_t index){
-		for(uint32_t i=0; i<step_size; i++){
-			if((index + i) >= nb_points){break;}
-			countPoint((*points)[index + i]);
+	if(!CPU_PARALLELISED){
+		for(Point& point : *points){
+			countPoint(point);
 		}
-		for(uint32_t i=0; i<step_size; i++){
-			if((index + i) >= nb_spilled_points){break;}
-			countPoint((*spilled_points)[index + i]);
+		for(Point& point : *spilled_points){
+			countPoint(point);		
 		}
-	});
+	} else {
+		vector<uint32_t> first_indices = {};
+		uint32_t step_size = 100'000u;
+		uint32_t nb_points = points->size();
+		uint32_t nb_spilled_points = spilled_points->size();
+		uint32_t max_nb_points = max(nb_points, nb_spilled_points);
+		for(uint32_t i=0; i<max_nb_points; i+=step_size){first_indices.push_back(i);}
+
+		std::for_each(std::execution::par, first_indices.begin(), first_indices.end(), [&](uint32_t index){
+			for(uint32_t i=0; i<step_size; i++){
+				if((index + i) >= nb_points){break;}
+				countPoint((*points)[index + i]);
+			}
+			for(uint32_t i=0; i<step_size; i++){
+				if((index + i) >= nb_spilled_points){break;}
+				countPoint((*spilled_points)[index + i]);
+			}
+		});
+	}
 }
 
 
@@ -384,19 +383,32 @@ void simLodInsertion(
 		return;
 	};
 
-	std::thread parallel_thread([&](){
+	if(!CPU_PARALLELISED){
+		for(Point& point : *points){
+			insertPoint(point);
+		}
+		for(Point& point : *spilled_points){
+			insertPoint(point);		
+		}
 		uint32_t nb_new_voxels = backlog_voxels->size();
 		for(uint32_t i=0; i<nb_new_voxels; i++){
 			insertVoxel((*backlog_voxels)[i], (*backlog_voxels_nodes)[i]);
 		}
-	});
+	} else {
+		std::thread parallel_thread([&](){
+			uint32_t nb_new_voxels = backlog_voxels->size();
+			for(uint32_t i=0; i<nb_new_voxels; i++){
+				insertVoxel((*backlog_voxels)[i], (*backlog_voxels_nodes)[i]);
+			}
+		});
 
-	for(Point& point : *points){
-		insertPoint(point);
-	}
-	for(Point& point : *spilled_points){
-		insertPoint(point);		
-	}
+		for(Point& point : *points){
+			insertPoint(point);
+		}
+		for(Point& point : *spilled_points){
+			insertPoint(point);		
+		}
 
-	parallel_thread.join();
+		parallel_thread.join();
+	}
 }

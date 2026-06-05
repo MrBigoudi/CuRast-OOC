@@ -313,7 +313,7 @@ void initScene() {
 				if(done){break;}
 			}
 			while(true){
-				addPointBatches();
+				addPointBatches(mainOctree, mainAABB);
 				bool done = true;
 				for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
 					if(batchesQueue[i] && batchesQueue[i]->state != BatchState::Inserted){
@@ -333,7 +333,7 @@ void initScene() {
 				if(done){break;}
 			}
 			clearUnusedBatches();
-			loadOctreeOnGPU(CuRast::instance);
+			loadOctreeOnGPU(mainOctree, mainAABB, CuRast::instance);
 		} else {
 			std::thread thread_loadLion([&](std::string file){
 				initLoadPointBatches(file);
@@ -457,7 +457,7 @@ int main(int argc, char** argv){
 
 	// temporary function
 	auto sequential = [&](vector<string> files){
-		std::for_each(std::execution::seq, files.begin(), files.end(), [&](string& file){
+		std::for_each(files.begin(), files.end(), [&](string& file){
 			if(iEndsWith(file, ".las") || iEndsWith(file, ".laz")){
 				initLoadPointBatches(file);
 				while(true){
@@ -471,7 +471,7 @@ int main(int argc, char** argv){
 					if(done){break;}
 				}
 				while(true){
-					addPointBatches();
+					addPointBatches(mainOctree, mainAABB);
 					bool done = true;
 					for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
 						if(batchesQueue[i] && batchesQueue[i]->state != BatchState::Inserted){
@@ -491,7 +491,7 @@ int main(int argc, char** argv){
 					if(done){break;}
 				}
 				clearUnusedBatches();
-				loadOctreeOnGPU(CuRast::instance);
+				loadOctreeOnGPU(mainOctree, mainAABB, CuRast::instance);
 			}
 		});
 	};
@@ -524,7 +524,7 @@ int main(int argc, char** argv){
 		thread_loading_points.detach();
 
 		// Octree update routine
-		std::thread thread_octree_update(updateOctreeRoutine);
+		std::thread thread_octree_update([&](){updateOctreeRoutine(mainOctree, mainAABB);});
 		thread_octree_update.detach();
 
 		// Clear unused batches routine
@@ -552,48 +552,40 @@ int main(int argc, char** argv){
 			Runtime::debugValues["stage 2"] = format("{:.3f}", stage2_millies);
 			Runtime::debugValues["stage 3"] = format("{:.3f}", stage3_millies);
 
-			if(CPU_PARALLELISED){
-				// Send things GPU side
-				loadOctreeOnGPU(CuRast::instance);
-			}
-			freeOctreesOnGPU(CuRast::instance);
-
 			// TODO to remove
 			{
+				static AABB test_stored_aabb;
+
 				// Testing stuff
 				if(CuRastSettings::storeOctree){
 					AABB test_aabb = {.mins = mainAABB.get()->mins, .maxs = mainAABB.get()->maxs};
 					storeOctree(test_aabb, mainOctree);
+					test_stored_aabb = test_aabb;
 					CuRastSettings::storeOctree = false;
 				}
 				if(CuRastSettings::loadOctree){
-					AABB test_aabb = {.mins = mainAABB.get()->mins, .maxs = mainAABB.get()->maxs};
-					std::shared_ptr<OctreeNode> octree = loadOctree(test_aabb);
+					std::shared_ptr<OctreeNode> octree = loadOctree(test_stored_aabb);
 					CuRastSettings::loadOctree = false;
-
-					println("///////////////////////////////////////////////////");
-					println("///////////////////// Loaded //////////////////////");
-					println("///////////////////////////////////////////////////\n");
-					octree->display(0,0);
-					println("\n///////////////////////////////////////////////////");
-					println("///////////////////////////////////////////////////");
-					println("///////////////////////////////////////////////////\n");
-
-					println("///////////////////////////////////////////////////");
-					println("////////////////////// Real ///////////////////////");
-					println("///////////////////////////////////////////////////\n");
-					mainOctree->display(0,0);
-					println("\n///////////////////////////////////////////////////");
-					println("///////////////////////////////////////////////////");
-					println("///////////////////////////////////////////////////\n");
 					
 					if(*octree.get() == *mainOctree.get()){
 						println("loaded == original, serialisation / deserialisation worked");
 					} else {
 						println("ERROR: loaded != original, serialisation / deserialisation failed");
 					}
+
+					mainOctree = octree;
+					mainAABB = std::make_shared<AABB>(test_stored_aabb);
+
+					cuCtxSetCurrent(context);
+					loadOctreeOnGPU(mainOctree, mainAABB, CuRast::instance, true);
 				}
 			}
+
+			if(CPU_PARALLELISED){
+				// Send things GPU side
+				loadOctreeOnGPU(mainOctree, mainAABB, CuRast::instance);
+			}
+			freeOctreesOnGPU(CuRast::instance);
 		},
 		[&]() {CuRast::instance->render();},
 		[&]() {CuRast::instance->postFrame();}

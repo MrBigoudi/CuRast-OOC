@@ -176,7 +176,7 @@ void loadPointsInBatches(){
 	if(CPU_PARALLELISED){
 		std::for_each(std::execution::par, first, last, lambda);
 	} else {
-		std::for_each(std::execution::seq, first, last, lambda);
+		std::for_each(first, last, lambda);
 	}
 
     timing->stop_clock();
@@ -231,7 +231,7 @@ void loadBatchesOnGPU(CuRast* editor, CUcontext* ctx){
 	if(CPU_PARALLELISED){
 		std::for_each(std::execution::par, first, last, lambda);
 	} else {
-		std::for_each(std::execution::seq, first, last, lambda);
+		std::for_each(first, last, lambda);
 	}
 
     timing->stop_clock();

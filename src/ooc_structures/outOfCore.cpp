@@ -171,7 +171,7 @@ void OctreeNodeSerializable::init(
                 serializable.serialize(new_node.voxels);
             }
 
-            // TODO: recreate occupancy grid
+            // TODO: store occupancy grid
             // if(cur_node->occupancy){
             //     new_node.occupancy = getOccupancyFilePath(cur_aabb);
             //     // TODO: occupancy grid
@@ -270,7 +270,9 @@ std::shared_ptr<OctreeNode> OctreeNodeSerializable::toLeafNode(const AABB& node_
         new_node->voxels = voxels_deserialized.toChunk();
     }
 
-    // TODO: occupancy grid
+    if(occupancy != ""){
+        // TODO: reload occupancy
+    }
 
     return new_node;
 }
