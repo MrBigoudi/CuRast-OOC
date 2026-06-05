@@ -3,6 +3,8 @@
 ## Next small steps
 
 - Add a way to (manually ?) select the node to store / load
+- Add a way to flag not visible nodes from GPU side
+- Add a way to reload a node
 - Add parameters to the UI (max nb batches, points per batches, etc...)
 - Implement frustum culling
 - Create uniform structure for better structuring in cuda code / gui
