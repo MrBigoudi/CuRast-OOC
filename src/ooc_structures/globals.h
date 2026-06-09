@@ -4,6 +4,8 @@
 #include "laszip/laszip_api.h"
 #include <semaphore>
 
+#include <unordered_set>
+
 
 ///////////////////////////////////////////////////////////////////////////////
 /////////////////////////// GLOBAL ENUM DECLARATION ///////////////////////////
@@ -58,10 +60,11 @@ constexpr NodePosition FIRST_NODE_POSITION = FrontTopLeft;
 const std::string TEMPORARY_DIRECTORY = format("{}/build/tmp", PROJECT_SOURCE_DIR);
 /// The size of the LRU cache
 // constexpr uint32_t LRU_CACHE_SIZE = 16;
+// constexpr uint32_t LRU_CACHE_SIZE = 128;
 constexpr uint32_t LRU_CACHE_SIZE = 1024;
 
-constexpr bool CPU_PARALLELISED = true;
-// constexpr bool CPU_PARALLELISED = false;
+// constexpr bool CPU_PARALLELISED = true;
+constexpr bool CPU_PARALLELISED = false;
 
 /// The maximum size for the batches vectors
 extern uint32_t BATCHES_QUEUE_SIZE;
@@ -186,9 +189,26 @@ struct OccupancyGrid {
 	}
 	bool operator==(const OccupancyGrid& rhs) const {
 		for(uint32_t i=0; i<GRID_NUM_CELLS / 32u; i++){
-			if(values[i] != rhs.values[i]){return false;};
+			if(values[i] != rhs.values[i]){
+				// println("OccupancyGrid::operator==: at i=={}: {} != {}", 
+				// 	i, values[i], rhs.values[i]
+				// );
+				return false;
+			}
 		}
 		return true;
+	}
+
+	uint32_t getNbFilledEntries() const {
+		uint32_t cpt = 0;
+		for(uint32_t i=0; i<GRID_NUM_CELLS / 32u; i++){
+			for(uint32_t j=0; j<32; j++){
+				if(values[i] & (1u << j)){
+					cpt++;
+				}
+			}
+		}
+		return cpt;
 	}
 };
 
@@ -200,6 +220,8 @@ struct OctreeNode {
 	std::shared_ptr<Chunk> points = nullptr;
 	std::shared_ptr<Chunk> voxels = nullptr;
 	std::shared_ptr<OccupancyGrid> occupancy = nullptr;
+	bool from_split = false;
+	bool from_bottom_up = false;
 
 	bool updated = false;
 
@@ -211,7 +233,9 @@ struct OctreeNode {
 	bool operator==(const OctreeNode& rhs) const;
 
 	OctreeNode(){}
-	OctreeNode(const OctreeNode& cpy) : counter(cpy.counter), children_ids(cpy.children_ids){
+	OctreeNode(const OctreeNode& cpy) : counter(cpy.counter), children_ids(cpy.children_ids)
+		, from_split(cpy.from_split), from_bottom_up(cpy.from_bottom_up)
+	{
 		points = cpy.points ? std::make_shared<Chunk>(*cpy.points) : nullptr;
 		voxels = cpy.voxels ? std::make_shared<Chunk>(*cpy.voxels) : nullptr;
 		occupancy = cpy.occupancy ? std::make_shared<OccupancyGrid>(*cpy.occupancy) : nullptr;
@@ -286,13 +310,16 @@ extern std::shared_ptr<vector<OctreeNode*>> backlogVoxelsNodes;
 extern uint64_t lruCounter;
 typedef std::pair<uint64_t, std::shared_ptr<AABB>> CacheEntry; 
 extern std::array<std::optional<CacheEntry>, LRU_CACHE_SIZE> lruCache;
-extern std::unordered_map<AABB, std::optional<uint32_t>, AABB::Hash> lruMap;
+extern std::unordered_map<AABB, uint32_t, AABB::Hash> lruMapInCache;
+extern std::unordered_set<AABB, AABB::Hash> lruMapStored;
 
 /// Add a node to the cache and return the id of a node if it has been removed from the cache
 /// The id of a node is it's AABB
 std::optional<std::shared_ptr<AABB>> addToCache(const std::shared_ptr<AABB>& aabb);
 /// Check if a node is already in cache
 std::optional<uint32_t> getCacheIndex(const std::shared_ptr<AABB>& aabb);
+/// Check if a node has been stored
+bool hasBeenStored(const std::shared_ptr<AABB>& aabb);
 /// Display the LRU cache
 void displayCache();
 

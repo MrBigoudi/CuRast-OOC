@@ -560,6 +560,7 @@ int main(int argc, char** argv){
 
 				// Testing stuff
 				if(CuRastSettings::storeOctree){
+					// mainOctree->display();
 					test_stored_aabb = std::make_shared<AABB>(*mainAABB);
 					println("Start storing octree");
 					storeOctree(mainOctree, test_stored_aabb);

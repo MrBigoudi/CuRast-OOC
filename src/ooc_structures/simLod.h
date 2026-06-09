@@ -43,3 +43,13 @@ void simLodInsertion(
     std::shared_ptr<vector<Point>>& backlog_voxels,
     std::shared_ptr<vector<OctreeNode*>>& backlog_voxels_nodes
 );
+
+
+
+/// SimLOD loading pass
+void simLodLoad(
+    std::shared_ptr<OctreeNode>& main_root, 
+    std::shared_ptr<AABB>& main_aabb, 
+    std::shared_ptr<vector<Point>>& points,
+    std::shared_ptr<vector<Point>>& spilled_points
+);

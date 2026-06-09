@@ -1,12 +1,18 @@
 #include "simLod.h"
+#include "outOfCore.h"
+
+#include <unordered_set>
 
 void simLodUpdate(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>& main_aabb, std::shared_ptr<vector<Point>>& points){
 	std::shared_ptr<Timing> count_split_timing = addTiming("simlod count/split loop", true, 1);
 
 	uint32_t inner_cpt = 0;
 	while(true){
-
 		std::shared_ptr<Timing> timing = addTiming("simlod count", true, 2);
+		// simLodLoad(main_root, main_aabb, points, spilledPoints);
+		// timing->stop_clock();
+
+		timing = addTiming("simlod count", true, 2);
 		simLodCount(main_root, main_aabb, points, spilledPoints, spillingNodes);
 		timing->stop_clock();
 
@@ -199,6 +205,7 @@ void simLodSplit(
 			// Create necessary empty children
 			if(!spilling_node->children[j] && (0x01 << j) & spilling_node_children){
 				std::shared_ptr<OctreeNode> empty_child = std::make_shared<OctreeNode>();
+				empty_child->from_split = true;
 				// empty_child->is_leaf = true;
 				spilling_node->children[j] = empty_child;
 			}
@@ -252,7 +259,28 @@ void simLodVoxelSampling(
 			// if(node->is_leaf){return;}
 			if(!node->occupancy){return;}
 
-			// Sample voxel occupancy grid at this location
+			// Find next child
+			NodePosition child_index = current_aabb.getNextChildIndex(point.position);
+			AABB child_aabb = AABB(current_aabb);
+			child_aabb.shrink(child_index);
+			if(!child_aabb.contains(point.position)){
+				println("Error SimLOD voxel sampling: the point should always be contained in the next AABB");
+				println("\tpoint position: ({}, {}, {})", point.position.x, point.position.y, point.position.z);
+				println("\tpoint new index: {}", uint32_t(child_index));
+				println("\told AABB: mins({}, {}, {}), maxs({}, {}, {})", 
+					current_aabb.mins.x, current_aabb.mins.y, current_aabb.mins.z,
+					current_aabb.maxs.x, current_aabb.maxs.y, current_aabb.maxs.z
+				);
+				println("\tnew AABB: mins({}, {}, {}), maxs({}, {}, {})", 
+					current_aabb.mins.x, current_aabb.mins.y, current_aabb.mins.z,
+					current_aabb.maxs.x, current_aabb.maxs.y, current_aabb.maxs.z
+				);
+				println("skipping point...");
+				return;
+			}
+			if(!node->children[child_index]){return;}
+
+			// Sample voxel occupancy grid at this location if the node is inner for this point
 			vec3 normalized_coordinates = current_aabb.getPointNormalizedCoordinates(point.position);
 			uint32_t grid_x = clamp(uint32_t(floor(GRID_SIZE * normalized_coordinates.x)), 0u, GRID_SIZE - 1u);
 			uint32_t grid_y = clamp(uint32_t(floor(GRID_SIZE * normalized_coordinates.y)), 0u, GRID_SIZE - 1u);
@@ -267,12 +295,13 @@ void simLodVoxelSampling(
 				node->occupancy->values[word_index] |= (1u << bit_index);
 				// Create corresponding voxel using this point
 				vec3 world_grid_size = current_aabb.getSize() / float(GRID_SIZE);
-				vec3 voxel_centroid = current_aabb.mins + world_grid_size * vec3(grid_x, grid_y, grid_z);
+				vec3 voxel_centroid = current_aabb.mins + world_grid_size * vec3(grid_x, grid_y, grid_z) + 0.5f*world_grid_size;
 				Point new_voxel = {};
 				new_voxel.position = voxel_centroid;
 				new_voxel.color[0] = point.color[0];
 				new_voxel.color[1] = point.color[1];
 				new_voxel.color[2] = point.color[2];
+
 				// new_voxel.color[0] = 0x00;
 				// new_voxel.color[1] = 0xff;
 				// new_voxel.color[2] = 0xff;
@@ -283,29 +312,8 @@ void simLodVoxelSampling(
 				backlog_voxels_nodes->push_back(node.get());
 			}
 
-			// Find next child
-			NodePosition child_index = current_aabb.getNextChildIndex(point.position);
-			AABB old_aabb = current_aabb;
-			current_aabb.shrink(child_index);
-
-			if(!current_aabb.contains(point.position)){
-				println("Error SimLOD voxel sampling: the point should always be contained in the next AABB");
-				println("\tpoint position: ({}, {}, {})", point.position.x, point.position.y, point.position.z);
-				println("\tpoint new index: {}", uint32_t(child_index));
-				println("\told AABB: mins({}, {}, {}), maxs({}, {}, {})", 
-					old_aabb.mins.x, old_aabb.mins.y, old_aabb.mins.z,
-					old_aabb.maxs.x, old_aabb.maxs.y, old_aabb.maxs.z
-				);
-				println("\tnew AABB: mins({}, {}, {}), maxs({}, {}, {})", 
-					current_aabb.mins.x, current_aabb.mins.y, current_aabb.mins.z,
-					current_aabb.maxs.x, current_aabb.maxs.y, current_aabb.maxs.z
-				);
-				println("skipping point...");
-				return;
-			}
-
-			if(!node->children[child_index]){return;}
 			node = node->children[child_index];
+			current_aabb = AABB(child_aabb);
 		}
 	};
 
@@ -325,6 +333,7 @@ void simLodInsertion(
     std::shared_ptr<vector<Point>>& backlog_voxels,
     std::shared_ptr<vector<OctreeNode*>>& backlog_voxels_nodes
 ){
+
 	auto insertPoint = [&](Point& point){
 		// Reach all corresponding leaves
 		std::shared_ptr<OctreeNode> node = main_root;
@@ -414,5 +423,112 @@ void simLodInsertion(
 		}
 
 		parallel_thread.join();
+	}
+
+}
+
+
+
+void simLodLoad(
+    std::shared_ptr<OctreeNode>& main_root, 
+    std::shared_ptr<AABB>& main_aabb, 
+    std::shared_ptr<vector<Point>>& points,
+    std::shared_ptr<vector<Point>>& spilled_points
+){
+
+	mutex mtx_child, mtx_set;
+	std::unordered_set<AABB, AABB::Hash> tmp_set = {};
+
+
+	// Try to insert all points
+	auto tryInsertPoint = [&](Point& point){
+		// Reach corresponding leaf
+		std::shared_ptr<OctreeNode> leaf = main_root;
+		AABB current_aabb = AABB(*main_aabb);
+
+		uint8_t level = 1;
+
+		while(true){
+			// Find next child
+			NodePosition child_index = current_aabb.getNextChildIndex(point.position);
+			AABB old_aabb = current_aabb;
+			current_aabb.shrink(child_index);
+			leaf->children_ids |= 0x01 << child_index;
+
+			if(!current_aabb.contains(point.position)){
+				return;
+			}
+
+			// If not leaf continue
+			std::shared_ptr<OctreeNode> child = nullptr;
+			{
+				std::lock_guard<std::mutex> lock_child(mtx_child);
+				child = leaf->children[child_index];
+			}
+			if(child){
+				leaf = child;
+				// Get node level
+				if(level == UINT8_MAX){
+					println("The octree has reached it's maximum depth size...");
+					exit(EXIT_FAILURE);
+				}
+				level++;
+			} else {
+				std::shared_ptr<AABB> aabb = std::make_shared<AABB>(current_aabb);
+				// Check if the child has been stored
+				bool has_been_stored = hasBeenStored(aabb);
+
+				if(!has_been_stored){return;}
+
+				{
+					std::lock_guard<std::mutex> lock_map(mtx_set);
+					if(!tmp_set.contains(current_aabb)){
+						tmp_set.insert(current_aabb);
+						std::lock_guard<std::mutex> lock_child(mtx_child);
+						leaf->children[child_index] = loadOctree(aabb);
+					}
+				}
+				leaf = leaf->children[child_index];
+				if(!leaf){
+					println("At this point in the SimLodLoad, the leaf should never be null");
+					exit(EXIT_FAILURE);
+				}
+
+				// Get node level
+				if(level == UINT8_MAX){
+					println("The octree has reached it's maximum depth size...");
+					exit(EXIT_FAILURE);
+				}
+				level++;
+			}
+		}
+	};
+
+	if(!CPU_PARALLELISED){
+		for(Point& point : *points){
+			tryInsertPoint(point);
+		}
+		for(Point& point : *spilled_points){
+			tryInsertPoint(point);		
+		}
+	} else {
+		vector<uint32_t> first_indices = {};
+		uint32_t step_size = 100'000u;
+		uint32_t nb_points = points->size();
+		uint32_t nb_spilled_points = spilled_points->size();
+		uint32_t max_nb_points = max(nb_points, nb_spilled_points);
+		for(uint32_t i=0; i<max_nb_points; i+=step_size){first_indices.push_back(i);}
+
+		// std::for_each(std::execution::par, first_indices.begin(), first_indices.end(), [&](uint32_t index){
+		std::for_each(first_indices.begin(), first_indices.end(), [&](uint32_t index){
+			for(uint32_t i=0; i<step_size; i++){
+				if((index + i) >= nb_points){break;}
+				tryInsertPoint((*points)[index + i]);
+			}
+			for(uint32_t i=0; i<step_size; i++){
+				if((index + i) >= nb_spilled_points){break;}
+				tryInsertPoint((*spilled_points)[index + i]);
+			}
+		});
 	}
 }

@@ -188,10 +188,6 @@ void OctreeNodeSerializable::init(
                     serializable.serialize(new_node.voxels);
                 }
                 // TODO: store occupancy grid
-                // if(cur_node->occupancy){
-                //     new_node.occupancy = getOccupancyFilePath(cur_aabb);
-                //     // TODO: occupancy grid
-                // }
 
                 new_node.serialize(getNodeFilePath(cur_aabb));
             }
@@ -276,8 +272,28 @@ std::shared_ptr<OctreeNode> OctreeNodeSerializable::toLeafNode(const AABB& node_
         new_node->voxels = voxels_deserialized.toChunk();
     }
 
-    if(occupancy != ""){
-        // TODO: reload occupancy
+    // Rebuild occupancy
+    if(new_node->voxels){
+        new_node->occupancy = std::make_shared<OccupancyGrid>();
+        auto fillOccupancy = [&](std::shared_ptr<Chunk> chunk) {
+            while(chunk){
+                for(std::uint32_t point_id=0; point_id<chunk->size; point_id++){
+                    Point& point = chunk->points[point_id];
+
+                    // Sample voxel occupancy grid at this location
+                    vec3 normalized_coordinates = node_aabb.getPointNormalizedCoordinates(point.position);
+                    uint32_t grid_x = clamp(uint32_t(floor(GRID_SIZE * normalized_coordinates.x)), 0u, GRID_SIZE - 1u);
+                    uint32_t grid_y = clamp(uint32_t(floor(GRID_SIZE * normalized_coordinates.y)), 0u, GRID_SIZE - 1u);
+                    uint32_t grid_z = clamp(uint32_t(floor(GRID_SIZE * normalized_coordinates.z)), 0u, GRID_SIZE - 1u);
+                    uint32_t index = grid_x + GRID_SIZE * (grid_y + GRID_SIZE * grid_z);
+                    uint32_t word_index = index >> 5u;
+                    uint32_t bit_index = index & 31u;
+                    new_node->occupancy->values[word_index] |= (1u << bit_index);
+                }
+                chunk = chunk->next;
+            }
+        };
+        fillOccupancy(new_node->voxels);
     }
 
     return new_node;
@@ -323,13 +339,15 @@ std::shared_ptr<OctreeNode> OctreeNodeSerializable::toOctreeNodes(
 void storeOctree(const std::shared_ptr<OctreeNode>& full_octree, 
     const std::shared_ptr<AABB>& node_aabb, bool node_only
 ){
+    lruMapStored.insert(*node_aabb);
     OctreeNodeSerializable::init(full_octree, *node_aabb, node_only);
     // println("Done storing octree");
 }
 
 std::shared_ptr<OctreeNode> loadOctree(const std::shared_ptr<AABB>& root_aabb){
     // println("Start loading octree");
-    auto res = OctreeNodeSerializable::toOctreeNodes(*root_aabb);
+    std::shared_ptr<OctreeNode> res = OctreeNodeSerializable::toOctreeNodes(*root_aabb);
+    lruMapStored.erase(*root_aabb);
     // println("Done loading octree");
     return res;
 }
@@ -337,6 +355,7 @@ std::shared_ptr<OctreeNode> loadOctree(const std::shared_ptr<AABB>& root_aabb){
 
 /// Add nodes to cache after octree update
 void updateCache(std::shared_ptr<OctreeNode>& root_octree, std::shared_ptr<AABB>& root_aabb){
+
     // Traverse octree and add newly updated aabbs to the cache
     std::function<void(const std::shared_ptr<AABB>&, const std::shared_ptr<OctreeNode>&)> recursionAddToCache = 
         [&](const std::shared_ptr<AABB>& cur_aabb, const std::shared_ptr<OctreeNode>& cur_node)
@@ -375,15 +394,35 @@ void updateCache(std::shared_ptr<OctreeNode>& root_octree, std::shared_ptr<AABB>
         bool is_in_cache = getCacheIndex(cur_aabb).has_value();
         bool to_remove = false;
         if(!is_in_cache){
-            if(cur_node->updated){
-                storeOctree(root_octree, cur_aabb, true);
-            }
+            storeOctree(root_octree, cur_aabb, true);
             to_remove = true;
         }
+
+        // bool is_in_cache = false;
+        // for (auto it = lruCache.begin(); it != lruCache.end(); it++){
+        //     if((*it).has_value() && *(*it)->second == *cur_aabb){
+        //         is_in_cache = true;
+        //         break;
+        //     }
+        // }
 
         cur_node->updated = false;
         return to_remove;
     };
 
+    // println("\n//////////////////////////////////////////////////");
+	// println("/////////// Octree before cache update ///////////");
+	// println("//////////////////////////////////////////////////\n");
+	// root_octree->display();
+
     recursionRemoveNodes(root_aabb, root_octree);
+
+    // println("\n//////////////////////////////////////////////////");
+	// println("/////////// Octree after cache update ////////////");
+	// println("//////////////////////////////////////////////////\n");
+    // root_octree->display();
+    // static int cpt = 0;
+    // if(++cpt >= 2){
+    //     exit(EXIT_FAILURE);
+    // }
 }

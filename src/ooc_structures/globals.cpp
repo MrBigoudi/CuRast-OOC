@@ -272,61 +272,63 @@ void OctreeNode::display(uint32_t id, uint32_t level, bool node_only) const {
 
 bool OctreeNode::operator==(const OctreeNode& rhs) const {
 
-    std::function<bool(const OctreeNode&, const OctreeNode&)> recursion = [&](const OctreeNode& cur_lhs, const OctreeNode& cur_rhs) -> bool{        
-        if(cur_lhs.counter != cur_rhs.counter){
+    std::function<bool(const std::shared_ptr<OctreeNode>&, const std::shared_ptr<OctreeNode>&)> recursion = 
+        [&](const std::shared_ptr<OctreeNode>& cur_lhs, const std::shared_ptr<OctreeNode>& cur_rhs) -> bool
+    {    
+        if(cur_lhs->counter != cur_rhs->counter){
             println("OctreeNode::operator==: Wrong counter");
             return false;
         }
-        if(cur_lhs.children_ids != cur_rhs.children_ids){
+        if(cur_lhs->children_ids != cur_rhs->children_ids){
             println("OctreeNode::operator==: Wrong children ids");
             return false;
         }
         
-        if(!cur_lhs.points && cur_rhs.points){
+        if(!cur_lhs->points && cur_rhs->points){
             println("OctreeNode::operator==: Wrong points, should be empty");
             return false;
         }
-        if(cur_lhs.points){
-            if(!cur_rhs.points){
+        if(cur_lhs->points){
+            if(!cur_rhs->points){
                 println("OctreeNode::operator==: Wrong points, should not be empty");
                 return false;
             }
-            const Chunk& lhs_points = *cur_lhs.points.get();
-            const Chunk& rhs_points = *cur_rhs.points.get();
+            const Chunk& lhs_points = *cur_lhs->points.get();
+            const Chunk& rhs_points = *cur_rhs->points.get();
             if(lhs_points != rhs_points){
                 println("OctreeNode::operator==: Wrong points");
                 return false;
             }
         }
         
-        if(!cur_lhs.voxels && cur_rhs.voxels){
+        if(!cur_lhs->voxels && cur_rhs->voxels){
             println("OctreeNode::operator==: Wrong voxels, should be empty");
             return false;
         }
-        if(cur_lhs.voxels){
-            if(!cur_rhs.voxels){
+        if(cur_lhs->voxels){
+            if(!cur_rhs->voxels){
                 println("OctreeNode::operator==: Wrong voxels, should not be empty");
                 return false;
             }
-            const Chunk& lhs_voxels = *cur_lhs.voxels.get();
-            const Chunk& rhs_voxels = *cur_rhs.voxels.get();
+            const Chunk& lhs_voxels = *cur_lhs->voxels.get();
+            const Chunk& rhs_voxels = *cur_rhs->voxels.get();
             if(lhs_voxels != rhs_voxels){
                 println("OctreeNode::operator==: Wrong voxels");
                 return false;
             }
         }
 
-        if(!cur_lhs.occupancy && cur_rhs.occupancy){
+        if(!cur_lhs->occupancy && cur_rhs->occupancy){
             println("OctreeNode::operator==: Wrong occupancy grid, should be empty");
             return false;
         }
-        if(cur_lhs.occupancy){
-            if(!cur_rhs.occupancy){
+        if(cur_lhs->occupancy){
+            if(!cur_rhs->occupancy){
                 println("OctreeNode::operator==: Wrong occupancy grid, should not be empty");
                 return false;
             }
-            const OccupancyGrid& lhs_grid = *cur_lhs.occupancy.get();
-            const OccupancyGrid& rhs_grid = *cur_rhs.occupancy.get();
+            const OccupancyGrid& lhs_grid = *cur_lhs->occupancy.get();
+            const OccupancyGrid& rhs_grid = *cur_rhs->occupancy.get();
             if(lhs_grid != rhs_grid){
                 println("OctreeNode::operator==: Wrong occupancy grid");
                 return false;
@@ -334,18 +336,18 @@ bool OctreeNode::operator==(const OctreeNode& rhs) const {
         }
 
         for(uint32_t i=0; i<8; i++){
-            if(!cur_lhs.children[i] && !cur_rhs.children[i]){continue;}
-            if(cur_lhs.children[i] && !cur_rhs.children[i]){
+            if(!cur_lhs->children[i] && !cur_rhs->children[i]){continue;}
+            if(cur_lhs->children[i] && !cur_rhs->children[i]){
                 println("OctreeNode::operator==: Wrong child, should not be empty");
                 return false;
             }
-            if(!cur_lhs.children[i] && cur_rhs.children[i]){
+            if(!cur_lhs->children[i] && cur_rhs->children[i]){
                 println("OctreeNode::operator==: Wrong child, should be empty");
                 return false;
             }
-            const OctreeNode& lhs_child = *cur_lhs.children[i].get();
-            const OctreeNode& rhs_child = *cur_rhs.children[i].get();
-            if(lhs_child != rhs_child){
+            const std::shared_ptr<OctreeNode>& lhs_child = cur_lhs->children[i];
+            const std::shared_ptr<OctreeNode>& rhs_child = cur_rhs->children[i];
+            if(!recursion(lhs_child, rhs_child)){
                 println("OctreeNode::operator==: Wrong child");
                 return false;
             }
@@ -354,7 +356,7 @@ bool OctreeNode::operator==(const OctreeNode& rhs) const {
         return true;
     };
 
-    return recursion(*this, rhs);
+    return recursion(std::make_shared<OctreeNode>(*this), std::make_shared<OctreeNode>(rhs));
 }
 
 
@@ -421,7 +423,8 @@ std::shared_ptr<vector<OctreeNode*>> backlogVoxelsNodes = std::make_shared<vecto
 
 /// The LRU cache for the nodes
 std::array<std::optional<CacheEntry>, LRU_CACHE_SIZE> lruCache = {nullopt};
-std::unordered_map<AABB, std::optional<uint32_t>, AABB::Hash> lruMap = {};
+std::unordered_map<AABB, uint32_t, AABB::Hash> lruMapInCache = {};
+std::unordered_set<AABB, AABB::Hash> lruMapStored = {};
 uint64_t lruCounter = 0;
 
 
@@ -568,7 +571,7 @@ std::optional<std::shared_ptr<AABB>> addToCache(const std::shared_ptr<AABB>& aab
         } else {
             // Found empty space
             lruCache[cache_id] = {lruCounter, aabb};
-            lruMap.insert_or_assign(*aabb, cache_id);
+            lruMapInCache.insert_or_assign(*aabb, cache_id);
             return nullopt;
         }
     }
@@ -577,12 +580,16 @@ std::optional<std::shared_ptr<AABB>> addToCache(const std::shared_ptr<AABB>& aab
     std::shared_ptr<AABB> old_entry = lruCache[new_id]->second;
     CacheEntry new_entry = {lruCounter, aabb};
     lruCache[new_id] = new_entry;
-    lruMap.insert_or_assign(*aabb, new_id);
-    lruMap.insert_or_assign(*old_entry, nullopt);
+    lruMapInCache.insert_or_assign(*aabb, new_id);
+    lruMapInCache.erase(*old_entry);
 
     return std::optional<std::shared_ptr<AABB>>(old_entry);
 }
 
 std::optional<uint32_t> getCacheIndex(const std::shared_ptr<AABB>& aabb){
-    return lruMap.contains(*aabb) ? lruMap.at(*aabb) : nullopt;
+    return lruMapInCache.contains(*aabb) ? std::optional<uint32_t>(lruMapInCache.at(*aabb)) : nullopt;
+}
+
+bool hasBeenStored(const std::shared_ptr<AABB>& aabb){
+    return lruMapStored.contains(*aabb);
 }

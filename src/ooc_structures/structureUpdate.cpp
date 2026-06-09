@@ -77,6 +77,7 @@ void uptadeOctree(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>&
 		// Create new parent
 		std::shared_ptr<OctreeNode> new_parent = std::make_shared<OctreeNode>();
 		new_parent->occupancy = std::make_shared<OccupancyGrid>();
+		new_parent->from_bottom_up = true;
 
 		new_parent->updated = true;
 		main_root->updated = true;
@@ -85,12 +86,13 @@ void uptadeOctree(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>&
 		new_parent->children[node_position] = main_root;
 		new_parent->children_ids |= 0x01 << node_position;
 
-		auto fillOccupancyGrid = [&](std::shared_ptr<Chunk> child_chunk_list){
+		auto fillOccupancyGrid = [&](AABB& cur_aabb, std::shared_ptr<Chunk> child_chunk_list){
 			while(child_chunk_list){
 				for(uint32_t j=0; j<child_chunk_list->size; j++){
-					Point point = child_chunk_list->points[j];
+					Point& point = child_chunk_list->points[j];
+
 					// Sample voxel occupancy grid at this location
-					vec3 normalized_coordinates = main_aabb->getPointNormalizedCoordinates(point.position);
+					vec3 normalized_coordinates = cur_aabb.getPointNormalizedCoordinates(point.position);
 					uint32_t grid_x = clamp(uint32_t(floor(GRID_SIZE * normalized_coordinates.x)), 0u, GRID_SIZE - 1u);
 					uint32_t grid_y = clamp(uint32_t(floor(GRID_SIZE * normalized_coordinates.y)), 0u, GRID_SIZE - 1u);
 					uint32_t grid_z = clamp(uint32_t(floor(GRID_SIZE * normalized_coordinates.z)), 0u, GRID_SIZE - 1u);
@@ -103,8 +105,8 @@ void uptadeOctree(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>&
 					if(!is_cell_occupied){
 						new_parent->occupancy->values[word_index] |= (1u << bit_index);
 						// Create corresponding voxel using this point
-						vec3 world_grid_size = main_aabb->getSize() / float(GRID_SIZE);
-						vec3 voxel_centroid = main_aabb->mins + world_grid_size * vec3(grid_x, grid_y, grid_z);
+						vec3 world_grid_size = cur_aabb.getSize() / float(GRID_SIZE);
+						vec3 voxel_centroid = cur_aabb.mins + world_grid_size * vec3(grid_x, grid_y, grid_z) + 0.5f*world_grid_size;
 						Point new_voxel = {};
 						new_voxel.position = voxel_centroid;
 						new_voxel.color[0] = point.color[0];
@@ -128,14 +130,13 @@ void uptadeOctree(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>&
 		};
 
 		// Sample voxels to fill new occupancy grid
-		fillOccupancyGrid(main_root->points);
-		fillOccupancyGrid(main_root->voxels);		
-
 		main_aabb->extend(node_position);
+		fillOccupancyGrid(*main_aabb.get(), main_root->points);
+		fillOccupancyGrid(*main_aabb.get(), main_root->voxels);
+
 		main_root = new_parent;
 		updateNodePosition(node_position);
 	}
-
 }
 
 
@@ -148,18 +149,6 @@ void freeOctreesOnGPU(CuRast* editor, bool force_free){
     uint64_t total_byte = 0;
 	double free_db, total_db, used_db = 0.;
 	CUresult cuda_status = CUDA_SUCCESS;
-
-	// // TODO: Debug display to remove
-	// {
-	// 	cuda_status = cuMemGetInfo(&free_byte, &total_byte);
-	// 	CURuntime::assertCudaSuccess(cuda_status);
-	// 	free_db = (double)free_byte;
-	// 	total_db = (double)total_byte;
-	// 	used_db = total_db - free_db;
-	// 	println("GPU memory usage before cleaning: used = {:L} Mb, free = {:L} Mb, total = {:L} Mb",
-	// 		used_db/1024.0/1024.0, free_db/1024.0/1024.0, total_db/1024.0/1024.0
-	// 	);
-	// }
 
 	std::vector<SNCOctree*> octrees = {};
 	editor->scene.forEach<SNCOctree>([&](SNCOctree* node){
@@ -176,21 +165,7 @@ void freeOctreesOnGPU(CuRast* editor, bool force_free){
 		if(octree->name != main_octree_name){
 			editor->scene.world->remove(octree);
 		}
-	}
-
-
-	// // TODO: Debug display to remove
-	// {
-	// 	cuda_status = cuMemGetInfo(&free_byte, &total_byte);
-	// 	CURuntime::assertCudaSuccess(cuda_status);
-	// 	free_db = (double)free_byte;
-	// 	total_db = (double)total_byte;
-	// 	used_db = total_db - free_db;
-	// 	println("GPU memory usage after cleaning: used = {:L} Mb, free = {:L} Mb, total = {:L} Mb",
-	// 		used_db/1024.0/1024.0, free_db/1024.0/1024.0, total_db/1024.0/1024.0
-	// 	);
-	// }
-	
+	}	
 }
 
 

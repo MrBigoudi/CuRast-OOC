@@ -38,7 +38,6 @@ struct OctreeNodeSerializable {
 	uint8_t children_ids = 0b00000000;
 	std::string points = "";
 	std::string voxels = "";
-    std::string occupancy = "";
 
     OctreeNodeSerializable(){};
 
