@@ -57,10 +57,10 @@ constexpr NodePosition FIRST_NODE_POSITION = FrontTopLeft;
 /// The temporary files directory to store nodes in disk
 const std::string TEMPORARY_DIRECTORY = format("{}/build/tmp", PROJECT_SOURCE_DIR);
 /// The size of the LRU cache
-constexpr uint32_t LRU_CACHE_SIZE = 16;
+constexpr uint32_t LRU_CACHE_SIZE = 1024;
 
-// constexpr bool CPU_PARALLELISED = true;
-constexpr bool CPU_PARALLELISED = false;
+constexpr bool CPU_PARALLELISED = true;
+// constexpr bool CPU_PARALLELISED = false;
 
 /// The maximum size for the batches vectors
 extern uint32_t BATCHES_QUEUE_SIZE;

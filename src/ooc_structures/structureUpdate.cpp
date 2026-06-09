@@ -490,7 +490,7 @@ void addPointBatches(std::shared_ptr<OctreeNode>& main_octree, std::shared_ptr<A
 	timing = addTiming("update cache", true);
 	updateCache(temporary_octree, temporary_aabb);
 	timing->stop_clock();
-	displayCache();
+	// displayCache();
 
 	// println("//////////////////////////////////////////////////");
 	// println("/////////// Octree after simLOD update ///////////");

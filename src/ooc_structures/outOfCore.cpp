@@ -353,7 +353,6 @@ void updateCache(std::shared_ptr<OctreeNode>& root_octree, std::shared_ptr<AABB>
             addToCache(cur_aabb);
         }
 
-        cur_node->updated = false;
     };
 
     recursionAddToCache(root_aabb, root_octree);
@@ -375,18 +374,23 @@ void updateCache(std::shared_ptr<OctreeNode>& root_octree, std::shared_ptr<AABB>
 
         bool is_in_cache = false;
         for (auto it = lruCache.begin(); it != lruCache.end(); it++){
-            if(*(*it)->second == *cur_aabb){
+            if((*it).has_value() && *(*it)->second == *cur_aabb){
                 is_in_cache = true;
                 break;
             }
         }
 
+        bool to_remove = false;
+
         if(!is_in_cache){
-            storeOctree(root_octree, cur_aabb, true);
-            return true;
+            if(cur_node->updated){
+                storeOctree(root_octree, cur_aabb, true);
+            }
+            to_remove = true;
         }
 
-        return false;
+        cur_node->updated = false;
+        return to_remove;
     };
 
     recursionRemoveNodes(root_aabb, root_octree);

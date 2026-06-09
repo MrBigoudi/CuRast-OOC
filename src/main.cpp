@@ -554,21 +554,25 @@ int main(int argc, char** argv){
 			Runtime::debugValues["stage 2"] = format("{:.3f}", stage2_millies);
 			Runtime::debugValues["stage 3"] = format("{:.3f}", stage3_millies);
 
-			// TODO to remove
+			// TODO: to remove
 			{
 				static std::shared_ptr<AABB> test_stored_aabb = nullptr;
 
 				// Testing stuff
 				if(CuRastSettings::storeOctree){
 					test_stored_aabb = std::make_shared<AABB>(*mainAABB);
+					println("Start storing octree");
 					storeOctree(mainOctree, test_stored_aabb);
+					println("Done storing octree");
 					CuRastSettings::storeOctree = false;
 				}
 				if(CuRastSettings::loadOctree){
+					println("Start loading octree");
 					std::shared_ptr<OctreeNode> octree = loadOctree(test_stored_aabb);
+					println("Done loading octree");
 					CuRastSettings::loadOctree = false;
 					
-					if(*octree.get() == *mainOctree.get()){
+					if(*mainOctree.get() == *octree.get()){
 						println("loaded == original, serialisation / deserialisation worked");
 					} else {
 						println("ERROR: loaded != original, serialisation / deserialisation failed");
