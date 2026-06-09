@@ -362,6 +362,7 @@ struct COctreeNode {
 	uint8_t level;
 	bool is_large = false;
 	bool is_visible = false;
+	bool is_cut = false;
 	CChunk* points;
 	CChunk* voxels;
 	COccupancyGrid* occupancy;

@@ -470,6 +470,7 @@ void kernel_visibilityPass(
     
     if(octree.debug_lod_to_render == -1){
         node->is_large = isLargerThanMinSpanning(octree.min_pixel_span, aabb, target, octree.world);
+        node->is_cut = false;
     }
 }
 
@@ -502,7 +503,7 @@ void kernel_drawOctreeLarge(
             if(!child){continue;}
             if(child->is_large){continue;}
             if(!child->is_visible){continue;}
-            child->is_visible = true;
+            child->is_cut = true;
         }
     }
 }
@@ -532,7 +533,9 @@ void kernel_drawOctreeSmall(
         }
         drawAllPoints(node, target, octree.world);
     } else {
-        if(!node->is_large && node->is_visible){
+        bool should_draw = !node->is_large && node->is_visible && node->is_cut;
+        bool is_minimal_draw = (node->level == 0) && !node->is_large;
+        if(should_draw || is_minimal_draw){
             drawAllPoints(node, target, octree.world);
             drawAllVoxels(
                 node, aabb, target, 
