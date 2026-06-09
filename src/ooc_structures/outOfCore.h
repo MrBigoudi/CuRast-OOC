@@ -48,7 +48,7 @@ struct OctreeNodeSerializable {
     );
 
     static std::shared_ptr<OctreeNode> toOctreeNodes(
-        const AABB& root_aabb
+        const AABB& root_aabb, bool node_only
     );
 
     private:
@@ -90,7 +90,7 @@ void storeOctree(const std::shared_ptr<OctreeNode>& full_octree,
 
 /// Load an octree from a file
 /// Recursively loads all root node's children
-std::shared_ptr<OctreeNode> loadOctree(const std::shared_ptr<AABB>& root_aabb);
+std::shared_ptr<OctreeNode> loadOctree(const std::shared_ptr<AABB>& root_aabb, bool node_only = false);
 
 /// Add nodes to cache after octree update
 void updateCache(std::shared_ptr<OctreeNode>& root_octree, std::shared_ptr<AABB>& root_aabb);

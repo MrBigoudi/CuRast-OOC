@@ -530,8 +530,8 @@ void kernel_drawOctreeSmall(
                 octree.world, octree.voxels_nb_points_per_axis,
                 octree.max_lod_level, octree.use_voxels_debug_color
             );
+            drawAllPoints(node, target, octree.world);
         }
-        drawAllPoints(node, target, octree.world);
     } else {
         bool should_draw = !node->is_large && node->is_visible && node->is_cut;
         bool is_minimal_draw = (node->level == 0) && !node->is_large;

@@ -6,11 +6,27 @@
 void simLodUpdate(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>& main_aabb, std::shared_ptr<vector<Point>>& points){
 	std::shared_ptr<Timing> count_split_timing = addTiming("simlod count/split loop", true, 1);
 
+	// println("//////////////////////////////////////////////////");
+	// println("////////// Octree before simlod update ///////////");
+	// println("//////////////////////////////////////////////////");
+	// main_root->display();
+
 	uint32_t inner_cpt = 0;
 	while(true){
-		std::shared_ptr<Timing> timing = addTiming("simlod count", true, 2);
-		// simLodLoad(main_root, main_aabb, points, spilledPoints);
-		// timing->stop_clock();
+		std::shared_ptr<Timing> timing = addTiming("simlod load", true, 2);
+		simLodLoad(main_root, main_aabb, points, spilledPoints);
+		timing->stop_clock();
+
+		// println("//////////////////////////////////////////////////");
+		// println("////////// Octree after simlod load //////////");
+		// println("//////////////////////////////////////////////////");
+		// main_root->display();
+		// {
+		// 	static int cpt = 0;
+		// 	if(cpt++ >= 30){
+		// 		exit(EXIT_FAILURE);
+		// 	}
+		// }
 
 		timing = addTiming("simlod count", true, 2);
 		simLodCount(main_root, main_aabb, points, spilledPoints, spillingNodes);
@@ -437,6 +453,7 @@ void simLodLoad(
 ){
 
 	mutex mtx_child, mtx_set;
+	// tmp_ser is here to avoid loading a node multiple time in the parallel context
 	std::unordered_set<AABB, AABB::Hash> tmp_set = {};
 
 
@@ -446,25 +463,21 @@ void simLodLoad(
 		std::shared_ptr<OctreeNode> leaf = main_root;
 		AABB current_aabb = AABB(*main_aabb);
 
-		uint8_t level = 1;
+		uint8_t level = 0;
 
 		while(true){
 			// Find next child
 			NodePosition child_index = current_aabb.getNextChildIndex(point.position);
-			AABB old_aabb = current_aabb;
 			current_aabb.shrink(child_index);
-			leaf->children_ids |= 0x01 << child_index;
 
+			// Sanitary check
 			if(!current_aabb.contains(point.position)){
+				println("Failed sanity check");
 				return;
 			}
 
-			// If not leaf continue
-			std::shared_ptr<OctreeNode> child = nullptr;
-			{
-				std::lock_guard<std::mutex> lock_child(mtx_child);
-				child = leaf->children[child_index];
-			}
+			// If current node is not a leaf continue, else current node becomes child
+			std::shared_ptr<OctreeNode> child = leaf->children[child_index];
 			if(child){
 				leaf = child;
 				// Get node level
@@ -476,18 +489,27 @@ void simLodLoad(
 			} else {
 				std::shared_ptr<AABB> aabb = std::make_shared<AABB>(current_aabb);
 				// Check if the child has been stored
-				bool has_been_stored = hasBeenStored(aabb);
+				bool has_been_stored = false;
+				
+				{
+					std::lock_guard<std::mutex> lock_map(mtx_set);
+					std::lock_guard<std::mutex> lock_child(mtx_child);
+					has_been_stored = hasBeenStored(aabb) || tmp_set.contains(current_aabb);
+				}
 
+				// If the child has not been stored, we've reached the end of the loop
 				if(!has_been_stored){return;}
 
+				// Else, we load the child and make it the current node
 				{
 					std::lock_guard<std::mutex> lock_map(mtx_set);
 					if(!tmp_set.contains(current_aabb)){
 						tmp_set.insert(current_aabb);
 						std::lock_guard<std::mutex> lock_child(mtx_child);
-						leaf->children[child_index] = loadOctree(aabb);
+						leaf->children[child_index] = loadOctree(aabb, true);
 					}
 				}
+
 				leaf = leaf->children[child_index];
 				if(!leaf){
 					println("At this point in the SimLodLoad, the leaf should never be null");
@@ -519,8 +541,7 @@ void simLodLoad(
 		uint32_t max_nb_points = max(nb_points, nb_spilled_points);
 		for(uint32_t i=0; i<max_nb_points; i+=step_size){first_indices.push_back(i);}
 
-		// std::for_each(std::execution::par, first_indices.begin(), first_indices.end(), [&](uint32_t index){
-		std::for_each(first_indices.begin(), first_indices.end(), [&](uint32_t index){
+		std::for_each(std::execution::par, first_indices.begin(), first_indices.end(), [&](uint32_t index){
 			for(uint32_t i=0; i<step_size; i++){
 				if((index + i) >= nb_points){break;}
 				tryInsertPoint((*points)[index + i]);
