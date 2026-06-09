@@ -4,7 +4,6 @@
 #include <cmath>
 #include <bit>
 
-
 #ifdef __CUDA_ARCH__
 	#include <math_constants.h>
 	constexpr float Infinity = __builtin_bit_cast(float, 0x7f800000);
@@ -324,3 +323,63 @@ struct RasterArgs{
 };
 
 extern __constant__ RenderTarget c_target;
+
+
+
+// TODO: test code to remove
+constexpr uint16_t C_MAX_POINTS_PER_LEAF = 50'000;
+constexpr uint32_t C_POINTS_PER_CHUNK = 1'024;
+constexpr uint32_t C_OCTREE_RENDER_BLOCK_SIZE = 256;
+constexpr uint32_t C_GRID_SIZE = 128;
+constexpr uint32_t C_GRID_NUM_CELLS = C_GRID_SIZE * C_GRID_SIZE * C_GRID_SIZE / 32u;
+constexpr uint32_t C_MAX_ALLOCATED_CHUNKS = 1'000;
+struct CAABB {
+	vec3 mins = {INFINITY, INFINITY, INFINITY};
+	vec3 maxs = {-INFINITY, -INFINITY, -INFINITY};
+};
+struct CPoint {
+	vec3 position;
+	uint32_t color;
+};
+struct CVoxel {
+	uint8_t x;
+	uint8_t y;
+	uint8_t z;
+	uint8_t padding;
+	uint32_t color;
+};
+struct CChunk{
+	CPoint points[C_POINTS_PER_CHUNK];
+	uint32_t size;
+	CChunk* next;
+};
+struct COccupancyGrid {
+	uint32_t values[C_GRID_NUM_CELLS];
+};
+struct COctreeNode {
+	uint16_t counter;
+	uint8_t children_ids;
+	uint8_t level;
+	bool is_large = false;
+	bool is_visible = false;
+	bool is_cut = false;
+	CChunk* points;
+	CChunk* voxels;
+	COccupancyGrid* occupancy;
+	COctreeNode* children[8];
+};
+
+struct CFullOctree {
+	mat4 world;
+	COctreeNode** nodes;
+	CAABB** aabbs;
+	CChunk** chunks;
+	COccupancyGrid** occupancy_grids;
+	uint32_t num_nodes;
+	uint32_t max_lod_level;
+	// TODO: put inside uniforms structure
+	int32_t debug_lod_to_render;
+	uint32_t voxels_nb_points_per_axis;
+	float min_pixel_span;
+	bool use_voxels_debug_color;
+};

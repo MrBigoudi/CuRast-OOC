@@ -28,6 +28,7 @@ if (LINUX)
 	find_library(TURBOJPEG_LIBRARY
 		NAMES turbojpeg
 	)
+	find_package(TBB REQUIRED)
 endif()
 
 # --------------------------------------------------------
@@ -36,6 +37,7 @@ endif()
 file(GLOB PROJECT_SOURCES CONFIGURE_DEPENDS 
 	src/*.[ch]pp
 	src/*.cu
+	src/ooc_structures/*.[ch]pp
 	src/kernels/textureTools.cu
 	src/kernels/lines.cu
 	#src/kernels/rasterization_utils.cu
@@ -66,10 +68,13 @@ target_compile_definitions(${TARGET_NAME}
 target_include_directories(${TARGET_NAME} PRIVATE
 	./src
 	./libs
+	./libs/container_hash/include
 	${TURBOJPEG_INCLUDE_DIR}
 )
 
+set(MY_BUILD_TYPE "${CMAKE_BUILD_TYPE}")
 add_subdirectory(libs/laszip)
+set(CMAKE_BUILD_TYPE "${MY_BUILD_TYPE}" CACHE STRING "" FORCE)
 
 
 if (WIN32)
@@ -82,6 +87,7 @@ elseif (LINUX)
 		${TURBOJPEG_LIBRARY}
 		laszip
 		stdc++exp
+		TBB::tbb
 	)
 endif()
 
@@ -124,4 +130,8 @@ target_include_directories(PlyToGlb PRIVATE
 	./src
 	./libs
 )
-target_link_libraries(PlyToGlb PRIVATE glfw)
+if (WIN32)
+	target_link_libraries(PlyToGlb PRIVATE glfw)
+elseif (LINUX)
+	target_link_libraries(PlyToGlb PRIVATE glfw TBB::tbb)
+endif()

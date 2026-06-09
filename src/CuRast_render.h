@@ -111,8 +111,70 @@ void drawPoints(Scene* scene, View view, RenderTarget& target){
 		prog->launch("kernel_drawPointcloud", {&cpc, &target}, cpc.numPoints);
 		
 	});
+}
 
+void drawOctreeAABB(Scene* scene, View view, RenderTarget& target){
+	static CudaModularProgram* prog = new CudaModularProgram({"./src/kernels/octree.cu"});
 
+	scene->forEach<SNCOctree>([&](SNCOctree* octree){
+
+		CFullOctree cfo;
+		cfo.world     = octree->transform_global;
+		cfo.nodes     = (COctreeNode**)(octree->nodes);
+		cfo.aabbs     = (CAABB**)(octree->aabbs);
+		cfo.chunks    = (CChunk**)(octree->chunks);
+		cfo.num_nodes = octree->num_nodes;
+		cfo.max_lod_level = octree->max_lod_level;
+
+		prog->launch("kernel_drawOctreeAABB", {&cfo, &target}, cfo.num_nodes);
+	});
+}
+
+void drawOctree(Scene* scene, View view, RenderTarget& target, 
+	int32_t debug_lod = -1, int32_t voxels_nb_points = 1, float min_pixel_span = 64.,
+	bool use_voxels_debug_color = false
+){
+	static CudaModularProgram* prog = new CudaModularProgram({"./src/kernels/octree.cu"});
+
+    scene->forEach<SNCOctree>([&](SNCOctree* octree){
+        CFullOctree cfo;
+        cfo.world     = octree->transform_global;
+        cfo.nodes     = (COctreeNode**)(octree->nodes);
+        cfo.aabbs     = (CAABB**)(octree->aabbs);
+        cfo.chunks    = (CChunk**)(octree->chunks);
+        cfo.occupancy_grids = (COccupancyGrid**)(octree->occupancy_grids);
+        cfo.num_nodes = octree->num_nodes;
+        cfo.max_lod_level = octree->max_lod_level;
+		cfo.debug_lod_to_render = debug_lod;
+		cfo.voxels_nb_points_per_axis = uint32_t(voxels_nb_points);
+		cfo.min_pixel_span = min_pixel_span;
+		cfo.use_voxels_debug_color = use_voxels_debug_color;
+
+		// println("nb nodes: {}, nb aabbs: {}, nb chunks: {}, nb nodes: {}",
+		// 	octree->cptr_nodes.size(), octree->cptr_aabbs.size(), octree->cptr_chunks.size(), octree->num_nodes
+		// );
+
+		// for(uint32_t i=0; i<10; i++){
+		// 	CAABB res = {};
+		// 	cuMemcpyDtoH(&res, octree->cptr_aabbs[i], sizeof(CAABB));
+		// 	println("- DEVICE: AABB[{}] = mins({}, {}, {}), maxs({}, {}, {})", i,
+		// 		res.mins.x, res.mins.y, res.mins.z,
+		// 		res.maxs.x, res.maxs.y, res.maxs.z
+		// 	);
+		// }
+		// exit(EXIT_FAILURE);
+		// prog->launch("kernel_drawOctree", {&cfo, &target}, cfo.num_nodes);
+        
+        uint32_t numThreads = cfo.num_nodes * C_OCTREE_RENDER_BLOCK_SIZE;
+		OptionalLaunchSettings launch_settings = {
+			.gridsize = cfo.num_nodes,
+			.blocksize = C_OCTREE_RENDER_BLOCK_SIZE
+		};
+
+		prog->launch("kernel_visibilityPass", {&cfo, &target}, launch_settings);
+		prog->launch("kernel_drawOctreeLarge", {&cfo, &target}, launch_settings);
+		prog->launch("kernel_drawOctreeSmall", {&cfo, &target}, launch_settings);
+    });
 }
 
 
@@ -368,17 +430,17 @@ void CuRast::draw(Scene* scene, vector<View> views){
 		Runtime::numTriangles = numTotalTriangles;
 
 		auto& dvlist = Runtime::debugValueList;
-		dvlist.push_back({"#total nodes           ", format("{:40L}", uint64_t(numTotalNodes))});
-		dvlist.push_back({"#total triangles       ", format("{:40L}", uint64_t(numTotalTriangles))});
-		dvlist.push_back({"#visible nodes         ", format("{:40L}", uint64_t(numVisibleNodes))});
-		dvlist.push_back({"#visible triangles     ", format("{:40L}", uint64_t(numVisibleTriangles))});
-		dvlist.push_back({"hovered mesh id        ", format("{:40L}", CuRast::deviceState->hovered_meshId)});
-		dvlist.push_back({"hovered triangle index ", format("{:40L}", CuRast::deviceState->hovered_triangleIndex)});
-		dvlist.push_back({"hovered node name      ", format("{:}", Runtime::hovered_node_name)});
-		dvlist.push_back({"hovered mesh name      ", format("{:}", Runtime::hovered_mesh_name)});
-		dvlist.push_back({"tris in hovered mesh   ", format("{:40L}", hoveredMesh ? hoveredMesh->numTriangles : 0)});
-		dvlist.push_back({"verts in hovered mesh  ", format("{:40L}", hoveredMesh ? hoveredMesh->numVertices : 0)});
-		dvlist.push_back({"CPU draw() duration    ", format("{:40.1f} ms", Runtime::duration_draw * 1000.0)});
+		// dvlist.push_back({"#total nodes           ", format("{:40L}", uint64_t(numTotalNodes))});
+		// dvlist.push_back({"#total triangles       ", format("{:40L}", uint64_t(numTotalTriangles))});
+		// dvlist.push_back({"#visible nodes         ", format("{:40L}", uint64_t(numVisibleNodes))});
+		// dvlist.push_back({"#visible triangles     ", format("{:40L}", uint64_t(numVisibleTriangles))});
+		// dvlist.push_back({"hovered mesh id        ", format("{:40L}", CuRast::deviceState->hovered_meshId)});
+		// dvlist.push_back({"hovered triangle index ", format("{:40L}", CuRast::deviceState->hovered_triangleIndex)});
+		// dvlist.push_back({"hovered node name      ", format("{:}", Runtime::hovered_node_name)});
+		// dvlist.push_back({"hovered mesh name      ", format("{:}", Runtime::hovered_mesh_name)});
+		// dvlist.push_back({"tris in hovered mesh   ", format("{:40L}", hoveredMesh ? hoveredMesh->numTriangles : 0)});
+		// dvlist.push_back({"verts in hovered mesh  ", format("{:40L}", hoveredMesh ? hoveredMesh->numVertices : 0)});
+		// dvlist.push_back({"CPU draw() duration    ", format("{:40.1f} ms", Runtime::duration_draw * 1000.0)});
 
 		// We measure CPU draw time until here, where CPU has finished its stuff and now just invokes cuda kernels.
 		Runtime::duration_draw = now() - t_start;
@@ -429,36 +491,36 @@ void CuRast::draw(Scene* scene, vector<View> views){
 		);
 		
 
-		// DRAW BOUNDING BOXES
-		if(CuRastSettings::showBoundingBoxes){
-			RenderTarget target_lines = target;
-			target_lines.framebuffer = (uint64_t*)cvm_colorbuffer->cptr;
+		// // DRAW BOUNDING BOXES
+		// if(CuRastSettings::showBoundingBoxes){
+		// 	RenderTarget target_lines = target;
+		// 	target_lines.framebuffer = (uint64_t*)cvm_colorbuffer->cptr;
 
-			vector<CMesh> boundingBoxNodes;
-			scene->forEach<SNTriangles>([&](SNTriangles* node){
-				CMesh mesh;
-				mesh.world                    = node->transform_global;
-				mesh.aabb                     = node->aabb;
+		// 	vector<CMesh> boundingBoxNodes;
+		// 	scene->forEach<SNTriangles>([&](SNTriangles* node){
+		// 		CMesh mesh;
+		// 		mesh.world                    = node->transform_global;
+		// 		mesh.aabb                     = node->aabb;
 
-				boundingBoxNodes.push_back(mesh);
-			});
+		// 		boundingBoxNodes.push_back(mesh);
+		// 	});
 			
-			static CUdeviceptr cptr_numProcessedBatches = MemoryManager::alloc(4, "cptr_numProcessedBatches");
-			// static CUdeviceptr cptr_meshes_boxes = MemoryManager::alloc(40'000 * sizeof(CMesh), "cptr_meshes_boxes");
-			static CudaVirtualMemory* cvm_meshes_boxes = MemoryManager::allocVirtualCuda(40'000 * sizeof(CMesh), "boxes");
-			cvm_meshes_boxes->commit(boundingBoxNodes.size() * sizeof(CMesh));
+		// 	static CUdeviceptr cptr_numProcessedBatches = MemoryManager::alloc(4, "cptr_numProcessedBatches");
+		// 	// static CUdeviceptr cptr_meshes_boxes = MemoryManager::alloc(40'000 * sizeof(CMesh), "cptr_meshes_boxes");
+		// 	static CudaVirtualMemory* cvm_meshes_boxes = MemoryManager::allocVirtualCuda(40'000 * sizeof(CMesh), "boxes");
+		// 	cvm_meshes_boxes->commit(boundingBoxNodes.size() * sizeof(CMesh));
 
-			cuMemcpyHtoDAsync(cvm_meshes_boxes->cptr, boundingBoxNodes.data(), boundingBoxNodes.size() * sizeof(CMesh), 0);
-			cuMemsetD8Async(cptr_numProcessedBatches, 0, 4, 0);
+		// 	cuMemcpyHtoDAsync(cvm_meshes_boxes->cptr, boundingBoxNodes.data(), boundingBoxNodes.size() * sizeof(CMesh), 0);
+		// 	cuMemsetD8Async(cptr_numProcessedBatches, 0, 4, 0);
 			
-			uint32_t numMeshes = boundingBoxNodes.size();
-			launch_drawBoundingBoxes(
-				target_lines, 
-				(CMesh*)cvm_meshes_boxes->cptr,
-				numMeshes,
-				(uint32_t*)cptr_numProcessedBatches
-			);
-		}
+		// 	uint32_t numMeshes = boundingBoxNodes.size();
+		// 	launch_drawBoundingBoxes(
+		// 		target_lines, 
+		// 		(CMesh*)cvm_meshes_boxes->cptr,
+		// 		numMeshes,
+		// 		(uint32_t*)cptr_numProcessedBatches
+		// 	);
+		// }
 
 		int mouse_X = Runtime::mousePosition.x;
 		int mouse_Y = target.height - Runtime::mousePosition.y;
@@ -608,7 +670,77 @@ void CuRast::draw(Scene* scene, vector<View> views){
 		// 	Timer::recordDuration("kernel_drawHeightmap", custart, Timer::recordCudaTimestamp());
 		// }
 
-		drawPoints(scene, view, target);
+		if(CuRastSettings::bruteForceRendering){
+			drawPoints(scene, view, target);
+		} else {
+			drawOctree(scene, view, target, 
+				CuRastSettings::debugLodToRender, 
+				CuRastSettings::voxelsPointsPerAxis,
+				CuRastSettings::minPixelSpan,
+				CuRastSettings::voxelsDebugColor
+			);
+		}
+		if(CuRastSettings::showBoundingBoxes){
+			drawOctreeAABB(scene, view, target);
+		}
+
+
+		{
+			// DEBUG
+			std::vector<SNCOctree*> octrees = {};
+			std::vector<SNCPoints*> batches = {};
+
+			uint64_t nb_octrees = 0;
+			uint64_t nb_batches  = 0;
+			uint64_t nb_points  = 0;
+			uint64_t points_gpu_memory  = 0;
+
+			scene->forEach<SNCOctree>([&](SNCOctree* node){
+				octrees.push_back(node);
+				nb_octrees++;
+			});
+			scene->forEach<SNCPoints>([&](SNCPoints* node){
+				batches.push_back(node);
+				nb_batches++;
+				nb_points += node->numPoints;
+				points_gpu_memory += node->getGpuMemoryUsage();
+			});
+
+			auto formatMemSize = [&](uint64_t size_bytes) -> std::string {
+				uint64_t nb_bytes = size_bytes;
+				uint64_t nb_tbs = uint64_t(floor(nb_bytes / 1'000'000'000'000));
+				nb_bytes -= nb_tbs * 1'000'000'000'000;
+				uint64_t nb_gbs = uint64_t(floor(nb_bytes / 1'000'000'000));
+				nb_bytes -= nb_gbs * 1'000'000'000;
+				uint64_t nb_mbs = uint64_t(floor(nb_bytes / 1'000'000));
+				nb_bytes -= nb_mbs * 1'000'000;
+				uint64_t nb_kbs = uint64_t(floor(nb_bytes / 1'000));
+				nb_bytes -= nb_kbs * 1'000;
+
+				if(nb_tbs){return format("{:5} {:3L}T {:3L}G {:3L}M {:3L}k {:3L}b", "", nb_tbs, nb_gbs, nb_mbs, nb_kbs, nb_bytes);}
+				if(nb_gbs){return format("{:10} {:3L}G {:3L}M {:3L}k {:3L}b", "", nb_gbs, nb_mbs, nb_kbs, nb_bytes);}
+				if(nb_mbs){return format("{:15} {:3L}M {:3L}k {:3L}b", "", nb_mbs, nb_kbs, nb_bytes);}
+				if(nb_kbs){return format("{:20} {:3L}k {:3L}b", "", nb_kbs, nb_bytes);}
+				return format("{:25} {:3L}b", "", nb_bytes);
+			};
+
+			// Octree info
+			dvlist.push_back({"# total octrees          ", format("{:30L}", nb_octrees)});
+			for(uint32_t i=0; i<nb_octrees; i++){
+				SNCOctree* node = octrees[i];
+				dvlist.push_back({format("    octree #{}", i), ""});
+				dvlist.push_back({"     - # nodes           ", format("{:30L}", node->cptr_nodes.size())});
+				dvlist.push_back({"     - # chunks          ", format("{:30L}", node->cptr_chunks.size())});
+				dvlist.push_back({"     - # occupancy grids ", format("{:30L}", node->cptr_occupancy_grids.size())});
+				dvlist.push_back({"     - GPU memory usage  ", formatMemSize(node->getGpuMemoryUsage())});
+				// dvlist.push_back({"\t#visible nodes         ", format("{:40L}", uint64_t(numVisibleNodes))});
+			}
+
+			// Batches info
+			dvlist.push_back({"\n# total batches          ", format("{:30L}", nb_batches)});
+			dvlist.push_back({"# total points           ", format("{:30L}", nb_points)});
+			dvlist.push_back({"batches GPU memory usage ", formatMemSize(points_gpu_memory)});			
+		}
 
 
 		// SCREEN SPACE AMBIENT OCCLUSION

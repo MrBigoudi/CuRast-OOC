@@ -65,15 +65,14 @@ Dependencies:
 * GCC 15.2.0
 * G++ 15.2.0
 * turbojpeg
+* TBB (for cpu parallel execution)
 
 Create a build directory via cmake and build the software:
 
 ```
-mkdir out
-cd out
-cmake ..
-make
-cd .. && ./out/CuRast
+cmake -B build
+make -C build
+./build/CuRast
 ```
 
 Main challenge: We're using the windows API for [memory mapping](./src/MappedFile.h) (easily read from files) and [unbuffered IO](./src/unsuck_platform_specific.cpp#L242) (efficiently read from files). mmap on linux should be straightforward, but what about fast sequential SSD reads without buffering overhead? io_uring?

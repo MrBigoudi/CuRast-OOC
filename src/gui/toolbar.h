@@ -144,20 +144,46 @@ void CuRast::makeToolbar(){
 
 				startSection("Dev");
 
-				ImGui::Checkbox("bounding boxes", &CuRastSettings::showBoundingBoxes);
+				ImGui::Checkbox("Bounding boxes", &CuRastSettings::showBoundingBoxes);
 				ImGui::SameLine();
-				ImGui::Checkbox("frustum culling", &CuRastSettings::enableFrustumCulling);
+				ImGui::Checkbox("Use voxel debug color", &CuRastSettings::voxelsDebugColor);
 				ImGui::SameLine();
-				ImGui::Checkbox("freeze frustum", &CuRastSettings::freezeFrustum);
+				ImGui::Checkbox("Brute force rendering", &CuRastSettings::bruteForceRendering);
+
+				ImGui::Checkbox("Auto-free unused octree GPU memory", &CuRastSettings::autoFreeOldOctreeMemoryOnGPU);
+				ImGui::SameLine();
+				ImGui::BeginDisabled(CuRastSettings::autoFreeOldOctreeMemoryOnGPU);
+					ImGui::Checkbox("Free unused octree GPU memory", &CuRastSettings::freeOldOctreeMemoryOnGPU);
+				ImGui::EndDisabled();
+
+				ImGui::SetNextItemWidth(200.0f);
+				ImGui::SliderInt("Max batches per update", &CuRastSettings::maxBatchesPerUpdate, 1, 64);
+				ImGui::SameLine();
+				ImGui::SetNextItemWidth(200.0f);
+				ImGui::SliderInt("Max batch size", &CuRastSettings::maxBatchSize, 10'000, 1'000'000'000);
+
+				ImGui::Checkbox("Store octree on disk", &CuRastSettings::storeOctree);
+				ImGui::SameLine();
+				ImGui::Checkbox("Load octree from disk", &CuRastSettings::loadOctree);
+
+				// ImGui::Checkbox("Frustum culling", &CuRastSettings::enableFrustumCulling);
+				// ImGui::SameLine();
+				// ImGui::Checkbox("freeze frustum", &CuRastSettings::freezeFrustum);
 
 				// ImGui::SameLine();
 				ImGui::SetNextItemWidth(200.0f);
-				ImGui::SliderFloat("threshold", &CuRastSettings::threshold, 0.0f, 1.0f);
-				
+				// ImGui::SliderFloat("threshold", &CuRastSettings::threshold, 0.0f, 1.0f);
+				ImGui::SliderInt("Points per voxel axis", &CuRastSettings::voxelsPointsPerAxis, 1, 64);
 				ImGui::SameLine();
-				ImGui::Checkbox("Disable Instancing", &CuRastSettings::disableInstancing);
+				ImGui::SetNextItemWidth(200.0f);
+				ImGui::SliderInt("LOD to render", &CuRastSettings::debugLodToRender, -1, 20);
 
-				ImGui::Checkbox("Enable Picking", &CuRastSettings::enableObjectPicking);
+				// ImGui::SetNextItemWidth(200.0f);
+				// ImGui::SliderFloat("Min pixel span", &CuRastSettings::minPixelSpan, 32.0f, 1024.0f);
+				// ImGui::SameLine();
+				// ImGui::Checkbox("Disable Instancing", &CuRastSettings::disableInstancing);
+
+				// ImGui::Checkbox("Enable Picking", &CuRastSettings::enableObjectPicking);
 				
 				// ImGui::SameLine();
 				// string strMeasure;

@@ -32,6 +32,11 @@
 #include "PlyLoader.h"
 #include "laszip/laszip_api.h"
 
+#include "ooc_structures/structureUpdate.h"
+#include "ooc_structures/simLod.h"
+#include "ooc_structures/loader.h"
+#include "ooc_structures/outOfCore.h"
+
 using namespace std; // YOLO
 
 CUcontext context;
@@ -51,109 +56,7 @@ void initCuda() {
 }
 
 
-void loadPointcloud(string file, CuRast* editor){
 
-	// Load pointcloud from file using laszip
-	laszip_POINTER laszip_reader;
-	if(laszip_create(&laszip_reader)){
-		println("ERROR: creating laszip reader");
-		return;
-	}
-
-	laszip_BOOL is_compressed = 0;
-	if(laszip_open_reader(laszip_reader, file.c_str(), &is_compressed)){
-		println("ERROR: opening laszip reader for '{}'", file);
-		laszip_destroy(laszip_reader);
-		return;
-	}
-
-	laszip_header* header;
-	if(laszip_get_header_pointer(laszip_reader, &header)){
-		println("ERROR: getting laszip header pointer");
-		laszip_close_reader(laszip_reader);
-		laszip_destroy(laszip_reader);
-		return;
-	}
-
-	laszip_point* laz_point;
-	if(laszip_get_point_pointer(laszip_reader, &laz_point)){
-		println("ERROR: getting laszip point pointer");
-		laszip_close_reader(laszip_reader);
-		laszip_destroy(laszip_reader);
-		return;
-	}
-
-	laszip_I64 numPoints = header->number_of_point_records
-		? header->number_of_point_records
-		: (laszip_I64)header->extended_number_of_point_records;
-
-	double scale_x = header->x_scale_factor;
-	double scale_y = header->y_scale_factor;
-	double scale_z = header->z_scale_factor;
-	double offset_x = header->x_offset;
-	double offset_y = header->y_offset;
-	double offset_z = header->z_offset;
-
-	// Point formats 2, 3, 5, 7, 8, 10 carry RGB
-	uint8_t fmt = header->point_data_format;
-	bool has_rgb = (fmt == 2 || fmt == 3 || fmt == 5 || fmt == 7 || fmt == 8 || fmt == 10);
-
-	println("loading {} points from '{}'", numPoints, file);
-
-	vector<vec3> positions(numPoints);
-	vector<uint32_t> colors(numPoints);
-
-	for(laszip_I64 i = 0; i < numPoints; i++){
-		if(laszip_read_point(laszip_reader)){
-			println("ERROR: reading point {}", i);
-			break;
-		}
-
-		float x = (float)(laz_point->X * scale_x + offset_x);
-		float y = (float)(laz_point->Y * scale_y + offset_y);
-		float z = (float)(laz_point->Z * scale_z + offset_z);
-
-		uint8_t r, g, b;
-		if(has_rgb){
-			// LAS RGB is 16-bit; many writers use the high byte, some use the low byte
-			r = laz_point->rgb[0] > 255 ? (uint8_t)(laz_point->rgb[0] >> 8) : (uint8_t)laz_point->rgb[0];
-			g = laz_point->rgb[1] > 255 ? (uint8_t)(laz_point->rgb[1] >> 8) : (uint8_t)laz_point->rgb[1];
-			b = laz_point->rgb[2] > 255 ? (uint8_t)(laz_point->rgb[2] >> 8) : (uint8_t)laz_point->rgb[2];
-		} else {
-			uint8_t intensity = (uint8_t)(laz_point->intensity >> 8);
-			r = g = b = intensity;
-		}
-
-		positions[i] = {x, y, z};
-		colors[i] = (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16) | (0xFFu << 24);
-	}
-
-	laszip_close_reader(laszip_reader);
-	laszip_destroy(laszip_reader);
-
-	println("done loading {} points", numPoints);
-
-	// Upload positions and colors to GPU
-	CUdeviceptr cptr_positions, cptr_colors;
-	cuMemAlloc(&cptr_positions, numPoints * sizeof(vec3));
-	cuMemAlloc(&cptr_colors,    numPoints * sizeof(uint32_t));
-	cuMemcpyHtoD(cptr_positions, positions.data(), numPoints * sizeof(vec3));
-	cuMemcpyHtoD(cptr_colors,    colors.data(),    numPoints * sizeof(uint32_t));
-
-	auto node = make_shared<SNCPoints>("pointcloud");
-	node->cptr_positions = cptr_positions;
-	node->cptr_colors    = cptr_colors;
-	node->numPoints      = numPoints;
-
-	editor->scene.world->children.push_back(node);
-
-	// // position: 4.283698075250294, -4.795270477550499, 6.400710991008715 
-	// Runtime::controls->yaw    = -5.582;
-	// Runtime::controls->pitch  = -0.294;
-	// Runtime::controls->radius = 5.584;
-	// Runtime::controls->target = { 0.679, -0.714, 5.163};
-
-};
 
 void initScene() {
 	CuRast* editor = CuRast::instance;
@@ -388,6 +291,56 @@ void initScene() {
 		Runtime::controls->target = { 352.960, -1134.931, -462.529, };
 	};
 
+	auto loadLion = [=]() {
+		std::string file = "./lion.laz";
+
+		// position: 4.283698075250294, -4.795270477550499, 6.400710991008715 
+		Runtime::controls->yaw    = -5.582;
+		Runtime::controls->pitch  = -0.294;
+		Runtime::controls->radius = 5.584;
+		Runtime::controls->target = { 0.679, -0.714, 5.163};
+
+		if(!CPU_PARALLELISED){
+			initLoadPointBatches(file);
+			while(true){
+				loadPointsInBatches();
+				bool done = true;
+				for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
+					if(batchesQueue[i] && batchesQueue[i]->state != BatchState::Loaded){
+						done = false;
+					}
+				}
+				if(done){break;}
+			}
+			while(true){
+				addPointBatches(mainOctree, mainAABB);
+				bool done = true;
+				for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
+					if(batchesQueue[i] && batchesQueue[i]->state != BatchState::Inserted){
+						done = false;
+					}
+				}
+				if(done){break;}
+			}
+			while(true){
+				loadBatchesOnGPU(CuRast::instance);
+				bool done = true;
+				for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
+					if(batchesQueue[i] && batchesQueue[i]->state != BatchState::ToRemove){
+						done = false;
+					}
+				}
+				if(done){break;}
+			}
+			clearUnusedBatches();
+			loadOctreeOnGPU(mainOctree, mainAABB, CuRast::instance);
+		} else {
+			std::thread thread_loadLion([&](std::string file){
+				initLoadPointBatches(file);
+			}, file);
+			thread_loadLion.detach();
+		}
+	};
 	
 
 	// createCube();
@@ -403,8 +356,8 @@ void initScene() {
 	// loadCubeJpeg();
 	// loadPolygraphenewerkLeibzigInstances();
 	// loadVenice();
-	loadPointcloud("./lion.laz", editor);
-
+	loadLion();
+	// loadTemple();
 }
 
 void update(){
@@ -502,46 +455,91 @@ int main(int argc, char** argv){
 	VKRenderer::init();
 	CuRast::setup();
 
-	VKRenderer::onFileDrop([](vector<string> files){
+	// temporary function
+	auto sequential = [&](vector<string> files){
+		std::for_each(files.begin(), files.end(), [&](string& file){
+			if(iEndsWith(file, ".las") || iEndsWith(file, ".laz")){
+				initLoadPointBatches(file);
+				while(true){
+					loadPointsInBatches();
+					bool done = true;
+					for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
+						if(batchesQueue[i] && batchesQueue[i]->state != BatchState::Loaded){
+							done = false;
+						}
+					}
+					if(done){break;}
+				}
+				while(true){
+					addPointBatches(mainOctree, mainAABB);
+					bool done = true;
+					for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
+						if(batchesQueue[i] && batchesQueue[i]->state != BatchState::Inserted){
+							done = false;
+						}
+					}
+					if(done){break;}
+				}
+				while(true){
+					loadBatchesOnGPU(CuRast::instance);
+					bool done = true;
+					for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
+						if(batchesQueue[i] && batchesQueue[i]->state != BatchState::ToRemove){
+							done = false;
+						}
+					}
+					if(done){break;}
+				}
+				clearUnusedBatches();
+				loadOctreeOnGPU(mainOctree, mainAABB, CuRast::instance);
+			}
+		});
+	};
 
-
-		if(files.size() != 1) return;
-
-		CuRast* editor = CuRast::instance;
-		Scene& scene = editor->scene;
-
-		string file = files[0];
-
-		static vector<shared_ptr<largeGlb::LoadedGlb>> loadedGlbs;
-
-		if(iEndsWith(file, ".gltf") || iEndsWith(file, ".glb")){
-			Scene& scene = editor->scene;
-
-			auto glb = largeGlb::load(file, context, {.skipUVs = false, .compress = false});
-			scene.world->children.push_back(glb->glbNode);
-			loadedGlbs.push_back(glb);
-
-			scene.updateTransformations();
-
-			Box3 aabb = glb->glbNode->aabb;
-			vec3 extent = aabb.max - aabb.min;
-			vec3 center = (aabb.min + aabb.max) * 0.5f;
-
-			Runtime::controls->yaw    = -7.204;
-			Runtime::controls->pitch  = -0.579;
-			Runtime::controls->radius = length(extent);
-			Runtime::controls->target = { center.x, center.y, center.z};
+	VKRenderer::onFileDrop([&](vector<string> files){
+		if(CPU_PARALLELISED){
+			std::for_each(std::execution::par, files.begin(), files.end(), 
+				[&](string& file){
+					if(iEndsWith(file, ".las") || iEndsWith(file, ".laz")){
+						std::thread thread_init_batch([&](std::string file){
+							initLoadPointBatches(file);
+						}, file);
+						thread_init_batch.detach();
+					}
+				}
+			);
+		} else {
+			sequential(files);
 		}
-
-
-		if(iEndsWith(file, ".las") || iEndsWith(file, ".laz")){
-			loadPointcloud(file, editor);
-		}
-
-
 	});
 
+	// Create temporary folder
+	std::filesystem::create_directories(TEMPORARY_DIRECTORY);
+
 	initScene();
+
+	if(CPU_PARALLELISED){
+		// Loading points routine
+		std::thread thread_loading_points(loadPointcloudRoutine);
+		thread_loading_points.detach();
+
+		// Octree update routine
+		std::thread thread_octree_update([&](){
+			updateOctreeRoutine(mainOctree, mainAABB);
+		});
+		thread_octree_update.detach();
+
+		// Clear unused batches routine
+		std::thread thread_clear_batches(clearUnusedBatchesRoutine);
+		thread_clear_batches.detach();
+
+		std::thread thread_load_points_on_gpu([&](CuRast* editor){
+			while(true){
+				loadBatchesOnGPU(editor, &context);
+			}
+		}, CuRast::instance);
+		thread_load_points_on_gpu.detach();
+	}
 
 	VKRenderer::loop(
 		[&]() {
@@ -555,10 +553,55 @@ int main(int argc, char** argv){
 			Runtime::debugValues["stage 1"] = format("{:.3f}", stage1_millies);
 			Runtime::debugValues["stage 2"] = format("{:.3f}", stage2_millies);
 			Runtime::debugValues["stage 3"] = format("{:.3f}", stage3_millies);
+
+			// TODO: to remove
+			{
+				static std::shared_ptr<AABB> test_stored_aabb = nullptr;
+
+				// Testing stuff
+				if(CuRastSettings::storeOctree){
+					// mainOctree->display();
+					test_stored_aabb = std::make_shared<AABB>(*mainAABB);
+					println("Start storing octree");
+					storeOctree(mainOctree, test_stored_aabb);
+					println("Done storing octree");
+					CuRastSettings::storeOctree = false;
+				}
+				if(CuRastSettings::loadOctree){
+					println("Start loading octree");
+					std::shared_ptr<OctreeNode> octree = loadOctree(test_stored_aabb);
+					println("Done loading octree");
+					CuRastSettings::loadOctree = false;
+					
+					if(*mainOctree.get() == *octree.get()){
+						println("loaded == original, serialisation / deserialisation worked");
+					} else {
+						println("ERROR: loaded != original, serialisation / deserialisation failed");
+					}
+
+					mainOctree = octree;
+					mainAABB = test_stored_aabb;
+
+					cuCtxSetCurrent(context);
+					loadOctreeOnGPU(mainOctree, mainAABB, CuRast::instance, true);
+				}
+			}
+
+			if(CPU_PARALLELISED){
+				// Send things GPU side
+				loadOctreeOnGPU(mainOctree, mainAABB, CuRast::instance);
+			}
+			freeOctreesOnGPU(CuRast::instance);
 		},
 		[&]() {CuRast::instance->render();},
 		[&]() {CuRast::instance->postFrame();}
 	);
+
+	displayTimings();
+	displayBuffers();
+
+	// Destroy temporary folder
+	std::filesystem::remove_all(TEMPORARY_DIRECTORY);
 
 	VKRenderer::destroy();
 }

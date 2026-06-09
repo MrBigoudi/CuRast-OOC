@@ -20,8 +20,12 @@ struct SNCPoints : public SceneNode{
 		
 	}
 
-	uint64_t getGpuMemoryUsage(){
-		return 0;
+	uint64_t getGpuMemoryUsage() override {
+		uint64_t total = 0;
+		
+		total += numPoints * (sizeof(vec3) + sizeof(uint32_t));
+
+		return total;
 	}
 
 };
