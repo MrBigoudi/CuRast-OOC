@@ -421,6 +421,7 @@ std::shared_ptr<vector<OctreeNode*>> backlogVoxelsNodes = std::make_shared<vecto
 
 /// The LRU cache for the nodes
 std::array<std::optional<CacheEntry>, LRU_CACHE_SIZE> lruCache = {nullopt};
+std::unordered_map<AABB, std::optional<uint32_t>, AABB::Hash> lruMap = {};
 uint64_t lruCounter = 0;
 
 
@@ -548,7 +549,7 @@ std::optional<std::shared_ptr<AABB>> addToCache(const std::shared_ptr<AABB>& aab
 
     // Check if already in cache
     uint32_t new_id = 0;
-    uint32_t min_counter = UINT64_MAX;
+    uint64_t min_counter = UINT64_MAX;
     for(uint32_t cache_id = 0; cache_id < LRU_CACHE_SIZE; cache_id++){
         if(lruCache[cache_id]){
             CacheEntry& entry = lruCache[cache_id].value();
@@ -567,6 +568,7 @@ std::optional<std::shared_ptr<AABB>> addToCache(const std::shared_ptr<AABB>& aab
         } else {
             // Found empty space
             lruCache[cache_id] = {lruCounter, aabb};
+            lruMap.insert_or_assign(*aabb, cache_id);
             return nullopt;
         }
     }
@@ -575,15 +577,12 @@ std::optional<std::shared_ptr<AABB>> addToCache(const std::shared_ptr<AABB>& aab
     std::shared_ptr<AABB> old_entry = lruCache[new_id]->second;
     CacheEntry new_entry = {lruCounter, aabb};
     lruCache[new_id] = new_entry;
+    lruMap.insert_or_assign(*aabb, new_id);
+    lruMap.insert_or_assign(*old_entry, nullopt);
 
     return std::optional<std::shared_ptr<AABB>>(old_entry);
 }
 
-bool isInCache(const std::shared_ptr<AABB>& aabb){
-    for(uint32_t cache_id = 0; cache_id < LRU_CACHE_SIZE; cache_id++){
-        if(lruCache[cache_id] && *lruCache[cache_id]->second == *aabb){
-            return true;
-        }
-    }
-    return false;
+std::optional<uint32_t> getCacheIndex(const std::shared_ptr<AABB>& aabb){
+    return lruMap.contains(*aabb) ? lruMap.at(*aabb) : nullopt;
 }

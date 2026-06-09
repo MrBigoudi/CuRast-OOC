@@ -57,6 +57,7 @@ constexpr NodePosition FIRST_NODE_POSITION = FrontTopLeft;
 /// The temporary files directory to store nodes in disk
 const std::string TEMPORARY_DIRECTORY = format("{}/build/tmp", PROJECT_SOURCE_DIR);
 /// The size of the LRU cache
+// constexpr uint32_t LRU_CACHE_SIZE = 16;
 constexpr uint32_t LRU_CACHE_SIZE = 1024;
 
 constexpr bool CPU_PARALLELISED = true;
@@ -113,6 +114,26 @@ struct AABB {
 	AABB(){}
 	AABB(const AABB& cpy) : mins(cpy.mins), maxs(cpy.maxs){}
 	AABB(AABB& cpy) : mins(cpy.mins), maxs(cpy.maxs){}
+
+	struct Hash {
+		std::size_t operator()(const AABB& aabb) const {
+			auto hashCombine = [](std::size_t& seed, std::size_t value){
+				seed ^= value + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+			};
+
+			std::size_t seed = 0;
+
+			hashCombine(seed, std::hash<float>{}(aabb.mins.x));
+			hashCombine(seed, std::hash<float>{}(aabb.mins.y));
+			hashCombine(seed, std::hash<float>{}(aabb.mins.z));
+
+			hashCombine(seed, std::hash<float>{}(aabb.maxs.x));
+			hashCombine(seed, std::hash<float>{}(aabb.maxs.y));
+			hashCombine(seed, std::hash<float>{}(aabb.maxs.z));
+
+			return seed;
+		}
+	};
 };
 
 /// A loaded point
@@ -265,12 +286,13 @@ extern std::shared_ptr<vector<OctreeNode*>> backlogVoxelsNodes;
 extern uint64_t lruCounter;
 typedef std::pair<uint64_t, std::shared_ptr<AABB>> CacheEntry; 
 extern std::array<std::optional<CacheEntry>, LRU_CACHE_SIZE> lruCache;
+extern std::unordered_map<AABB, std::optional<uint32_t>, AABB::Hash> lruMap;
 
 /// Add a node to the cache and return the id of a node if it has been removed from the cache
 /// The id of a node is it's AABB
 std::optional<std::shared_ptr<AABB>> addToCache(const std::shared_ptr<AABB>& aabb);
 /// Check if a node is already in cache
-bool isInCache(const std::shared_ptr<AABB>& aabb);
+std::optional<uint32_t> getCacheIndex(const std::shared_ptr<AABB>& aabb);
 /// Display the LRU cache
 void displayCache();
 

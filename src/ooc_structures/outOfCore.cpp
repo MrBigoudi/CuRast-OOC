@@ -372,16 +372,8 @@ void updateCache(std::shared_ptr<OctreeNode>& root_octree, std::shared_ptr<AABB>
             }
         }
 
-        bool is_in_cache = false;
-        for (auto it = lruCache.begin(); it != lruCache.end(); it++){
-            if((*it).has_value() && *(*it)->second == *cur_aabb){
-                is_in_cache = true;
-                break;
-            }
-        }
-
+        bool is_in_cache = getCacheIndex(cur_aabb).has_value();
         bool to_remove = false;
-
         if(!is_in_cache){
             if(cur_node->updated){
                 storeOctree(root_octree, cur_aabb, true);
