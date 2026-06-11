@@ -80,7 +80,12 @@ void ChunkSerializable::serialize(const std::string& filepath) const {
     ofstream file(filepath, ios::binary);
     if(!file.is_open()){
         println("Failed to open the file {} to serialize a chunk", filepath);
-        exit(EXIT_FAILURE);
+        {
+            std::lock_guard<std::mutex> lock(mainLoopIsTerminatingMtx);
+            if(!MAIN_LOOP_IS_TERMINATING){
+                exit(EXIT_FAILURE);
+            }
+        }
     }
     size_t nb_chunks = points.size();
     file.write(reinterpret_cast<const char*>(&nb_chunks), sizeof(nb_chunks));
@@ -102,6 +107,15 @@ ChunkSerializable ChunkSerializable::deserialize(const std::string& filepath){
 
     // https://www.geeksforgeeks.org/cpp/serialize-and-deserialize-an-object-in-cpp/
     ifstream file(filepath, ios::binary);
+    if(!file.is_open()){
+        println("Failed to open the file {} to deserialize a chunk", filepath);
+        {
+            std::lock_guard<std::mutex> lock(mainLoopIsTerminatingMtx);
+            if(!MAIN_LOOP_IS_TERMINATING){
+                exit(EXIT_FAILURE);
+            }
+        }
+    }
 
     size_t nb_chunks;
     file.read(reinterpret_cast<char*>(&nb_chunks), sizeof(nb_chunks));
@@ -203,7 +217,12 @@ void OctreeNodeSerializable::serialize(const std::string& filepath) const {
 
     if (!file.is_open()) {
         println("Failed to open the file {} to serialize an octree node", filepath);
-        std::exit(EXIT_FAILURE);
+        {
+            std::lock_guard<std::mutex> lock(mainLoopIsTerminatingMtx);
+            if(!MAIN_LOOP_IS_TERMINATING){
+                exit(EXIT_FAILURE);
+            }
+        }
     }
 
     // Write fixed-size members
@@ -231,7 +250,12 @@ OctreeNodeSerializable OctreeNodeSerializable::deserialize(const std::string& fi
 
     if (!file.is_open()) {
         println("Failed to open the file {} to deserialize an octree node", filepath);
-        std::exit(EXIT_FAILURE);
+        {
+            std::lock_guard<std::mutex> lock(mainLoopIsTerminatingMtx);
+            if(!MAIN_LOOP_IS_TERMINATING){
+                exit(EXIT_FAILURE);
+            }
+        }
     }
 
     // Read fixed-size members

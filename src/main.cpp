@@ -333,7 +333,7 @@ void initScene() {
 				if(done){break;}
 			}
 			clearUnusedBatches();
-			loadOctreeOnGPU(mainOctree, mainAABB, CuRast::instance);
+			loadOctreeOnGPU(mainOctree, mainAABB, CuRast::instance, &context);
 		} else {
 			std::thread thread_loadLion([&](std::string file){
 				initLoadPointBatches(file);
@@ -491,7 +491,7 @@ int main(int argc, char** argv){
 					if(done){break;}
 				}
 				clearUnusedBatches();
-				loadOctreeOnGPU(mainOctree, mainAABB, CuRast::instance);
+				loadOctreeOnGPU(mainOctree, mainAABB, CuRast::instance, &context);
 			}
 		});
 	};
@@ -583,25 +583,49 @@ int main(int argc, char** argv){
 					mainAABB = test_stored_aabb;
 
 					cuCtxSetCurrent(context);
-					loadOctreeOnGPU(mainOctree, mainAABB, CuRast::instance, true);
+					loadOctreeOnGPU(mainOctree, mainAABB, CuRast::instance, &context, true);
 				}
 			}
 
 			if(CPU_PARALLELISED){
 				// Send things GPU side
-				loadOctreeOnGPU(mainOctree, mainAABB, CuRast::instance);
+				loadOctreeOnGPU(mainOctree, mainAABB, CuRast::instance, &context);
 			}
+
 			freeOctreesOnGPU(CuRast::instance);
+
+			// { // TODO: remove, just for debugging
+
+			// 	// https://forums.developer.nvidia.com/t/best-way-to-report-memory-consumption-in-cuda/21042
+			// 	static double freeDB = 0.;
+			// 	uint64_t free_byte, total_byte = 0;
+			// 	double free_db, total_db, used_db = 0.;
+
+			// 	CURuntime::assertCudaSuccess(cuMemGetInfo(&free_byte, &total_byte));
+			// 	free_db = (double)free_byte; total_db = (double)total_byte; used_db = total_db - free_db;
+			// 	free_db /= (1024 * 1024); total_db /= (1024 * 1024); used_db /= (1024 * 1024);
+			// 	// Only display if changes bigger than X Mb
+			// 	if(abs(freeDB - floor(free_db)) >= 10){
+			// 		println("GPU usage\n    Total: {:L} Mb\n    InUse: {:L} Mb\n    Available: {:L} Mb",
+			// 			total_db, used_db, free_db
+			// 		);
+			// 		freeDB = floor(free_db);
+			// 	}
+			// }
 		},
 		[&]() {CuRast::instance->render();},
 		[&]() {CuRast::instance->postFrame();}
 	);
 
+	{
+		std::lock_guard<std::mutex> lock(mainLoopIsTerminatingMtx);
+		MAIN_LOOP_IS_TERMINATING = true;
+		// Destroy temporary folder
+		std::filesystem::remove_all(TEMPORARY_DIRECTORY);
+	}
+
 	displayTimings();
 	displayBuffers();
-
-	// Destroy temporary folder
-	std::filesystem::remove_all(TEMPORARY_DIRECTORY);
 
 	VKRenderer::destroy();
 }

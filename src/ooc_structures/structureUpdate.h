@@ -27,14 +27,21 @@ void uptadeOctree(
 /// TODO: temporary function
 /// Load an octree to gpu memory
 void loadOctreeOnGPU(std::shared_ptr<OctreeNode>& main_octree, std::shared_ptr<AABB>& main_aabb,
-    CuRast* editor, bool bypass_semaphore = false
+    CuRast* editor, CUcontext* context, bool bypass_semaphore = false
 );
 /// TODO: temporary function
 /// Frees the unused octrees on gpu memory
-void freeOctreesOnGPU(CuRast* editor, bool force_free = false);
+void freeOctreesOnGPU(CuRast* editor);
+/// Frees the last unused octree on gpu memory
+/// If given a caller, only frees the memory when the caller is done loading
+void freePreviousOctreeOnGPU(CuRast* editor, std::shared_ptr<SNCOctree> caller);
 
 
 /// Add new batches to the octree
 void addPointBatches(std::shared_ptr<OctreeNode>& main_octree, std::shared_ptr<AABB>& main_aabb);
 /// Asynchronously update the octree
 void updateOctreeRoutine(std::shared_ptr<OctreeNode>& main_octree, std::shared_ptr<AABB>& main_aabb);
+
+
+/// TODO: test to get culled nodes from GPU
+void getCulledNodes();

@@ -38,14 +38,22 @@ enum BatchState {
 ////////////////////////////// GLOBAL CONSTANTS ///////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
 
-/// The maximum number of batches that should be load from disk at once
+/// The maximum number of batches that should be loaded from disk at once
 constexpr uint8_t MAX_BATCHES_PER_LOAD = 100;
+// constexpr uint8_t MAX_BATCHES_PER_LOAD = 1000;
 /// The maximum number of batches that should be loaded to the GPU at once
-constexpr uint8_t MAX_BATCHES_PER_GPU_LOAD = 50;
+// constexpr uint8_t MAX_BATCHES_PER_GPU_LOAD = 50;
+constexpr uint8_t MAX_BATCHES_PER_GPU_LOAD = 200;
+
+extern uint64_t NB_POINTS;
+extern bool MAIN_LOOP_IS_TERMINATING;
+extern std::mutex mainLoopIsTerminatingMtx;
+
 // /// The maximum number of batches that should be used per octree update
 // constexpr uint8_t MAX_BATCHES_PER_UPDATE = 1;
 // /// The maximum number of points in a batch
 // constexpr uint64_t MAX_BATCH_SIZE = 1'000'000;
+
 /// The maximum number of points in a leaf node
 constexpr uint16_t MAX_POINTS_PER_LEAF = 50'000;
 /// The number of points in a chunk
@@ -58,10 +66,12 @@ constexpr uint32_t GRID_NUM_CELLS = GRID_SIZE * GRID_SIZE * GRID_SIZE;
 constexpr NodePosition FIRST_NODE_POSITION = FrontTopLeft;
 /// The temporary files directory to store nodes in disk
 const std::string TEMPORARY_DIRECTORY = format("{}/build/tmp", PROJECT_SOURCE_DIR);
+
 /// The size of the LRU cache
 // constexpr uint32_t LRU_CACHE_SIZE = 16;
-constexpr uint32_t LRU_CACHE_SIZE = 128;
+// constexpr uint32_t LRU_CACHE_SIZE = 128;
 // constexpr uint32_t LRU_CACHE_SIZE = 1024;
+constexpr uint32_t LRU_CACHE_SIZE = 4096;
 
 constexpr bool CPU_PARALLELISED = true;
 // constexpr bool CPU_PARALLELISED = false;
@@ -279,12 +289,15 @@ struct Chunk {
 /// Name of the main octree node in the scene
 const std::string simLodOctreeName = std::string("MainOctreeSimLOD");
 /// Counter for the number of octree created
-static uint64_t simLodOctreeCounter = 0;
+extern uint64_t simLodOctreeCounter;
 std::string getSimLodOctreeName(bool generate_new_name = false);
 
 /// Variables tracking when the octree can be sent to GPU
 extern std::binary_semaphore octreeReadyToBeSent;
 extern std::binary_semaphore octreeReadyToBeUpdated;
+extern std::binary_semaphore octreeNotBeingSent;
+extern uint64_t loadCounter;
+extern std::mutex loadCounterMtx;
 
 /// The queue of batches
 extern std::deque<std::shared_ptr<PointBatch>> batchesQueue;
@@ -293,8 +306,10 @@ extern std::mutex updateSceneMutex;
 
 /// The main octree
 extern std::shared_ptr<OctreeNode> mainOctree;
+extern std::shared_ptr<OctreeNode> mainOctreeCpy;
 /// The main bounding box
 extern std::shared_ptr<AABB> mainAABB;
+extern std::shared_ptr<AABB> mainAABBCpy;
 
 /// The buffer of spilled points
 extern std::shared_ptr<vector<Point>> spilledPoints;

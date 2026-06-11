@@ -100,7 +100,7 @@ void simLodCount(
     std::shared_ptr<vector<OctreeNode*>>& spilling_nodes
 ){
 
-	mutex mtx;
+	mutex mtx_counter, mtx_spilling_nodes;
 
 	auto countPoint = [&](Point& point){
 		// Reach corresponding leaf
@@ -154,14 +154,17 @@ void simLodCount(
 					uint16_t old_counter = 0;
 					
 					{
-						std::lock_guard<std::mutex> lock(mtx);
+						std::lock_guard<std::mutex> lock_counter(mtx_counter);
 						old_counter = leaf->counter;
 					}
 					leaf->counter++;
 					if(old_counter == MAX_POINTS_PER_LEAF){
 						// leaf->counter.store(MAX_POINTS_PER_LEAF + 1u);
 						leaf->counter = MAX_POINTS_PER_LEAF + 1u;
-						spilling_nodes->push_back(leaf.get());
+						{
+							std::lock_guard<std::mutex> lock_spilling(mtx_spilling_nodes);
+							spilling_nodes->push_back(leaf.get());
+						}
 					}
 				}
 
@@ -207,8 +210,12 @@ void simLodSplit(
     std::shared_ptr<vector<Point>>& spilled_points,
     std::shared_ptr<vector<OctreeNode*>>& spilling_nodes
 ){
-	for(uint32_t node_id = 0; node_id < spilling_nodes->size(); node_id++){
-		OctreeNode*& spilling_node = (*spilling_nodes)[node_id];
+
+	mutex mtx_spilled_points;
+
+	auto lambda = [&](OctreeNode*& spilling_node){
+	// for(uint32_t node_id = 0; node_id < spilling_nodes->size(); node_id++){
+		// OctreeNode*& spilling_node = (*spilling_nodes)[node_id];
 		uint8_t spilling_node_children = spilling_node->children_ids;
 
 		// spilling_node->is_leaf = false;
@@ -231,7 +238,8 @@ void simLodSplit(
 		std::vector<std::shared_ptr<Chunk>> old_chunks = {spilling_node->points};
 		std::shared_ptr<Chunk> current_chunk = spilling_node->points;
 		if(!current_chunk){
-			continue;
+			// continue;
+			return;
 		}
 		
 		while(current_chunk->next){
@@ -245,6 +253,7 @@ void simLodSplit(
 				// Flag the point as not accepted
 				current_chunk->points[j].color[3] = 0;
 
+				std::lock_guard<std::mutex> lock_spilled(mtx_spilled_points);
 				spilled_points->push_back(current_chunk->points[j]);
 			}
 			current_chunk->next = nullptr;
@@ -253,7 +262,18 @@ void simLodSplit(
 		}
 
 		spilling_node->points = nullptr;
+	};
+
+	if(!CPU_PARALLELISED){
+		std::for_each(spilling_nodes->begin(), spilling_nodes->end(), [&](OctreeNode*& spilling_node){
+			lambda(spilling_node);
+		});
+	} else {
+		std::for_each(std::execution::par, spilling_nodes->begin(), spilling_nodes->end(), [&](OctreeNode*& spilling_node){
+			lambda(spilling_node);
+		});
 	}
+
 	spilling_nodes->clear();
 }
 

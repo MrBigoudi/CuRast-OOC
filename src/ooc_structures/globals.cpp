@@ -379,9 +379,11 @@ bool Chunk::operator==(const Chunk& rhs) const{
 }
 
 
-
+uint64_t simLodOctreeCounter = 0;
 std::string getSimLodOctreeName(bool generate_new_name){
-    if(generate_new_name){simLodOctreeCounter++;}
+    if(generate_new_name){
+        simLodOctreeCounter++;
+    }
     return format("{}_{}", simLodOctreeName, simLodOctreeCounter);
 }
 
@@ -400,6 +402,10 @@ uint32_t BATCHES_QUEUE_SIZE = 1000;
 std::binary_semaphore octreeReadyToBeSent{0};
 /// Initialized as ready to be updated
 std::binary_semaphore octreeReadyToBeUpdated{1};
+/// Initialized as not being sent
+std::binary_semaphore octreeNotBeingSent{1};
+uint64_t loadCounter = 0;
+std::mutex loadCounterMtx;
 
 /// The queue of batches
 std::deque<std::shared_ptr<PointBatch>> batchesQueue(BATCHES_QUEUE_SIZE, nullptr);
@@ -408,8 +414,10 @@ std::mutex updateSceneMutex;
 
 /// The main octree
 std::shared_ptr<OctreeNode> mainOctree = std::make_shared<OctreeNode>();
+std::shared_ptr<OctreeNode> mainOctreeCpy = std::make_shared<OctreeNode>();
 /// The main bounding box
 std::shared_ptr<AABB> mainAABB = nullptr;
+std::shared_ptr<AABB> mainAABBCpy = nullptr;
 
 /// The buffer of spilled points
 std::shared_ptr<vector<Point>> spilledPoints = std::make_shared<vector<Point>>(vector<Point>());
@@ -427,7 +435,9 @@ std::unordered_map<AABB, uint32_t, AABB::Hash> lruMapInCache = {};
 std::unordered_set<AABB, AABB::Hash> lruMapStored = {};
 uint64_t lruCounter = 0;
 
-
+uint64_t NB_POINTS = 0;
+bool MAIN_LOOP_IS_TERMINATING = false;
+std::mutex mainLoopIsTerminatingMtx;
 
 
 

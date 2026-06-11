@@ -117,7 +117,9 @@ void drawOctreeAABB(Scene* scene, View view, RenderTarget& target){
 	static CudaModularProgram* prog = new CudaModularProgram({"./src/kernels/octree.cu"});
 
 	scene->forEach<SNCOctree>([&](SNCOctree* octree){
-
+		// Sanity check
+		if(!octree){return;}
+		if(!octree->isDoneLoadingToGpu()){return;}
 		CFullOctree cfo;
 		cfo.world     = octree->transform_global;
 		cfo.nodes     = (COctreeNode**)(octree->nodes);
@@ -137,7 +139,11 @@ void drawOctree(Scene* scene, View view, RenderTarget& target,
 	static CudaModularProgram* prog = new CudaModularProgram({"./src/kernels/octree.cu"});
 
     scene->forEach<SNCOctree>([&](SNCOctree* octree){
-        CFullOctree cfo;
+		// Sanity check
+		if(!octree){return;}
+		if(!octree->isDoneLoadingToGpu()){return;}
+
+		CFullOctree cfo;
         cfo.world     = octree->transform_global;
         cfo.nodes     = (COctreeNode**)(octree->nodes);
         cfo.aabbs     = (CAABB**)(octree->aabbs);
@@ -149,21 +155,6 @@ void drawOctree(Scene* scene, View view, RenderTarget& target,
 		cfo.voxels_nb_points_per_axis = uint32_t(voxels_nb_points);
 		cfo.min_pixel_span = min_pixel_span;
 		cfo.use_voxels_debug_color = use_voxels_debug_color;
-
-		// println("nb nodes: {}, nb aabbs: {}, nb chunks: {}, nb nodes: {}",
-		// 	octree->cptr_nodes.size(), octree->cptr_aabbs.size(), octree->cptr_chunks.size(), octree->num_nodes
-		// );
-
-		// for(uint32_t i=0; i<10; i++){
-		// 	CAABB res = {};
-		// 	cuMemcpyDtoH(&res, octree->cptr_aabbs[i], sizeof(CAABB));
-		// 	println("- DEVICE: AABB[{}] = mins({}, {}, {}), maxs({}, {}, {})", i,
-		// 		res.mins.x, res.mins.y, res.mins.z,
-		// 		res.maxs.x, res.maxs.y, res.maxs.z
-		// 	);
-		// }
-		// exit(EXIT_FAILURE);
-		// prog->launch("kernel_drawOctree", {&cfo, &target}, cfo.num_nodes);
         
         uint32_t numThreads = cfo.num_nodes * C_OCTREE_RENDER_BLOCK_SIZE;
 		OptionalLaunchSettings launch_settings = {
@@ -693,11 +684,13 @@ void CuRast::draw(Scene* scene, vector<View> views){
 			uint64_t nb_octrees = 0;
 			uint64_t nb_batches  = 0;
 			uint64_t nb_points  = 0;
+			uint64_t nb_points_octree = 0;
 			uint64_t points_gpu_memory  = 0;
 
 			scene->forEach<SNCOctree>([&](SNCOctree* node){
 				octrees.push_back(node);
 				nb_octrees++;
+				nb_points_octree = node->nb_points;
 			});
 			scene->forEach<SNCPoints>([&](SNCPoints* node){
 				batches.push_back(node);
@@ -705,6 +698,9 @@ void CuRast::draw(Scene* scene, vector<View> views){
 				nb_points += node->numPoints;
 				points_gpu_memory += node->getGpuMemoryUsage();
 			});
+			if(nb_points == 0){
+				nb_points = nb_points_octree;
+			}
 
 			auto formatMemSize = [&](uint64_t size_bytes) -> std::string {
 				uint64_t nb_bytes = size_bytes;
@@ -728,7 +724,7 @@ void CuRast::draw(Scene* scene, vector<View> views){
 			dvlist.push_back({"# total octrees          ", format("{:30L}", nb_octrees)});
 			for(uint32_t i=0; i<nb_octrees; i++){
 				SNCOctree* node = octrees[i];
-				dvlist.push_back({format("    octree #{}", i), ""});
+				dvlist.push_back({format("    octree #{}", node->counter), ""});
 				dvlist.push_back({"     - # nodes           ", format("{:30L}", node->cptr_nodes.size())});
 				dvlist.push_back({"     - # chunks          ", format("{:30L}", node->cptr_chunks.size())});
 				dvlist.push_back({"     - # occupancy grids ", format("{:30L}", node->cptr_occupancy_grids.size())});
@@ -739,7 +735,8 @@ void CuRast::draw(Scene* scene, vector<View> views){
 			// Batches info
 			dvlist.push_back({"\n# total batches          ", format("{:30L}", nb_batches)});
 			dvlist.push_back({"# total points           ", format("{:30L}", nb_points)});
-			dvlist.push_back({"batches GPU memory usage ", formatMemSize(points_gpu_memory)});			
+			dvlist.push_back({"batches GPU memory usage ", formatMemSize(points_gpu_memory)});
+			
 		}
 
 

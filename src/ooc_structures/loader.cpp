@@ -199,31 +199,37 @@ void loadBatchesOnGPU(CuRast* editor, CUcontext* ctx){
 
     std::shared_ptr<Timing> timing = addTiming("send points to GPU memory", true);
 
+	std::mutex mtx_counter;
 
 	auto lambda = [&](uint32_t index){
 		std::lock_guard<std::mutex> lock(batchesQueueMutexes[index]);
 		std::shared_ptr<PointBatch> batch = batchesQueue[index];
 
-        // Upload positions and colors to GPU
-        CUdeviceptr cptr_positions, cptr_colors;
+        // // Upload positions and colors to GPU
+        // CUdeviceptr cptr_positions, cptr_colors;
 
-		if(CPU_PARALLELISED){
-			cuCtxSetCurrent(*ctx);
-		}
+		// if(CPU_PARALLELISED){
+		// 	cuCtxSetCurrent(*ctx);
+		// }
 
-        cuMemAlloc(&cptr_positions, batch->count * sizeof(vec3));
-        cuMemAlloc(&cptr_colors,    batch->count * sizeof(uint32_t));
-        cuMemcpyHtoD(cptr_positions, batch->getPositions().data(), batch->count * sizeof(vec3));
-        cuMemcpyHtoD(cptr_colors, batch->getColors().data(),batch->count * sizeof(uint32_t));
+        // cuMemAlloc(&cptr_positions, batch->count * sizeof(vec3));
+        // cuMemAlloc(&cptr_colors,    batch->count * sizeof(uint32_t));
+        // cuMemcpyHtoD(cptr_positions, batch->getPositions().data(), batch->count * sizeof(vec3));
+        // cuMemcpyHtoD(cptr_colors, batch->getColors().data(),batch->count * sizeof(uint32_t));
 
-        auto node = make_shared<SNCPoints>("pointcloud");
-        node->cptr_positions = cptr_positions;
-        node->cptr_colors    = cptr_colors;
-        node->numPoints      = batch->count;
+        // auto node = make_shared<SNCPoints>("pointcloud");
+        // node->cptr_positions = cptr_positions;
+        // node->cptr_colors    = cptr_colors;
+        // node->numPoints      = batch->count;
 		batch->state = BatchState::ToRemove;
 
-		std::lock_guard<std::mutex> lock_scene(updateSceneMutex);
-        editor->scene.world->children.push_back(node);
+		{
+			std::lock_guard<std::mutex> lock_counter(mtx_counter);
+			NB_POINTS += batch->count;
+		}
+
+		// std::lock_guard<std::mutex> lock_scene(updateSceneMutex);
+        // editor->scene.world->children.push_back(node);
     };
 
 	auto first = batches_indices.begin();
