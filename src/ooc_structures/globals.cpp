@@ -283,6 +283,23 @@ bool OctreeNode::operator==(const OctreeNode& rhs) const {
             println("OctreeNode::operator==: Wrong children ids");
             return false;
         }
+
+        if(!cur_lhs->aabb && cur_rhs->aabb){
+            println("OctreeNode::operator==: Wrong aabb, should be empty");
+            return false;
+        }
+        if(cur_lhs->aabb){
+            if(!cur_rhs->aabb){
+                println("OctreeNode::operator==: Wrong aabb, should not be empty");
+                return false;
+            }
+            const AABB& lhs_aabb = *cur_lhs->aabb.get();
+            const AABB& rhs_aabb = *cur_rhs->aabb.get();
+            if(lhs_aabb != rhs_aabb){
+                println("OctreeNode::operator==: Wrong aabbs");
+                return false;
+            }
+        }
         
         if(!cur_lhs->points && cur_rhs->points){
             println("OctreeNode::operator==: Wrong points, should be empty");
@@ -415,9 +432,6 @@ std::mutex updateSceneMutex;
 /// The main octree
 std::shared_ptr<OctreeNode> mainOctree = std::make_shared<OctreeNode>();
 std::shared_ptr<OctreeNode> mainOctreeCpy = std::make_shared<OctreeNode>();
-/// The main bounding box
-std::shared_ptr<AABB> mainAABB = nullptr;
-std::shared_ptr<AABB> mainAABBCpy = nullptr;
 
 /// The buffer of spilled points
 std::shared_ptr<vector<Point>> spilledPoints = std::make_shared<vector<Point>>(vector<Point>());
@@ -443,8 +457,7 @@ std::mutex mainLoopIsTerminatingMtx;
 
 std::shared_ptr<Timing> addTiming(string name, bool start_now, uint32_t level){
     std::shared_ptr<Timing> new_timing = std::make_shared<Timing>(name, start_now, level);
-    std::mutex mtx;
-    std::lock_guard<std::mutex> lock(mtx);
+    std::lock_guard<std::mutex> lock(timingsMtx);
     timingsList.push_back(new_timing);
     return timingsList.back();
 }
@@ -545,6 +558,7 @@ std::optional<std::shared_ptr<AABB>> addToCache(const std::shared_ptr<AABB>& aab
 
     // Reset every counters if needed
     if(lruCounter == UINT64_MAX){
+        println("Cache counter reseting");
         for(uint32_t cache_id = 0; cache_id < LRU_CACHE_SIZE; cache_id++){
             if(lruCache[cache_id]){
                 CacheEntry& entry = lruCache[cache_id].value();
@@ -581,7 +595,7 @@ std::optional<std::shared_ptr<AABB>> addToCache(const std::shared_ptr<AABB>& aab
         } else {
             // Found empty space
             lruCache[cache_id] = {lruCounter, aabb};
-            lruMapInCache.insert_or_assign(*aabb, cache_id);
+            lruMapInCache[*aabb] = cache_id;
             return nullopt;
         }
     }
@@ -590,14 +604,14 @@ std::optional<std::shared_ptr<AABB>> addToCache(const std::shared_ptr<AABB>& aab
     std::shared_ptr<AABB> old_entry = lruCache[new_id]->second;
     CacheEntry new_entry = {lruCounter, aabb};
     lruCache[new_id] = new_entry;
-    lruMapInCache.insert_or_assign(*aabb, new_id);
+    lruMapInCache[*aabb] = new_id;
     lruMapInCache.erase(*old_entry);
 
     return std::optional<std::shared_ptr<AABB>>(old_entry);
 }
 
 std::optional<uint32_t> getCacheIndex(const std::shared_ptr<AABB>& aabb){
-    return lruMapInCache.contains(*aabb) ? std::optional<uint32_t>(lruMapInCache.at(*aabb)) : nullopt;
+    return lruMapInCache.contains(*aabb) ? std::optional<uint32_t>(lruMapInCache[*aabb]) : nullopt;
 }
 
 bool hasBeenStored(const std::shared_ptr<AABB>& aabb){

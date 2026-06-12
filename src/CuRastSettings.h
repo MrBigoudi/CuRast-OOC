@@ -15,8 +15,9 @@ struct CuRastSettings{
 	static inline bool loadOctree = false;
 
 	/// The maximum number of batches that should be used per octree update
-	static inline int32_t maxBatchesPerUpdate = 10;
-	// static inline int32_t maxBatchesPerUpdate = 100;
+	static inline int32_t minBatchesPerUpdate = 1;
+	// static inline int32_t maxBatchesPerUpdate = 10;
+	static inline int32_t maxBatchesPerUpdate = 1;
 	/// The maximum number of points in a batch
 	static inline int32_t maxBatchSize = 100'000;
 	// static inline int32_t maxBatchSize = 1'000'000;

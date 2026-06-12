@@ -2,12 +2,11 @@
 
 ## Next small steps
 
+- Store AABB in nodes
 - Batch the memcpy on loadingtogpu
-- Replace semaphores by setting context as current (be carefull of gpu memory free then)
 - Clean the code + improve comments
 - Implement frustum culling
-- Try out big scenes, load / unload part of the scene on the fly
-- Automatically get CPU / GPU capcatities to set the constants
+- Automatically get CPU / GPU capacities to set the constants
 
 ## Next big steps
 

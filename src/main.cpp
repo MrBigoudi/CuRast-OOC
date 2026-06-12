@@ -313,7 +313,7 @@ void initScene() {
 				if(done){break;}
 			}
 			while(true){
-				addPointBatches(mainOctree, mainAABB);
+				addPointBatches(mainOctree);
 				bool done = true;
 				for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
 					if(batchesQueue[i] && batchesQueue[i]->state != BatchState::Inserted){
@@ -333,7 +333,7 @@ void initScene() {
 				if(done){break;}
 			}
 			clearUnusedBatches();
-			loadOctreeOnGPU(mainOctree, mainAABB, CuRast::instance, &context);
+			loadOctreeOnGPU(mainOctree, CuRast::instance, &context);
 		} else {
 			std::thread thread_loadLion([&](std::string file){
 				initLoadPointBatches(file);
@@ -471,7 +471,7 @@ int main(int argc, char** argv){
 					if(done){break;}
 				}
 				while(true){
-					addPointBatches(mainOctree, mainAABB);
+					addPointBatches(mainOctree);
 					bool done = true;
 					for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
 						if(batchesQueue[i] && batchesQueue[i]->state != BatchState::Inserted){
@@ -491,7 +491,7 @@ int main(int argc, char** argv){
 					if(done){break;}
 				}
 				clearUnusedBatches();
-				loadOctreeOnGPU(mainOctree, mainAABB, CuRast::instance, &context);
+				loadOctreeOnGPU(mainOctree, CuRast::instance, &context);
 			}
 		});
 	};
@@ -525,7 +525,7 @@ int main(int argc, char** argv){
 
 		// Octree update routine
 		std::thread thread_octree_update([&](){
-			updateOctreeRoutine(mainOctree, mainAABB);
+			updateOctreeRoutine(mainOctree);
 		});
 		thread_octree_update.detach();
 
@@ -561,9 +561,9 @@ int main(int argc, char** argv){
 				// Testing stuff
 				if(CuRastSettings::storeOctree){
 					// mainOctree->display();
-					test_stored_aabb = std::make_shared<AABB>(*mainAABB);
 					println("Start storing octree");
-					storeOctree(mainOctree, test_stored_aabb);
+					storeOctree(mainOctree);
+					test_stored_aabb = mainOctree->aabb;
 					println("Done storing octree");
 					CuRastSettings::storeOctree = false;
 				}
@@ -580,16 +580,15 @@ int main(int argc, char** argv){
 					}
 
 					mainOctree = octree;
-					mainAABB = test_stored_aabb;
 
 					cuCtxSetCurrent(context);
-					loadOctreeOnGPU(mainOctree, mainAABB, CuRast::instance, &context, true);
+					loadOctreeOnGPU(mainOctree, CuRast::instance, &context, true);
 				}
 			}
 
 			if(CPU_PARALLELISED){
 				// Send things GPU side
-				loadOctreeOnGPU(mainOctree, mainAABB, CuRast::instance, &context);
+				loadOctreeOnGPU(mainOctree, CuRast::instance, &context);
 			}
 
 			freeOctreesOnGPU(CuRast::instance);

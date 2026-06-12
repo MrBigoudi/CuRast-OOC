@@ -6,6 +6,9 @@
 
 #include <unordered_set>
 
+#define GLM_ENABLE_EXPERIMENTAL
+#include "glm/gtx/hash.hpp"
+
 
 ///////////////////////////////////////////////////////////////////////////////
 /////////////////////////// GLOBAL ENUM DECLARATION ///////////////////////////
@@ -42,8 +45,8 @@ enum BatchState {
 constexpr uint8_t MAX_BATCHES_PER_LOAD = 100;
 // constexpr uint8_t MAX_BATCHES_PER_LOAD = 1000;
 /// The maximum number of batches that should be loaded to the GPU at once
-// constexpr uint8_t MAX_BATCHES_PER_GPU_LOAD = 50;
-constexpr uint8_t MAX_BATCHES_PER_GPU_LOAD = 200;
+constexpr uint8_t MAX_BATCHES_PER_GPU_LOAD = 50;
+// constexpr uint8_t MAX_BATCHES_PER_GPU_LOAD = 200;
 
 extern uint64_t NB_POINTS;
 extern bool MAIN_LOOP_IS_TERMINATING;
@@ -70,8 +73,8 @@ const std::string TEMPORARY_DIRECTORY = format("{}/build/tmp", PROJECT_SOURCE_DI
 /// The size of the LRU cache
 // constexpr uint32_t LRU_CACHE_SIZE = 16;
 // constexpr uint32_t LRU_CACHE_SIZE = 128;
-// constexpr uint32_t LRU_CACHE_SIZE = 1024;
-constexpr uint32_t LRU_CACHE_SIZE = 4096;
+constexpr uint32_t LRU_CACHE_SIZE = 1024;
+// constexpr uint32_t LRU_CACHE_SIZE = 4096;
 
 constexpr bool CPU_PARALLELISED = true;
 // constexpr bool CPU_PARALLELISED = false;
@@ -130,21 +133,27 @@ struct AABB {
 
 	struct Hash {
 		std::size_t operator()(const AABB& aabb) const {
-			auto hashCombine = [](std::size_t& seed, std::size_t value){
-				seed ^= value + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+			mat3 matrix = {
+				aabb.mins,
+				aabb.maxs,
+				{0,0,0}
 			};
+			return std::hash<mat3>()(matrix);
 
-			std::size_t seed = 0;
+			// auto hashCombine = [](std::size_t& seed, std::size_t value){
+			// 	seed ^= value + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+			// };
 
-			hashCombine(seed, std::hash<float>{}(aabb.mins.x));
-			hashCombine(seed, std::hash<float>{}(aabb.mins.y));
-			hashCombine(seed, std::hash<float>{}(aabb.mins.z));
+			// std::size_t seed = 0;
+			// hashCombine(seed, std::hash<float>{}(aabb.mins.x));
+			// hashCombine(seed, std::hash<float>{}(aabb.mins.y));
+			// hashCombine(seed, std::hash<float>{}(aabb.mins.z));
 
-			hashCombine(seed, std::hash<float>{}(aabb.maxs.x));
-			hashCombine(seed, std::hash<float>{}(aabb.maxs.y));
-			hashCombine(seed, std::hash<float>{}(aabb.maxs.z));
+			// hashCombine(seed, std::hash<float>{}(aabb.maxs.x));
+			// hashCombine(seed, std::hash<float>{}(aabb.maxs.y));
+			// hashCombine(seed, std::hash<float>{}(aabb.maxs.z));
 
-			return seed;
+			// return seed;
 		}
 	};
 };
@@ -235,6 +244,8 @@ struct OctreeNode {
 
 	bool updated = false;
 
+	std::shared_ptr<AABB> aabb = nullptr;
+
 	uint32_t getNbPoints() const;
 	uint32_t getNbVoxels() const;
 
@@ -246,6 +257,7 @@ struct OctreeNode {
 	OctreeNode(const OctreeNode& cpy) : counter(cpy.counter), children_ids(cpy.children_ids)
 		, from_split(cpy.from_split), from_bottom_up(cpy.from_bottom_up)
 	{
+		aabb = cpy.aabb ? std::make_shared<AABB>(*cpy.aabb) : nullptr;
 		points = cpy.points ? std::make_shared<Chunk>(*cpy.points) : nullptr;
 		voxels = cpy.voxels ? std::make_shared<Chunk>(*cpy.voxels) : nullptr;
 		occupancy = cpy.occupancy ? std::make_shared<OccupancyGrid>(*cpy.occupancy) : nullptr;
@@ -307,9 +319,6 @@ extern std::mutex updateSceneMutex;
 /// The main octree
 extern std::shared_ptr<OctreeNode> mainOctree;
 extern std::shared_ptr<OctreeNode> mainOctreeCpy;
-/// The main bounding box
-extern std::shared_ptr<AABB> mainAABB;
-extern std::shared_ptr<AABB> mainAABBCpy;
 
 /// The buffer of spilled points
 extern std::shared_ptr<vector<Point>> spilledPoints;
@@ -375,6 +384,7 @@ struct Timing {
 
 /// The timings list
 extern vector<std::shared_ptr<Timing>> timingsList;
+static std::mutex timingsMtx;
 std::shared_ptr<Timing> addTiming(string name, bool start_now = true, uint32_t level = 0);
 
 void displayTimings();
