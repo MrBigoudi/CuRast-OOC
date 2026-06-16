@@ -415,9 +415,9 @@ void simLodLoad(
     std::shared_ptr<vector<Point>>& spilled_points
 ){
 
-	// mutex mtx_child, mtx_set;
-	// // tmp_ser is here to avoid loading a node multiple time in the parallel context
-	// std::unordered_set<AABB, AABB::Hash> tmp_set = {};
+	mutex mtx_set;
+	// tmp_ser is here to avoid loading a node multiple time in the parallel context
+	std::unordered_set<AABB, AABB::Hash> tmp_set = {};
 
 
 	// Try to insert all points
@@ -432,11 +432,8 @@ void simLodLoad(
 			NodePosition child_index = leaf->aabb->getNextChildIndex(point.position);
 
 			// If current node is not a leaf continue, else current node becomes child
-			std::shared_ptr<OctreeNode> child = nullptr;
-			{
-				// std::lock_guard<std::mutex> lock_child(mtx_child);
-				child = leaf->children[child_index];
-			}
+			std::shared_ptr<OctreeNode> child = leaf->children[child_index];
+
 			if(child){
 				leaf = child;
 				// Get node level
@@ -452,29 +449,20 @@ void simLodLoad(
 				child_aabb->shrink((NodePosition)child_index);
 				
 				{
-					// std::lock_guard<std::mutex> lock_map(mtx_set);
-					// std::lock_guard<std::mutex> lock_child(mtx_child);
-					has_been_stored = hasBeenStored(child_aabb);// || tmp_set.contains(*child_aabb);
+					std::lock_guard<std::mutex> lock_map(mtx_set);
+					has_been_stored = hasBeenStored(child_aabb) || tmp_set.contains(*child_aabb);
+
+					// If the child has not been stored, we've reached the end of the loop
+					if(!has_been_stored){return;}
+
+					// Else, we load the child and make it the current node
+					tmp_set.insert(*child_aabb);
+					leaf->children[child_index] = loadOctree(child_aabb, true);
+					leaf->children[child_index]->aabb = child_aabb;
 				}
 
-				// If the child has not been stored, we've reached the end of the loop
-				if(!has_been_stored){return;}
+				leaf = leaf->children[child_index];
 
-				// Else, we load the child and make it the current node
-				{
-					// std::lock_guard<std::mutex> lock_map(mtx_set);
-					// if(!tmp_set.contains(*child_aabb)){
-					// 	tmp_set.insert(*child_aabb);
-					// 	std::lock_guard<std::mutex> lock_child(mtx_child);
-						leaf->children[child_index] = loadOctree(child_aabb, true);
-						leaf->children[child_index]->aabb = child_aabb;
-					// }
-				}
-
-				{
-					// std::lock_guard<std::mutex> lock_child(mtx_child);
-					leaf = leaf->children[child_index];
-				}
 				if(!leaf){
 					println("At this point in the SimLodLoad, the leaf should never be null");
 					exit(EXIT_FAILURE);
