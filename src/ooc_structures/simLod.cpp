@@ -3,7 +3,7 @@
 
 #include <unordered_set>
 
-void simLodUpdate(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<vector<Point>>& points){
+void simLodUpdate(OctreeNode* main_root, std::shared_ptr<vector<Point>>& points){
 	std::shared_ptr<Timing> count_split_timing = addTiming("simlod count/split loop", true, 1);
 
 	// println("//////////////////////////////////////////////////");
@@ -93,7 +93,7 @@ void simLodUpdate(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<vector
 
 
 void simLodCount(
-    std::shared_ptr<OctreeNode>& main_root,
+    OctreeNode* main_root,
     std::shared_ptr<vector<Point>>& points,
     std::shared_ptr<vector<Point>>& spilled_points,
     std::shared_ptr<vector<OctreeNode*>>& spilling_nodes
@@ -103,7 +103,7 @@ void simLodCount(
 
 	auto countPoint = [&](Point& point, std::mutex& mtx_counter, std::mutex& mtx_spilling_nodes){
 		// Reach corresponding leaf
-		std::shared_ptr<OctreeNode> leaf = main_root;
+		OctreeNode* leaf = main_root;
 
 		uint8_t level = 1;
 
@@ -140,7 +140,7 @@ void simLodCount(
 					}
 					if(old_counter == MAX_POINTS_PER_LEAF){
 						std::lock_guard<std::mutex> lock_spilling(mtx_spilling_nodes);
-						spilling_nodes->push_back(leaf.get());
+						spilling_nodes->push_back(leaf);
 					}
 				}
 
@@ -197,14 +197,14 @@ void simLodSplit(
 		// spilling_node->is_leaf = false;
 		spilling_node->counter = 0;
 		if(!spilling_node->occupancy){
-			spilling_node->occupancy = std::make_shared<OccupancyGrid>();
+			spilling_node->occupancy = new OccupancyGrid();
 		}
 
 		for(uint32_t j=0; j<8; j++){
 			// Create necessary empty children
 			if(!spilling_node->children[j] && (0x01 << j) & spilling_node_children){
-				std::shared_ptr<OctreeNode> empty_child = std::make_shared<OctreeNode>();
-				empty_child->aabb = std::make_shared<AABB>(*spilling_node->aabb);
+				OctreeNode* empty_child = new OctreeNode();
+				empty_child->aabb = new AABB(*spilling_node->aabb);
 				empty_child->aabb->shrink((NodePosition)j);
 				empty_child->from_split = true;
 				// empty_child->is_leaf = true;
@@ -213,34 +213,26 @@ void simLodSplit(
 		}
 
 		// Add former points to spilled points and free memory
-		std::vector<std::shared_ptr<Chunk>> old_chunks = {spilling_node->points};
-		std::shared_ptr<Chunk> current_chunk = spilling_node->points;
+		Chunk* current_chunk = spilling_node->points;
 		if(!current_chunk){
 			// continue;
 			return;
 		}
 		
-		while(current_chunk->next){
-			current_chunk = current_chunk->next;
-			old_chunks.push_back(current_chunk);
-		}
-		for(int32_t i = old_chunks.size()-1; i >= 0; i--){
-			current_chunk = old_chunks[i];
+		while(current_chunk){
 			for(uint32_t j=0; j<current_chunk->size; j++){
-
 				// Flag the point as not accepted
 				current_chunk->points[j].color[3] = 0;
-
 				std::lock_guard<std::mutex> lock_spilled(mtx_spilled_points);
 				spilled_points->push_back(current_chunk->points[j]);
 			}
-			current_chunk->next = nullptr;
-			current_chunk = nullptr;
-			old_chunks[i] = nullptr;
+			current_chunk = current_chunk->next;
 		}
 
+		delete(spilling_node->points);
 		spilling_node->points = nullptr;
 	};
+
 
 	// // Sanity check
 	// std::unordered_set<OctreeNode*> set = {};
@@ -267,7 +259,7 @@ void simLodSplit(
 
 
 void simLodVoxelSampling(
-    std::shared_ptr<OctreeNode>& main_root,
+    OctreeNode* main_root,
     std::shared_ptr<vector<Point>>& points,
     std::shared_ptr<vector<Point>>& spilled_points,
     std::shared_ptr<vector<Point>>& backlog_voxels,
@@ -275,7 +267,7 @@ void simLodVoxelSampling(
 ){
 	auto sampleVoxel = [&](Point& point){
 		// Reach all corresponding inner nodes
-		std::shared_ptr<OctreeNode> node = main_root;
+		OctreeNode* node = main_root;
 
 		while(true){
 			// if(node->is_leaf){return;}
@@ -314,7 +306,7 @@ void simLodVoxelSampling(
 				// Add voxel to backlog buffers
 				// node->counter++;
 				backlog_voxels->push_back(new_voxel);
-				backlog_voxels_nodes->push_back(node.get());
+				backlog_voxels_nodes->push_back(node);
 			}
 
 			node = node->children[child_index];
@@ -330,15 +322,15 @@ void simLodVoxelSampling(
 }
 
 void simLodInsertion(
-    std::shared_ptr<OctreeNode>& main_root,
+    OctreeNode* main_root,
     std::shared_ptr<vector<Point>>& points,
     std::shared_ptr<vector<Point>>& spilled_points,
     std::shared_ptr<vector<Point>>& backlog_voxels,
     std::shared_ptr<vector<OctreeNode*>>& backlog_voxels_nodes
 ){
 
-	auto insertPoint = [&](Point& point, const std::shared_ptr<OctreeNode>& main_node){
-		std::shared_ptr<OctreeNode> cur_node = main_node;
+	auto insertPoint = [&](Point& point, OctreeNode* main_node){
+		OctreeNode* cur_node = main_node;
 		// Reach all corresponding leaves
 		while(true){
 			cur_node->updated = true;
@@ -348,11 +340,11 @@ void simLodInsertion(
 			if(cur_node->children[child_index]){
 				cur_node = cur_node->children[child_index];
 			} else {
-				if(!cur_node->points){cur_node->points = std::make_shared<Chunk>();}
-				std::shared_ptr<Chunk> chunk_list = cur_node->points;
+				if(!cur_node->points){cur_node->points = new Chunk();}
+				Chunk* chunk_list = cur_node->points;
 				while(chunk_list->next){chunk_list = chunk_list->next;}
 				if(chunk_list->size == POINTS_PER_CHUNK){
-					chunk_list->next = std::make_shared<Chunk>();
+					chunk_list->next = new Chunk();
 					chunk_list = chunk_list->next;
 				}
 				chunk_list->points[chunk_list->size] = point;
@@ -364,11 +356,11 @@ void simLodInsertion(
 
 	auto insertVoxel = [&](Point& voxel, OctreeNode* node){
 		node->updated = true;
-		if(!node->voxels){node->voxels = std::make_shared<Chunk>();}
-		std::shared_ptr<Chunk> chunk_list = node->voxels;
+		if(!node->voxels){node->voxels = new Chunk();}
+		Chunk* chunk_list = node->voxels;
 		while(chunk_list->next){chunk_list = chunk_list->next;}
 		if(chunk_list->size == POINTS_PER_CHUNK){
-			chunk_list->next = std::make_shared<Chunk>();
+			chunk_list->next = new Chunk();
 			chunk_list = chunk_list->next;
 		}
 		chunk_list->points[chunk_list->size] = voxel;
@@ -410,7 +402,7 @@ void simLodInsertion(
 
 
 void simLodLoad(
-    std::shared_ptr<OctreeNode>& main_root,
+    OctreeNode* main_root,
     std::shared_ptr<vector<Point>>& points,
     std::shared_ptr<vector<Point>>& spilled_points
 ){
@@ -421,9 +413,9 @@ void simLodLoad(
 
 
 	// Try to insert all points
-	auto tryInsertPoint = [&](Point& point, std::shared_ptr<OctreeNode>& main_root){
+	auto tryInsertPoint = [&](Point& point, OctreeNode* main_root){
 		// Reach corresponding leaf
-		std::shared_ptr<OctreeNode> leaf = main_root;
+		OctreeNode* leaf = main_root;
 
 		uint8_t level = 0;
 
@@ -432,7 +424,7 @@ void simLodLoad(
 			NodePosition child_index = leaf->aabb->getNextChildIndex(point.position);
 
 			// If current node is not a leaf continue, else current node becomes child
-			std::shared_ptr<OctreeNode> child = leaf->children[child_index];
+			OctreeNode* child = leaf->children[child_index];
 
 			if(child){
 				leaf = child;
@@ -445,20 +437,19 @@ void simLodLoad(
 			} else {
 				// Check if the child has been stored
 				bool has_been_stored = false;
-				std::shared_ptr<AABB> child_aabb = std::make_shared<AABB>(*leaf->aabb);
+				AABB* child_aabb = new AABB(*leaf->aabb);
 				child_aabb->shrink((NodePosition)child_index);
 				
 				{
 					std::lock_guard<std::mutex> lock_map(mtx_set);
-					has_been_stored = hasBeenStored(child_aabb) || tmp_set.contains(*child_aabb);
+					has_been_stored = hasBeenStored(*child_aabb) || tmp_set.contains(*child_aabb);
 
 					// If the child has not been stored, we've reached the end of the loop
 					if(!has_been_stored){return;}
 
 					// Else, we load the child and make it the current node
 					tmp_set.insert(*child_aabb);
-					leaf->children[child_index] = loadOctree(child_aabb, true);
-					leaf->children[child_index]->aabb = child_aabb;
+					leaf->children[child_index] = loadOctree(*child_aabb, true);
 				}
 
 				leaf = leaf->children[child_index];

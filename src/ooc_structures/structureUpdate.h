@@ -5,27 +5,28 @@
 
 /// Init the main octree
 void initOctree(
-    std::shared_ptr<OctreeNode>& root_node, 
+    OctreeNode* root_node, 
     std::shared_ptr<vector<Point>>& points
 );
 
 /// Grow the octree
 uint32_t growOctree(
-    std::shared_ptr<OctreeNode>& root_node, 
+    OctreeNode* root_node, 
     const std::shared_ptr<vector<Point>>& points
 );
 
 /// Bottom up update of the octree
 /// Creates nb_new_levels inner nodes
-void uptadeOctree(
-    std::shared_ptr<OctreeNode>& main_root,
+/// Returns the new root
+OctreeNode* uptadeOctree(
+    OctreeNode* main_root,
     uint32_t nb_new_levels
 );
 
 
 /// TODO: temporary function
 /// Load an octree to gpu memory
-void loadOctreeOnGPU(std::shared_ptr<OctreeNode>& main_octree,
+void loadOctreeOnGPU(OctreeNode* main_octree,
     CuRast* editor, CUcontext* context, bool bypass_semaphore = false
 );
 /// TODO: temporary function
@@ -37,9 +38,9 @@ void freePreviousOctreeOnGPU(CuRast* editor, std::shared_ptr<SNCOctree> caller);
 
 
 /// Add new batches to the octree
-void addPointBatches(std::shared_ptr<OctreeNode>& main_octree);
+void addPointBatches();
 /// Asynchronously update the octree
-void updateOctreeRoutine(std::shared_ptr<OctreeNode>& main_octree);
+void updateOctreeRoutine();
 
 
 /// TODO: test to get culled nodes from GPU

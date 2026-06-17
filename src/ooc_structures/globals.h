@@ -76,8 +76,8 @@ const std::string TEMPORARY_DIRECTORY = format("{}/build/tmp", PROJECT_SOURCE_DI
 constexpr uint32_t LRU_CACHE_SIZE = 1024;
 // constexpr uint32_t LRU_CACHE_SIZE = 4096;
 
-constexpr bool CPU_PARALLELISED = true;
-// constexpr bool CPU_PARALLELISED = false;
+// constexpr bool CPU_PARALLELISED = true;
+constexpr bool CPU_PARALLELISED = false;
 
 /// The maximum size for the batches vectors
 extern uint32_t BATCHES_QUEUE_SIZE;
@@ -205,6 +205,7 @@ struct OccupancyGrid {
 		for(uint32_t i=0; i<GRID_NUM_CELLS / 32u; i++){
 			values[i] = cpy.values[i];
 		}
+		assert(cpy == *this);
 	}
 	bool operator==(const OccupancyGrid& rhs) const {
 		for(uint32_t i=0; i<GRID_NUM_CELLS / 32u; i++){
@@ -231,52 +232,13 @@ struct OccupancyGrid {
 	}
 };
 
-/// A node in an octree
-struct OctreeNode {
-	std::shared_ptr<OctreeNode> children[8] = {nullptr};
-	uint16_t counter = 0;
-	uint8_t children_ids = 0b00000000;
-	std::shared_ptr<Chunk> points = nullptr;
-	std::shared_ptr<Chunk> voxels = nullptr;
-	std::shared_ptr<OccupancyGrid> occupancy = nullptr;
-	bool from_split = false;
-	bool from_bottom_up = false;
-
-	bool updated = false;
-
-	std::shared_ptr<AABB> aabb = nullptr;
-
-	uint32_t getNbPoints() const;
-	uint32_t getNbVoxels() const;
-
-	void display(uint32_t id = 0, uint32_t level = 0, bool node_only = false) const;
-
-	bool operator==(const OctreeNode& rhs) const;
-
-	OctreeNode(){}
-	OctreeNode(const OctreeNode& cpy) : counter(cpy.counter), children_ids(cpy.children_ids)
-		, from_split(cpy.from_split), from_bottom_up(cpy.from_bottom_up)
-	{
-		aabb = cpy.aabb ? std::make_shared<AABB>(*cpy.aabb) : nullptr;
-		points = cpy.points ? std::make_shared<Chunk>(*cpy.points) : nullptr;
-		voxels = cpy.voxels ? std::make_shared<Chunk>(*cpy.voxels) : nullptr;
-		occupancy = cpy.occupancy ? std::make_shared<OccupancyGrid>(*cpy.occupancy) : nullptr;
-
-		for(uint32_t child = 0; child < 8; child++){
-			if(cpy.children[child]){
-				children[child] = std::make_shared<OctreeNode>(*cpy.children[child]);
-			}
-		}
-	}
-};
-
 /// A chunk linked list in a node
 struct Chunk {
 	/// All chunk have the same physical size even if empty
 	Point points[POINTS_PER_CHUNK] = {Point()};
 	uint32_t size = 0;
 	/// For the linked list
-	std::shared_ptr<Chunk> next = nullptr;
+	Chunk* next = nullptr;
 
 	bool operator==(const Chunk& rhs) const;
 
@@ -287,8 +249,82 @@ struct Chunk {
 		}
 
 		if(cpy.next){
-			next = std::make_shared<Chunk>(*cpy.next);
+			next = new Chunk(*cpy.next);
 		}
+		assert(cpy == *this);
+	}
+
+	~Chunk() {
+		delete(next);
+		next = nullptr;
+	}
+
+};
+
+/// A node in an octree
+struct OctreeNode {
+	OctreeNode* children[8] = {nullptr};
+	uint16_t counter = 0;
+	uint8_t children_ids = 0b00000000;
+	Chunk* points = nullptr;
+	Chunk* voxels = nullptr;
+	OccupancyGrid* occupancy = nullptr;
+	bool from_split = false;
+	bool from_bottom_up = false;
+
+	bool updated = false;
+
+	AABB* aabb = nullptr;
+
+	uint8_t level = 0;
+	bool is_large = false;
+	bool is_visible = false;
+	bool is_cut = false;
+
+	uint32_t getNbPoints() const;
+	uint32_t getNbVoxels() const;
+
+	void display(uint32_t id = 0, uint32_t level = 0, bool node_only = false) const;
+
+	bool operator==(const OctreeNode& rhs) const;
+
+	~OctreeNode(){
+		if(points){
+			delete(points);
+			points = nullptr;
+		}
+		if(voxels){
+			delete(voxels);
+			voxels = nullptr;
+		}
+		if(occupancy){
+			delete(occupancy);
+			occupancy = nullptr;
+		}
+		for(uint32_t i=0; i<8; i++){
+			if(children[i]){
+				delete(children[i]);
+				children[i] = nullptr;
+			}
+		}
+	}
+
+	OctreeNode(){}
+	OctreeNode(const OctreeNode& cpy) : counter(cpy.counter), children_ids(cpy.children_ids)
+		, from_split(cpy.from_split), from_bottom_up(cpy.from_bottom_up)
+	{
+		aabb = cpy.aabb ? new AABB(*cpy.aabb) : nullptr;
+		points = cpy.points ? new Chunk(*cpy.points) : nullptr;
+		voxels = cpy.voxels ? new Chunk(*cpy.voxels) : nullptr;
+		occupancy = cpy.occupancy ? new OccupancyGrid(*cpy.occupancy) : nullptr;
+
+		for(uint32_t child = 0; child < 8; child++){
+			if(cpy.children[child]){
+				children[child] = new OctreeNode(*cpy.children[child]);
+			}
+		}
+
+		assert(cpy == *this);
 	}
 };
 
@@ -317,8 +353,8 @@ extern std::deque<std::mutex> batchesQueueMutexes;
 extern std::mutex updateSceneMutex;
 
 /// The main octree
-extern std::shared_ptr<OctreeNode> mainOctree;
-extern std::shared_ptr<OctreeNode> mainOctreeCpy;
+extern OctreeNode* mainOctree;
+extern OctreeNode* mainOctreeCpy;
 
 /// The buffer of spilled points
 extern std::shared_ptr<vector<Point>> spilledPoints;
@@ -332,18 +368,18 @@ extern std::shared_ptr<vector<OctreeNode*>> backlogVoxelsNodes;
 
 /// The LRU cache for the nodes
 extern uint64_t lruCounter;
-typedef std::pair<uint64_t, std::shared_ptr<AABB>> CacheEntry; 
+typedef std::pair<uint64_t, AABB> CacheEntry; 
 extern std::array<std::optional<CacheEntry>, LRU_CACHE_SIZE> lruCache;
 extern std::unordered_map<AABB, uint32_t, AABB::Hash> lruMapInCache;
 extern std::unordered_set<AABB, AABB::Hash> lruMapStored;
 
 /// Add a node to the cache and return the id of a node if it has been removed from the cache
 /// The id of a node is it's AABB
-std::optional<std::shared_ptr<AABB>> addToCache(const std::shared_ptr<AABB>& aabb);
+std::optional<AABB> addToCache(const AABB& aabb);
 /// Check if a node is already in cache
-std::optional<uint32_t> getCacheIndex(const std::shared_ptr<AABB>& aabb);
+std::optional<uint32_t> getCacheIndex(const AABB& aabb);
 /// Check if a node has been stored
-bool hasBeenStored(const std::shared_ptr<AABB>& aabb);
+bool hasBeenStored(const AABB& aabb);
 /// Display the LRU cache
 void displayCache();
 
@@ -389,3 +425,19 @@ std::shared_ptr<Timing> addTiming(string name, bool start_now = true, uint32_t l
 
 void displayTimings();
 void displayBuffers();
+
+
+
+/// Test unified memory
+extern std::vector<std::shared_ptr<std::vector<vec3>>> unified_positions;
+extern std::vector<std::shared_ptr<std::vector<uint32_t>>> unified_colors;
+
+struct CFullOctreeUnifiedBuilder {
+	std::vector<void*> nodes = {};
+	uint32_t num_nodes = 0;
+	uint32_t max_lod_level = 0;
+
+	void update();
+	CFullOctreeUnified build();
+};
+extern CFullOctreeUnifiedBuilder unifiedOctreeBuilder;

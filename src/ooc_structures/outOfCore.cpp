@@ -58,8 +58,8 @@ std::string getChunkFilePath(const AABB& aabb, bool is_voxel){
 ///////////////////////////// CHUNK SERIALIZATION /////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
 
-ChunkSerializable::ChunkSerializable(const std::shared_ptr<Chunk>& root_chunk){
-    Chunk* cur_chunk = root_chunk.get();
+ChunkSerializable::ChunkSerializable(const Chunk* root_chunk){
+    const Chunk* cur_chunk = root_chunk;
     while(cur_chunk){
         // Copy points
         uint32_t cur_size = cur_chunk->size;
@@ -71,7 +71,7 @@ ChunkSerializable::ChunkSerializable(const std::shared_ptr<Chunk>& root_chunk){
         }
         points.push_back(new_points);
 
-        cur_chunk = cur_chunk->next.get();
+        cur_chunk = cur_chunk->next;
     }
 }
 
@@ -138,15 +138,15 @@ ChunkSerializable ChunkSerializable::deserialize(const std::string& filepath){
     return new_chunk;
 }
 
-std::shared_ptr<Chunk> ChunkSerializable::toChunk() const{
-    std::shared_ptr<Chunk> root_chunk = nullptr;
+Chunk* ChunkSerializable::toChunk() const{
+    Chunk* root_chunk = nullptr;
     uint32_t nb_chunks = sizes.size();
 
     for(int32_t chunk_id=nb_chunks-1; chunk_id>=0; chunk_id--){
         uint32_t cur_size = sizes[chunk_id];
         const std::array<Point, POINTS_PER_CHUNK>& cur_points = points[chunk_id];
 
-        std::shared_ptr<Chunk> new_chunk = std::make_shared<Chunk>();
+        Chunk* new_chunk = new Chunk();
         new_chunk->size = cur_size;
         for(uint32_t point_id = 0; point_id < cur_size; point_id++){
             new_chunk->points[point_id] = cur_points[point_id];
@@ -165,8 +165,8 @@ std::shared_ptr<Chunk> ChunkSerializable::toChunk() const{
 //////////////////////////// OCTREE SERIALIZATION /////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
 
-void OctreeNodeSerializable::init(const std::shared_ptr<OctreeNode>& node, bool node_only){
-    std::function<void (const std::shared_ptr<OctreeNode>&)> recursion = [&](const std::shared_ptr<OctreeNode>& cur_node){
+void OctreeNodeSerializable::init(const OctreeNode* node, bool node_only){
+    std::function<void (const OctreeNode*)> recursion = [&](const OctreeNode* cur_node){
             OctreeNodeSerializable new_node = {};
             new_node.counter = cur_node->counter;
             new_node.children_ids = cur_node->children_ids;
@@ -267,10 +267,11 @@ OctreeNodeSerializable OctreeNodeSerializable::deserialize(const std::string& fi
     return new_node;
 }
 
-std::shared_ptr<OctreeNode> OctreeNodeSerializable::toLeafNode(const AABB& node_aabb) const{
-    std::shared_ptr<OctreeNode> new_node = std::make_shared<OctreeNode>();
+OctreeNode* OctreeNodeSerializable::toLeafNode(const AABB& node_aabb) const{
+    OctreeNode* new_node = new OctreeNode();
     new_node->counter = counter;
     new_node->children_ids = children_ids;
+    new_node->aabb = new AABB(node_aabb);
 
     if(points != ""){
         ChunkSerializable points_deserialized = ChunkSerializable::deserialize(
@@ -288,11 +289,12 @@ std::shared_ptr<OctreeNode> OctreeNodeSerializable::toLeafNode(const AABB& node_
 
     // Rebuild occupancy
     if(new_node->voxels){
-        new_node->occupancy = std::make_shared<OccupancyGrid>();
-        auto fillOccupancy = [&](std::shared_ptr<Chunk> chunk) {
-            while(chunk){
-                for(std::uint32_t point_id=0; point_id<chunk->size; point_id++){
-                    Point& point = chunk->points[point_id];
+        new_node->occupancy = new OccupancyGrid();
+        auto fillOccupancy = [&](const Chunk* chunk) {
+            const Chunk* cur_chunk = chunk;
+            while(cur_chunk){
+                for(std::uint32_t point_id=0; point_id<cur_chunk->size; point_id++){
+                    const Point& point = cur_chunk->points[point_id];
 
                     // Sample voxel occupancy grid at this location
                     vec3 normalized_coordinates = node_aabb.getPointNormalizedCoordinates(point.position);
@@ -304,7 +306,7 @@ std::shared_ptr<OctreeNode> OctreeNodeSerializable::toLeafNode(const AABB& node_
                     uint32_t bit_index = index & 31u;
                     new_node->occupancy->values[word_index] |= (1u << bit_index);
                 }
-                chunk = chunk->next;
+                cur_chunk = cur_chunk->next;
             }
         };
         fillOccupancy(new_node->voxels);
@@ -313,10 +315,10 @@ std::shared_ptr<OctreeNode> OctreeNodeSerializable::toLeafNode(const AABB& node_
     return new_node;
 }
 
-std::shared_ptr<OctreeNode> OctreeNodeSerializable::toOctreeNodes(
+OctreeNode* OctreeNodeSerializable::toOctreeNodes(
     const AABB& root_aabb, bool node_only
 ){
-    std::unordered_map<std::string, std::shared_ptr<OctreeNode>> map = {};
+    std::unordered_map<std::string, OctreeNode*> map = {};
     
     // Load all nodes indepentenly
     std::function<void(const AABB&, uint32_t, uint32_t)> recursion = 
@@ -325,7 +327,7 @@ std::shared_ptr<OctreeNode> OctreeNodeSerializable::toOctreeNodes(
         std::string filepath = getNodeFilePath(cur_aabb);
         OctreeNodeSerializable new_serializable_node = OctreeNodeSerializable::deserialize(filepath);
         lruMapStored.erase(cur_aabb);
-        std::shared_ptr<OctreeNode> new_node = new_serializable_node.toLeafNode(cur_aabb);
+        OctreeNode* new_node = new_serializable_node.toLeafNode(cur_aabb);
 
         if(!node_only){
             // new_node->display(id, level, true);
@@ -352,26 +354,24 @@ std::shared_ptr<OctreeNode> OctreeNodeSerializable::toOctreeNodes(
 
 
 
-void storeOctree(const std::shared_ptr<OctreeNode>& node, bool node_only
+void storeOctree(const OctreeNode* node, bool node_only
 ){
     OctreeNodeSerializable::init(node, node_only);
     // println("Done storing octree");
 }
 
-std::shared_ptr<OctreeNode> loadOctree(const std::shared_ptr<AABB>& root_aabb, bool node_only){
+OctreeNode* loadOctree(const AABB& root_aabb, bool node_only){
     // println("Start loading octree");
-    std::shared_ptr<OctreeNode> res = OctreeNodeSerializable::toOctreeNodes(*root_aabb, node_only);
-    // println("Done loading octree");
+    OctreeNode* res = OctreeNodeSerializable::toOctreeNodes(root_aabb, node_only);
+    println("Done loading octree");
     return res;
 }
 
 
 /// Add nodes to cache after octree update
-void updateCache(std::shared_ptr<OctreeNode>& root_octree){    
-
-
+void updateCache(OctreeNode* root_octree){
     // Traverse octree and add newly updated aabbs to the cache
-    std::function<void(const std::shared_ptr<OctreeNode>&)> recursionAddToCache = [&](const std::shared_ptr<OctreeNode>& cur_node){
+    std::function<void(OctreeNode*)> recursionAddToCache = [&](OctreeNode* cur_node){
         for(uint32_t child_id = 0; child_id < 8; child_id++){
             if(cur_node->children[child_id]){
                 recursionAddToCache(cur_node->children[child_id]);
@@ -379,7 +379,8 @@ void updateCache(std::shared_ptr<OctreeNode>& root_octree){
         }
 
         if(cur_node->updated){
-            addToCache(cur_node->aabb);
+            addToCache(AABB(*cur_node->aabb));
+            cur_node->updated = false;
         }
 
     };
@@ -387,9 +388,9 @@ void updateCache(std::shared_ptr<OctreeNode>& root_octree){
     recursionAddToCache(root_octree);
 
     // Traverse octree and remove nodes that were just serialized
-    std::function<bool(const std::shared_ptr<OctreeNode>&, uint32_t, uint32_t)> 
+    std::function<bool(OctreeNode*, uint32_t, uint32_t)> 
         recursionRemoveNodes = 
-            [&](const std::shared_ptr<OctreeNode>& cur_node, uint32_t id, uint32_t level) -> bool
+            [&](OctreeNode* cur_node, uint32_t id, uint32_t level) -> bool
     {
         for(uint32_t child_id = 0; child_id < 8; child_id++){
             if(cur_node->children[child_id]){
@@ -399,11 +400,11 @@ void updateCache(std::shared_ptr<OctreeNode>& root_octree){
             }
         }
 
-        bool is_in_cache = getCacheIndex(cur_node->aabb).has_value();
-        bool to_remove = false;
+        bool is_in_cache = getCacheIndex(*cur_node->aabb).has_value();
         if(!is_in_cache){
             storeOctree(cur_node, true);
-            to_remove = true;
+            delete(cur_node);
+            return true;
         }
 
         // bool is_in_cache = false;
@@ -414,8 +415,7 @@ void updateCache(std::shared_ptr<OctreeNode>& root_octree){
         //     }
         // }
 
-        cur_node->updated = false;
-        return to_remove;
+        return false;
     };
 
     // println("\n//////////////////////////////////////////////////");

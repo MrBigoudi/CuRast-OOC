@@ -14,6 +14,8 @@ struct SNCPoints : public SceneNode{
 
 	CUdeviceptr cptr_positions;
 	CUdeviceptr cptr_colors;
+	void* ptr_positions;
+	void* ptr_colors;
 	uint64_t numPoints = 0;
 	
 	SNCPoints(string name) : SceneNode(name){

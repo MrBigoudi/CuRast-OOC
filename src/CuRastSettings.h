@@ -13,6 +13,7 @@ struct CuRastSettings{
 	static inline bool autoFreeOldOctreeMemoryOnGPU = true;
 	static inline bool storeOctree = false;
 	static inline bool loadOctree = false;
+	static inline bool useUnifiedMemory = false;
 
 	/// The maximum number of batches that should be used per octree update
 	static inline int32_t minBatchesPerUpdate = 1;

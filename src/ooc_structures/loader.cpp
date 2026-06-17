@@ -205,22 +205,33 @@ void loadBatchesOnGPU(CuRast* editor, CUcontext* ctx){
 		std::lock_guard<std::mutex> lock(batchesQueueMutexes[index]);
 		std::shared_ptr<PointBatch> batch = batchesQueue[index];
 
-        // // Upload positions and colors to GPU
-        // CUdeviceptr cptr_positions, cptr_colors;
+        // Upload positions and colors to GPU
+        CUdeviceptr cptr_positions, cptr_colors;
 
-		// if(CPU_PARALLELISED){
-		// 	cuCtxSetCurrent(*ctx);
-		// }
+		if(CPU_PARALLELISED){
+			cuCtxSetCurrent(*ctx);
+		}
 
-        // cuMemAlloc(&cptr_positions, batch->count * sizeof(vec3));
-        // cuMemAlloc(&cptr_colors,    batch->count * sizeof(uint32_t));
-        // cuMemcpyHtoD(cptr_positions, batch->getPositions().data(), batch->count * sizeof(vec3));
-        // cuMemcpyHtoD(cptr_colors, batch->getColors().data(),batch->count * sizeof(uint32_t));
+        cuMemAlloc(&cptr_positions, batch->count * sizeof(vec3));
+        cuMemAlloc(&cptr_colors,    batch->count * sizeof(uint32_t));
+        cuMemcpyHtoD(cptr_positions, batch->getPositions().data(), batch->count * sizeof(vec3));
+        cuMemcpyHtoD(cptr_colors, batch->getColors().data(),batch->count * sizeof(uint32_t));
 
-        // auto node = make_shared<SNCPoints>("pointcloud");
-        // node->cptr_positions = cptr_positions;
-        // node->cptr_colors    = cptr_colors;
-        // node->numPoints      = batch->count;
+        auto node = make_shared<SNCPoints>("pointcloud");
+        node->cptr_positions = cptr_positions;
+        node->cptr_colors    = cptr_colors;
+        node->numPoints      = batch->count;
+
+		{
+			// Unified memory rendering
+			auto tmp_positions = std::make_shared<std::vector<vec3>>(batch->getPositions());
+			auto tmp_colors = std::make_shared<std::vector<uint32_t>>(batch->getColors());
+			unified_positions.push_back(tmp_positions);
+			unified_colors.push_back(tmp_colors);
+			node->ptr_positions = tmp_positions.get()->data();
+			node->ptr_colors    = tmp_colors.get()->data();
+		}
+
 		batch->state = BatchState::ToRemove;
 
 		{
@@ -228,8 +239,8 @@ void loadBatchesOnGPU(CuRast* editor, CUcontext* ctx){
 			NB_POINTS += batch->count;
 		}
 
-		// std::lock_guard<std::mutex> lock_scene(updateSceneMutex);
-        // editor->scene.world->children.push_back(node);
+		std::lock_guard<std::mutex> lock_scene(updateSceneMutex);
+        editor->scene.world->children.push_back(node);
     };
 
 	auto first = batches_indices.begin();

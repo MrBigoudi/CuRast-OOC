@@ -7,6 +7,8 @@
 #include "VKRenderer.h"
 #include "TextureManager.h"
 
+#include "ooc_structures/globals.h"
+
 using namespace std;
 
 CudaVirtualMemory* cvm_framebuffer = nullptr;
@@ -104,8 +106,13 @@ void drawPoints(Scene* scene, View view, RenderTarget& target){
 
 		CPointcloud cpc;
 		cpc.world     = node->transform_global;
-		cpc.positions = (vec3*)node->cptr_positions;
-		cpc.colors    = (uint32_t*)node->cptr_colors;
+		if(CuRastSettings::useUnifiedMemory){
+			cpc.positions = (vec3*)node->ptr_positions;
+			cpc.colors    = (uint32_t*)node->ptr_colors;
+		} else {
+			cpc.positions = (vec3*)node->cptr_positions;
+			cpc.colors    = (uint32_t*)node->cptr_colors;
+		}
 		cpc.numPoints = node->numPoints;
 
 		prog->launch("kernel_drawPointcloud", {&cpc, &target}, cpc.numPoints);
@@ -166,6 +173,42 @@ void drawOctree(Scene* scene, View view, RenderTarget& target,
 		prog->launch("kernel_drawOctreeLarge", {&cfo, &target}, launch_settings);
 		prog->launch("kernel_drawOctreeSmall", {&cfo, &target}, launch_settings);
     });
+}
+
+void drawOctreeAABBUnified(Scene* scene, View view, RenderTarget& target){
+	static CudaModularProgram* prog = new CudaModularProgram({"./src/kernels/octreeUnified.cu"});
+
+	unifiedOctreeBuilder.update();
+	CFullOctreeUnified cfo = unifiedOctreeBuilder.build();
+	cfo.world = mat4(1.0f);
+
+	prog->launch("kernel_drawOctreeAABB", {&cfo, &target}, cfo.num_nodes);
+}
+
+void drawOctreeUnified(Scene* scene, View view, RenderTarget& target, 
+	int32_t debug_lod = -1, int32_t voxels_nb_points = 1, float min_pixel_span = 64.,
+	bool use_voxels_debug_color = false
+){
+	static CudaModularProgram* prog = new CudaModularProgram({"./src/kernels/octreeUnified.cu"});
+
+	unifiedOctreeBuilder.update();
+	CFullOctreeUnified cfo = unifiedOctreeBuilder.build();
+
+	cfo.world = mat4(1.0f);
+	cfo.debug_lod_to_render = debug_lod;
+	cfo.voxels_nb_points_per_axis = uint32_t(voxels_nb_points);
+	cfo.min_pixel_span = min_pixel_span;
+	cfo.use_voxels_debug_color = use_voxels_debug_color;
+        
+	uint32_t numThreads = cfo.num_nodes * C_OCTREE_RENDER_BLOCK_SIZE;
+	OptionalLaunchSettings launch_settings = {
+		.gridsize = cfo.num_nodes,
+		.blocksize = C_OCTREE_RENDER_BLOCK_SIZE
+	};
+
+	prog->launch("kernel_visibilityPass", {&cfo, &target}, launch_settings);
+	prog->launch("kernel_drawOctreeLarge", {&cfo, &target}, launch_settings);
+	prog->launch("kernel_drawOctreeSmall", {&cfo, &target}, launch_settings);
 }
 
 
@@ -664,15 +707,28 @@ void CuRast::draw(Scene* scene, vector<View> views){
 		if(CuRastSettings::bruteForceRendering){
 			drawPoints(scene, view, target);
 		} else {
-			drawOctree(scene, view, target, 
-				CuRastSettings::debugLodToRender, 
-				CuRastSettings::voxelsPointsPerAxis,
-				CuRastSettings::minPixelSpan,
-				CuRastSettings::voxelsDebugColor
-			);
+			if(CuRastSettings::useUnifiedMemory){
+				drawOctreeUnified(scene, view, target, 
+					CuRastSettings::debugLodToRender, 
+					CuRastSettings::voxelsPointsPerAxis,
+					CuRastSettings::minPixelSpan,
+					CuRastSettings::voxelsDebugColor
+				);
+			} else {
+				drawOctree(scene, view, target, 
+					CuRastSettings::debugLodToRender, 
+					CuRastSettings::voxelsPointsPerAxis,
+					CuRastSettings::minPixelSpan,
+					CuRastSettings::voxelsDebugColor
+				);
+			}
 		}
 		if(CuRastSettings::showBoundingBoxes){
-			drawOctreeAABB(scene, view, target);
+			if(CuRastSettings::useUnifiedMemory){
+				drawOctreeAABBUnified(scene, view, target);
+			} else {
+				drawOctreeAABB(scene, view, target);
+			}
 		}
 
 

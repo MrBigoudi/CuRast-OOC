@@ -223,7 +223,7 @@ void updateNodePosition(NodePosition& position){
 
 uint32_t OctreeNode::getNbPoints() const {
     uint32_t res = 0;
-    shared_ptr<Chunk> point_chunk = points;
+    Chunk* point_chunk = points;
     while(point_chunk){
         res += point_chunk->size;
         point_chunk = point_chunk->next;
@@ -233,7 +233,7 @@ uint32_t OctreeNode::getNbPoints() const {
 
 uint32_t OctreeNode::getNbVoxels() const {
     uint32_t res = 0;
-    shared_ptr<Chunk> voxel_chunk = voxels;
+    Chunk* voxel_chunk = voxels;
     while(voxel_chunk){
         res += voxel_chunk->size;
         voxel_chunk = voxel_chunk->next;
@@ -261,6 +261,10 @@ void OctreeNode::display(uint32_t id, uint32_t level, bool node_only) const {
         uint8_t(children[6] != nullptr), 
         uint8_t(children[7] != nullptr)
     );
+    println("    aabb: mins = ({}, {}, {}), maxs = ({}, {}, {})",
+        aabb->mins.x, aabb->mins.y, aabb->mins.z,
+        aabb->maxs.x, aabb->maxs.y, aabb->maxs.z
+    );
     if(!node_only){
         for(size_t i=0; i<8; i++){
             if(children[i]){
@@ -272,8 +276,8 @@ void OctreeNode::display(uint32_t id, uint32_t level, bool node_only) const {
 
 bool OctreeNode::operator==(const OctreeNode& rhs) const {
 
-    std::function<bool(const std::shared_ptr<OctreeNode>&, const std::shared_ptr<OctreeNode>&)> recursion = 
-        [&](const std::shared_ptr<OctreeNode>& cur_lhs, const std::shared_ptr<OctreeNode>& cur_rhs) -> bool
+    std::function<bool(const OctreeNode*, const OctreeNode*)> recursion = 
+        [&](const OctreeNode* cur_lhs, const OctreeNode* cur_rhs) -> bool
     {    
         if(cur_lhs->counter != cur_rhs->counter){
             println("OctreeNode::operator==: Wrong counter");
@@ -293,8 +297,8 @@ bool OctreeNode::operator==(const OctreeNode& rhs) const {
                 println("OctreeNode::operator==: Wrong aabb, should not be empty");
                 return false;
             }
-            const AABB& lhs_aabb = *cur_lhs->aabb.get();
-            const AABB& rhs_aabb = *cur_rhs->aabb.get();
+            const AABB& lhs_aabb = *cur_lhs->aabb;
+            const AABB& rhs_aabb = *cur_rhs->aabb;
             if(lhs_aabb != rhs_aabb){
                 println("OctreeNode::operator==: Wrong aabbs");
                 return false;
@@ -310,8 +314,8 @@ bool OctreeNode::operator==(const OctreeNode& rhs) const {
                 println("OctreeNode::operator==: Wrong points, should not be empty");
                 return false;
             }
-            const Chunk& lhs_points = *cur_lhs->points.get();
-            const Chunk& rhs_points = *cur_rhs->points.get();
+            const Chunk& lhs_points = *cur_lhs->points;
+            const Chunk& rhs_points = *cur_rhs->points;
             if(lhs_points != rhs_points){
                 println("OctreeNode::operator==: Wrong points");
                 return false;
@@ -327,8 +331,8 @@ bool OctreeNode::operator==(const OctreeNode& rhs) const {
                 println("OctreeNode::operator==: Wrong voxels, should not be empty");
                 return false;
             }
-            const Chunk& lhs_voxels = *cur_lhs->voxels.get();
-            const Chunk& rhs_voxels = *cur_rhs->voxels.get();
+            const Chunk& lhs_voxels = *cur_lhs->voxels;
+            const Chunk& rhs_voxels = *cur_rhs->voxels;
             if(lhs_voxels != rhs_voxels){
                 println("OctreeNode::operator==: Wrong voxels");
                 return false;
@@ -344,8 +348,8 @@ bool OctreeNode::operator==(const OctreeNode& rhs) const {
                 println("OctreeNode::operator==: Wrong occupancy grid, should not be empty");
                 return false;
             }
-            const OccupancyGrid& lhs_grid = *cur_lhs->occupancy.get();
-            const OccupancyGrid& rhs_grid = *cur_rhs->occupancy.get();
+            const OccupancyGrid& lhs_grid = *cur_lhs->occupancy;
+            const OccupancyGrid& rhs_grid = *cur_rhs->occupancy;
             if(lhs_grid != rhs_grid){
                 println("OctreeNode::operator==: Wrong occupancy grid");
                 return false;
@@ -362,8 +366,8 @@ bool OctreeNode::operator==(const OctreeNode& rhs) const {
                 println("OctreeNode::operator==: Wrong child, should be empty");
                 return false;
             }
-            const std::shared_ptr<OctreeNode>& lhs_child = cur_lhs->children[i];
-            const std::shared_ptr<OctreeNode>& rhs_child = cur_rhs->children[i];
+            const OctreeNode* lhs_child = cur_lhs->children[i];
+            const OctreeNode* rhs_child = cur_rhs->children[i];
             if(!recursion(lhs_child, rhs_child)){
                 println("OctreeNode::operator==: Wrong child");
                 return false;
@@ -373,7 +377,7 @@ bool OctreeNode::operator==(const OctreeNode& rhs) const {
         return true;
     };
 
-    return recursion(std::make_shared<OctreeNode>(*this), std::make_shared<OctreeNode>(rhs));
+    return recursion(this, &rhs);
 }
 
 
@@ -388,8 +392,8 @@ bool Chunk::operator==(const Chunk& rhs) const{
             const Point& rhs_point = rhs_chunk->points[i];
             if(lhs_point != rhs_point){return false;}
         }
-        lhs_chunk = lhs_chunk->next.get();
-        rhs_chunk = rhs_chunk->next.get();
+        lhs_chunk = lhs_chunk->next;
+        rhs_chunk = rhs_chunk->next;
     }
     if(rhs_chunk){return false;}
     return true;
@@ -430,8 +434,8 @@ std::deque<std::mutex> batchesQueueMutexes(BATCHES_QUEUE_SIZE);
 std::mutex updateSceneMutex;
 
 /// The main octree
-std::shared_ptr<OctreeNode> mainOctree = std::make_shared<OctreeNode>();
-std::shared_ptr<OctreeNode> mainOctreeCpy = std::make_shared<OctreeNode>();
+OctreeNode* mainOctree = new OctreeNode();
+OctreeNode* mainOctreeCpy = new OctreeNode();
 
 /// The buffer of spilled points
 std::shared_ptr<vector<Point>> spilledPoints = std::make_shared<vector<Point>>(vector<Point>());
@@ -535,12 +539,12 @@ void displayCache(){
 	for(std::optional<CacheEntry>& entry : lruCache){
         if(entry.has_value()){
             std::string output = format("mins = ({}, {}, {}), maxs = ({}, {}, {})",
-                entry->second->mins.x, 
-                entry->second->mins.y, 
-                entry->second->mins.z, 
-                entry->second->maxs.x, 
-                entry->second->maxs.y, 
-                entry->second->maxs.z
+                entry->second.mins.x, 
+                entry->second.mins.y, 
+                entry->second.mins.z, 
+                entry->second.maxs.x, 
+                entry->second.maxs.y, 
+                entry->second.maxs.z
             );
             println("- [ {} ]: {}", entry->first, output);
         } else {
@@ -553,7 +557,7 @@ void displayCache(){
 }
 
 
-std::optional<std::shared_ptr<AABB>> addToCache(const std::shared_ptr<AABB>& aabb){
+std::optional<AABB> addToCache(const AABB& aabb){
     bool already_in_cache = false;
 
     // Reset every counters if needed
@@ -563,7 +567,7 @@ std::optional<std::shared_ptr<AABB>> addToCache(const std::shared_ptr<AABB>& aab
             if(lruCache[cache_id]){
                 CacheEntry& entry = lruCache[cache_id].value();
                 entry.first = 0;
-                if(*entry.second == *aabb){
+                if(entry.second == aabb){
                     entry.first = 1;
                     already_in_cache = true;
                 }
@@ -582,7 +586,7 @@ std::optional<std::shared_ptr<AABB>> addToCache(const std::shared_ptr<AABB>& aab
             CacheEntry& entry = lruCache[cache_id].value();
 
             // Check if already in cache
-            if(*entry.second == *aabb){
+            if(entry.second == aabb){
                 entry.first = lruCounter;
                 return nullopt;
             }
@@ -595,25 +599,70 @@ std::optional<std::shared_ptr<AABB>> addToCache(const std::shared_ptr<AABB>& aab
         } else {
             // Found empty space
             lruCache[cache_id] = {lruCounter, aabb};
-            lruMapInCache[*aabb] = cache_id;
+            lruMapInCache[aabb] = cache_id;
             return nullopt;
         }
     }
 
     // If not in cache, create new entry
-    std::shared_ptr<AABB> old_entry = lruCache[new_id]->second;
+    const AABB& old_entry = lruCache[new_id]->second;
     CacheEntry new_entry = {lruCounter, aabb};
     lruCache[new_id] = new_entry;
-    lruMapInCache[*aabb] = new_id;
-    lruMapInCache.erase(*old_entry);
+    lruMapInCache[aabb] = new_id;
+    lruMapInCache.erase(old_entry);
 
-    return std::optional<std::shared_ptr<AABB>>(old_entry);
+    return std::optional<AABB>(old_entry);
 }
 
-std::optional<uint32_t> getCacheIndex(const std::shared_ptr<AABB>& aabb){
-    return lruMapInCache.contains(*aabb) ? std::optional<uint32_t>(lruMapInCache[*aabb]) : nullopt;
+std::optional<uint32_t> getCacheIndex(const AABB& aabb){
+    return lruMapInCache.contains(aabb) ? std::optional<uint32_t>(lruMapInCache[aabb]) : nullopt;
 }
 
-bool hasBeenStored(const std::shared_ptr<AABB>& aabb){
-    return lruMapStored.contains(*aabb);
+bool hasBeenStored(const AABB& aabb){
+    return lruMapStored.contains(aabb);
+}
+
+
+
+
+
+/// Test unified memory
+std::vector<std::shared_ptr<std::vector<vec3>>> unified_positions = {};
+std::vector<std::shared_ptr<std::vector<uint32_t>>> unified_colors = {};
+
+CFullOctreeUnifiedBuilder unifiedOctreeBuilder = {};
+void CFullOctreeUnifiedBuilder::update() {
+    nodes.clear();
+    num_nodes = 0;
+    max_lod_level = 0;
+
+    std::function<void(OctreeNode*, uint8_t)> recursion = [&](
+        OctreeNode* cur_node, uint8_t level
+    ) -> void {
+
+        if(cur_node){
+            max_lod_level = std::max(max_lod_level, uint32_t(level));
+            num_nodes++;
+            cur_node->level = level;
+            cur_node->is_large = false;
+            cur_node->is_visible = false;
+            cur_node->is_cut = false;
+            nodes.push_back(cur_node);
+
+            for(uint32_t child = 0; child < 8; child++){
+                recursion(cur_node->children[child], level+1);
+            }
+        }
+    };
+
+    recursion(mainOctree, 0);
+}
+
+
+CFullOctreeUnified CFullOctreeUnifiedBuilder::build() {
+    CFullOctreeUnified res = {};
+    res.nodes = (COctreeNodeUnified**)nodes.data();
+    res.num_nodes = num_nodes;
+    res.max_lod_level = max_lod_level;
+    return res;
 }

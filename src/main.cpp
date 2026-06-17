@@ -313,7 +313,7 @@ void initScene() {
 				if(done){break;}
 			}
 			while(true){
-				addPointBatches(mainOctree);
+				addPointBatches();
 				bool done = true;
 				for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
 					if(batchesQueue[i] && batchesQueue[i]->state != BatchState::Inserted){
@@ -471,7 +471,7 @@ int main(int argc, char** argv){
 					if(done){break;}
 				}
 				while(true){
-					addPointBatches(mainOctree);
+					addPointBatches();
 					bool done = true;
 					for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
 						if(batchesQueue[i] && batchesQueue[i]->state != BatchState::Inserted){
@@ -525,7 +525,7 @@ int main(int argc, char** argv){
 
 		// Octree update routine
 		std::thread thread_octree_update([&](){
-			updateOctreeRoutine(mainOctree);
+			updateOctreeRoutine();
 		});
 		thread_octree_update.detach();
 
@@ -556,7 +556,7 @@ int main(int argc, char** argv){
 
 			// TODO: to remove
 			{
-				static std::shared_ptr<AABB> test_stored_aabb = nullptr;
+				static AABB* test_stored_aabb = nullptr;
 
 				// Testing stuff
 				if(CuRastSettings::storeOctree){
@@ -569,11 +569,11 @@ int main(int argc, char** argv){
 				}
 				if(CuRastSettings::loadOctree){
 					println("Start loading octree");
-					std::shared_ptr<OctreeNode> octree = loadOctree(test_stored_aabb);
+					OctreeNode* octree = loadOctree(*test_stored_aabb);
 					println("Done loading octree");
 					CuRastSettings::loadOctree = false;
 					
-					if(*mainOctree.get() == *octree.get()){
+					if(*mainOctree == *octree){
 						println("loaded == original, serialisation / deserialisation worked");
 					} else {
 						println("ERROR: loaded != original, serialisation / deserialisation failed");
@@ -626,5 +626,7 @@ int main(int argc, char** argv){
 	displayTimings();
 	displayBuffers();
 
+	delete(mainOctree);
+	delete(mainOctreeCpy);
 	VKRenderer::destroy();
 }
