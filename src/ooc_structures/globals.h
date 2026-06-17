@@ -76,8 +76,8 @@ const std::string TEMPORARY_DIRECTORY = format("{}/build/tmp", PROJECT_SOURCE_DI
 constexpr uint32_t LRU_CACHE_SIZE = 1024;
 // constexpr uint32_t LRU_CACHE_SIZE = 4096;
 
-// constexpr bool CPU_PARALLELISED = true;
-constexpr bool CPU_PARALLELISED = false;
+constexpr bool CPU_PARALLELISED = true;
+// constexpr bool CPU_PARALLELISED = false;
 
 /// The maximum size for the batches vectors
 extern uint32_t BATCHES_QUEUE_SIZE;
@@ -353,7 +353,7 @@ extern std::deque<std::mutex> batchesQueueMutexes;
 extern std::mutex updateSceneMutex;
 
 /// The main octree
-extern OctreeNode* mainOctree;
+extern std::shared_ptr<OctreeNode> mainOctree;
 extern OctreeNode* mainOctreeCpy;
 
 /// The buffer of spilled points

@@ -26,7 +26,7 @@ OctreeNode* uptadeOctree(
 
 /// TODO: temporary function
 /// Load an octree to gpu memory
-void loadOctreeOnGPU(OctreeNode* main_octree,
+void loadOctreeOnGPU(std::shared_ptr<OctreeNode>& main_octree,
     CuRast* editor, CUcontext* context, bool bypass_semaphore = false
 );
 /// TODO: temporary function

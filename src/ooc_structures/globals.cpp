@@ -434,8 +434,8 @@ std::deque<std::mutex> batchesQueueMutexes(BATCHES_QUEUE_SIZE);
 std::mutex updateSceneMutex;
 
 /// The main octree
-OctreeNode* mainOctree = new OctreeNode();
-OctreeNode* mainOctreeCpy = new OctreeNode();
+std::shared_ptr<OctreeNode> mainOctree = std::make_shared<OctreeNode>();
+OctreeNode* mainOctreeCpy = nullptr;
 
 /// The buffer of spilled points
 std::shared_ptr<vector<Point>> spilledPoints = std::make_shared<vector<Point>>(vector<Point>());
@@ -605,9 +605,8 @@ std::optional<AABB> addToCache(const AABB& aabb){
     }
 
     // If not in cache, create new entry
-    const AABB& old_entry = lruCache[new_id]->second;
-    CacheEntry new_entry = {lruCounter, aabb};
-    lruCache[new_id] = new_entry;
+    const AABB old_entry = lruCache[new_id]->second;
+    lruCache[new_id] = {lruCounter, aabb};
     lruMapInCache[aabb] = new_id;
     lruMapInCache.erase(old_entry);
 
@@ -655,7 +654,7 @@ void CFullOctreeUnifiedBuilder::update() {
         }
     };
 
-    recursion(mainOctree, 0);
+    recursion(mainOctree.get(), 0);
 }
 
 
@@ -664,5 +663,6 @@ CFullOctreeUnified CFullOctreeUnifiedBuilder::build() {
     res.nodes = (COctreeNodeUnified**)nodes.data();
     res.num_nodes = num_nodes;
     res.max_lod_level = max_lod_level;
+    res.world = mat4(1.f);
     return res;
 }

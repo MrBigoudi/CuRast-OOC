@@ -321,8 +321,8 @@ OctreeNode* OctreeNodeSerializable::toOctreeNodes(
     std::unordered_map<std::string, OctreeNode*> map = {};
     
     // Load all nodes indepentenly
-    std::function<void(const AABB&, uint32_t, uint32_t)> recursion = 
-        [&](const AABB& cur_aabb, uint32_t id, uint32_t level) {
+    std::function<void(const AABB, uint32_t, uint32_t)> recursion = 
+        [&](AABB cur_aabb, uint32_t id, uint32_t level) {
 
         std::string filepath = getNodeFilePath(cur_aabb);
         OctreeNodeSerializable new_serializable_node = OctreeNodeSerializable::deserialize(filepath);
@@ -333,12 +333,10 @@ OctreeNode* OctreeNodeSerializable::toOctreeNodes(
             // new_node->display(id, level, true);
             for(uint32_t child_id = 0; child_id < 8; child_id++){
                 if(new_serializable_node.children & (0x01 << child_id)){
-                    AABB child_aabb = cur_aabb;
-                    child_aabb.shrink((NodePosition)child_id);
-                    
-                    recursion(child_aabb, child_id, level+1);
+                    cur_aabb.shrink((NodePosition)child_id);
+                    recursion(cur_aabb, child_id, level+1);
                     // Fill up children pointers
-                    std::string child_filepath = getNodeFilePath(child_aabb);
+                    std::string child_filepath = getNodeFilePath(cur_aabb);
                     new_node->children[child_id] = map[child_filepath];
                 }
             }
@@ -363,7 +361,7 @@ void storeOctree(const OctreeNode* node, bool node_only
 OctreeNode* loadOctree(const AABB& root_aabb, bool node_only){
     // println("Start loading octree");
     OctreeNode* res = OctreeNodeSerializable::toOctreeNodes(root_aabb, node_only);
-    println("Done loading octree");
+    // println("Done loading octree");
     return res;
 }
 
@@ -371,7 +369,7 @@ OctreeNode* loadOctree(const AABB& root_aabb, bool node_only){
 /// Add nodes to cache after octree update
 void updateCache(OctreeNode* root_octree){
     // Traverse octree and add newly updated aabbs to the cache
-    std::function<void(OctreeNode*)> recursionAddToCache = [&](OctreeNode* cur_node){
+    std::function<void(const OctreeNode*)> recursionAddToCache = [&](const OctreeNode* cur_node){
         for(uint32_t child_id = 0; child_id < 8; child_id++){
             if(cur_node->children[child_id]){
                 recursionAddToCache(cur_node->children[child_id]);
@@ -379,8 +377,7 @@ void updateCache(OctreeNode* root_octree){
         }
 
         if(cur_node->updated){
-            addToCache(AABB(*cur_node->aabb));
-            cur_node->updated = false;
+            addToCache(*cur_node->aabb);
         }
 
     };
@@ -395,16 +392,17 @@ void updateCache(OctreeNode* root_octree){
         for(uint32_t child_id = 0; child_id < 8; child_id++){
             if(cur_node->children[child_id]){
                 if(recursionRemoveNodes(cur_node->children[child_id], child_id, level+1)){
+                    delete(cur_node->children[child_id]);
                     cur_node->children[child_id] = nullptr;
                 }
             }
         }
 
         bool is_in_cache = getCacheIndex(*cur_node->aabb).has_value();
+        bool to_remove = false;
         if(!is_in_cache){
             storeOctree(cur_node, true);
-            delete(cur_node);
-            return true;
+            to_remove = true;
         }
 
         // bool is_in_cache = false;
@@ -415,7 +413,8 @@ void updateCache(OctreeNode* root_octree){
         //     }
         // }
 
-        return false;
+        cur_node->updated = false;
+        return to_remove;
     };
 
     // println("\n//////////////////////////////////////////////////");

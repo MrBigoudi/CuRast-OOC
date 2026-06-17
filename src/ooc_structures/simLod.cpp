@@ -437,19 +437,19 @@ void simLodLoad(
 			} else {
 				// Check if the child has been stored
 				bool has_been_stored = false;
-				AABB* child_aabb = new AABB(*leaf->aabb);
-				child_aabb->shrink((NodePosition)child_index);
+				AABB child_aabb = *leaf->aabb;
+				child_aabb.shrink((NodePosition)child_index);
 				
 				{
 					std::lock_guard<std::mutex> lock_map(mtx_set);
-					has_been_stored = hasBeenStored(*child_aabb) || tmp_set.contains(*child_aabb);
+					has_been_stored = hasBeenStored(child_aabb) || tmp_set.contains(child_aabb);
 
 					// If the child has not been stored, we've reached the end of the loop
 					if(!has_been_stored){return;}
 
 					// Else, we load the child and make it the current node
-					tmp_set.insert(*child_aabb);
-					leaf->children[child_index] = loadOctree(*child_aabb, true);
+					tmp_set.insert(child_aabb);
+					leaf->children[child_index] = loadOctree(child_aabb, true);
 				}
 
 				leaf = leaf->children[child_index];

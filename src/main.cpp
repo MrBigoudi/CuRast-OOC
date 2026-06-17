@@ -562,7 +562,7 @@ int main(int argc, char** argv){
 				if(CuRastSettings::storeOctree){
 					// mainOctree->display();
 					println("Start storing octree");
-					storeOctree(mainOctree);
+					storeOctree(mainOctree.get());
 					test_stored_aabb = mainOctree->aabb;
 					println("Done storing octree");
 					CuRastSettings::storeOctree = false;
@@ -579,7 +579,7 @@ int main(int argc, char** argv){
 						println("ERROR: loaded != original, serialisation / deserialisation failed");
 					}
 
-					mainOctree = octree;
+					mainOctree = std::shared_ptr<OctreeNode>(octree);
 
 					cuCtxSetCurrent(context);
 					loadOctreeOnGPU(mainOctree, CuRast::instance, &context, true);
@@ -626,7 +626,10 @@ int main(int argc, char** argv){
 	displayTimings();
 	displayBuffers();
 
-	delete(mainOctree);
-	delete(mainOctreeCpy);
+	if(mainOctreeCpy){
+		delete(mainOctreeCpy);
+		mainOctreeCpy = nullptr;
+	}
+
 	VKRenderer::destroy();
 }

@@ -175,26 +175,16 @@ void drawOctree(Scene* scene, View view, RenderTarget& target,
     });
 }
 
-void drawOctreeAABBUnified(Scene* scene, View view, RenderTarget& target){
+void drawOctreeAABBUnified(Scene* scene, View view, RenderTarget& target, CFullOctreeUnified& cfo){
 	static CudaModularProgram* prog = new CudaModularProgram({"./src/kernels/octreeUnified.cu"});
-
-	unifiedOctreeBuilder.update();
-	CFullOctreeUnified cfo = unifiedOctreeBuilder.build();
-	cfo.world = mat4(1.0f);
-
 	prog->launch("kernel_drawOctreeAABB", {&cfo, &target}, cfo.num_nodes);
 }
 
-void drawOctreeUnified(Scene* scene, View view, RenderTarget& target, 
+void drawOctreeUnified(Scene* scene, View view, RenderTarget& target, CFullOctreeUnified& cfo, 
 	int32_t debug_lod = -1, int32_t voxels_nb_points = 1, float min_pixel_span = 64.,
 	bool use_voxels_debug_color = false
 ){
 	static CudaModularProgram* prog = new CudaModularProgram({"./src/kernels/octreeUnified.cu"});
-
-	unifiedOctreeBuilder.update();
-	CFullOctreeUnified cfo = unifiedOctreeBuilder.build();
-
-	cfo.world = mat4(1.0f);
 	cfo.debug_lod_to_render = debug_lod;
 	cfo.voxels_nb_points_per_axis = uint32_t(voxels_nb_points);
 	cfo.min_pixel_span = min_pixel_span;
@@ -704,11 +694,17 @@ void CuRast::draw(Scene* scene, vector<View> views){
 		// 	Timer::recordDuration("kernel_drawHeightmap", custart, Timer::recordCudaTimestamp());
 		// }
 
+		CFullOctreeUnified cfo = {};
+		if(CuRastSettings::useUnifiedMemory){
+			unifiedOctreeBuilder.update();
+			cfo = unifiedOctreeBuilder.build();
+		}
+
 		if(CuRastSettings::bruteForceRendering){
 			drawPoints(scene, view, target);
 		} else {
 			if(CuRastSettings::useUnifiedMemory){
-				drawOctreeUnified(scene, view, target, 
+				drawOctreeUnified(scene, view, target, cfo,
 					CuRastSettings::debugLodToRender, 
 					CuRastSettings::voxelsPointsPerAxis,
 					CuRastSettings::minPixelSpan,
@@ -725,7 +721,7 @@ void CuRast::draw(Scene* scene, vector<View> views){
 		}
 		if(CuRastSettings::showBoundingBoxes){
 			if(CuRastSettings::useUnifiedMemory){
-				drawOctreeAABBUnified(scene, view, target);
+				drawOctreeAABBUnified(scene, view, target, cfo);
 			} else {
 				drawOctreeAABB(scene, view, target);
 			}
@@ -760,14 +756,14 @@ void CuRast::draw(Scene* scene, vector<View> views){
 
 			auto formatMemSize = [&](uint64_t size_bytes) -> std::string {
 				uint64_t nb_bytes = size_bytes;
-				uint64_t nb_tbs = uint64_t(floor(nb_bytes / 1'000'000'000'000));
-				nb_bytes -= nb_tbs * 1'000'000'000'000;
-				uint64_t nb_gbs = uint64_t(floor(nb_bytes / 1'000'000'000));
-				nb_bytes -= nb_gbs * 1'000'000'000;
-				uint64_t nb_mbs = uint64_t(floor(nb_bytes / 1'000'000));
-				nb_bytes -= nb_mbs * 1'000'000;
-				uint64_t nb_kbs = uint64_t(floor(nb_bytes / 1'000));
-				nb_bytes -= nb_kbs * 1'000;
+				uint64_t nb_tbs = uint64_t(floor(nb_bytes / 1'024 / 1'024 / 1'024 / 1'024));
+				nb_bytes -= nb_tbs * 1'024 * 1'024 * 1'024 * 1'024;
+				uint64_t nb_gbs = uint64_t(floor(nb_bytes / 1'024 / 1'024 / 1'024));
+				nb_bytes -= nb_gbs * 1'024 * 1'024 * 1'024;
+				uint64_t nb_mbs = uint64_t(floor(nb_bytes / 1'024 / 1'024));
+				nb_bytes -= nb_mbs * 1'024 * 1'024;
+				uint64_t nb_kbs = uint64_t(floor(nb_bytes / 1'024));
+				nb_bytes -= nb_kbs * 1'024;
 
 				if(nb_tbs){return format("{:5} {:3L}T {:3L}G {:3L}M {:3L}k {:3L}b", "", nb_tbs, nb_gbs, nb_mbs, nb_kbs, nb_bytes);}
 				if(nb_gbs){return format("{:10} {:3L}G {:3L}M {:3L}k {:3L}b", "", nb_gbs, nb_mbs, nb_kbs, nb_bytes);}

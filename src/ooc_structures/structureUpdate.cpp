@@ -182,7 +182,7 @@ void freePreviousOctreeOnGPU(CuRast* editor, std::shared_ptr<SNCOctree> caller){
 }
 
 
-void loadOctreeOnGPU(OctreeNode* main_octree,
+void loadOctreeOnGPU(std::shared_ptr<OctreeNode>& main_octree,
 	CuRast* editor, CUcontext* context, bool bypass_semaphore
 ){
 	if(CPU_PARALLELISED && !bypass_semaphore){
@@ -191,6 +191,7 @@ void loadOctreeOnGPU(OctreeNode* main_octree,
 		// Acquire => semaphore_counter -= 1
 		if(!octreeReadyToBeSent.try_acquire()){return;}
 	}
+	// println("semaphore SENDING acquired");
 
 	std::shared_ptr<Timing> timing = addTiming("send octree to GPU ", true);
 
@@ -235,7 +236,6 @@ void loadOctreeOnGPU(OctreeNode* main_octree,
 			}
 
 			
-			// Chunk* cur_chunk = nullptr;
 			auto allocateChunks = [&](const Chunk* root) -> std::optional<uint32_t> {
 				uint32_t before_chunk_counter = chunk_counter;
 
@@ -406,7 +406,7 @@ void loadOctreeOnGPU(OctreeNode* main_octree,
 	};
 
 	std::thread thread_load_to_gpu([&](CuRast* editor, CUcontext* context, 
-		OctreeNode* octree, uint64_t load_id
+		std::shared_ptr<OctreeNode> octree, uint64_t load_id
 	){
 		// Acquire => semaphore_counter -= 1
 		octreeNotBeingSent.acquire();
@@ -420,7 +420,7 @@ void loadOctreeOnGPU(OctreeNode* main_octree,
 		}
 
 		if(send_to_gpu){
-			lambda(editor, context, octree);
+			lambda(editor, context, octree.get());
 		}
 
 		// Release => semaphore_counter += 1
@@ -436,6 +436,7 @@ void loadOctreeOnGPU(OctreeNode* main_octree,
 		// Release the semaphore when every GPU side structures is done being built
 		// Rlease => semaphore_counter += 1
 		octreeReadyToBeUpdated.release();
+		// println("semaphore UPDATING released");
 	}
 
 	timing->stop_clock();
@@ -480,12 +481,11 @@ void addPointBatches(){
 		mainOctree->aabb = new AABB();
 		uint32_t batch_index = batches_indices[0];
 		std::lock_guard<std::mutex> lock(batchesQueueMutexes[batch_index]);
-		initOctree(mainOctree, batchesQueue[batch_index]->points);
+		initOctree(mainOctree.get(), batchesQueue[batch_index]->points);
 		timing->stop_clock();
 
 		// Copy octree once at the beginning
 		timing = addTiming("copy initial octree", true);
-		delete(mainOctreeCpy);
 		mainOctreeCpy = new OctreeNode(*mainOctree);
 		timing->stop_clock();
 	}
@@ -579,6 +579,7 @@ void addPointBatches(){
 		// Block if the mainOctree / mainAABB are being send to the GPU (see `loadOctreeOnGPU`)
 		// Acquire => semaphore_counter -= 1
 		octreeReadyToBeUpdated.acquire();
+		// println("semaphore UPDATING acquired");
 	}
 
 	if(CPU_PARALLELISED){
@@ -593,14 +594,13 @@ void addPointBatches(){
 		});
 	}
 
-	// Delete old mainOctree before copying new octree
-	delete(mainOctree);
-	mainOctree = new OctreeNode(*mainOctreeCpy);
+	mainOctree = std::make_shared<OctreeNode>(*mainOctreeCpy);
 	
 	if(CPU_PARALLELISED){
 		// Release the semaphore when not using mainOctree / mainAABB anymore
 		// Rlease => semaphore_counter += 1
 		octreeReadyToBeSent.release();
+		// println("semaphore SENDING released");
 	}
 };
 
