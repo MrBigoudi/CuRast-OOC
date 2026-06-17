@@ -541,11 +541,21 @@ int main(int argc, char** argv){
 		thread_load_points_on_gpu.detach();
 	}
 
+	bool was_unified_set = CuRastSettings::useUnifiedMemory;
+
 	VKRenderer::loop(
 		[&]() {
 			update();
 			CuRast::instance->update();
 			
+			{
+				if(!was_unified_set && CuRastSettings::useUnifiedMemory){
+					println("Using unified memory...");
+					cudaDeviceSynchronize();
+				}
+				was_unified_set = CuRastSettings::useUnifiedMemory;
+			}
+
 			DeviceState* state = CuRast::instance->deviceState;
 			double stage1_millies = double(state->nanotime_stage_1 - state->nanotime_start) / 1'000'000.0;
 			double stage2_millies = double(state->nanotime_stage_2 - state->nanotime_stage_1) / 1'000'000.0;
