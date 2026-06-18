@@ -36,6 +36,8 @@
 #include "ooc_structures/simLod.h"
 #include "ooc_structures/loader.h"
 #include "ooc_structures/outOfCore.h"
+#include "ooc_structures/visibility.h"
+
 
 using namespace std; // YOLO
 
@@ -603,6 +605,11 @@ int main(int argc, char** argv){
 
 			freeOctreesOnGPU(CuRast::instance);
 
+			if(CuRastSettings::voxelsDebugColor){
+				updateVisibilityCache(VKRenderer::view.view, VKRenderer::view.proj);
+			}
+
+
 			cudaDeviceSynchronize();
 			elapsedFrames++;
 
@@ -625,7 +632,9 @@ int main(int argc, char** argv){
 			// 	}
 			// }
 		},
-		[&]() {CuRast::instance->render();},
+		[&]() {
+			CuRast::instance->render();
+		},
 		[&]() {CuRast::instance->postFrame();}
 	);
 
