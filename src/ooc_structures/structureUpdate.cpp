@@ -182,262 +182,278 @@ void freePreviousOctreeOnGPU(CuRast* editor, std::shared_ptr<SNCOctree> caller){
 }
 
 
-void loadOctreeOnGPU(std::shared_ptr<OctreeNode>& main_octree,
-	CuRast* editor, CUcontext* context, bool bypass_semaphore
-){
-	if(CPU_PARALLELISED && !bypass_semaphore){
-		// If the mainOctree / mainAABB are being updated (see `addPointBatches`)
-		// Do not block but do not send data to the GPU
-		// Acquire => semaphore_counter -= 1
-		if(!octreeReadyToBeSent.try_acquire()){return;}
+
+
+std::optional<uint32_t> allocateChunks(std::shared_ptr<SNCOctree>& octree, const Chunk* root, uint32_t* chunk_counter){
+	uint32_t before_chunk_counter = *chunk_counter;
+
+	// Create CChunks
+	vector<const Chunk*> chunks = {};
+
+	const Chunk* cur_chunk = root;
+	while(cur_chunk){
+		chunks.push_back(cur_chunk);
+		cur_chunk = cur_chunk->next;
 	}
-	// println("semaphore SENDING acquired");
+	for(int32_t i=chunks.size()-1; i>=0; i--){
+		CChunk tmp = {};
+		tmp.size = chunks[i]->size;
+		tmp.next = nullptr;
+		for(uint32_t j=0; j<tmp.size; j++){
+			CPoint tmp_point = {
+				.position = chunks[i]->points[j].position, 
+				.color = (uint32_t)chunks[i]->points[j].color[0]
+					| ((uint32_t)chunks[i]->points[j].color[1] << 8)
+					| ((uint32_t)chunks[i]->points[j].color[2] << 16)
+					| (0xFFu << 24)
+			};
+			tmp.points[j] = tmp_point;
+		}
+		if(chunks[i]->next){
+			tmp.next = (CChunk*)octree->cptr_chunks[*chunk_counter-1];
+		}
+		octree->cptr_chunks.push_back(CUdeviceptr());
+		if(CPU_PARALLELISED){
+			cuMemAllocAsync(&octree->cptr_chunks[*chunk_counter], sizeof(CChunk), octree->stream);
+			cuMemcpyHtoDAsync(octree->cptr_chunks[*chunk_counter], &tmp, sizeof(CChunk), octree->stream);
+		} else {
+			cuMemAlloc(&octree->cptr_chunks[*chunk_counter], sizeof(CChunk));
+			cuMemcpyHtoD(octree->cptr_chunks[*chunk_counter], &tmp, sizeof(CChunk));
+		}
+		(*chunk_counter)++;
+	}
+
+	if(*chunk_counter > before_chunk_counter){
+		return *chunk_counter-1;
+	} else {
+		return nullopt;
+	}
+};
+
+
+void createCudaMemory(CuRast* editor, CUcontext* context, std::shared_ptr<OctreeNode>& input_octree){
+	// Create cuda memory pointers
+	std::shared_ptr<SNCOctree> octree = make_shared<SNCOctree>(getSimLodOctreeName(true), simLodOctreeCounter);
+	octree->cptr_nodes = {};
+	octree->cptr_aabbs = {};
+	octree->cptr_chunks = {};
+	octree->cptr_occupancy_grids = {};
+	cuCtxSetCurrent(*context);
+	CUresult cuda_status = cuStreamCreate(&octree->stream, CU_STREAM_NON_BLOCKING);
+
+	// Create enough chunks
+	uint32_t chunk_counter = 0;
+	uint32_t nodes_counter = 0;
+	uint32_t occupancy_grids_counter = 0;
+	uint32_t max_lod_level = 0;
+
+	std::function<CUdeviceptr(const OctreeNode*, uint8_t)> recursive = [&](
+		const OctreeNode* cur_node, uint8_t level
+	) -> CUdeviceptr {
+
+		CUdeviceptr child_indices[8] = {0};
+		
+		for(uint32_t child = 0; child < 8; child++){
+			if(cur_node->children[child]){
+				if(level == UINT8_MAX){
+					println("Can't have a level greater than {}", UINT8_MAX);
+					exit(EXIT_FAILURE);
+				}
+				const OctreeNode* next_node = cur_node->children[child];
+				child_indices[child] = recursive(next_node, level+1);
+			}
+		}
+
+		std::optional<uint32_t> chunk_first_points = nullopt;
+		std::optional<uint32_t> chunk_first_voxels = nullopt;
+		if(cur_node->points){
+			chunk_first_points = allocateChunks(octree, cur_node->points, &chunk_counter);
+		} 
+		if(cur_node->voxels){
+			chunk_first_voxels = allocateChunks(octree, cur_node->voxels, &chunk_counter);
+		}
+		
+
+		// Create COctreeNode
+		COctreeNode new_node = {};
+		for(uint32_t child = 0; child < 8; child++){
+			if(cur_node->children[child]){
+				new_node.children[child] = (COctreeNode*) child_indices[child];
+			}
+		}
+		new_node.counter = cur_node->counter;
+		new_node.children_ids = cur_node->children_ids;
+		new_node.level = level;
+
+		if(chunk_first_points.has_value()){
+			new_node.points = (CChunk*)octree->cptr_chunks[chunk_first_points.value()];
+		}
+		if(chunk_first_voxels.has_value()){
+			new_node.voxels = (CChunk*)octree->cptr_chunks[chunk_first_voxels.value()];
+		}
+		if(cur_node->occupancy){
+			// Allocate occupancy grid
+			COccupancyGrid tmp = {};
+			for(uint32_t i=0; i<C_GRID_NUM_CELLS; i++){
+				tmp.values[i] = cur_node->occupancy->values[i];
+			}
+			octree->cptr_occupancy_grids.push_back(CUdeviceptr());
+			if(CPU_PARALLELISED){
+				cuMemAllocAsync(&octree->cptr_occupancy_grids[occupancy_grids_counter], sizeof(COccupancyGrid), octree->stream);
+				cuMemcpyHtoDAsync(octree->cptr_occupancy_grids[occupancy_grids_counter], &tmp, sizeof(COccupancyGrid), octree->stream);
+			} else {
+				cuMemAlloc(&octree->cptr_occupancy_grids[occupancy_grids_counter], sizeof(COccupancyGrid));
+				cuMemcpyHtoD(octree->cptr_occupancy_grids[occupancy_grids_counter], &tmp, sizeof(COccupancyGrid));
+			}
+			new_node.occupancy = (COccupancyGrid*)octree->cptr_occupancy_grids[occupancy_grids_counter];
+			occupancy_grids_counter++;
+		}
+		if(level > max_lod_level){
+			max_lod_level = level;
+		}
+
+		CAABB new_aabb = {};
+		new_aabb.mins = cur_node->aabb->mins;
+		new_aabb.maxs = cur_node->aabb->maxs;
+
+		// cur_node->display(0, level, true);
+		// println("\tAABB: .mins = ({}, {}, {}), .maxs = ({}, {}, {})",
+		// 	new_aabb.mins.x, new_aabb.mins.y, new_aabb.mins.z,
+		// 	new_aabb.maxs.x, new_aabb.maxs.y, new_aabb.maxs.z
+		// );
+
+		// Create cuda pointers
+		CUdeviceptr cptr_node, cptr_aabb;
+		if(CPU_PARALLELISED){
+			cuMemAllocAsync(&cptr_node, sizeof(COctreeNode), octree->stream); 
+			cuMemAllocAsync(&cptr_aabb, sizeof(CAABB), octree->stream);
+			cuMemcpyHtoDAsync(cptr_node, &new_node, sizeof(COctreeNode), octree->stream);
+			cuMemcpyHtoDAsync(cptr_aabb, &new_aabb, sizeof(CAABB), octree->stream);
+		} else {
+			cuMemAlloc(&cptr_node, sizeof(COctreeNode)); 
+			cuMemAlloc(&cptr_aabb, sizeof(CAABB));
+			cuMemcpyHtoD(cptr_node, &new_node, sizeof(COctreeNode));
+			cuMemcpyHtoD(cptr_aabb, &new_aabb, sizeof(CAABB));
+		}
+		
+		octree->cptr_nodes.push_back(cptr_node);
+		octree->cptr_aabbs.push_back(cptr_aabb);
+
+		nodes_counter++;
+		return cptr_node;
+	};
+
+
+	
+	const OctreeNode* next_octree = input_octree.get();
+	recursive(next_octree, 0);
+
+	octree->num_nodes = nodes_counter;
+	octree->max_lod_level = max_lod_level;
+	octree->nb_points = NB_POINTS;
+
+
+	// Copy arrays of pointers to GPU
+	if(CPU_PARALLELISED){
+		cuMemAllocAsync(&octree->aabbs, octree->cptr_aabbs.size() * sizeof(CUdeviceptr), octree->stream);
+		cuMemcpyHtoDAsync(octree->aabbs, octree->cptr_aabbs.data(), octree->cptr_aabbs.size() * sizeof(CUdeviceptr), octree->stream);
+		cuMemAllocAsync(&octree->chunks, octree->cptr_chunks.size() * sizeof(CUdeviceptr), octree->stream);
+		cuMemcpyHtoDAsync(octree->chunks, octree->cptr_chunks.data(), octree->cptr_chunks.size() * sizeof(CUdeviceptr), octree->stream);
+		cuMemAllocAsync(&octree->nodes, octree->cptr_nodes.size() * sizeof(CUdeviceptr), octree->stream);
+		cuMemcpyHtoDAsync(octree->nodes, octree->cptr_nodes.data(), octree->cptr_nodes.size() * sizeof(CUdeviceptr), octree->stream);
+		cuMemAllocAsync(&octree->occupancy_grids, octree->cptr_occupancy_grids.size() * sizeof(CUdeviceptr), octree->stream);
+		cuMemcpyHtoDAsync(octree->occupancy_grids, octree->cptr_occupancy_grids.data(), octree->cptr_occupancy_grids.size() * sizeof(CUdeviceptr), octree->stream);
+	} else {
+		cuMemAlloc(&octree->aabbs, octree->cptr_aabbs.size() * sizeof(CUdeviceptr));
+		cuMemcpyHtoD(octree->aabbs, octree->cptr_aabbs.data(), octree->cptr_aabbs.size() * sizeof(CUdeviceptr));
+		cuMemAlloc(&octree->chunks, octree->cptr_chunks.size() * sizeof(CUdeviceptr));
+		cuMemcpyHtoD(octree->chunks, octree->cptr_chunks.data(), octree->cptr_chunks.size() * sizeof(CUdeviceptr));
+		cuMemAlloc(&octree->nodes, octree->cptr_nodes.size() * sizeof(CUdeviceptr));
+		cuMemcpyHtoD(octree->nodes, octree->cptr_nodes.data(), octree->cptr_nodes.size() * sizeof(CUdeviceptr));
+		cuMemAlloc(&octree->occupancy_grids, octree->cptr_occupancy_grids.size() * sizeof(CUdeviceptr));
+		cuMemcpyHtoD(octree->occupancy_grids, octree->cptr_occupancy_grids.data(), octree->cptr_occupancy_grids.size() * sizeof(CUdeviceptr));
+	}
+	{
+		std::lock_guard<std::mutex> lock_scene(updateSceneMutex);
+		editor->scene.world->children.push_back(octree);
+	}
+
+	if(CuRastSettings::autoFreeOldOctreeMemoryOnGPU){
+		std::thread thread_free_old_octree([&](CuRast* editor, std::shared_ptr<SNCOctree> octree){
+			freePreviousOctreeOnGPU(editor, octree);
+		}, editor, octree);
+		thread_free_old_octree.detach();
+	}
+	// println("Final octree: {} nodes, {} max level", nodes_counter, max_lod_level);
+};
+
+
+void loadOctreeOnGPU(CuRast* editor, CUcontext* context, 
+    bool bypass_semaphore
+){
+	// if(CPU_PARALLELISED && !bypass_semaphore){
+	// 	// If the mainOctree / mainAABB are being updated (see `addPointBatches`)
+	// 	// Do not block but do not send data to the GPU
+	// 	// Acquire => semaphore_counter -= 1
+	// 	if(!octreeReadyToBeSent.try_acquire()){return;}
+	// }
+	// // println("semaphore SENDING acquired");
+
+	if(elapsedFrames < SEND_DATA_EVERY_X_FRAMES){return;}
+	elapsedFrames = 0;
+	
+	std::shared_ptr<OctreeNode> octree_ref = nullptr;
+	if(CPU_PARALLELISED && !bypass_semaphore){
+		std::lock_guard<std::mutex> lock_send(isUpdatingMtx);
+		octree_ref = mainOctree;
+	} else {
+		octree_ref = mainOctree;
+	}
+	if(!octree_ref){return;}
 
 	std::shared_ptr<Timing> timing = addTiming("send octree to GPU ", true);
 
-	uint64_t load_id = 0;
-	{
-		std::lock_guard<std::mutex> lock_load_counter(loadCounterMtx);
-		load_id = loadCounter + 1;
-		loadCounter = load_id;
-	}
+	// uint64_t load_id = 0;
+	// {
+	// 	std::lock_guard<std::mutex> lock_load_counter(loadCounterMtx);
+	// 	load_id = loadCounter + 1;
+	// 	loadCounter = load_id;
+	// }
 
-	auto lambda = [&](CuRast* editor, CUcontext* context, OctreeNode* input_octree){
-		// Create cuda memory pointers
-		std::shared_ptr<SNCOctree> octree = make_shared<SNCOctree>(getSimLodOctreeName(true), simLodOctreeCounter);
-		octree->cptr_nodes = {};
-		octree->cptr_aabbs = {};
-		octree->cptr_chunks = {};
-		octree->cptr_occupancy_grids = {};
-		cuCtxSetCurrent(*context);
-		CUresult cuda_status = cuStreamCreate(&octree->stream, CU_STREAM_NON_BLOCKING);
+	// std::thread thread_load_to_gpu([&](CuRast* editor, CUcontext* context, 
+	// 	std::shared_ptr<OctreeNode> octree, uint64_t load_id
+	// ){
+	// 	// Acquire => semaphore_counter -= 1
+	// 	octreeNotBeingSent.acquire();
 
-		// Create enough chunks
-		uint32_t chunk_counter = 0;
-		uint32_t nodes_counter = 0;
-		uint32_t occupancy_grids_counter = 0;
-		uint32_t max_lod_level = 0;
+	// 	bool send_to_gpu = false;
+	// 	{
+	// 		std::lock_guard<std::mutex> lock_load_counter(loadCounterMtx);
+	// 		if(load_id == loadCounter){
+	// 			send_to_gpu = true;
+	// 		}
+	// 	}
 
-		std::function<CUdeviceptr(const OctreeNode*&, uint8_t)> recursive = [&](
-			const OctreeNode*& cur_node, uint8_t level
-		) -> CUdeviceptr {
+	// 	if(send_to_gpu){
+	// 		createCudaMemory(editor, context, octree);
+	// 	}
 
-			CUdeviceptr child_indices[8] = {0};
-			
-			for(uint32_t child = 0; child < 8; child++){
-				if(cur_node->children[child]){
-					if(level == UINT8_MAX){
-						println("Can't have a level greater than {}", UINT8_MAX);
-						exit(EXIT_FAILURE);
-					}
-					const OctreeNode* next_node = cur_node->children[child];
-					child_indices[child] = recursive(next_node, level+1);
-				}
-			}
+	// 	// Release => semaphore_counter += 1
+	// 	octreeNotBeingSent.release();
+	// }, editor, context, octree_ref, load_id);
+	// if(!CPU_PARALLELISED){
+	// 	thread_load_to_gpu.join();
+	// } else {
+	// 	thread_load_to_gpu.detach();
+	// }
+	createCudaMemory(editor, context, octree_ref);
 
-			
-			auto allocateChunks = [&](const Chunk* root) -> std::optional<uint32_t> {
-				uint32_t before_chunk_counter = chunk_counter;
-
-				// Create CChunks
-				vector<const Chunk*> chunks = {};
-
-				const Chunk* cur_chunk = root;
-				while(cur_chunk){
-					chunks.push_back(cur_chunk);
-					cur_chunk = cur_chunk->next;
-				}
-				for(int32_t i=chunks.size()-1; i>=0; i--){
-					CChunk tmp = {};
-					tmp.size = chunks[i]->size;
-					tmp.next = nullptr;
-					for(uint32_t j=0; j<tmp.size; j++){
-						CPoint tmp_point = {
-							.position = chunks[i]->points[j].position, 
-							.color = (uint32_t)chunks[i]->points[j].color[0]
-								| ((uint32_t)chunks[i]->points[j].color[1] << 8)
-								| ((uint32_t)chunks[i]->points[j].color[2] << 16)
-								| (0xFFu << 24)
-						};
-						tmp.points[j] = tmp_point;
-					}
-					if(chunks[i]->next){
-						tmp.next = (CChunk*)octree->cptr_chunks[chunk_counter-1];
-					}
-					octree->cptr_chunks.push_back(CUdeviceptr());
-					if(CPU_PARALLELISED){
-						cuMemAllocAsync(&octree->cptr_chunks[chunk_counter], sizeof(CChunk), octree->stream);
-						cuMemcpyHtoDAsync(octree->cptr_chunks[chunk_counter], &tmp, sizeof(CChunk), octree->stream);
-					} else {
-						cuMemAlloc(&octree->cptr_chunks[chunk_counter], sizeof(CChunk));
-						cuMemcpyHtoD(octree->cptr_chunks[chunk_counter], &tmp, sizeof(CChunk));
-					}
-					chunk_counter++;
-				}
-
-				if(chunk_counter > before_chunk_counter){
-					return chunk_counter-1;
-				} else {
-					return nullopt;
-				}
-			};
-			std::optional<uint32_t> chunk_first_points = nullopt;
-			std::optional<uint32_t> chunk_first_voxels = nullopt;
-			if(cur_node->points){
-				chunk_first_points = allocateChunks(cur_node->points);
-			} 
-			if(cur_node->voxels){
-				chunk_first_voxels = allocateChunks(cur_node->voxels);
-			}
-			
-
-			// Create COctreeNode
-			COctreeNode new_node = {};
-			for(uint32_t child = 0; child < 8; child++){
-				if(cur_node->children[child]){
-					new_node.children[child] = (COctreeNode*) child_indices[child];
-				}
-			}
-			new_node.counter = cur_node->counter;
-			new_node.children_ids = cur_node->children_ids;
-			new_node.level = level;
-
-			if(chunk_first_points.has_value()){
-				new_node.points = (CChunk*)octree->cptr_chunks[chunk_first_points.value()];
-			}
-			if(chunk_first_voxels.has_value()){
-				new_node.voxels = (CChunk*)octree->cptr_chunks[chunk_first_voxels.value()];
-			}
-			if(cur_node->occupancy){
-				// Allocate occupancy grid
-				COccupancyGrid tmp = {};
-				for(uint32_t i=0; i<C_GRID_NUM_CELLS; i++){
-					tmp.values[i] = cur_node->occupancy->values[i];
-				}
-				octree->cptr_occupancy_grids.push_back(CUdeviceptr());
-				if(CPU_PARALLELISED){
-					cuMemAllocAsync(&octree->cptr_occupancy_grids[occupancy_grids_counter], sizeof(COccupancyGrid), octree->stream);
-					cuMemcpyHtoDAsync(octree->cptr_occupancy_grids[occupancy_grids_counter], &tmp, sizeof(COccupancyGrid), octree->stream);
-				} else {
-					cuMemAlloc(&octree->cptr_occupancy_grids[occupancy_grids_counter], sizeof(COccupancyGrid));
-					cuMemcpyHtoD(octree->cptr_occupancy_grids[occupancy_grids_counter], &tmp, sizeof(COccupancyGrid));
-				}
-				new_node.occupancy = (COccupancyGrid*)octree->cptr_occupancy_grids[occupancy_grids_counter];
-				occupancy_grids_counter++;
-			}
-			if(level > max_lod_level){
-				max_lod_level = level;
-			}
-
-			CAABB new_aabb = {
-				.mins = cur_node->aabb->mins,
-				.maxs = cur_node->aabb->maxs,
-			};
-
-			// cur_node->display(0, level, true);
-			// println("\tAABB: .mins = ({}, {}, {}), .maxs = ({}, {}, {})",
-			// 	new_aabb.mins.x, new_aabb.mins.y, new_aabb.mins.z,
-			// 	new_aabb.maxs.x, new_aabb.maxs.y, new_aabb.maxs.z
-			// );
-
-			// Create cuda pointers
-			CUdeviceptr cptr_node, cptr_aabb;
-			if(CPU_PARALLELISED){
-				cuMemAllocAsync(&cptr_node, sizeof(COctreeNode), octree->stream); 
-				cuMemAllocAsync(&cptr_aabb, sizeof(CAABB), octree->stream);
-				cuMemcpyHtoDAsync(cptr_node, &new_node, sizeof(COctreeNode), octree->stream);
-				cuMemcpyHtoDAsync(cptr_aabb, &new_aabb, sizeof(CAABB), octree->stream);
-			} else {
-				cuMemAlloc(&cptr_node, sizeof(COctreeNode)); 
-				cuMemAlloc(&cptr_aabb, sizeof(CAABB));
-				cuMemcpyHtoD(cptr_node, &new_node, sizeof(COctreeNode));
-				cuMemcpyHtoD(cptr_aabb, &new_aabb, sizeof(CAABB));
-			}
-			
-			octree->cptr_nodes.push_back(cptr_node);
-			octree->cptr_aabbs.push_back(cptr_aabb);
-
-			nodes_counter++;
-			return cptr_node;
-		};
-
-
-		
-		const OctreeNode* nex_octree = input_octree;
-		recursive(nex_octree, 0);
-
-		octree->num_nodes = nodes_counter;
-		octree->max_lod_level = max_lod_level;
-		octree->nb_points = NB_POINTS;
-
-
-		// Copy arrays of pointers to GPU
-		if(CPU_PARALLELISED){
-			cuMemAllocAsync(&octree->aabbs, octree->cptr_aabbs.size() * sizeof(CUdeviceptr), octree->stream);
-			cuMemcpyHtoDAsync(octree->aabbs, octree->cptr_aabbs.data(), octree->cptr_aabbs.size() * sizeof(CUdeviceptr), octree->stream);
-			cuMemAllocAsync(&octree->chunks, octree->cptr_chunks.size() * sizeof(CUdeviceptr), octree->stream);
-			cuMemcpyHtoDAsync(octree->chunks, octree->cptr_chunks.data(), octree->cptr_chunks.size() * sizeof(CUdeviceptr), octree->stream);
-			cuMemAllocAsync(&octree->nodes, octree->cptr_nodes.size() * sizeof(CUdeviceptr), octree->stream);
-			cuMemcpyHtoDAsync(octree->nodes, octree->cptr_nodes.data(), octree->cptr_nodes.size() * sizeof(CUdeviceptr), octree->stream);
-			cuMemAllocAsync(&octree->occupancy_grids, octree->cptr_occupancy_grids.size() * sizeof(CUdeviceptr), octree->stream);
-			cuMemcpyHtoDAsync(octree->occupancy_grids, octree->cptr_occupancy_grids.data(), octree->cptr_occupancy_grids.size() * sizeof(CUdeviceptr), octree->stream);
-		} else {
-			cuMemAlloc(&octree->aabbs, octree->cptr_aabbs.size() * sizeof(CUdeviceptr));
-			cuMemcpyHtoD(octree->aabbs, octree->cptr_aabbs.data(), octree->cptr_aabbs.size() * sizeof(CUdeviceptr));
-			cuMemAlloc(&octree->chunks, octree->cptr_chunks.size() * sizeof(CUdeviceptr));
-			cuMemcpyHtoD(octree->chunks, octree->cptr_chunks.data(), octree->cptr_chunks.size() * sizeof(CUdeviceptr));
-			cuMemAlloc(&octree->nodes, octree->cptr_nodes.size() * sizeof(CUdeviceptr));
-			cuMemcpyHtoD(octree->nodes, octree->cptr_nodes.data(), octree->cptr_nodes.size() * sizeof(CUdeviceptr));
-			cuMemAlloc(&octree->occupancy_grids, octree->cptr_occupancy_grids.size() * sizeof(CUdeviceptr));
-			cuMemcpyHtoD(octree->occupancy_grids, octree->cptr_occupancy_grids.data(), octree->cptr_occupancy_grids.size() * sizeof(CUdeviceptr));
-		}
-		{
-			std::lock_guard<std::mutex> lock_scene(updateSceneMutex);
-			editor->scene.world->children.push_back(octree);
-		}
-
-		if(CuRastSettings::autoFreeOldOctreeMemoryOnGPU){
-			std::thread thread_free_old_octree([&](CuRast* editor, std::shared_ptr<SNCOctree> octree){
-				freePreviousOctreeOnGPU(editor, octree);
-			}, editor, octree);
-			thread_free_old_octree.detach();
-		}
-		// println("Final octree: {} nodes, {} max level", nodes_counter, max_lod_level);
-	};
-
-	std::thread thread_load_to_gpu([&](CuRast* editor, CUcontext* context, 
-		std::shared_ptr<OctreeNode> octree, uint64_t load_id
-	){
-		// Acquire => semaphore_counter -= 1
-		octreeNotBeingSent.acquire();
-
-		bool send_to_gpu = false;
-		{
-			std::lock_guard<std::mutex> lock_load_counter(loadCounterMtx);
-			if(load_id == loadCounter){
-				send_to_gpu = true;
-			}
-		}
-
-		if(send_to_gpu){
-			lambda(editor, context, octree.get());
-		}
-
-		// Release => semaphore_counter += 1
-		octreeNotBeingSent.release();
-	}, editor, context, main_octree, load_id);
-	if(!CPU_PARALLELISED){
-		thread_load_to_gpu.join();
-	} else {
-		thread_load_to_gpu.detach();
-	}
-
-	if(CPU_PARALLELISED && !bypass_semaphore){
-		// Release the semaphore when every GPU side structures is done being built
-		// Rlease => semaphore_counter += 1
-		octreeReadyToBeUpdated.release();
-		// println("semaphore UPDATING released");
-	}
+	// if(CPU_PARALLELISED && !bypass_semaphore){
+	// 	// Release the semaphore when every GPU side structures is done being built
+	// 	// Rlease => semaphore_counter += 1
+	// 	octreeReadyToBeUpdated.release();
+	// 	// println("semaphore UPDATING released");
+	// }
 
 	timing->stop_clock();
 }
@@ -476,8 +492,10 @@ void addPointBatches(){
 	auto first = batches_indices.begin();
 	auto last = first + last_index;
 
-	if(!mainOctree->aabb){
+	if(!mainOctree){
 		std::shared_ptr<Timing> timing = addTiming("init octree", true);
+		std::lock_guard<std::mutex> lock_send(isUpdatingMtx);
+		mainOctree = std::make_shared<OctreeNode>();
 		mainOctree->aabb = new AABB();
 		uint32_t batch_index = batches_indices[0];
 		std::lock_guard<std::mutex> lock(batchesQueueMutexes[batch_index]);
@@ -566,7 +584,7 @@ void addPointBatches(){
 	// mainOctreeCpy->display();
 
 	timing = addTiming("update cache", true);
-	updateCache(mainOctreeCpy);
+	updateUpdatesCache(mainOctreeCpy);
 	timing->stop_clock();
 	// displayCache();
 
@@ -575,12 +593,26 @@ void addPointBatches(){
 	// println("//////////////////////////////////////////////////");
 	// mainOctreeCpy->display();
 
+	// if(CPU_PARALLELISED){
+	// 	// Block if the mainOctree / mainAABB are being send to the GPU (see `loadOctreeOnGPU`)
+	// 	// Acquire => semaphore_counter -= 1
+	// 	octreeReadyToBeUpdated.acquire();
+	// 	// println("semaphore UPDATING acquired");
+	// }
+
 	if(CPU_PARALLELISED){
-		// Block if the mainOctree / mainAABB are being send to the GPU (see `loadOctreeOnGPU`)
-		// Acquire => semaphore_counter -= 1
-		octreeReadyToBeUpdated.acquire();
-		// println("semaphore UPDATING acquired");
+		std::lock_guard<std::mutex> lock_send(isUpdatingMtx);
+		mainOctree = std::make_shared<OctreeNode>(*mainOctreeCpy);
+	} else {
+		mainOctree = std::make_shared<OctreeNode>(*mainOctreeCpy);
 	}
+	
+	// if(CPU_PARALLELISED){
+	// 	// Release the semaphore when not using mainOctree / mainAABB anymore
+	// 	// Rlease => semaphore_counter += 1
+	// 	octreeReadyToBeSent.release();
+	// 	// println("semaphore SENDING released");
+	// }
 
 	if(CPU_PARALLELISED){
 		std::for_each(std::execution::par, first, last, [&](uint32_t index){
@@ -592,15 +624,6 @@ void addPointBatches(){
 			std::lock_guard<std::mutex> lock(batchesQueueMutexes[index]);
 			batchesQueue[index]->state = BatchState::Inserted;
 		});
-	}
-
-	mainOctree = std::make_shared<OctreeNode>(*mainOctreeCpy);
-	
-	if(CPU_PARALLELISED){
-		// Release the semaphore when not using mainOctree / mainAABB anymore
-		// Rlease => semaphore_counter += 1
-		octreeReadyToBeSent.release();
-		// println("semaphore SENDING released");
 	}
 };
 

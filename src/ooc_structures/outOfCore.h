@@ -86,5 +86,5 @@ void storeOctree(const OctreeNode* node, bool node_only = false);
 /// Recursively loads all root node's children
 OctreeNode* loadOctree(const AABB& root_aabb, bool node_only = false);
 
-/// Add nodes to cache after octree update
-void updateCache(OctreeNode* root_octree);
+/// Add nodes to the updates cache after octree update
+void updateUpdatesCache(OctreeNode* root_octree);

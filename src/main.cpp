@@ -333,7 +333,7 @@ void initScene() {
 				if(done){break;}
 			}
 			clearUnusedBatches();
-			loadOctreeOnGPU(mainOctree, CuRast::instance, &context);
+			loadOctreeOnGPU(CuRast::instance, &context);
 		} else {
 			std::thread thread_loadLion([&](std::string file){
 				initLoadPointBatches(file);
@@ -491,7 +491,7 @@ int main(int argc, char** argv){
 					if(done){break;}
 				}
 				clearUnusedBatches();
-				loadOctreeOnGPU(mainOctree, CuRast::instance, &context);
+				loadOctreeOnGPU(CuRast::instance, &context);
 			}
 		});
 	};
@@ -592,16 +592,19 @@ int main(int argc, char** argv){
 					mainOctree = std::shared_ptr<OctreeNode>(octree);
 
 					cuCtxSetCurrent(context);
-					loadOctreeOnGPU(mainOctree, CuRast::instance, &context, true);
+					loadOctreeOnGPU(CuRast::instance, &context, true);
 				}
 			}
 
-			if(CPU_PARALLELISED){
+			// if(CPU_PARALLELISED){
 				// Send things GPU side
-				loadOctreeOnGPU(mainOctree, CuRast::instance, &context);
-			}
+				loadOctreeOnGPU(CuRast::instance, &context);
+			// }
 
 			freeOctreesOnGPU(CuRast::instance);
+
+			cudaDeviceSynchronize();
+			elapsedFrames++;
 
 			// { // TODO: remove, just for debugging
 

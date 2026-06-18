@@ -26,9 +26,12 @@ OctreeNode* uptadeOctree(
 
 /// TODO: temporary function
 /// Load an octree to gpu memory
-void loadOctreeOnGPU(std::shared_ptr<OctreeNode>& main_octree,
-    CuRast* editor, CUcontext* context, bool bypass_semaphore = false
+void loadOctreeOnGPU(CuRast* editor, CUcontext* context, 
+    bool bypass_semaphore = false
 );
+void createCudaMemory(CuRast* editor, CUcontext* context, std::shared_ptr<OctreeNode>& input_octree);
+std::optional<uint32_t> allocateChunks(std::shared_ptr<SNCOctree>& octree, const Chunk* root, uint32_t* chunk_counter);
+
 /// TODO: temporary function
 /// Frees the unused octrees on gpu memory
 void freeOctreesOnGPU(CuRast* editor);

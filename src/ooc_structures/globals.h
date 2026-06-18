@@ -48,6 +48,9 @@ constexpr uint8_t MAX_BATCHES_PER_LOAD = 100;
 constexpr uint8_t MAX_BATCHES_PER_GPU_LOAD = 50;
 // constexpr uint8_t MAX_BATCHES_PER_GPU_LOAD = 200;
 
+constexpr uint32_t SEND_DATA_EVERY_X_FRAMES = 200;
+extern uint32_t elapsedFrames;
+
 extern uint64_t NB_POINTS;
 extern bool MAIN_LOOP_IS_TERMINATING;
 extern std::mutex mainLoopIsTerminatingMtx;
@@ -69,12 +72,6 @@ constexpr uint32_t GRID_NUM_CELLS = GRID_SIZE * GRID_SIZE * GRID_SIZE;
 constexpr NodePosition FIRST_NODE_POSITION = FrontTopLeft;
 /// The temporary files directory to store nodes in disk
 const std::string TEMPORARY_DIRECTORY = format("{}/build/tmp", PROJECT_SOURCE_DIR);
-
-/// The size of the LRU cache
-// constexpr uint32_t LRU_CACHE_SIZE = 16;
-// constexpr uint32_t LRU_CACHE_SIZE = 128;
-constexpr uint32_t LRU_CACHE_SIZE = 1024;
-// constexpr uint32_t LRU_CACHE_SIZE = 4096;
 
 constexpr bool CPU_PARALLELISED = true;
 // constexpr bool CPU_PARALLELISED = false;
@@ -255,8 +252,9 @@ struct Chunk {
 	}
 
 	~Chunk() {
-		delete(next);
+		Chunk* tmp = next;
 		next = nullptr;
+		delete(tmp);
 	}
 
 };
@@ -264,22 +262,22 @@ struct Chunk {
 /// A node in an octree
 struct OctreeNode {
 	OctreeNode* children[8] = {nullptr};
-	uint16_t counter = 0;
-	uint8_t children_ids = 0b00000000;
 	Chunk* points = nullptr;
 	Chunk* voxels = nullptr;
 	OccupancyGrid* occupancy = nullptr;
-	bool from_split = false;
-	bool from_bottom_up = false;
-
-	bool updated = false;
-
 	AABB* aabb = nullptr;
 
+	uint16_t counter = 0;
+	uint8_t children_ids = 0b00000000;
+
+	bool from_split = false;
+	bool from_bottom_up = false;
+	bool updated = false;
 	uint8_t level = 0;
 	bool is_large = false;
 	bool is_visible = false;
 	bool is_cut = false;
+
 
 	uint32_t getNbPoints() const;
 	uint32_t getNbVoxels() const;
@@ -290,21 +288,30 @@ struct OctreeNode {
 
 	~OctreeNode(){
 		if(points){
-			delete(points);
+			Chunk* tmp = points;
 			points = nullptr;
+			delete(tmp);
 		}
 		if(voxels){
-			delete(voxels);
+			Chunk* tmp = voxels;
 			voxels = nullptr;
+			delete(tmp);
 		}
 		if(occupancy){
-			delete(occupancy);
+			OccupancyGrid* tmp = occupancy;
 			occupancy = nullptr;
+			delete(tmp);
+		}
+		if(aabb){
+			AABB* tmp = aabb;
+			aabb = nullptr;
+			delete(aabb);
 		}
 		for(uint32_t i=0; i<8; i++){
 			if(children[i]){
-				delete(children[i]);
+				OctreeNode* tmp = children[i];
 				children[i] = nullptr;
+				delete(tmp);
 			}
 		}
 	}
@@ -344,6 +351,8 @@ std::string getSimLodOctreeName(bool generate_new_name = false);
 extern std::binary_semaphore octreeReadyToBeSent;
 extern std::binary_semaphore octreeReadyToBeUpdated;
 extern std::binary_semaphore octreeNotBeingSent;
+extern std::mutex isUpdatingMtx;
+
 extern uint64_t loadCounter;
 extern std::mutex loadCounterMtx;
 
@@ -365,23 +374,6 @@ extern std::shared_ptr<vector<OctreeNode*>> spillingNodes;
 extern std::shared_ptr<vector<Point>> backlogVoxels;
 /// The backlog buffer for the nodes corresponding to the new voxels
 extern std::shared_ptr<vector<OctreeNode*>> backlogVoxelsNodes;
-
-/// The LRU cache for the nodes
-extern uint64_t lruCounter;
-typedef std::pair<uint64_t, AABB> CacheEntry; 
-extern std::array<std::optional<CacheEntry>, LRU_CACHE_SIZE> lruCache;
-extern std::unordered_map<AABB, uint32_t, AABB::Hash> lruMapInCache;
-extern std::unordered_set<AABB, AABB::Hash> lruMapStored;
-
-/// Add a node to the cache and return the id of a node if it has been removed from the cache
-/// The id of a node is it's AABB
-std::optional<AABB> addToCache(const AABB& aabb);
-/// Check if a node is already in cache
-std::optional<uint32_t> getCacheIndex(const AABB& aabb);
-/// Check if a node has been stored
-bool hasBeenStored(const AABB& aabb);
-/// Display the LRU cache
-void displayCache();
 
 
 /// The hash map to store timings
@@ -428,7 +420,62 @@ void displayBuffers();
 
 
 
-/// Test unified memory
+
+///////////////////////////////////////////////////////////////////////////////
+/////////////////////////// LRU CACHING SHENANIGANS ///////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+
+/// The size of the LRU cache
+// constexpr uint32_t LRU_CACHE_SIZE = 16;
+// constexpr uint32_t LRU_CACHE_SIZE = 128;
+constexpr uint32_t LRU_CACHE_SIZE = 1024;
+// constexpr uint32_t LRU_CACHE_SIZE = 4096;
+
+typedef std::pair<uint64_t, AABB> CacheEntry;
+
+/// The LRU caches for the UPDATED nodes
+struct LRUCache {
+	static std::mutex stored_set_mtx;
+	static std::unordered_set<AABB, AABB::Hash> stored_set;
+
+
+	uint64_t counter = 0;
+	std::array<std::optional<CacheEntry>, LRU_CACHE_SIZE> cache = {nullopt};
+	std::unordered_map<AABB, uint32_t, AABB::Hash> cache_map = {};
+	std::string name = "";
+	std::mutex mtx = {};
+
+	LRUCache(const std::string& name): name(name){}
+
+
+	/// Add a node to the cache and return the id of a node if it has been removed from the cache
+	/// The id of a node is it's AABB
+	std::optional<AABB> add(const AABB& aabb, bool sync = false);
+	/// Gets the cache index of a node
+	std::optional<uint32_t> getIndex(const AABB& aabb, bool sync = false);
+	/// Check if a node is already in cache
+	bool contains(const AABB& aabb, bool sync = false);
+	/// Display the LRU cache
+	void display(bool sync = false);
+
+	/// Check if a node has been stored
+	static bool hasBeenStored(const AABB& aabb);
+	/// Mark a node as stored
+	static void mark(const AABB& aabb);
+	/// Unmark a node as stored
+	static void unmark(const AABB& aabb);
+};
+
+extern LRUCache updatesCache;
+extern LRUCache visibilityCache;
+
+
+
+
+///////////////////////////////////////////////////////////////////////////////
+/////////////////////// CUDA UNIFIED MEMORY SHENANIGANS ///////////////////////
+///////////////////////////////////////////////////////////////////////////////
+
 extern std::vector<std::shared_ptr<std::vector<vec3>>> unified_positions;
 extern std::vector<std::shared_ptr<std::vector<uint32_t>>> unified_colors;
 

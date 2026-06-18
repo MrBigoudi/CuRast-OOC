@@ -167,7 +167,9 @@ void CuRast::makeToolbar(){
 				ImGui::Checkbox("Load octree from disk", &CuRastSettings::loadOctree);
 				
 				ImGui::SameLine();
-				ImGui::Checkbox("Use unified memory", &CuRastSettings::useUnifiedMemory);
+				ImGui::BeginDisabled(true);
+					ImGui::Checkbox("Use unified memory", &CuRastSettings::useUnifiedMemory);
+				ImGui::EndDisabled();
 
 				// ImGui::Checkbox("Frustum culling", &CuRastSettings::enableFrustumCulling);
 				// ImGui::SameLine();

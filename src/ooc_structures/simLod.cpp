@@ -442,7 +442,7 @@ void simLodLoad(
 				
 				{
 					std::lock_guard<std::mutex> lock_map(mtx_set);
-					has_been_stored = hasBeenStored(child_aabb) || tmp_set.contains(child_aabb);
+					has_been_stored = LRUCache::hasBeenStored(child_aabb) || tmp_set.contains(child_aabb);
 
 					// If the child has not been stored, we've reached the end of the loop
 					if(!has_been_stored){return;}

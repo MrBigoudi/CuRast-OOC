@@ -194,7 +194,7 @@ void OctreeNodeSerializable::init(const OctreeNode* node, bool node_only){
             // TODO: store occupancy grid
 
             new_node.serialize(getNodeFilePath(*cur_node->aabb));
-            lruMapStored.insert(*cur_node->aabb);
+            LRUCache::mark(*cur_node->aabb);
     };
 
     // root_node->display();
@@ -326,7 +326,7 @@ OctreeNode* OctreeNodeSerializable::toOctreeNodes(
 
         std::string filepath = getNodeFilePath(cur_aabb);
         OctreeNodeSerializable new_serializable_node = OctreeNodeSerializable::deserialize(filepath);
-        lruMapStored.erase(cur_aabb);
+        LRUCache::unmark(cur_aabb);
         OctreeNode* new_node = new_serializable_node.toLeafNode(cur_aabb);
 
         if(!node_only){
@@ -367,7 +367,7 @@ OctreeNode* loadOctree(const AABB& root_aabb, bool node_only){
 
 
 /// Add nodes to cache after octree update
-void updateCache(OctreeNode* root_octree){
+void updateUpdatesCache(OctreeNode* root_octree){
     // Traverse octree and add newly updated aabbs to the cache
     std::function<void(const OctreeNode*)> recursionAddToCache = [&](const OctreeNode* cur_node){
         for(uint32_t child_id = 0; child_id < 8; child_id++){
@@ -377,7 +377,7 @@ void updateCache(OctreeNode* root_octree){
         }
 
         if(cur_node->updated){
-            addToCache(*cur_node->aabb);
+            updatesCache.add(*cur_node->aabb, true);
         }
 
     };
@@ -398,15 +398,15 @@ void updateCache(OctreeNode* root_octree){
             }
         }
 
-        bool is_in_cache = getCacheIndex(*cur_node->aabb).has_value();
+        bool is_in_cache = updatesCache.contains(*cur_node->aabb);
         bool to_remove = false;
         if(!is_in_cache){
             storeOctree(cur_node, true);
-            to_remove = true;
+            to_remove = !visibilityCache.contains(*cur_node->aabb, true);
         }
 
         // bool is_in_cache = false;
-        // for (auto it = lruCache.begin(); it != lruCache.end(); it++){
+        // for (auto it = lruUpdatesCache.begin(); it != lruUpdatesCache.end(); it++){
         //     if((*it).has_value() && *(*it)->second == *cur_aabb){
         //         is_in_cache = true;
         //         break;

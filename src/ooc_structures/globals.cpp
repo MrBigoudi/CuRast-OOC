@@ -416,6 +416,7 @@ std::string getSimLodOctreeName(bool generate_new_name){
 vector<std::shared_ptr<Timing>> timingsList = {};
 
 uint32_t BATCHES_QUEUE_SIZE = 1000;
+uint32_t elapsedFrames = 0;
 
 
 /// Variables tracking when the octree can be sent to GPU
@@ -425,6 +426,9 @@ std::binary_semaphore octreeReadyToBeSent{0};
 std::binary_semaphore octreeReadyToBeUpdated{1};
 /// Initialized as not being sent
 std::binary_semaphore octreeNotBeingSent{1};
+
+std::mutex isUpdatingMtx;
+
 uint64_t loadCounter = 0;
 std::mutex loadCounterMtx;
 
@@ -434,7 +438,7 @@ std::deque<std::mutex> batchesQueueMutexes(BATCHES_QUEUE_SIZE);
 std::mutex updateSceneMutex;
 
 /// The main octree
-std::shared_ptr<OctreeNode> mainOctree = std::make_shared<OctreeNode>();
+std::shared_ptr<OctreeNode> mainOctree = nullptr;
 OctreeNode* mainOctreeCpy = nullptr;
 
 /// The buffer of spilled points
@@ -446,12 +450,6 @@ std::shared_ptr<vector<OctreeNode*>> spillingNodes = std::make_shared<vector<Oct
 std::shared_ptr<vector<Point>> backlogVoxels = std::make_shared<vector<Point>>(vector<Point>());
 /// The backlog buffer for the nodes corresponding to the new voxels
 std::shared_ptr<vector<OctreeNode*>> backlogVoxelsNodes = std::make_shared<vector<OctreeNode*>>(vector<OctreeNode*>());
-
-/// The LRU cache for the nodes
-std::array<std::optional<CacheEntry>, LRU_CACHE_SIZE> lruCache = {nullopt};
-std::unordered_map<AABB, uint32_t, AABB::Hash> lruMapInCache = {};
-std::unordered_set<AABB, AABB::Hash> lruMapStored = {};
-uint64_t lruCounter = 0;
 
 uint64_t NB_POINTS = 0;
 bool MAIN_LOOP_IS_TERMINATING = false;
@@ -532,11 +530,100 @@ void displayBuffers(){
 	println("///////////////////////////////////////////////////\n");
 }
 
-void displayCache(){
-    println("\n///////////////////////////////////////////////////");
-	println("////////////////////// Cache //////////////////////");
+
+
+
+
+
+
+
+
+
+
+///////////////////////////////////////////////////////////////////////////////
+/////////////////////////// LRU CACHING SHENANIGANS ///////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+
+/// The LRU cache for the nodes
+LRUCache updatesCache = {"updates cache"};
+LRUCache visibilityCache = {"visibility cache"};
+std::mutex LRUCache::stored_set_mtx;
+std::unordered_set<AABB, AABB::Hash> LRUCache::stored_set = {};
+
+std::optional<AABB> LRUCache::add(const AABB& aabb, bool sync){
+    auto lock_guard = sync ? std::unique_lock<std::mutex>(mtx) : std::unique_lock<std::mutex>();
+    bool already_in_cache = false;
+
+    // Reset every counters if needed
+    if(counter == UINT64_MAX){
+        println("Cache counter reseting");
+        for(uint32_t cache_id = 0; cache_id < LRU_CACHE_SIZE; cache_id++){
+            if(cache[cache_id]){
+                CacheEntry& entry = cache[cache_id].value();
+                entry.first = 0;
+                if(entry.second == aabb){
+                    entry.first = 1;
+                    already_in_cache = true;
+                }
+            }
+        }
+        counter = 0;
+    }
+    counter++;
+    if(already_in_cache){return nullopt;}
+
+    // Check if already in cache
+    uint32_t new_id = 0;
+    uint64_t min_counter = UINT64_MAX;
+    for(uint32_t cache_id = 0; cache_id < LRU_CACHE_SIZE; cache_id++){
+        if(cache[cache_id]){
+            CacheEntry& entry = cache[cache_id].value();
+
+            // Check if already in cache
+            if(entry.second == aabb){
+                entry.first = counter;
+                return nullopt;
+            }
+
+            // Check if smallest counter
+            if(entry.first < min_counter){
+                min_counter = entry.first;
+                new_id = cache_id;
+            }
+        } else {
+            // Found empty space
+            cache[cache_id] = {counter, aabb};
+            cache_map[aabb] = cache_id;
+            return nullopt;
+        }
+    }
+
+    // If not in cache, create new entry
+    const AABB old_entry = cache[new_id]->second;
+    cache[new_id] = {counter, aabb};
+    cache_map[aabb] = new_id;
+    cache_map.erase(old_entry);
+
+    return std::optional<AABB>(old_entry);
+}
+
+std::optional<uint32_t> LRUCache::getIndex(const AABB& aabb, bool sync) {
+    auto lock_guard = sync ? std::unique_lock<std::mutex>(mtx) : std::unique_lock<std::mutex>();
+    return cache_map.contains(aabb) ? std::optional<uint32_t>(cache_map.at(aabb)) : nullopt;
+}
+
+bool LRUCache::contains(const AABB& aabb, bool sync ) {
+    auto lock_guard = sync ? std::unique_lock<std::mutex>(mtx) : std::unique_lock<std::mutex>();
+    return getIndex(aabb).has_value();
+}
+
+void LRUCache::display(bool sync) {
+    auto lock_guard = sync ? std::unique_lock<std::mutex>(mtx) : std::unique_lock<std::mutex>();
+
+    println("///////////////////////////////////////////////////");
+	println("////////////////////// {} //////////////////////", name);
 	println("///////////////////////////////////////////////////\n");
-	for(std::optional<CacheEntry>& entry : lruCache){
+	for(const std::optional<CacheEntry>& entry : cache){
         if(entry.has_value()){
             std::string output = format("mins = ({}, {}, {}), maxs = ({}, {}, {})",
                 entry->second.mins.x, 
@@ -556,76 +643,40 @@ void displayCache(){
 	println("///////////////////////////////////////////////////\n");
 }
 
-
-std::optional<AABB> addToCache(const AABB& aabb){
-    bool already_in_cache = false;
-
-    // Reset every counters if needed
-    if(lruCounter == UINT64_MAX){
-        println("Cache counter reseting");
-        for(uint32_t cache_id = 0; cache_id < LRU_CACHE_SIZE; cache_id++){
-            if(lruCache[cache_id]){
-                CacheEntry& entry = lruCache[cache_id].value();
-                entry.first = 0;
-                if(entry.second == aabb){
-                    entry.first = 1;
-                    already_in_cache = true;
-                }
-            }
-        }
-        lruCounter = 0;
-    }
-    lruCounter++;
-    if(already_in_cache){return nullopt;}
-
-    // Check if already in cache
-    uint32_t new_id = 0;
-    uint64_t min_counter = UINT64_MAX;
-    for(uint32_t cache_id = 0; cache_id < LRU_CACHE_SIZE; cache_id++){
-        if(lruCache[cache_id]){
-            CacheEntry& entry = lruCache[cache_id].value();
-
-            // Check if already in cache
-            if(entry.second == aabb){
-                entry.first = lruCounter;
-                return nullopt;
-            }
-
-            // Check if smallest counter
-            if(entry.first < min_counter){
-                min_counter = entry.first;
-                new_id = cache_id;
-            }
-        } else {
-            // Found empty space
-            lruCache[cache_id] = {lruCounter, aabb};
-            lruMapInCache[aabb] = cache_id;
-            return nullopt;
-        }
-    }
-
-    // If not in cache, create new entry
-    const AABB old_entry = lruCache[new_id]->second;
-    lruCache[new_id] = {lruCounter, aabb};
-    lruMapInCache[aabb] = new_id;
-    lruMapInCache.erase(old_entry);
-
-    return std::optional<AABB>(old_entry);
+bool LRUCache::hasBeenStored(const AABB& aabb){
+    std::lock_guard<std::mutex> lock(stored_set_mtx);
+    return stored_set.contains(aabb);
 }
 
-std::optional<uint32_t> getCacheIndex(const AABB& aabb){
-    return lruMapInCache.contains(aabb) ? std::optional<uint32_t>(lruMapInCache[aabb]) : nullopt;
+void LRUCache::mark(const AABB& aabb){
+    std::lock_guard<std::mutex> lock(stored_set_mtx);
+    stored_set.insert(aabb);
 }
 
-bool hasBeenStored(const AABB& aabb){
-    return lruMapStored.contains(aabb);
+void LRUCache::unmark(const AABB& aabb){
+    std::lock_guard<std::mutex> lock(stored_set_mtx);
+    stored_set.erase(aabb);
 }
 
 
 
 
 
-/// Test unified memory
+
+
+
+
+
+
+
+
+
+
+
+///////////////////////////////////////////////////////////////////////////////
+/////////////////////// CUDA UNIFIED MEMORY SHENANIGANS ///////////////////////
+///////////////////////////////////////////////////////////////////////////////
+
 std::vector<std::shared_ptr<std::vector<vec3>>> unified_positions = {};
 std::vector<std::shared_ptr<std::vector<uint32_t>>> unified_colors = {};
 
