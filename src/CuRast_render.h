@@ -120,7 +120,7 @@ void drawPoints(Scene* scene, View view, RenderTarget& target){
 	});
 }
 
-void drawOctreeAABB(Scene* scene, View view, RenderTarget& target){
+void drawOctreeAABB(Scene* scene, View view, RenderTarget& target, bool use_visibility_debug_color = false){
 	static CudaModularProgram* prog = new CudaModularProgram({"./src/kernels/octree.cu"});
 
 	scene->forEach<SNCOctree>([&](SNCOctree* octree){
@@ -132,8 +132,10 @@ void drawOctreeAABB(Scene* scene, View view, RenderTarget& target){
 		cfo.nodes     = (COctreeNode**)(octree->nodes);
 		cfo.aabbs     = (CAABB**)(octree->aabbs);
 		cfo.chunks    = (CChunk**)(octree->chunks);
+
 		cfo.num_nodes = octree->num_nodes;
 		cfo.max_lod_level = octree->max_lod_level;
+		cfo.use_aabb_debug_color = use_visibility_debug_color;
 
 		prog->launch("kernel_drawOctreeAABB", {&cfo, &target}, cfo.num_nodes);
 	});
@@ -723,7 +725,9 @@ void CuRast::draw(Scene* scene, vector<View> views){
 			if(CuRastSettings::useUnifiedMemory){
 				drawOctreeAABBUnified(scene, view, target, cfo);
 			} else {
-				drawOctreeAABB(scene, view, target);
+				drawOctreeAABB(scene, view, target, 
+					CuRastSettings::showVisibleNodes
+				);
 			}
 		}
 

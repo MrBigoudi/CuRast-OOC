@@ -2,7 +2,6 @@
 
 ## Next small steps
 
-- Store AABB in nodes
 - Batch the memcpy on loadingtogpu
 - Clean the code + improve comments
 - Implement frustum culling
@@ -15,6 +14,7 @@
 
 ## Coding part
 
+- Add a settings file to avoid recompiling everytime
 - Add parameters to the UI (max nb batches, points per batches, etc...)
 - Create uniform structure for better structuring in cuda code / gui
 - Add a way to (manually ?) select the node to store / load

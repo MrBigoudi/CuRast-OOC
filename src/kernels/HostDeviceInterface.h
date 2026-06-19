@@ -363,6 +363,9 @@ struct COctreeNode {
 	bool is_large = false;
 	bool is_visible = false;
 	bool is_cut = false;
+
+	bool cpu_debug_visibility = false;
+	
 	CChunk* points;
 	CChunk* voxels;
 	COccupancyGrid* occupancy;
@@ -377,11 +380,13 @@ struct CFullOctree {
 	COccupancyGrid** occupancy_grids;
 	uint32_t num_nodes;
 	uint32_t max_lod_level;
+
 	// TODO: put inside uniforms structure
 	int32_t debug_lod_to_render;
 	uint32_t voxels_nb_points_per_axis;
 	float min_pixel_span;
 	bool use_voxels_debug_color;
+	bool use_aabb_debug_color;
 };
 
 

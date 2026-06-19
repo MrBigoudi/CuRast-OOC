@@ -443,7 +443,11 @@ void kernel_drawOctreeAABB(
     factor = clamp(factor, 0.0f, 1.0f);
     uint32_t min_level_color = 0xff00ff00; // green
     uint32_t max_level_color = 0xff0000ff; // red
+
     uint32_t color = linearGradient(factor, min_level_color, max_level_color);
+    if(octree.use_aabb_debug_color && node->cpu_debug_visibility){
+        color = 0xffffffff;
+    }
     
     drawBoundingBox(target, octree.world, *aabb, color);
 

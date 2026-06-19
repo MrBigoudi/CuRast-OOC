@@ -284,6 +284,11 @@ void createCudaMemory(CuRast* editor, CUcontext* context, std::shared_ptr<Octree
 		new_node.counter = cur_node->counter;
 		new_node.children_ids = cur_node->children_ids;
 		new_node.level = level;
+		new_node.is_large = cur_node->is_large;
+		new_node.is_visible = cur_node->is_visible;
+		new_node.is_cut = cur_node->is_cut;
+		// TODO: for debug purposes
+		new_node.cpu_debug_visibility = cur_node->is_visible;
 
 		if(chunk_first_points.has_value()){
 			new_node.points = (CChunk*)octree->cptr_chunks[chunk_first_points.value()];
@@ -446,6 +451,7 @@ void loadOctreeOnGPU(CuRast* editor, CUcontext* context,
 	// } else {
 	// 	thread_load_to_gpu.detach();
 	// }
+	cudaDeviceSynchronize();
 	createCudaMemory(editor, context, octree_ref);
 
 	// if(CPU_PARALLELISED && !bypass_semaphore){

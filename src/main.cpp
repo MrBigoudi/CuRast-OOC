@@ -605,12 +605,8 @@ int main(int argc, char** argv){
 
 			freeOctreesOnGPU(CuRast::instance);
 
-			if(CuRastSettings::voxelsDebugColor){
-				updateVisibilityCache(VKRenderer::view.view, VKRenderer::view.proj);
-			}
+			updateVisibilityCache(VKRenderer::view.view, VKRenderer::view.proj);
 
-
-			cudaDeviceSynchronize();
 			elapsedFrames++;
 
 			// { // TODO: remove, just for debugging

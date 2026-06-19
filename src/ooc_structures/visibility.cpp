@@ -92,48 +92,24 @@ std::unordered_set<AABB, AABB::Hash> getVisibleNodes(const Frustum& frustum){
 
 void updateVisibilityCache(const mat4& view, const mat4& proj){
     Frustum frustum = Frustum(proj * view);
-    frustum.display();
+    // frustum.display();
 
     std::unordered_set<AABB, AABB::Hash> visible_nodes = getVisibleNodes(frustum);
     
-    println("visible nodes:");
-    for(const AABB& aabb : visible_nodes){
-        println("    .mins = ({}, {}, {}), .maxs = ({}, {}, {})",
-            aabb.mins.x, aabb.mins.y, aabb.mins.z,
-            aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
-        );
-    }
-    println();
+    // Flag the visible nodes
+    std::function<void(OctreeNode*)> recursion = [&](OctreeNode* cur_node){
+        if(!CuRastSettings::freezeVisibleNodes){
+            cur_node->is_visible = visible_nodes.contains(*cur_node->aabb);
+        }
 
-    {
-        // TODO: to remove
-        std::unordered_set<AABB, AABB::Hash> invisible_nodes = {};
-        invisible_nodes.reserve(LRU_CACHE_SIZE);
-        {
-            std::lock_guard<std::mutex> lock_cache(updatesCache.mtx);
-            for(const auto& [aabb, _id] : updatesCache.cache_map){
-                if(!frustum.doesIntersect(aabb)){
-                    invisible_nodes.insert(aabb);
-                }
+        for(uint32_t child=0; child<8; child++){
+            if(cur_node->children[child]){
+                recursion(cur_node->children[child]);
             }
         }
-        {
-            std::lock_guard<std::mutex> lock_cache(LRUCache::stored_set_mtx);
-            for(const AABB& aabb : LRUCache::stored_set){
-                if(!frustum.doesIntersect(aabb)){
-                    invisible_nodes.insert(aabb);
-                }
-            }
-        }
-        println("not visible nodes:");
-        for(const AABB& aabb : invisible_nodes){
-            println("    .mins = ({}, {}, {}), .maxs = ({}, {}, {})",
-                aabb.mins.x, aabb.mins.y, aabb.mins.z,
-                aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
-            );
-        }
-        println();
+    };
+
+    if(mainOctree){
+        recursion(mainOctree.get());
     }
-    
-    exit(EXIT_FAILURE);
 }
