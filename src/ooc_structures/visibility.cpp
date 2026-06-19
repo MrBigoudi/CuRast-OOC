@@ -1,5 +1,8 @@
 #include "visibility.h"
 
+#include "outOfCore.h"
+
+
 Plane::Plane(float x, float y, float z, float w){
     float normal_length = glm::length(vec3{x, y, z});
     normal = vec3{x, y, z} / normal_length;
@@ -94,60 +97,124 @@ std::unordered_set<AABB, AABB::Hash> getVisibleNodes(const Frustum& frustum){
 /// All nodes in the list must have their parent in the list
 /// All nodes in the list must have their parent marked as closest
 std::vector<AABB> orderNodes(
+    const AABB& root_node,
     const std::unordered_set<AABB, AABB::Hash>& visible_nodes,
     const vec3& camera_pos
 ){
     uint32_t size = visible_nodes.size();
-    std::vector<AABB> sorted = std::vector<AABB>(visible_nodes.begin(), visible_nodes.end());
 
-    // Sort the visible nodes by furthest to camera position
-    auto comparison_dist = [&](const AABB& a, const AABB& b) -> bool {
-        float dist_a = glm::length(a.getCentroid() - camera_pos);
-        float dist_b = glm::length(b.getCentroid() - camera_pos);
-        return dist_a > dist_b;
-    };
-    std::sort(sorted.begin(), sorted.end(), comparison_dist);
-
-    std::unordered_set<AABB, AABB::Hash> already_added = {};
-    std::vector<AABB> res = sorted;
-
-    // TODO: can we do better than O(n2) ?
-    for(uint32_t i=0; i<size; i++){
-        if(already_added.contains(res[i])){continue;}
-        uint32_t last_child_index = 0;
-
-        do {
-            last_child_index = i;
-            AABB current_node = res[i];
-
-
-            // Try to find a child marked as closer
-            for(uint32_t j=i+1; j<size; j++){
-                // If is a child of current node
-                if(current_node.isParentOf(res[j])){
-                    last_child_index = j;
-                }
-            }
-
-            // Update the array by swapping elements up to the child found
-            for(uint32_t j=i; j<last_child_index; j++){
-                res[j] = res[j+1];
-            }
-            res[last_child_index] = current_node;
-            already_added.insert(current_node);
-
-        } while(last_child_index != i);
+    // Get root node
+    if(!visible_nodes.empty() && !visible_nodes.contains(root_node)){
+        println("ERROR: the root node should always be marked as visible");
+        exit(EXIT_FAILURE);
     }
 
-    return res;
+    // std::vector<AABB> sorted = std::vector<AABB>(visible_nodes.begin(), visible_nodes.end());
+    // // Sort the visible nodes by furthest to camera position
+    // auto comparison_dist = [&](const AABB& a, const AABB& b) -> bool {
+    //     float dist_a = glm::length(a.getCentroid() - camera_pos);
+    //     float dist_b = glm::length(b.getCentroid() - camera_pos);
+    //     return dist_a > dist_b;
+    // };
+    // std::sort(sorted.begin(), sorted.end(), comparison_dist);
+
+    // std::unordered_set<AABB, AABB::Hash> already_added = {};
+    // std::vector<AABB> res = sorted;
+
+    // // TODO: can we do better than O(n2) ?
+    // for(uint32_t i=0; i<size; i++){
+    //     // if(already_added.contains(res[i])){continue;}
+    //     uint32_t last_child_index = 0;
+
+    //     do {
+    //         last_child_index = i;
+    //         AABB current_node = res[i];
+
+
+    //         // Try to find a child marked as closer
+    //         for(uint32_t j=i+1; j<size; j++){
+    //             // If is a child of current node
+    //             if(current_node.isParentOf(res[j])){
+    //                 last_child_index = j;
+    //             }
+    //         }
+
+    //         // Update the array by swapping elements up to the child found
+    //         for(uint32_t j=i; j<last_child_index; j++){
+    //             res[j] = res[j+1];
+    //         }
+    //         res[last_child_index] = current_node;
+    //         already_added.insert(current_node);
+
+    //     } while(last_child_index != i);
+    // }
+    // return res;
+
+
+    // TODO: better than O(n2) but less accurate
+    // Build a temporary octree
+    struct Node {
+        const AABB aabb;
+        float dist = INFINITY;
+        std::vector<std::shared_ptr<Node>> children = {};
+
+        Node(const AABB& aabb, float dist): aabb(aabb), dist(dist) {
+            children.reserve(8);
+        }
+    };
+    std::vector<AABB> result = {};
+    result.reserve(size);
+    std::function<void(std::shared_ptr<Node>)> recursion = [&](std::shared_ptr<Node> cur_node){
+        for(uint32_t child_id = 0; child_id < 8; child_id++){
+            AABB child_aabb = cur_node->aabb;
+            child_aabb.shrink((NodePosition)child_id);
+            if(visible_nodes.contains(child_aabb)){
+                println("This aabb is apparently visible: .mins = ({}, {}, {}), .maxs = ({}, {}, {})",
+                    child_aabb.mins.x, child_aabb.mins.y, child_aabb.mins.z,
+                    child_aabb.maxs.x, child_aabb.maxs.y, child_aabb.maxs.z
+                );
+                float dist = glm::length(child_aabb.getCentroid() - camera_pos);
+                cur_node->children.push_back(std::make_shared<Node>(child_aabb, dist));
+            }
+        }
+
+        std::sort(cur_node->children.begin(), cur_node->children.end(), 
+        [](const std::shared_ptr<Node>& a, const std::shared_ptr<Node>& b){
+            return a->dist > b->dist;
+        });
+        println("children:");
+        for(auto& child : cur_node->children){
+            println("    .mins = ({}, {}, {}), .maxs = ({}, {}, {})",
+                child->aabb.mins.x, child->aabb.mins.y, child->aabb.mins.z,
+                child->aabb.maxs.x, child->aabb.maxs.y, child->aabb.maxs.z
+            );
+        }
+
+        for(auto child : cur_node->children){
+            recursion(child);
+        }
+
+        result.push_back(cur_node->aabb);
+    };
+
+    float root_dist = glm::length(root_node.getCentroid() - camera_pos);
+    std::shared_ptr<Node> root = std::make_shared<Node>(root_node, root_dist);
+
+    recursion(root);
+    return result;
 }
 
 
 
 /// Fill the visibility cache with the ordered nodes
-void fillVisibilityCache(const std::vector<AABB>& nodes){
+void fillVisibilityCache(const std::vector<AABB>& nodes, OctreeNode* root_octree){
+    println("before add: vis cache size = {}, updates cache size = {}, stored nodes = {}", 
+        visibilityCache.getSize(), updatesCache.getSize(), LRUCache::stored_set.size()
+    );
+    
     std::unordered_set<AABB, AABB::Hash> removed_set = {};
 
+    // uint32_t first_index = 0;
     uint32_t first_index = uint32_t(max(int32_t(nodes.size()) - int32_t(LRU_VISIBILITY_CACHE_SIZE), 0));
     uint32_t last_index = min(first_index + LRU_VISIBILITY_CACHE_SIZE, uint32_t(nodes.size()));
 
@@ -158,7 +225,93 @@ void fillVisibilityCache(const std::vector<AABB>& nodes){
         }
     }
 
-    // TODO: store all removed nodes that are not in any of the other caches
+    println("after add: vis cache size = {}, updates cache size = {}, stored nodes = {}", 
+        visibilityCache.getSize(), updatesCache.getSize(), LRUCache::stored_set.size()
+    );
+    println();
+
+    uint32_t cpt = 0;
+
+    // Remove all nodes that are not in any of the other caches
+    // No need to store them as if they were not in the updates cache they were not updated since last load
+    // Also load all the nodes that need to be loaded
+    std::function<bool(OctreeNode*, uint32_t, uint32_t)> recursion = [&](OctreeNode* cur_node, uint32_t id, uint32_t level) -> bool {
+        cpt++;
+
+        const AABB& aabb = *cur_node->aabb;
+        bool in_vis_cache = visibilityCache.contains(aabb, true);
+
+        if(!CuRastSettings::freezeVisibleNodes){
+            cur_node->is_visible = in_vis_cache;
+        }
+
+        for(uint32_t child_id = 0; child_id < 8; child_id++){
+            if(cur_node->children[child_id]){
+                if(recursion(cur_node->children[child_id], child_id, level+1)){
+                    println("delete");
+                    delete(cur_node->children[child_id]);
+                    cur_node->children[child_id] = nullptr;
+                }
+            } else {
+                AABB child_aabb = AABB(aabb);
+                child_aabb.shrink((NodePosition)child_id);
+                if(visibilityCache.contains(child_aabb, true)){
+                    println("loaded node:");
+                    cur_node->children[child_id] = loadOctree(child_aabb, true);
+                    cur_node->children[child_id]->display(child_id, level+1);
+                    recursion(cur_node->children[child_id], child_id, level+1);
+                } else {
+                    println("Node: level = {}, id = {}", level+1, child_id);
+                    println("This aabb is apparently not in cache: .mins = ({}, {}, {}), .maxs = ({}, {}, {})",
+                        child_aabb.mins.x, child_aabb.mins.y, child_aabb.mins.z,
+                        child_aabb.maxs.x, child_aabb.maxs.y, child_aabb.maxs.z
+                    );
+                    println();
+                }
+            }
+        }
+
+        return !in_vis_cache 
+            && removed_set.contains(aabb)
+            && !updatesCache.contains(aabb, true) 
+        ;
+    };
+
+    println();
+    println();
+    updatesCache.display(true);
+    println();
+    println();
+    visibilityCache.display(true);
+    println();
+    println();
+
+    println("Octree before: ");
+    root_octree->display();
+    println();
+    println();
+
+    if(!visibilityCache.sanityCheck(*root_octree->aabb)){
+        exit(EXIT_FAILURE);
+    }
+
+    recursion(root_octree, 0, 0);
+    println();
+    println();
+
+    println("Octree after: ");
+    root_octree->display();
+    println();
+    println();
+
+    println("end: vis cache size = {}, updates cache size = {}, stored nodes = {}, nodes in octree = {}", 
+        visibilityCache.getSize(), updatesCache.getSize(), LRUCache::stored_set.size(), cpt
+    );
+    println();
+    println();
+
+
+    exit(EXIT_FAILURE);
 }
 
 
@@ -231,7 +384,7 @@ void updateVisibilityCache(const mat4& view, const mat4& proj){
 
 
     vec3 cameraPos = vec3(glm::inverse(view) * vec4(0.0f, 0.0f, 0.0f, 1.0f));
-    std::vector<AABB> ordered_nodes = orderNodes(visible_nodes, cameraPos);
+    std::vector<AABB> ordered_nodes = orderNodes(*octree_ref->aabb, visible_nodes, cameraPos);
 
     // // TODO: just for debugging
     // if(just_freezed){
@@ -246,32 +399,13 @@ void updateVisibilityCache(const mat4& view, const mat4& proj){
     // }
 
 
-    fillVisibilityCache(ordered_nodes);
+    std::lock_guard<std::mutex> lock_send(isUpdatingMtx);
+    fillVisibilityCache(ordered_nodes, octree_ref.get());
 
     // if(just_freezed){
     //     updatesCache.display(true);
     //     visibilityCache.display(true);
     // }
-
-    // TODO: just for debugging
-    {
-        // Flag the visible nodes
-        std::function<void(OctreeNode*)> recursion = [&](OctreeNode* cur_node){
-            if(!CuRastSettings::freezeVisibleNodes){
-                cur_node->is_visible = visibilityCache.contains(*cur_node->aabb, true);
-            }
-
-            for(uint32_t child=0; child<8; child++){
-                if(cur_node->children[child]){
-                    recursion(cur_node->children[child]);
-                }
-            }
-        };
-
-        if(octree_ref){
-            recursion(octree_ref.get());
-        }
-    }
 
     // exit(EXIT_FAILURE);
 }

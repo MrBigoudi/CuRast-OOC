@@ -31,12 +31,14 @@ std::unordered_set<AABB, AABB::Hash> getVisibleNodes(const Frustum& frustum);
 /// All nodes in the list must have their parent in the list
 /// All nodes in the list must have their parent marked as closest
 std::vector<AABB> orderNodes(
+    const AABB& root_node,
     const std::unordered_set<AABB, AABB::Hash>& visible_nodes,
     const vec3& camera_pos
 );
 
 /// Fill the visibility cache with the ordered nodes
-void fillVisibilityCache(const std::vector<AABB>& nodes);
+/// Also load and store the nodes according to the cache
+void fillVisibilityCache(const std::vector<AABB>& nodes, OctreeNode* root_octree);
 
 
 /// Update visibility cache and the current octree by taking into account the visibility of each nodes

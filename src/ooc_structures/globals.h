@@ -74,8 +74,8 @@ constexpr NodePosition FIRST_NODE_POSITION = FrontTopLeft;
 /// The temporary files directory to store nodes in disk
 const std::string TEMPORARY_DIRECTORY = format("{}/build/tmp", PROJECT_SOURCE_DIR);
 
-constexpr bool CPU_PARALLELISED = true;
-// constexpr bool CPU_PARALLELISED = false;
+// constexpr bool CPU_PARALLELISED = true;
+constexpr bool CPU_PARALLELISED = false;
 
 /// The maximum size for the batches vectors
 extern uint32_t BATCHES_QUEUE_SIZE;
@@ -428,13 +428,13 @@ void displayBuffers();
 ///////////////////////////////////////////////////////////////////////////////
 
 /// The size of the LRU cache
-// constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 16;
+constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 16;
 // constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 128;
-constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 1024;
+// constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 1024;
 // constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 4096;
 
-constexpr uint32_t LRU_VISIBILITY_CACHE_SIZE = 16;
-// constexpr uint32_t LRU_VISIBILITY_CACHE_SIZE = 128;
+// constexpr uint32_t LRU_VISIBILITY_CACHE_SIZE = 16;
+constexpr uint32_t LRU_VISIBILITY_CACHE_SIZE = 128;
 // constexpr uint32_t LRU_VISIBILITY_CACHE_SIZE = 1024;
 // constexpr uint32_t LRU_VISIBILITY_CACHE_SIZE = 4096;
 
@@ -467,6 +467,8 @@ struct LRUCache {
 	bool contains(const AABB& aabb, bool sync = false);
 	/// Display the LRU cache
 	void display(bool sync = false);
+	/// Returns the number of occupied cell in the cache
+	uint32_t getSize() const;
 
 	/// Check if a node has been stored
 	static bool hasBeenStored(const AABB& aabb);
@@ -478,6 +480,9 @@ struct LRUCache {
 	static bool isInACache(const AABB& aabb, bool sync = false);
 	/// Check if a node is in all of the global caches
 	static bool isInAllCaches(const AABB& aabb, bool sync = false);
+
+
+	bool sanityCheck(const AABB& root_aabb);
 };
 
 extern LRUCache updatesCache;

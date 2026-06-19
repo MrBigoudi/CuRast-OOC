@@ -62,8 +62,8 @@ bool AABB::isParentOf(const AABB& aabb) const {
     vec3 aabb_size = aabb.getSize();
     vec3 size = getSize();
     return aabb_size.x < size.x
-        || aabb_size.y < size.y
-        || aabb_size.z < size.z
+        && aabb_size.y < size.y
+        && aabb_size.z < size.z
     ;
 }
 
@@ -256,8 +256,8 @@ uint32_t OctreeNode::getNbVoxels() const {
 }
 
 void OctreeNode::display(uint32_t id, uint32_t level, bool node_only) const {
-    println("id: {}, level: {}, counter: {}, updated: {}, nbPoints: {}, nbVoxels: {}, points location: 0b{}{}{}{}{}{}{}{}, children: 0b{}{}{}{}{}{}{}{}",
-        id, level, counter, updated, getNbPoints(), getNbVoxels(),
+    println("level: {}, id: {}, counter: {}, updated: {}, nbPoints: {}, nbVoxels: {}, points location: 0b{}{}{}{}{}{}{}{}, children: 0b{}{}{}{}{}{}{}{}",
+        level, id, counter, updated, getNbPoints(), getNbVoxels(),
         uint8_t(bool(children_ids & 0x01 << 0)),
         uint8_t(bool(children_ids & 0x01 << 1)),
         uint8_t(bool(children_ids & 0x01 << 2)),
@@ -631,6 +631,15 @@ bool LRUCache::contains(const AABB& aabb, bool sync ) {
     return getIndex(aabb).has_value();
 }
 
+uint32_t LRUCache::getSize() const {
+    uint32_t nb_elements = 0;
+    for(auto& entry : cache){
+        nb_elements += uint32_t(entry.has_value());
+    }
+    return nb_elements;
+}
+
+
 void LRUCache::display(bool sync) {
     auto lock_guard = sync ? std::unique_lock<std::mutex>(mtx) : std::unique_lock<std::mutex>();
 
@@ -686,6 +695,36 @@ bool LRUCache::isInAllCaches(const AABB& aabb, bool sync){
     ;
 }
 
+
+bool LRUCache::sanityCheck(const AABB& root_aabb) {
+    if(!contains(root_aabb, true)){
+        println("ERROR: cache should always contain the root node");
+        return false;
+    }
+    for(auto& [aabb, id] : cache_map){
+        // Check if all parents of aabb are in cache
+        AABB cur_aabb = AABB(aabb);
+        while(cur_aabb != root_aabb){
+            std::vector<uint32_t> parents_ids = {};
+            for(uint32_t parent_id = 0; parent_id<8; parent_id++){
+                AABB tmp = AABB(cur_aabb); tmp.extend((NodePosition)parent_id);
+                if(contains(tmp, true)){
+                    parents_ids.push_back(parent_id);
+                }
+            }
+            if(parents_ids.size() != 1){
+                println("ERROR: wrong number of parents in cache; expected 1 got {}", parents_ids.size());
+                println("AABB: .mins = ({}, {}, {}), .maxs = ({}, {}, {})",
+                    cur_aabb.mins.x, cur_aabb.mins.y, cur_aabb.mins.z,
+                    cur_aabb.maxs.x, cur_aabb.maxs.y, cur_aabb.maxs.z
+                );
+                return false;
+            }
+            cur_aabb.extend((NodePosition)parents_ids[0]);
+        }
+    }
+    return true;
+}
 
 
 
