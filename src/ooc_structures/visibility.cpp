@@ -108,7 +108,6 @@ std::vector<AABB> orderNodes(
     };
     std::sort(sorted.begin(), sorted.end(), comparison_dist);
 
-
     std::unordered_set<AABB, AABB::Hash> already_added = {};
     std::vector<AABB> res = sorted;
 
@@ -174,6 +173,15 @@ void updateVisibilityCache(const mat4& view, const mat4& proj){
     if(was_freezed && !CuRastSettings::freezeVisibleNodes){
         was_freezed = false;
     }
+
+    std::shared_ptr<OctreeNode> octree_ref = nullptr;
+	if(CPU_PARALLELISED){
+		std::lock_guard<std::mutex> lock_send(isUpdatingMtx);
+		octree_ref = mainOctree;
+	} else {
+		octree_ref = mainOctree;
+	}
+	if(!octree_ref){return;}
 
 
     Frustum frustum = Frustum(proj * view);
@@ -260,8 +268,8 @@ void updateVisibilityCache(const mat4& view, const mat4& proj){
             }
         };
 
-        if(mainOctree){
-            recursion(mainOctree.get());
+        if(octree_ref){
+            recursion(octree_ref.get());
         }
     }
 

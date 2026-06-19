@@ -598,16 +598,13 @@ int main(int argc, char** argv){
 				}
 			}
 
-			// if(CPU_PARALLELISED){
-				// Send things GPU side
+			if(elapsedFrames >= SEND_DATA_EVERY_X_FRAMES){
+				elapsedFrames = 0;
+				updateVisibilityCache(VKRenderer::view.view, VKRenderer::view.proj);
 				loadOctreeOnGPU(CuRast::instance, &context);
-			// }
+			}
 
-			// // TODO: remove this one, here just to have smaller nodes to check
-			// updateVisibilityCache(VKRenderer::view.view, VKRenderer::view.proj);
-			
 			freeOctreesOnGPU(CuRast::instance);
-
 			elapsedFrames++;
 
 			// { // TODO: remove, just for debugging
@@ -631,7 +628,6 @@ int main(int argc, char** argv){
 		},
 		[&]() {
 			CuRast::instance->render();
-			updateVisibilityCache(VKRenderer::view.view, VKRenderer::view.proj);
 		},
 		[&]() {CuRast::instance->postFrame();}
 	);

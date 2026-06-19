@@ -403,9 +403,6 @@ void loadOctreeOnGPU(CuRast* editor, CUcontext* context,
 	// 	if(!octreeReadyToBeSent.try_acquire()){return;}
 	// }
 	// // println("semaphore SENDING acquired");
-
-	if(elapsedFrames < SEND_DATA_EVERY_X_FRAMES){return;}
-	elapsedFrames = 0;
 	
 	std::shared_ptr<OctreeNode> octree_ref = nullptr;
 	if(CPU_PARALLELISED && !bypass_semaphore){

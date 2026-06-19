@@ -48,8 +48,8 @@ constexpr uint8_t MAX_BATCHES_PER_LOAD = 100;
 constexpr uint8_t MAX_BATCHES_PER_GPU_LOAD = 50;
 // constexpr uint8_t MAX_BATCHES_PER_GPU_LOAD = 200;
 
-// constexpr uint32_t SEND_DATA_EVERY_X_FRAMES = 200;
-constexpr uint32_t SEND_DATA_EVERY_X_FRAMES = 1;
+constexpr uint32_t SEND_DATA_EVERY_X_FRAMES = 200;
+// constexpr uint32_t SEND_DATA_EVERY_X_FRAMES = 1;
 extern uint32_t elapsedFrames;
 
 extern uint64_t NB_POINTS;
@@ -74,8 +74,8 @@ constexpr NodePosition FIRST_NODE_POSITION = FrontTopLeft;
 /// The temporary files directory to store nodes in disk
 const std::string TEMPORARY_DIRECTORY = format("{}/build/tmp", PROJECT_SOURCE_DIR);
 
-// constexpr bool CPU_PARALLELISED = true;
-constexpr bool CPU_PARALLELISED = false;
+constexpr bool CPU_PARALLELISED = true;
+// constexpr bool CPU_PARALLELISED = false;
 
 /// The maximum size for the batches vectors
 extern uint32_t BATCHES_QUEUE_SIZE;
