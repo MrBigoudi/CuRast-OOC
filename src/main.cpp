@@ -603,9 +603,10 @@ int main(int argc, char** argv){
 				loadOctreeOnGPU(CuRast::instance, &context);
 			// }
 
+			// // TODO: remove this one, here just to have smaller nodes to check
+			// updateVisibilityCache(VKRenderer::view.view, VKRenderer::view.proj);
+			
 			freeOctreesOnGPU(CuRast::instance);
-
-			updateVisibilityCache(VKRenderer::view.view, VKRenderer::view.proj);
 
 			elapsedFrames++;
 
@@ -630,6 +631,7 @@ int main(int argc, char** argv){
 		},
 		[&]() {
 			CuRast::instance->render();
+			updateVisibilityCache(VKRenderer::view.view, VKRenderer::view.proj);
 		},
 		[&]() {CuRast::instance->postFrame();}
 	);

@@ -48,7 +48,8 @@ constexpr uint8_t MAX_BATCHES_PER_LOAD = 100;
 constexpr uint8_t MAX_BATCHES_PER_GPU_LOAD = 50;
 // constexpr uint8_t MAX_BATCHES_PER_GPU_LOAD = 200;
 
-constexpr uint32_t SEND_DATA_EVERY_X_FRAMES = 200;
+// constexpr uint32_t SEND_DATA_EVERY_X_FRAMES = 200;
+constexpr uint32_t SEND_DATA_EVERY_X_FRAMES = 1;
 extern uint32_t elapsedFrames;
 
 extern uint64_t NB_POINTS;
@@ -103,6 +104,7 @@ struct AABB {
 	vec3 maxs = {-INFINITY, -INFINITY, -INFINITY};
 
 	bool contains(const vec3& position) const;
+	bool isParentOf(const AABB& aabb) const;
 	vec3 getCentroid() const;
 	vec3 getSize() const;
 	void extend(const NodePosition& position);
@@ -426,10 +428,15 @@ void displayBuffers();
 ///////////////////////////////////////////////////////////////////////////////
 
 /// The size of the LRU cache
-// constexpr uint32_t LRU_CACHE_SIZE = 16;
-// constexpr uint32_t LRU_CACHE_SIZE = 128;
-constexpr uint32_t LRU_CACHE_SIZE = 1024;
-// constexpr uint32_t LRU_CACHE_SIZE = 4096;
+// constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 16;
+// constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 128;
+constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 1024;
+// constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 4096;
+
+constexpr uint32_t LRU_VISIBILITY_CACHE_SIZE = 16;
+// constexpr uint32_t LRU_VISIBILITY_CACHE_SIZE = 128;
+// constexpr uint32_t LRU_VISIBILITY_CACHE_SIZE = 1024;
+// constexpr uint32_t LRU_VISIBILITY_CACHE_SIZE = 4096;
 
 typedef std::pair<uint64_t, AABB> CacheEntry;
 
@@ -438,14 +445,17 @@ struct LRUCache {
 	static std::mutex stored_set_mtx;
 	static std::unordered_set<AABB, AABB::Hash> stored_set;
 
-
+	const uint32_t CACHE_SIZE;
 	uint64_t counter = 0;
-	std::array<std::optional<CacheEntry>, LRU_CACHE_SIZE> cache = {nullopt};
+	std::vector<std::optional<CacheEntry>> cache = {};
 	std::unordered_map<AABB, uint32_t, AABB::Hash> cache_map = {};
 	std::string name = "";
 	std::mutex mtx = {};
 
-	LRUCache(const std::string& name): name(name){}
+	LRUCache(const std::string& name, uint32_t cache_size)
+		: name(name), CACHE_SIZE(cache_size){
+		cache = std::vector<std::optional<CacheEntry>>(cache_size, nullopt);
+	}
 
 
 	/// Add a node to the cache and return the id of a node if it has been removed from the cache
@@ -464,6 +474,10 @@ struct LRUCache {
 	static void mark(const AABB& aabb);
 	/// Unmark a node as stored
 	static void unmark(const AABB& aabb);
+	/// Check if a node is in one of the global caches
+	static bool isInACache(const AABB& aabb, bool sync = false);
+	/// Check if a node is in all of the global caches
+	static bool isInAllCaches(const AABB& aabb, bool sync = false);
 };
 
 extern LRUCache updatesCache;

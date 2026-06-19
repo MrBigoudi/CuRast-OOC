@@ -66,7 +66,6 @@ void Frustum::display() const {
 /// Get a list of all visible nodes that are either loaded or in cache
 std::unordered_set<AABB, AABB::Hash> getVisibleNodes(const Frustum& frustum){
     std::unordered_set<AABB, AABB::Hash> res = {};
-    res.reserve(LRU_CACHE_SIZE);
 
     {
         std::lock_guard<std::mutex> lock_cache(updatesCache.mtx);
@@ -90,26 +89,181 @@ std::unordered_set<AABB, AABB::Hash> getVisibleNodes(const Frustum& frustum){
 }
 
 
+/// Order the visible nodes from furthest to closest
+/// All nodes in the list must appear only once
+/// All nodes in the list must have their parent in the list
+/// All nodes in the list must have their parent marked as closest
+std::vector<AABB> orderNodes(
+    const std::unordered_set<AABB, AABB::Hash>& visible_nodes,
+    const vec3& camera_pos
+){
+    uint32_t size = visible_nodes.size();
+    std::vector<AABB> sorted = std::vector<AABB>(visible_nodes.begin(), visible_nodes.end());
+
+    // Sort the visible nodes by furthest to camera position
+    auto comparison_dist = [&](const AABB& a, const AABB& b) -> bool {
+        float dist_a = glm::length(a.getCentroid() - camera_pos);
+        float dist_b = glm::length(b.getCentroid() - camera_pos);
+        return dist_a > dist_b;
+    };
+    std::sort(sorted.begin(), sorted.end(), comparison_dist);
+
+
+    std::unordered_set<AABB, AABB::Hash> already_added = {};
+    std::vector<AABB> res = sorted;
+
+    // TODO: can we do better than O(n2) ?
+    for(uint32_t i=0; i<size; i++){
+        if(already_added.contains(res[i])){continue;}
+        uint32_t last_child_index = 0;
+
+        do {
+            last_child_index = i;
+            AABB current_node = res[i];
+
+
+            // Try to find a child marked as closer
+            for(uint32_t j=i+1; j<size; j++){
+                // If is a child of current node
+                if(current_node.isParentOf(res[j])){
+                    last_child_index = j;
+                }
+            }
+
+            // Update the array by swapping elements up to the child found
+            for(uint32_t j=i; j<last_child_index; j++){
+                res[j] = res[j+1];
+            }
+            res[last_child_index] = current_node;
+            already_added.insert(current_node);
+
+        } while(last_child_index != i);
+    }
+
+    return res;
+}
+
+
+
+/// Fill the visibility cache with the ordered nodes
+void fillVisibilityCache(const std::vector<AABB>& nodes){
+    std::unordered_set<AABB, AABB::Hash> removed_set = {};
+
+    uint32_t first_index = uint32_t(max(int32_t(nodes.size()) - int32_t(LRU_VISIBILITY_CACHE_SIZE), 0));
+    uint32_t last_index = min(first_index + LRU_VISIBILITY_CACHE_SIZE, uint32_t(nodes.size()));
+
+    for(uint32_t i = first_index; i<last_index; i++){
+        std::optional<AABB> removed = visibilityCache.add(nodes[i], true);
+        if(removed.has_value()){
+            removed_set.insert(removed.value());
+        }
+    }
+
+    // TODO: store all removed nodes that are not in any of the other caches
+}
+
+
 void updateVisibilityCache(const mat4& view, const mat4& proj){
+    // TODO: just for debugging
+    static bool was_freezed = false;
+    bool just_freezed = false;
+    if(!was_freezed && CuRastSettings::freezeVisibleNodes){
+        was_freezed = true;
+        just_freezed = true;
+    }
+    if(was_freezed && !CuRastSettings::freezeVisibleNodes){
+        was_freezed = false;
+    }
+
+
     Frustum frustum = Frustum(proj * view);
     // frustum.display();
 
     std::unordered_set<AABB, AABB::Hash> visible_nodes = getVisibleNodes(frustum);
-    
-    // Flag the visible nodes
-    std::function<void(OctreeNode*)> recursion = [&](OctreeNode* cur_node){
-        if(!CuRastSettings::freezeVisibleNodes){
-            cur_node->is_visible = visible_nodes.contains(*cur_node->aabb);
-        }
 
-        for(uint32_t child=0; child<8; child++){
-            if(cur_node->children[child]){
-                recursion(cur_node->children[child]);
+    // // TODO: just for debugging
+    // println("visible nodes:");
+    // for(const AABB& aabb : visible_nodes){
+    //     println("    .mins = ({}, {}, {}), .maxs = ({}, {}, {})",
+    //         aabb.mins.x, aabb.mins.y, aabb.mins.z,
+    //         aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
+    //     );
+    // }
+    // println();
+
+    // {
+    //     // TODO: to remove
+    //     std::unordered_set<AABB, AABB::Hash> invisible_nodes = {};
+    //     invisible_nodes.reserve(LRU_CACHE_SIZE);
+    //     {
+    //         std::lock_guard<std::mutex> lock_cache(updatesCache.mtx);
+    //         for(const auto& [aabb, _id] : updatesCache.cache_map){
+    //             if(!frustum.doesIntersect(aabb)){
+    //                 invisible_nodes.insert(aabb);
+    //             }
+    //         }
+    //     }
+    //     {
+    //         std::lock_guard<std::mutex> lock_cache(LRUCache::stored_set_mtx);
+    //         for(const AABB& aabb : LRUCache::stored_set){
+    //             if(!frustum.doesIntersect(aabb)){
+    //                 invisible_nodes.insert(aabb);
+    //             }
+    //         }
+    //     }
+    //     println("not visible nodes:");
+    //     for(const AABB& aabb : invisible_nodes){
+    //         println("    .mins = ({}, {}, {}), .maxs = ({}, {}, {})",
+    //             aabb.mins.x, aabb.mins.y, aabb.mins.z,
+    //             aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
+    //         );
+    //     }
+    //     println();
+    // }
+
+
+    vec3 cameraPos = vec3(glm::inverse(view) * vec4(0.0f, 0.0f, 0.0f, 1.0f));
+    std::vector<AABB> ordered_nodes = orderNodes(visible_nodes, cameraPos);
+
+    // // TODO: just for debugging
+    // if(just_freezed){
+    //     println("ordered visible nodes:");
+    //     for(const AABB& aabb : ordered_nodes){
+    //         println("    .mins = ({}, {}, {}), .maxs = ({}, {}, {})",
+    //             aabb.mins.x, aabb.mins.y, aabb.mins.z,
+    //             aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
+    //         );
+    //     }
+    //     println();
+    // }
+
+
+    fillVisibilityCache(ordered_nodes);
+
+    // if(just_freezed){
+    //     updatesCache.display(true);
+    //     visibilityCache.display(true);
+    // }
+
+    // TODO: just for debugging
+    {
+        // Flag the visible nodes
+        std::function<void(OctreeNode*)> recursion = [&](OctreeNode* cur_node){
+            if(!CuRastSettings::freezeVisibleNodes){
+                cur_node->is_visible = visibilityCache.contains(*cur_node->aabb, true);
             }
-        }
-    };
 
-    if(mainOctree){
-        recursion(mainOctree.get());
+            for(uint32_t child=0; child<8; child++){
+                if(cur_node->children[child]){
+                    recursion(cur_node->children[child]);
+                }
+            }
+        };
+
+        if(mainOctree){
+            recursion(mainOctree.get());
+        }
     }
+
+    // exit(EXIT_FAILURE);
 }

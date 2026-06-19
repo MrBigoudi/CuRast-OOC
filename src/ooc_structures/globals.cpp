@@ -48,11 +48,25 @@ vec3 AABB::getPointWorldCoordinates(const vec3& normalized_position) const {
 
 
 bool AABB::contains(const vec3& position) const {
-    return position.x >= mins.x && position.x <= maxs.x
-        && position.y >= mins.y && position.y <= maxs.y
-        && position.z >= mins.z && position.z <= maxs.z
+    return position.x > mins.x && position.x < maxs.x
+        && position.y > mins.y && position.y < maxs.y
+        && position.z > mins.z && position.z < maxs.z
     ;
 }
+
+bool AABB::isParentOf(const AABB& aabb) const {
+    if(!contains(aabb.getCentroid())){
+        return false;
+    }
+
+    vec3 aabb_size = aabb.getSize();
+    vec3 size = getSize();
+    return aabb_size.x < size.x
+        || aabb_size.y < size.y
+        || aabb_size.z < size.z
+    ;
+}
+
 
 vec3 AABB::getCentroid() const {
     return 0.5f*(mins + maxs);
@@ -545,8 +559,8 @@ void displayBuffers(){
 ///////////////////////////////////////////////////////////////////////////////
 
 /// The LRU cache for the nodes
-LRUCache updatesCache = {"updates cache"};
-LRUCache visibilityCache = {"visibility cache"};
+LRUCache updatesCache = {"updates cache", LRU_UPDATES_CACHE_SIZE};
+LRUCache visibilityCache = {"visibility cache", LRU_VISIBILITY_CACHE_SIZE};
 std::mutex LRUCache::stored_set_mtx;
 std::unordered_set<AABB, AABB::Hash> LRUCache::stored_set = {};
 
@@ -557,7 +571,7 @@ std::optional<AABB> LRUCache::add(const AABB& aabb, bool sync){
     // Reset every counters if needed
     if(counter == UINT64_MAX){
         println("Cache counter reseting");
-        for(uint32_t cache_id = 0; cache_id < LRU_CACHE_SIZE; cache_id++){
+        for(uint32_t cache_id = 0; cache_id < CACHE_SIZE; cache_id++){
             if(cache[cache_id]){
                 CacheEntry& entry = cache[cache_id].value();
                 entry.first = 0;
@@ -575,7 +589,7 @@ std::optional<AABB> LRUCache::add(const AABB& aabb, bool sync){
     // Check if already in cache
     uint32_t new_id = 0;
     uint64_t min_counter = UINT64_MAX;
-    for(uint32_t cache_id = 0; cache_id < LRU_CACHE_SIZE; cache_id++){
+    for(uint32_t cache_id = 0; cache_id < CACHE_SIZE; cache_id++){
         if(cache[cache_id]){
             CacheEntry& entry = cache[cache_id].value();
 
@@ -620,9 +634,10 @@ bool LRUCache::contains(const AABB& aabb, bool sync ) {
 void LRUCache::display(bool sync) {
     auto lock_guard = sync ? std::unique_lock<std::mutex>(mtx) : std::unique_lock<std::mutex>();
 
-    println("///////////////////////////////////////////////////");
+    std::string pad = std::string(max(int32_t(name.size())-2, 0), '/');
+    println("////////////////////////////////////////////////{}", pad);
 	println("////////////////////// {} //////////////////////", name);
-	println("///////////////////////////////////////////////////\n");
+	println("////////////////////////////////////////////////{}\n", pad);
 	for(const std::optional<CacheEntry>& entry : cache){
         if(entry.has_value()){
             std::string output = format("mins = ({}, {}, {}), maxs = ({}, {}, {})",
@@ -638,9 +653,9 @@ void LRUCache::display(bool sync) {
             println("- [ null ]");
         }
     }
-    println("\n///////////////////////////////////////////////////");
-	println("///////////////////////////////////////////////////");
-	println("///////////////////////////////////////////////////\n");
+	println("\n////////////////////////////////////////////////{}", pad);
+    println("////////////////////////////////////////////////{}", pad);
+	println("////////////////////////////////////////////////{}\n", pad);
 }
 
 bool LRUCache::hasBeenStored(const AABB& aabb){
@@ -658,7 +673,18 @@ void LRUCache::unmark(const AABB& aabb){
     stored_set.erase(aabb);
 }
 
-
+bool LRUCache::isInACache(const AABB& aabb, bool sync){
+    return updatesCache.contains(aabb, sync) 
+        || visibilityCache.contains(aabb, sync)
+        // TODO: add other caches if necessary
+    ;
+}
+bool LRUCache::isInAllCaches(const AABB& aabb, bool sync){
+    return updatesCache.contains(aabb, sync) 
+        && visibilityCache.contains(aabb, sync)
+        // TODO: add other caches if necessary
+    ;
+}
 
 
 
