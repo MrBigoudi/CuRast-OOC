@@ -33,11 +33,12 @@ struct ChunkSerializable {
 
 /// A serializable node
 struct OctreeNodeSerializable {
-	uint16_t counter = 0;
+	uint32_t counter = 0;
 	uint8_t children = 0b00000000;
 	uint8_t children_ids = 0b00000000;
 	std::string points = "";
 	std::string voxels = "";
+    AABB aabb = {};
 
     OctreeNodeSerializable(){};
 

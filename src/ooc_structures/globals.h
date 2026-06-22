@@ -62,7 +62,8 @@ extern std::mutex mainLoopIsTerminatingMtx;
 // constexpr uint64_t MAX_BATCH_SIZE = 1'000'000;
 
 /// The maximum number of points in a leaf node
-constexpr uint16_t MAX_POINTS_PER_LEAF = 50'000;
+constexpr uint32_t MAX_POINTS_PER_LEAF = 50'000;
+// constexpr uint32_t MAX_POINTS_PER_LEAF = 250'000;
 /// The number of points in a chunk
 constexpr uint32_t POINTS_PER_CHUNK = 1'024;
 /// The voxel grid size
@@ -74,8 +75,8 @@ constexpr NodePosition FIRST_NODE_POSITION = FrontTopLeft;
 /// The temporary files directory to store nodes in disk
 const std::string TEMPORARY_DIRECTORY = format("{}/build/tmp", PROJECT_SOURCE_DIR);
 
-// constexpr bool CPU_PARALLELISED = true;
-constexpr bool CPU_PARALLELISED = false;
+constexpr bool CPU_PARALLELISED = true;
+// constexpr bool CPU_PARALLELISED = false;
 
 /// The maximum size for the batches vectors
 extern uint32_t BATCHES_QUEUE_SIZE;
@@ -132,10 +133,11 @@ struct AABB {
 
 	struct Hash {
 		std::size_t operator()(const AABB& aabb) const {
+			vec3 tmp = {0,0,0};
 			mat3 matrix = {
 				aabb.mins,
 				aabb.maxs,
-				{0,0,0}
+				tmp
 			};
 			return std::hash<mat3>()(matrix);
 
@@ -269,7 +271,7 @@ struct OctreeNode {
 	OccupancyGrid* occupancy = nullptr;
 	AABB* aabb = nullptr;
 
-	uint16_t counter = 0;
+	uint32_t counter = 0;
 	uint8_t children_ids = 0b00000000;
 
 	bool from_split = false;
@@ -358,6 +360,8 @@ extern std::mutex isUpdatingMtx;
 extern uint64_t loadCounter;
 extern std::mutex loadCounterMtx;
 
+extern bool lodUpdated;
+
 /// The queue of batches
 extern std::deque<std::shared_ptr<PointBatch>> batchesQueue;
 extern std::deque<std::mutex> batchesQueueMutexes;
@@ -428,14 +432,15 @@ void displayBuffers();
 ///////////////////////////////////////////////////////////////////////////////
 
 /// The size of the LRU cache
-constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 16;
-// constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 128;
+// constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 16;
+constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 128;
 // constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 1024;
 // constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 4096;
 
 // constexpr uint32_t LRU_VISIBILITY_CACHE_SIZE = 16;
-constexpr uint32_t LRU_VISIBILITY_CACHE_SIZE = 128;
-// constexpr uint32_t LRU_VISIBILITY_CACHE_SIZE = 1024;
+// constexpr uint32_t LRU_VISIBILITY_CACHE_SIZE = 32;
+// constexpr uint32_t LRU_VISIBILITY_CACHE_SIZE = 128;
+constexpr uint32_t LRU_VISIBILITY_CACHE_SIZE = 1024;
 // constexpr uint32_t LRU_VISIBILITY_CACHE_SIZE = 4096;
 
 typedef std::pair<uint64_t, AABB> CacheEntry;
@@ -469,6 +474,7 @@ struct LRUCache {
 	void display(bool sync = false);
 	/// Returns the number of occupied cell in the cache
 	uint32_t getSize() const;
+	bool sanityCheck(const OctreeNode* root_node);
 
 	/// Check if a node has been stored
 	static bool hasBeenStored(const AABB& aabb);
@@ -480,15 +486,20 @@ struct LRUCache {
 	static bool isInACache(const AABB& aabb, bool sync = false);
 	/// Check if a node is in all of the global caches
 	static bool isInAllCaches(const AABB& aabb, bool sync = false);
-
-
-	bool sanityCheck(const AABB& root_aabb);
+	/// Display all stored nodes
+	static void displayStored();
+	static bool sanityCheckStored(const OctreeNode* root_node);
 };
 
 extern LRUCache updatesCache;
 extern LRUCache visibilityCache;
 
 
+extern std::mutex aabb_relationship_map_mtx;
+extern std::unordered_map<AABB, std::array<std::optional<AABB>, 8>, AABB::Hash> aabb_relationship_map;
+extern std::mutex aabb_parent_map_mtx;
+extern std::unordered_map<AABB, AABB, AABB::Hash> aabb_parent_map;
+extern std::unordered_map<AABB, std::mutex, AABB::Hash> aabb_mutex_map;
 
 
 ///////////////////////////////////////////////////////////////////////////////

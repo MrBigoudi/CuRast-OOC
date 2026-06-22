@@ -170,6 +170,7 @@ void OctreeNodeSerializable::init(const OctreeNode* node, bool node_only){
             OctreeNodeSerializable new_node = {};
             new_node.counter = cur_node->counter;
             new_node.children_ids = cur_node->children_ids;
+            new_node.aabb = AABB(*cur_node->aabb);
             
             if(!node_only){
                 for(uint32_t child_id = 0; child_id < 8; child_id++){
@@ -191,10 +192,19 @@ void OctreeNodeSerializable::init(const OctreeNode* node, bool node_only){
                 ChunkSerializable serializable = ChunkSerializable(cur_node->voxels);
                 serializable.serialize(new_node.voxels);
             }
-            // TODO: store occupancy grid
 
             new_node.serialize(getNodeFilePath(*cur_node->aabb));
             LRUCache::mark(*cur_node->aabb);
+
+            // // TODO: temporary node
+            // if(!LRUCache::sanityCheckStored(mainOctreeCpy)){
+            //     updatesCache.display(true);
+            //     println("\n\n");
+            //     LRUCache::displayStored();
+            //     println("\n\n");
+            //     println("Sanity check failed for the stored cache");
+            //     exit(EXIT_FAILURE);
+            // }
     };
 
     // root_node->display();
@@ -228,6 +238,9 @@ void OctreeNodeSerializable::serialize(const std::string& filepath) const {
     uint64_t voxels_size = voxels.size();
     file.write(reinterpret_cast<const char*>(&voxels_size), sizeof(voxels_size));
     file.write(voxels.data(), voxels_size);
+
+    // Write aabb
+    file.write(reinterpret_cast<const char*>(&aabb), sizeof(AABB));
 
     file.close();
 }
@@ -263,6 +276,9 @@ OctreeNodeSerializable OctreeNodeSerializable::deserialize(const std::string& fi
     file.read(reinterpret_cast<char*>(&voxels_size), sizeof(voxels_size));
     new_node.voxels.resize(voxels_size);
     file.read(new_node.voxels.data(), voxels_size);
+
+    // Read aabb
+    file.read(reinterpret_cast<char*>(&new_node.aabb), sizeof(AABB));
 
     return new_node;
 }
@@ -326,15 +342,21 @@ OctreeNode* OctreeNodeSerializable::toOctreeNodes(
 
         std::string filepath = getNodeFilePath(cur_aabb);
         OctreeNodeSerializable new_serializable_node = OctreeNodeSerializable::deserialize(filepath);
-        LRUCache::unmark(cur_aabb);
+        // LRUCache::unmark(cur_aabb);
         OctreeNode* new_node = new_serializable_node.toLeafNode(cur_aabb);
 
         if(!node_only){
             // new_node->display(id, level, true);
             for(uint32_t child_id = 0; child_id < 8; child_id++){
                 if(new_serializable_node.children & (0x01 << child_id)){
-                    cur_aabb.shrink((NodePosition)child_id);
-                    recursion(cur_aabb, child_id, level+1);
+                    // cur_aabb.shrink((NodePosition)child_id);
+                    
+                    // TODO: temporary code
+                    std::lock_guard<std::mutex> lock(aabb_relationship_map_mtx);
+                    const AABB& child_aabb = aabb_relationship_map[cur_aabb][child_id].value();
+
+                    recursion(child_aabb, child_id, level+1);
+                    // recursion(cur_aabb, child_id, level+1);
                     // Fill up children pointers
                     std::string child_filepath = getNodeFilePath(cur_aabb);
                     new_node->children[child_id] = map[child_filepath];
@@ -354,12 +376,14 @@ OctreeNode* OctreeNodeSerializable::toOctreeNodes(
 
 void storeOctree(const OctreeNode* node, bool node_only
 ){
+    std::lock_guard<std::mutex> lock(aabb_mutex_map[*node->aabb]);
     OctreeNodeSerializable::init(node, node_only);
     // println("Done storing octree");
 }
 
 OctreeNode* loadOctree(const AABB& root_aabb, bool node_only){
     // println("Start loading octree");
+    std::lock_guard<std::mutex> lock(aabb_mutex_map[root_aabb]);
     OctreeNode* res = OctreeNodeSerializable::toOctreeNodes(root_aabb, node_only);
     // println("Done loading octree");
     return res;
@@ -422,6 +446,7 @@ void updateUpdatesCache(OctreeNode* root_octree){
 	// println("//////////////////////////////////////////////////\n");
 	// root_octree->display();
 
+    // std::lock_guard<std::mutex> lock_test(updatesCache.mtx);
     recursionRemoveNodes(root_octree, 0, 0);
 
     // println("\n//////////////////////////////////////////////////");

@@ -131,7 +131,7 @@ void simLodCount(
 				{
 					// Sync read / write to counter
 					// uint16_t old_counter = leaf->counter.fetch_add(1u);
-					uint16_t old_counter = 0;
+					uint32_t old_counter = 0;
 					
 					{
 						std::lock_guard<std::mutex> lock_counter(mtx_counter);
@@ -209,6 +209,16 @@ void simLodSplit(
 				empty_child->from_split = true;
 				// empty_child->is_leaf = true;
 				spilling_node->children[j] = empty_child;
+
+				// TODO: temporary code
+				{
+					std::lock_guard<std::mutex> lock(aabb_relationship_map_mtx);
+					if(!aabb_relationship_map.contains(*spilling_node->aabb)){
+						aabb_relationship_map[*spilling_node->aabb] = {nullopt};
+					}
+					aabb_relationship_map[*spilling_node->aabb][j] = *empty_child->aabb;
+					aabb_parent_map[*empty_child->aabb] = *spilling_node->aabb;
+				}
 			}
 		}
 
@@ -437,8 +447,19 @@ void simLodLoad(
 			} else {
 				// Check if the child has been stored
 				bool has_been_stored = false;
-				AABB child_aabb = *leaf->aabb;
-				child_aabb.shrink((NodePosition)child_index);
+				// AABB child_aabb = *leaf->aabb;
+				// child_aabb.shrink((NodePosition)child_index);
+				AABB child_aabb = {};
+				// TODO: temporary code
+				{
+					std::lock_guard<std::mutex> lock(aabb_relationship_map_mtx);
+					if(aabb_relationship_map[*leaf->aabb][child_index].has_value()){
+						child_aabb = aabb_relationship_map[*leaf->aabb][child_index].value();
+					} else {
+						return;
+					}
+				}
+				
 				
 				{
 					std::lock_guard<std::mutex> lock_map(mtx_set);

@@ -55,16 +55,22 @@ bool AABB::contains(const vec3& position) const {
 }
 
 bool AABB::isParentOf(const AABB& aabb) const {
-    if(!contains(aabb.getCentroid())){
-        return false;
+    vec3 sizes = aabb.getSize() * 0.5f;
+    vec3 centroid = aabb.getCentroid();
+    vec3 positions[7] = {
+        centroid,
+        centroid - vec3(sizes.x, 0, 0),
+        centroid + vec3(sizes.x, 0, 0),
+        centroid - vec3(0, sizes.y, 0),
+        centroid + vec3(0, sizes.y, 0),
+        centroid - vec3(0, 0, sizes.y),
+        centroid + vec3(0, 0, sizes.z)
+    };
+    
+    for(const vec3& point : positions){
+        if(!contains(point)){return false;}
     }
-
-    vec3 aabb_size = aabb.getSize();
-    vec3 size = getSize();
-    return aabb_size.x < size.x
-        && aabb_size.y < size.y
-        && aabb_size.z < size.z
-    ;
+    return true;
 }
 
 
@@ -446,6 +452,8 @@ std::mutex isUpdatingMtx;
 uint64_t loadCounter = 0;
 std::mutex loadCounterMtx;
 
+bool lodUpdated = false;
+
 /// The queue of batches
 std::deque<std::shared_ptr<PointBatch>> batchesQueue(BATCHES_QUEUE_SIZE, nullptr);
 std::deque<std::mutex> batchesQueueMutexes(BATCHES_QUEUE_SIZE);
@@ -667,6 +675,29 @@ void LRUCache::display(bool sync) {
 	println("////////////////////////////////////////////////{}\n", pad);
 }
 
+void LRUCache::displayStored(){
+    std::lock_guard<std::mutex> lock(stored_set_mtx);
+
+    println("//////////////////////////////////////////////////////////");
+	println("////////////////////// Stored Nodes //////////////////////");
+	println("//////////////////////////////////////////////////////////\n");
+	for(const AABB& aabb : stored_set){
+        std::string output = format("mins = ({}, {}, {}), maxs = ({}, {}, {})",
+            aabb.mins.x, 
+            aabb.mins.y, 
+            aabb.mins.z, 
+            aabb.maxs.x, 
+            aabb.maxs.y, 
+            aabb.maxs.z
+        );
+        println("- {}", output);
+    }
+	println("\n//////////////////////////////////////////////////////////");
+	println("//////////////////////////////////////////////////////////");
+	println("//////////////////////////////////////////////////////////\n");
+}
+
+
 bool LRUCache::hasBeenStored(const AABB& aabb){
     std::lock_guard<std::mutex> lock(stored_set_mtx);
     return stored_set.contains(aabb);
@@ -696,39 +727,151 @@ bool LRUCache::isInAllCaches(const AABB& aabb, bool sync){
 }
 
 
-bool LRUCache::sanityCheck(const AABB& root_aabb) {
-    if(!contains(root_aabb, true)){
+bool LRUCache::sanityCheck(const OctreeNode* root_node) {
+    if(!contains(*root_node->aabb, true)){
         println("ERROR: cache should always contain the root node");
         return false;
     }
-    for(auto& [aabb, id] : cache_map){
-        // Check if all parents of aabb are in cache
-        AABB cur_aabb = AABB(aabb);
-        while(cur_aabb != root_aabb){
-            std::vector<uint32_t> parents_ids = {};
-            for(uint32_t parent_id = 0; parent_id<8; parent_id++){
-                AABB tmp = AABB(cur_aabb); tmp.extend((NodePosition)parent_id);
-                if(contains(tmp, true)){
-                    parents_ids.push_back(parent_id);
+
+    std::unordered_set<AABB, AABB::Hash> correct = {};
+    std::function<void(const AABB&)> recursion = [&](const AABB& cur_aabb){
+        if(contains(cur_aabb, true)){
+            correct.insert(cur_aabb);
+            for(uint32_t child_id = 0; child_id < 8; child_id++){
+                // TODO: temporary code
+                if(aabb_relationship_map[cur_aabb][child_id].has_value()){
+                    recursion(aabb_relationship_map[cur_aabb][child_id].value());
                 }
             }
-            if(parents_ids.size() != 1){
-                println("ERROR: wrong number of parents in cache; expected 1 got {}", parents_ids.size());
-                println("AABB: .mins = ({}, {}, {}), .maxs = ({}, {}, {})",
-                    cur_aabb.mins.x, cur_aabb.mins.y, cur_aabb.mins.z,
-                    cur_aabb.maxs.x, cur_aabb.maxs.y, cur_aabb.maxs.z
-                );
-                return false;
-            }
-            cur_aabb.extend((NodePosition)parents_ids[0]);
         }
-    }
+    };
+    recursion(*root_node->aabb);
+    // std::function<void(const OctreeNode*)> recursion = [&](const OctreeNode* cur_node){
+    //     if(!cur_node){return;}
+    //     if(contains(*cur_node->aabb, true)){
+    //         correct.insert(*cur_node->aabb);
+    //         for(uint32_t child_id = 0; child_id < 8; child_id++){
+    //             recursion(cur_node->children[child_id]);
+    //         }
+    //     }
+    // };
+    // recursion(root_node);
+
+    uint32_t expected = getSize();
+    uint32_t found = correct.size();
+    if(found != expected){
+        println("ERROR: invalid elements in cache, expected {} elements from the octree, found {}",
+            expected, found
+        );
+        std::unordered_set<AABB, AABB::Hash> incorrect = {};
+        for(auto& [aabb, id] : cache_map){
+            if(!correct.contains(aabb)){
+                incorrect.insert(aabb);
+            }
+        }
+        assert(incorrect.size() + found == expected);
+        println("Correct elements in cache:");
+        for(const AABB& aabb : correct){
+            println("    mins = ({}, {}, {}), maxs = ({}, {}, {})",
+                aabb.mins.x, aabb.mins.y, aabb.mins.z,
+                aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
+            );
+        }
+        println();
+        println("Incorrect elements in cache:");
+        for(const AABB& aabb : incorrect){
+            println("    mins = ({}, {}, {}), maxs = ({}, {}, {})",
+                aabb.mins.x, aabb.mins.y, aabb.mins.z,
+                aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
+            );
+        }
+        return false;
+    };
+
     return true;
 }
 
+bool LRUCache::sanityCheckStored(const OctreeNode* root_node) {
+    std::lock_guard<std::mutex> lock(stored_set_mtx);
 
+    std::unordered_set<AABB, AABB::Hash> roots = {};
+    std::function<void(const AABB&)> roots_recursion = [&](const AABB& cur_aabb){
+        if(!stored_set.contains(cur_aabb)){
+            for(uint32_t child_id = 0; child_id < 8; child_id++){
+                // TODO: temporary code
+                if(aabb_relationship_map[cur_aabb][child_id].has_value()){
+                    roots_recursion(aabb_relationship_map[cur_aabb][child_id].value());
+                }
+            }
+        } else {
+            roots.insert(cur_aabb);
+        }
+    };
+    roots_recursion(*root_node->aabb);
 
+    std::unordered_set<AABB, AABB::Hash> correct = {};
+    std::function<void(const AABB&)> recursion = [&](const AABB& cur_aabb){
+        if(stored_set.contains(cur_aabb)){
+            correct.insert(cur_aabb);
+            for(uint32_t child_id = 0; child_id < 8; child_id++){
+                AABB child_aabb = AABB(cur_aabb);
+                child_aabb.shrink((NodePosition)child_id);
+                recursion(child_aabb);
+            }
+        }
+    };
+    for(const AABB& root : roots){
+        recursion(root);
+    }
 
+    uint32_t expected = stored_set.size();
+    uint32_t found = correct.size();
+    if(found != expected){
+        println("ERROR: invalid elements in stored cache, expected {} elements from the octree, found {} correct elements",
+            expected, found
+        );
+
+        println("Roots found:");
+        for(const AABB& aabb : roots){
+            println("    mins = ({}, {}, {}), maxs = ({}, {}, {})",
+                aabb.mins.x, aabb.mins.y, aabb.mins.z,
+                aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
+            );
+        }
+
+        std::unordered_set<AABB, AABB::Hash> incorrect = {};
+        for(const AABB& aabb : stored_set){
+            if(!correct.contains(aabb)){
+                incorrect.insert(aabb);
+            }
+        }
+        assert(incorrect.size() + found == expected);
+        println("Correct elements in stored cache:");
+        for(const AABB& aabb : correct){
+            println("    mins = ({}, {}, {}), maxs = ({}, {}, {})",
+                aabb.mins.x, aabb.mins.y, aabb.mins.z,
+                aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
+            );
+        }
+        println();
+        println("Incorrect elements in stored cache:");
+        for(const AABB& aabb : incorrect){
+            println("    mins = ({}, {}, {}), maxs = ({}, {}, {})",
+                aabb.mins.x, aabb.mins.y, aabb.mins.z,
+                aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
+            );
+        }
+        return false;
+    };
+
+    return true;
+}
+
+std::unordered_map<AABB, std::array<std::optional<AABB>, 8>, AABB::Hash> aabb_relationship_map = {};
+std::mutex aabb_relationship_map_mtx;
+std::unordered_map<AABB, AABB, AABB::Hash> aabb_parent_map = {};
+std::mutex aabb_parent_map_mtx;
+std::unordered_map<AABB, std::mutex, AABB::Hash> aabb_mutex_map = {};
 
 
 

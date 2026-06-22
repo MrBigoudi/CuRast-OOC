@@ -49,6 +49,12 @@ void initOctree(OctreeNode* root_node, std::shared_ptr<vector<Point>>& points){
 			root_node->aabb->maxs.x += half_sizes_z.x;
 		}
 	}
+
+	// TODO: temporary code
+	{
+		std::lock_guard<std::mutex> lock(aabb_relationship_map_mtx);
+		aabb_relationship_map[*root_node->aabb] = {nullopt};
+	}
 }
 
 
@@ -135,6 +141,14 @@ OctreeNode* uptadeOctree(OctreeNode* main_root, uint32_t nb_new_levels){
 		new_parent->aabb->extend(node_position);
 		fillOccupancyGrid(*new_parent->aabb, cur_child->points);
 		fillOccupancyGrid(*new_parent->aabb, cur_child->voxels);
+
+		// TODO: temporary code
+		{
+			std::lock_guard<std::mutex> lock(aabb_relationship_map_mtx);
+			aabb_relationship_map[*new_parent->aabb] = {nullopt};
+			aabb_relationship_map[*new_parent->aabb][node_position] = *cur_child->aabb;
+			aabb_parent_map[*cur_child->aabb] = *new_parent->aabb;
+		}
 
 		cur_child = new_parent;
 		updateNodePosition(node_position);
@@ -591,6 +605,10 @@ void addPointBatches(){
 	timing->stop_clock();
 	// displayCache();
 
+	// if(!LRUCache::sanityCheckStored(*mainOctreeCpy->aabb)){
+    //     println("Sanity check failed for the stored cache");
+    // }
+
 	// println("//////////////////////////////////////////////////");
 	// println("/////////// Octree after cache update ///////////");
 	// println("//////////////////////////////////////////////////");
@@ -606,6 +624,7 @@ void addPointBatches(){
 	if(CPU_PARALLELISED){
 		std::lock_guard<std::mutex> lock_send(isUpdatingMtx);
 		mainOctree = std::make_shared<OctreeNode>(*mainOctreeCpy);
+		lodUpdated = true;
 	} else {
 		mainOctree = std::make_shared<OctreeNode>(*mainOctreeCpy);
 	}
