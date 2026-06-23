@@ -516,4 +516,8 @@ void simLodLoad(
 			}
 		});
 	}
+
+	// if(!tmp_set.empty()){
+	// 	println("nb loaded nodes = {}", tmp_set.size());
+	// }
 }

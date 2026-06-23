@@ -75,8 +75,8 @@ constexpr NodePosition FIRST_NODE_POSITION = FrontTopLeft;
 /// The temporary files directory to store nodes in disk
 const std::string TEMPORARY_DIRECTORY = format("{}/build/tmp", PROJECT_SOURCE_DIR);
 
-// constexpr bool CPU_PARALLELISED = true;
-constexpr bool CPU_PARALLELISED = false;
+constexpr bool CPU_PARALLELISED = true;
+// constexpr bool CPU_PARALLELISED = false;
 
 /// The maximum size for the batches vectors
 extern uint32_t BATCHES_QUEUE_SIZE;
@@ -285,6 +285,7 @@ struct OctreeNode {
 
 	uint32_t getNbPoints() const;
 	uint32_t getNbVoxels() const;
+	uint32_t getDepth() const;
 
 	void display(uint32_t id = 0, uint32_t level = 0, bool node_only = false) const;
 

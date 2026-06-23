@@ -568,30 +568,84 @@ int main(int argc, char** argv){
 
 			// TODO: to remove
 			{
-				static AABB* test_stored_aabb = nullptr;
+				static OctreeNode* random_node = nullptr; 
+				static uint32_t random_depth = 0;
+				static std::vector<NodePosition> random_path = {};
 
 				// Testing stuff
 				if(CuRastSettings::storeOctree){
+					println("Start getting random node");
+					random_node = mainOctree.get();
+					random_device rd;
+					mt19937 gen(rd());
+					uniform_int_distribution<> distrib(2, mainOctree->getDepth());
+					random_depth = distrib(gen);
+					random_path = {};
+
+					for(uint32_t i=1; i<random_depth; i++){
+						uniform_int_distribution<> child_distrib(0, 8);
+						uint32_t random_child = child_distrib(gen);
+						bool found = false;
+						for(uint32_t j=0; j<8; j++){
+							uint32_t cur_child = (random_child + j) % 8;
+							if(random_node->children[cur_child]){
+								random_path.push_back((NodePosition)cur_child);
+								random_node = random_node->children[cur_child];
+								found = true;
+								break;
+							}
+						}
+						if(!found){break;}
+					}
+					printf("Random path: ");
+					for(uint32_t i=0; i<random_path.size(); i++){
+						printf("%d, ", random_path[i]);
+					}
+					println();
+
 					// mainOctree->display();
 					println("Start storing octree");
-					storeOctree(mainOctree.get());
-					test_stored_aabb = mainOctree->aabb;
+					storeOctree(random_node, true);
 					println("Done storing octree");
 					CuRastSettings::storeOctree = false;
 				}
-				if(CuRastSettings::loadOctree){
+				if(CuRastSettings::loadOctree && random_node){
 					println("Start loading octree");
-					OctreeNode* octree = loadOctree(*test_stored_aabb);
-					println("Done loading octree");
+					OctreeNode* octree = loadOctree(*random_node->aabb, true);
 					CuRastSettings::loadOctree = false;
-					
-					if(*mainOctree == *octree){
+
+					mainOctree->display();
+
+					println("Loaded single node:");
+					octree->display(random_path.back(), random_path.size(), true);
+					println();
+
+					random_node = mainOctree.get();
+					for(uint32_t i=0; i<random_path.size()-1; i++){
+						random_node = random_node->children[random_path[i]];
+					}
+					println("Loaded subtree:");
+					for(uint32_t i=0; i<8; i++){
+						// octree->children[i] = random_node->children[random_path.back()]->children[i];
+						if(random_node->children[random_path.back()]->children[i]){
+							const AABB& aabb = *random_node->children[random_path.back()]->children[i]->aabb;
+							if(LRUCache::hasBeenStored(aabb)){
+								octree->children[i] = loadOctree(aabb);
+							} else {
+								octree->children[i] = random_node->children[random_path.back()]->children[i];
+							}
+							octree->children[i]->display(i, random_path.size()+1);
+						}
+					}
+					println("Done loading octree");
+
+					if(*random_node->children[random_path.back()] == *octree){
 						println("loaded == original, serialisation / deserialisation worked");
 					} else {
 						println("ERROR: loaded != original, serialisation / deserialisation failed");
 					}
+					random_node->children[random_path.back()] = octree;
 
-					mainOctree = std::shared_ptr<OctreeNode>(octree);
 
 					cuCtxSetCurrent(context);
 					loadOctreeOnGPU(CuRast::instance, &context, true);

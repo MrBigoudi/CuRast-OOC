@@ -304,7 +304,7 @@ void fillVisibilityCache(const std::vector<AABB>& nodes, OctreeNode* root_octree
                     child_aabb = aabb_relationship_map[*cur_node->aabb][child_id].value();
                 }
 
-                if(visibilityCache.contains(child_aabb, true)){
+                if(visibilityCache.contains(child_aabb, true) && LRUCache::hasBeenStored(child_aabb)){
                     cur_node->children[child_id] = loadOctree(child_aabb, true);
                     recursion(cur_node->children[child_id], child_id, level+1);
                 }

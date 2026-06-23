@@ -404,6 +404,8 @@ void updateUpdatesCache(OctreeNode* root_octree){
 
     recursionAddToCache(root_octree);
 
+    uint32_t cpt = 0;
+
     // Traverse octree and remove nodes that were just serialized
     std::function<bool(OctreeNode*, uint32_t, uint32_t)> 
         recursionRemoveNodes = 
@@ -422,6 +424,7 @@ void updateUpdatesCache(OctreeNode* root_octree){
         bool to_remove = false;
         if(!is_in_cache){
             storeOctree(cur_node, true);
+            cpt++;
             to_remove = !visibilityCache.contains(*cur_node->aabb, true);
         }
 
@@ -453,4 +456,9 @@ void updateUpdatesCache(OctreeNode* root_octree){
     // if(++cpt >= 2){
     //     exit(EXIT_FAILURE);
     // }
+
+    // if(cpt){
+    //     println("nb stored nodes = {}", cpt);
+    // }
+
 }

@@ -261,6 +261,24 @@ uint32_t OctreeNode::getNbVoxels() const {
     return res;
 }
 
+uint32_t OctreeNode::getDepth() const {
+    uint32_t max_level = 0;
+    
+    std::function<uint32_t(const OctreeNode*)> rec = [&](const OctreeNode* cur_node) -> uint32_t {
+        if(!cur_node){return 0;}
+        uint32_t max_children_depth = 0;
+        for(uint32_t i=0; i<8; i++){
+            uint32_t child_depth = rec(cur_node->children[i]);
+            if(child_depth > max_children_depth){
+                max_children_depth = child_depth;
+            }
+        }
+        return 1+max_children_depth;
+    };
+
+    return rec(this);
+}
+
 void OctreeNode::display(uint32_t id, uint32_t level, bool node_only) const {
     println("level: {}, id: {}, counter: {}, updated: {}, nbPoints: {}, nbVoxels: {}, points location: 0b{}{}{}{}{}{}{}{}, children: 0b{}{}{}{}{}{}{}{}",
         level, id, counter, updated, getNbPoints(), getNbVoxels(),
