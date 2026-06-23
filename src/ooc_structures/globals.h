@@ -75,8 +75,8 @@ constexpr NodePosition FIRST_NODE_POSITION = FrontTopLeft;
 /// The temporary files directory to store nodes in disk
 const std::string TEMPORARY_DIRECTORY = format("{}/build/tmp", PROJECT_SOURCE_DIR);
 
-constexpr bool CPU_PARALLELISED = true;
-// constexpr bool CPU_PARALLELISED = false;
+// constexpr bool CPU_PARALLELISED = true;
+constexpr bool CPU_PARALLELISED = false;
 
 /// The maximum size for the batches vectors
 extern uint32_t BATCHES_QUEUE_SIZE;
@@ -433,8 +433,8 @@ void displayBuffers();
 
 /// The size of the LRU cache
 // constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 16;
-constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 128;
-// constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 1024;
+// constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 128;
+constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 1024;
 // constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 4096;
 
 // constexpr uint32_t LRU_VISIBILITY_CACHE_SIZE = 16;

@@ -123,6 +123,7 @@ void drawPoints(Scene* scene, View view, RenderTarget& target){
 void drawOctreeAABB(Scene* scene, View view, RenderTarget& target, bool use_visibility_debug_color = false){
 	static CudaModularProgram* prog = new CudaModularProgram({"./src/kernels/octree.cu"});
 
+	std::lock_guard<std::mutex> lock_scene(updateSceneMutex);
 	scene->forEach<SNCOctree>([&](SNCOctree* octree){
 		// Sanity check
 		if(!octree){return;}
@@ -147,6 +148,7 @@ void drawOctree(Scene* scene, View view, RenderTarget& target,
 ){
 	static CudaModularProgram* prog = new CudaModularProgram({"./src/kernels/octree.cu"});
 
+	std::lock_guard<std::mutex> lock_scene(updateSceneMutex);
     scene->forEach<SNCOctree>([&](SNCOctree* octree){
 		// Sanity check
 		if(!octree){return;}
@@ -743,19 +745,23 @@ void CuRast::draw(Scene* scene, vector<View> views){
 			uint64_t nb_points_octree = 0;
 			uint64_t points_gpu_memory  = 0;
 
-			scene->forEach<SNCOctree>([&](SNCOctree* node){
-				octrees.push_back(node);
-				nb_octrees++;
-				nb_points_octree = node->nb_points;
-			});
-			scene->forEach<SNCPoints>([&](SNCPoints* node){
-				batches.push_back(node);
-				nb_batches++;
-				nb_points += node->numPoints;
-				points_gpu_memory += node->getGpuMemoryUsage();
-			});
-			if(nb_points == 0){
-				nb_points = nb_points_octree;
+			{
+				std::lock_guard<std::mutex> lock(updateSceneMutex);
+				scene->forEach<SNCOctree>([&](SNCOctree* node){
+					if(node->name != getSimLodOctreeName()){return;}
+					octrees.push_back(node);
+					nb_octrees++;
+					nb_points_octree = node->nb_points;
+				});
+				scene->forEach<SNCPoints>([&](SNCPoints* node){
+					batches.push_back(node);
+					nb_batches++;
+					nb_points += node->numPoints;
+					points_gpu_memory += node->getGpuMemoryUsage();
+				});
+				if(nb_points == 0){
+					nb_points = nb_points_octree;
+				}
 			}
 
 			auto formatMemSize = [&](uint64_t size_bytes) -> std::string {
