@@ -433,8 +433,8 @@ void displayBuffers();
 
 /// The size of the LRU cache
 // constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 16;
-// constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 128;
-constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 1024;
+constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 128;
+// constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 1024;
 // constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 4096;
 
 // constexpr uint32_t LRU_VISIBILITY_CACHE_SIZE = 16;

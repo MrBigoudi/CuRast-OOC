@@ -610,7 +610,7 @@ int main(int argc, char** argv){
 
 			if(should_update || elapsedFrames >= SEND_DATA_EVERY_X_FRAMES){
 				elapsedFrames = 0;
-				// updateVisibilityCache(VKRenderer::view.view, VKRenderer::view.proj);
+				updateVisibilityCache(VKRenderer::view.view, VKRenderer::view.proj);
 				loadOctreeOnGPU(CuRast::instance, &context);
 			}
 

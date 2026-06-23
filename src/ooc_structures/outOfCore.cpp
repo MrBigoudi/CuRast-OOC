@@ -170,7 +170,6 @@ void OctreeNodeSerializable::init(const OctreeNode* node, bool node_only){
             OctreeNodeSerializable new_node = {};
             new_node.counter = cur_node->counter;
             new_node.children_ids = cur_node->children_ids;
-            new_node.aabb = AABB(*cur_node->aabb);
             
             if(!node_only){
                 for(uint32_t child_id = 0; child_id < 8; child_id++){
@@ -239,9 +238,6 @@ void OctreeNodeSerializable::serialize(const std::string& filepath) const {
     file.write(reinterpret_cast<const char*>(&voxels_size), sizeof(voxels_size));
     file.write(voxels.data(), voxels_size);
 
-    // Write aabb
-    file.write(reinterpret_cast<const char*>(&aabb), sizeof(AABB));
-
     file.close();
 }
 
@@ -276,9 +272,6 @@ OctreeNodeSerializable OctreeNodeSerializable::deserialize(const std::string& fi
     file.read(reinterpret_cast<char*>(&voxels_size), sizeof(voxels_size));
     new_node.voxels.resize(voxels_size);
     file.read(new_node.voxels.data(), voxels_size);
-
-    // Read aabb
-    file.read(reinterpret_cast<char*>(&new_node.aabb), sizeof(AABB));
 
     return new_node;
 }
@@ -352,13 +345,16 @@ OctreeNode* OctreeNodeSerializable::toOctreeNodes(
                     // cur_aabb.shrink((NodePosition)child_id);
                     
                     // TODO: temporary code
-                    std::lock_guard<std::mutex> lock(aabb_relationship_map_mtx);
-                    const AABB& child_aabb = aabb_relationship_map[cur_aabb][child_id].value();
+                    AABB child_aabb = {};
+                    {
+                        std::lock_guard<std::mutex> lock(aabb_relationship_map_mtx);
+                        child_aabb = aabb_relationship_map[cur_aabb][child_id].value();
+                    }
 
                     recursion(child_aabb, child_id, level+1);
                     // recursion(cur_aabb, child_id, level+1);
                     // Fill up children pointers
-                    std::string child_filepath = getNodeFilePath(cur_aabb);
+                    std::string child_filepath = getNodeFilePath(child_aabb);
                     new_node->children[child_id] = map[child_filepath];
                 }
             }

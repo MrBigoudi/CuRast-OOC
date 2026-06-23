@@ -417,8 +417,8 @@ void simLodLoad(
     std::shared_ptr<vector<Point>>& spilled_points
 ){
 
-	mutex mtx_set;
 	// tmp_ser is here to avoid loading a node multiple time in the parallel context
+	mutex mtx_set;
 	std::unordered_set<AABB, AABB::Hash> tmp_set = {};
 
 
@@ -462,7 +462,7 @@ void simLodLoad(
 				
 				
 				{
-					std::lock_guard<std::mutex> lock_map(mtx_set);
+					std::lock_guard<std::mutex> lock(mtx_set);
 					has_been_stored = LRUCache::hasBeenStored(child_aabb) || tmp_set.contains(child_aabb);
 
 					// If the child has not been stored, we've reached the end of the loop
