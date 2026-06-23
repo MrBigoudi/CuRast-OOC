@@ -11,24 +11,17 @@ void simLodUpdate(OctreeNode* main_root, std::shared_ptr<vector<Point>>& points)
 	// println("//////////////////////////////////////////////////");
 	// main_root->display();
 
-	uint32_t inner_cpt = 0;
+	std::shared_ptr<Timing> timing = addTiming("simlod load", true, 1);
+	simLodLoad(main_root, points, spilledPoints);
+	timing->stop_clock();
+
+	// println("//////////////////////////////////////////////////");
+	// println("////////// Octree after simlod load //////////");
+	// println("//////////////////////////////////////////////////");
+	// main_root->display();
+
 	while(true){
-		std::shared_ptr<Timing> timing = addTiming("simlod load", true, 2);
-		simLodLoad(main_root, points, spilledPoints);
-		timing->stop_clock();
-
-		// println("//////////////////////////////////////////////////");
-		// println("////////// Octree after simlod load //////////");
-		// println("//////////////////////////////////////////////////");
-		// main_root->display();
-		// {
-		// 	static int cpt = 0;
-		// 	if(cpt++ >= 30){
-		// 		exit(EXIT_FAILURE);
-		// 	}
-		// }
-
-		timing = addTiming("simlod count", true, 2);
+		std::shared_ptr<Timing> timing = addTiming("simlod count", true, 2);
 		simLodCount(main_root, points, spilledPoints, spillingNodes);
 		timing->stop_clock();
 
@@ -49,8 +42,6 @@ void simLodUpdate(OctreeNode* main_root, std::shared_ptr<vector<Point>>& points)
 		// println("////////// Octree after simlod splitting /////////");
 		// println("//////////////////////////////////////////////////");
 		// main_root->display();
-		
-		inner_cpt++;
 	}
 	count_split_timing->stop_clock();
 
@@ -60,7 +51,7 @@ void simLodUpdate(OctreeNode* main_root, std::shared_ptr<vector<Point>>& points)
 	// main_root->display();
 
 
-	std::shared_ptr<Timing> timing = addTiming("simlod voxel sampling", true, 1);
+	timing = addTiming("simlod voxel sampling", true, 1);
 	simLodVoxelSampling(main_root, points, spilledPoints, backlogVoxels, backlogVoxelsNodes);
 	timing->stop_clock();
 
