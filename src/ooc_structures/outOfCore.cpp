@@ -80,11 +80,8 @@ void ChunkSerializable::serialize(const std::string& filepath) const {
     ofstream file(filepath, ios::binary | std::ios::trunc);
     if(!file.is_open()){
         println("Failed to open the file {} to serialize a chunk", filepath);
-        {
-            std::lock_guard<std::mutex> lock(mainLoopIsTerminatingMtx);
-            if(!MAIN_LOOP_IS_TERMINATING){
-                exit(EXIT_FAILURE);
-            }
+        if(!MAIN_LOOP_IS_TERMINATING){
+            exit(EXIT_FAILURE);
         }
     }
     size_t nb_chunks = points.size();
@@ -109,11 +106,8 @@ ChunkSerializable ChunkSerializable::deserialize(const std::string& filepath){
     ifstream file(filepath, ios::binary);
     if(!file.is_open()){
         println("Failed to open the file {} to deserialize a chunk", filepath);
-        {
-            std::lock_guard<std::mutex> lock(mainLoopIsTerminatingMtx);
-            if(!MAIN_LOOP_IS_TERMINATING){
-                exit(EXIT_FAILURE);
-            }
+        if(!MAIN_LOOP_IS_TERMINATING){
+            exit(EXIT_FAILURE);
         }
     }
 
@@ -166,6 +160,8 @@ Chunk* ChunkSerializable::toChunk() const{
 ///////////////////////////////////////////////////////////////////////////////
 
 void OctreeNodeSerializable::init(const OctreeNode* node, bool node_only){
+    std::lock_guard<std::mutex> lock(mainLoopIsTerminatingMtx);
+
     std::function<void (const OctreeNode*)> recursion = [&](const OctreeNode* cur_node){
         OctreeNodeSerializable new_node = {};
         new_node.counter = cur_node->counter;
@@ -216,11 +212,8 @@ void OctreeNodeSerializable::serialize(const std::string& filepath) const {
 
     if (!file.is_open()) {
         println("Failed to open the file {} to serialize an octree node", filepath);
-        {
-            std::lock_guard<std::mutex> lock(mainLoopIsTerminatingMtx);
-            if(!MAIN_LOOP_IS_TERMINATING){
-                exit(EXIT_FAILURE);
-            }
+        if(!MAIN_LOOP_IS_TERMINATING){
+            exit(EXIT_FAILURE);
         }
     }
 
@@ -251,17 +244,15 @@ void OctreeNodeSerializable::serialize(const std::string& filepath) const {
 }
 
 OctreeNodeSerializable OctreeNodeSerializable::deserialize(const std::string& filepath) {
+    std::lock_guard<std::mutex> lock(mainLoopIsTerminatingMtx);
     OctreeNodeSerializable new_node = {};
 
     std::ifstream file(filepath, std::ios::binary);
 
     if (!file.is_open()) {
         println("Failed to open the file {} to deserialize an octree node", filepath);
-        {
-            std::lock_guard<std::mutex> lock(mainLoopIsTerminatingMtx);
-            if(!MAIN_LOOP_IS_TERMINATING){
-                exit(EXIT_FAILURE);
-            }
+        if(!MAIN_LOOP_IS_TERMINATING){
+            exit(EXIT_FAILURE);
         }
     }
 
@@ -365,7 +356,7 @@ OctreeNode* OctreeNodeSerializable::toOctreeNodes(
 
         std::string filepath = getNodeFilePath(cur_aabb);
         OctreeNodeSerializable new_serializable_node = OctreeNodeSerializable::deserialize(filepath);
-        LRUCache::unmark(cur_aabb);
+        // LRUCache::unmark(cur_aabb);
         OctreeNode* new_node = new_serializable_node.toLeafNode(cur_aabb);
 
         if(!node_only){
@@ -419,6 +410,9 @@ OctreeNode* loadOctree(const AABB& root_aabb, bool node_only){
 
 /// Add nodes to cache after octree update
 void updateUpdatesCache(OctreeNode* root_octree){
+    std::lock_guard<std::mutex> lock(LRUCache::test_mtx);
+
+
     // Traverse octree and add newly updated aabbs to the cache
     std::function<void(const OctreeNode*)> recursionAddToCache = [&](const OctreeNode* cur_node){
         for(uint32_t child_id = 0; child_id < 8; child_id++){

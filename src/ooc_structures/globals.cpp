@@ -590,6 +590,8 @@ std::shared_ptr<LRUCache> visibilityCache = std::make_shared<LRUCache>("visibili
 std::mutex LRUCache::stored_set_mtx;
 std::unordered_set<AABB, AABB::Hash> LRUCache::stored_set = {};
 
+std::mutex LRUCache::test_mtx;
+
 std::optional<AABB> LRUCache::add(const AABB& aabb, bool sync){
     auto lock_guard = sync ? std::unique_lock<std::mutex>(mtx) : std::unique_lock<std::mutex>();
     bool already_in_cache = false;

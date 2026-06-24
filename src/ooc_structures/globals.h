@@ -443,7 +443,8 @@ constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 128;
 // constexpr uint32_t LRU_VISIBILITY_CACHE_SIZE = 16;
 // constexpr uint32_t LRU_VISIBILITY_CACHE_SIZE = 32;
 // constexpr uint32_t LRU_VISIBILITY_CACHE_SIZE = 128;
-constexpr uint32_t LRU_VISIBILITY_CACHE_SIZE = 1024;
+constexpr uint32_t LRU_VISIBILITY_CACHE_SIZE = 512;
+// constexpr uint32_t LRU_VISIBILITY_CACHE_SIZE = 1024;
 // constexpr uint32_t LRU_VISIBILITY_CACHE_SIZE = 4096;
 
 typedef std::pair<uint64_t, AABB> CacheEntry;
@@ -453,9 +454,9 @@ struct LRUCache {
 	static std::mutex stored_set_mtx;
 	static std::unordered_set<AABB, AABB::Hash> stored_set;
 
-	// const uint32_t CACHE_SIZE;
-	// TODO: to remove
-	uint32_t CACHE_SIZE = 0;
+	static std::mutex test_mtx;
+
+	const uint32_t CACHE_SIZE;
 	uint64_t counter = 0;
 	std::vector<std::optional<CacheEntry>> cache = {};
 	std::unordered_map<AABB, uint32_t, AABB::Hash> cache_map = {};

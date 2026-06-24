@@ -113,7 +113,7 @@ void simLodCount(
 				level++;
 			} else {
 				leaf->children_ids |= 0x01 << child_index;
-				
+
 				// Skip if the point was already accepted at this level
 				if(point.color[3] == level){return;}
 
@@ -473,17 +473,11 @@ void simLodLoad(
 				
 				{
 					std::lock_guard<std::mutex> lock(mtx_set);
-					has_been_stored = LRUCache::hasBeenStored(child_aabb) || tmp_set.contains(child_aabb);
-
-					// If the child has not been stored, we've reached the end of the loop
-					if(!has_been_stored){
-						println("The child should always exist");
-						exit(EXIT_FAILURE);
+					if(!tmp_set.contains(child_aabb)){
+						// Load the child and make it the current node
+						tmp_set.insert(child_aabb);
+						leaf->children[child_index] = loadOctree(child_aabb, true);
 					}
-
-					// Else, we load the child and make it the current node
-					tmp_set.insert(child_aabb);
-					leaf->children[child_index] = loadOctree(child_aabb, true);
 				}
 
 				leaf = leaf->children[child_index];

@@ -736,17 +736,7 @@ int main(int argc, char** argv){
 			// 	}
 			// }
 
-
-			bool should_update = false;
-			// {
-			// 	std::lock_guard<std::mutex> lock(isUpdatingMtx);
-			// 	if(lodUpdated){
-			// 		should_update = true;
-			// 		lodUpdated = false;
-			// 	}
-			// }
-
-			if(should_update || elapsedFrames >= SEND_DATA_EVERY_X_FRAMES){
+			if(elapsedFrames >= SEND_DATA_EVERY_X_FRAMES){
 				elapsedFrames = 0;
 				updateVisibilityCache(VKRenderer::view.view, VKRenderer::view.proj);
 				loadOctreeOnGPU(CuRast::instance, &context);

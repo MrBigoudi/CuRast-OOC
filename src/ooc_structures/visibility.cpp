@@ -336,6 +336,10 @@ void updateVisibilityCache(const mat4& view, const mat4& proj){
         was_freezed = false;
     }
 
+
+    std::lock_guard<std::mutex> lock(LRUCache::test_mtx);
+
+
     std::shared_ptr<OctreeNode> octree_ref = nullptr;
 	if(CPU_PARALLELISED){
 		std::lock_guard<std::mutex> lock_send(isUpdatingMtx);

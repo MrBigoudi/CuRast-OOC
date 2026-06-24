@@ -23,9 +23,9 @@ struct CuRastSettings{
 	// static inline int32_t maxBatchesPerUpdate = 10;
 	static inline int32_t maxBatchesPerUpdate = 1;
 	/// The maximum number of points in a batch
-	static inline int32_t maxBatchSize = 10'000;
+	// static inline int32_t maxBatchSize = 10'000;
 	// static inline int32_t maxBatchSize = 100'000;
-	// static inline int32_t maxBatchSize = 1'000'000;
+	static inline int32_t maxBatchSize = 1'000'000;
 
 	static inline bool enableEDL = true;
 	static inline bool enableFrustumCulling = true;
