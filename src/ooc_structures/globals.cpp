@@ -585,8 +585,8 @@ void displayBuffers(){
 ///////////////////////////////////////////////////////////////////////////////
 
 /// The LRU cache for the nodes
-LRUCache updatesCache = {"updates cache", LRU_UPDATES_CACHE_SIZE};
-LRUCache visibilityCache = {"visibility cache", LRU_VISIBILITY_CACHE_SIZE};
+std::shared_ptr<LRUCache> updatesCache = std::make_shared<LRUCache>("updates cache", LRU_UPDATES_CACHE_SIZE);
+std::shared_ptr<LRUCache> visibilityCache = std::make_shared<LRUCache>("visibility cache", LRU_VISIBILITY_CACHE_SIZE);
 std::mutex LRUCache::stored_set_mtx;
 std::unordered_set<AABB, AABB::Hash> LRUCache::stored_set = {};
 
@@ -685,7 +685,7 @@ void LRUCache::display(bool sync) {
             );
             println("- [ {} ]: {}", entry->first, output);
         } else {
-            println("- [ null ]");
+            // println("- [ null ]");
         }
     }
 	println("\n////////////////////////////////////////////////{}", pad);
@@ -723,23 +723,61 @@ bool LRUCache::hasBeenStored(const AABB& aabb){
 
 void LRUCache::mark(const AABB& aabb){
     std::lock_guard<std::mutex> lock(stored_set_mtx);
+
+    // // TODO: to remove
+    // {
+    //     std::string output = format("mins = ({}, {}, {}), maxs = ({}, {}, {})",
+    //         aabb.mins.x, 
+    //         aabb.mins.y, 
+    //         aabb.mins.z, 
+    //         aabb.maxs.x, 
+    //         aabb.maxs.y, 
+    //         aabb.maxs.z
+    //     );
+    //     if(stored_set.contains(aabb)){
+    //         println("AABB: {} was already stored", output);
+    //     } else {
+    //         println("AABB: {} has been stored", output);
+    //     }
+    // }
+
     stored_set.insert(aabb);
 }
 
 void LRUCache::unmark(const AABB& aabb){
     std::lock_guard<std::mutex> lock(stored_set_mtx);
+
+    // // TODO: to remove
+    // {
+    //     static std::unordered_set<AABB, AABB::Hash> tmp_loaded = {};
+    //     std::string output = format("mins = ({}, {}, {}), maxs = ({}, {}, {})",
+    //         aabb.mins.x, 
+    //         aabb.mins.y, 
+    //         aabb.mins.z, 
+    //         aabb.maxs.x, 
+    //         aabb.maxs.y, 
+    //         aabb.maxs.z
+    //     );
+    //     if(tmp_loaded.contains(aabb)){
+    //         println("AABB: {} was already loaded", output);
+    //     } else {
+    //         println("AABB: {} has been loaded", output);
+    //     }
+    //     tmp_loaded.insert(aabb);
+    // }
+
     stored_set.erase(aabb);
 }
 
 bool LRUCache::isInACache(const AABB& aabb, bool sync){
-    return updatesCache.contains(aabb, sync) 
-        || visibilityCache.contains(aabb, sync)
+    return updatesCache->contains(aabb, sync) 
+        || visibilityCache->contains(aabb, sync)
         // TODO: add other caches if necessary
     ;
 }
 bool LRUCache::isInAllCaches(const AABB& aabb, bool sync){
-    return updatesCache.contains(aabb, sync) 
-        && visibilityCache.contains(aabb, sync)
+    return updatesCache->contains(aabb, sync) 
+        && visibilityCache->contains(aabb, sync)
         // TODO: add other caches if necessary
     ;
 }

@@ -12,7 +12,7 @@ void simLodUpdate(OctreeNode* main_root, std::shared_ptr<vector<Point>>& points)
 	// main_root->display();
 
 	std::shared_ptr<Timing> timing = addTiming("simlod load", true, 1);
-	simLodLoad(main_root, points, spilledPoints);
+	simLodLoad(main_root, points);
 	timing->stop_clock();
 
 	// println("//////////////////////////////////////////////////");
@@ -101,7 +101,6 @@ void simLodCount(
 		while(true){
 			// Find next child
 			NodePosition child_index = leaf->aabb->getNextChildIndex(point.position);
-			leaf->children_ids |= 0x01 << child_index;
 
 			// If not leaf continue
 			if(leaf->children[child_index]){
@@ -113,6 +112,8 @@ void simLodCount(
 				}
 				level++;
 			} else {
+				leaf->children_ids |= 0x01 << child_index;
+				
 				// Skip if the point was already accepted at this level
 				if(point.color[3] == level){return;}
 
@@ -187,13 +188,15 @@ void simLodSplit(
 
 		// spilling_node->is_leaf = false;
 		spilling_node->counter = 0;
+		spilling_node->children_ids = 0;
 		if(!spilling_node->occupancy){
 			spilling_node->occupancy = new OccupancyGrid();
 		}
 
 		for(uint32_t j=0; j<8; j++){
 			// Create necessary empty children
-			if(!spilling_node->children[j] && (0x01 << j) & spilling_node_children){
+			bool can_be_spilled = (0x01 << j) & spilling_node_children;
+			if(!spilling_node->children[j] && can_be_spilled){
 				OctreeNode* empty_child = new OctreeNode();
 				empty_child->aabb = new AABB(*spilling_node->aabb);
 				empty_child->aabb->shrink((NodePosition)j);
@@ -204,10 +207,27 @@ void simLodSplit(
 				// TODO: temporary code
 				{
 					std::lock_guard<std::mutex> lock(aabb_relationship_map_mtx);
-					if(!aabb_relationship_map.contains(*spilling_node->aabb)){
-						aabb_relationship_map[*spilling_node->aabb] = {nullopt};
+
+					if(aabb_relationship_map[*spilling_node->aabb][j]){
+						std::string output = format("mins = ({}, {}, {}), maxs = ({}, {}, {})",
+							empty_child->aabb->mins.x, 
+							empty_child->aabb->mins.y, 
+							empty_child->aabb->mins.z, 
+							empty_child->aabb->maxs.x, 
+							empty_child->aabb->maxs.y, 
+							empty_child->aabb->maxs.z
+						);
+						println("Weird 1: AABB {}, should have been loaded in simlodload", output);
 					}
+					if(aabb_relationship_map.contains(*empty_child->aabb)){
+						println("Weird 2");
+					}
+					if(aabb_parent_map.contains(*empty_child->aabb)){
+						println("Weird 3");
+					}
+
 					aabb_relationship_map[*spilling_node->aabb][j] = *empty_child->aabb;
+					aabb_relationship_map[*empty_child->aabb] = {nullopt};
 					aabb_parent_map[*empty_child->aabb] = *spilling_node->aabb;
 				}
 			}
@@ -404,8 +424,7 @@ void simLodInsertion(
 
 void simLodLoad(
     OctreeNode* main_root,
-    std::shared_ptr<vector<Point>>& points,
-    std::shared_ptr<vector<Point>>& spilled_points
+    std::shared_ptr<vector<Point>>& points
 ){
 
 	// tmp_ser is here to avoid loading a node multiple time in the parallel context
@@ -457,7 +476,10 @@ void simLodLoad(
 					has_been_stored = LRUCache::hasBeenStored(child_aabb) || tmp_set.contains(child_aabb);
 
 					// If the child has not been stored, we've reached the end of the loop
-					if(!has_been_stored){return;}
+					if(!has_been_stored){
+						println("The child should always exist");
+						exit(EXIT_FAILURE);
+					}
 
 					// Else, we load the child and make it the current node
 					tmp_set.insert(child_aabb);
@@ -485,25 +507,16 @@ void simLodLoad(
 		for(Point& point : *points){
 			tryInsertPoint(point, main_root);
 		}
-		for(Point& point : *spilled_points){
-			tryInsertPoint(point, main_root);		
-		}
 	} else {
 		vector<uint32_t> first_indices = {};
 		uint32_t step_size = 100'000u;
 		uint32_t nb_points = points->size();
-		uint32_t nb_spilled_points = spilled_points->size();
-		uint32_t max_nb_points = max(nb_points, nb_spilled_points);
-		for(uint32_t i=0; i<max_nb_points; i+=step_size){first_indices.push_back(i);}
+		for(uint32_t i=0; i<nb_points; i+=step_size){first_indices.push_back(i);}
 
 		std::for_each(std::execution::par, first_indices.begin(), first_indices.end(), [&](uint32_t index){
 			for(uint32_t i=0; i<step_size; i++){
 				if((index + i) >= nb_points){break;}
 				tryInsertPoint((*points)[index + i], main_root);
-			}
-			for(uint32_t i=0; i<step_size; i++){
-				if((index + i) >= nb_spilled_points){break;}
-				tryInsertPoint((*spilled_points)[index + i], main_root);
 			}
 		});
 	}

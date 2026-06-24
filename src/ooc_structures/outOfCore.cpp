@@ -77,7 +77,7 @@ ChunkSerializable::ChunkSerializable(const Chunk* root_chunk){
 
 void ChunkSerializable::serialize(const std::string& filepath) const {
     // https://www.geeksforgeeks.org/cpp/serialize-and-deserialize-an-object-in-cpp/
-    ofstream file(filepath, ios::binary);
+    ofstream file(filepath, ios::binary | std::ios::trunc);
     if(!file.is_open()){
         println("Failed to open the file {} to serialize a chunk", filepath);
         {
@@ -167,43 +167,44 @@ Chunk* ChunkSerializable::toChunk() const{
 
 void OctreeNodeSerializable::init(const OctreeNode* node, bool node_only){
     std::function<void (const OctreeNode*)> recursion = [&](const OctreeNode* cur_node){
-            OctreeNodeSerializable new_node = {};
-            new_node.counter = cur_node->counter;
-            new_node.children_ids = cur_node->children_ids;
-            
-            if(!node_only){
-                for(uint32_t child_id = 0; child_id < 8; child_id++){
-                    if(cur_node->children[child_id]){
-                        new_node.children |= (0x01 << child_id);
-                        std::string new_filepath = getNodeFilePath(*cur_node->children[child_id]->aabb);
-                        recursion(cur_node->children[child_id]);
-                    }
+        OctreeNodeSerializable new_node = {};
+        new_node.counter = cur_node->counter;
+        new_node.children_ids = cur_node->children_ids;
+        new_node.aabb = *cur_node->aabb;
+        
+        if(!node_only){
+            for(uint32_t child_id = 0; child_id < 8; child_id++){
+                if(cur_node->children[child_id]){
+                    new_node.children |= (0x01 << child_id);
+                    std::string new_filepath = getNodeFilePath(*cur_node->children[child_id]->aabb);
+                    recursion(cur_node->children[child_id]);
                 }
             }
+        }
 
-            if(cur_node->points){
-                new_node.points = getChunkFilePath(*cur_node->aabb, false);
-                ChunkSerializable serializable = ChunkSerializable(cur_node->points);
-                serializable.serialize(new_node.points);
-            }
-            if(cur_node->voxels){
-                new_node.voxels = getChunkFilePath(*cur_node->aabb, true);
-                ChunkSerializable serializable = ChunkSerializable(cur_node->voxels);
-                serializable.serialize(new_node.voxels);
-            }
+        if(cur_node->points){
+            new_node.points = getChunkFilePath(*cur_node->aabb, false);
+            ChunkSerializable serializable = ChunkSerializable(cur_node->points);
+            serializable.serialize(new_node.points);
+        }
+        if(cur_node->voxels){
+            new_node.voxels = getChunkFilePath(*cur_node->aabb, true);
+            ChunkSerializable serializable = ChunkSerializable(cur_node->voxels);
+            serializable.serialize(new_node.voxels);
+        }
 
-            new_node.serialize(getNodeFilePath(*cur_node->aabb));
-            LRUCache::mark(*cur_node->aabb);
+        new_node.serialize(getNodeFilePath(*cur_node->aabb));
+        LRUCache::mark(*cur_node->aabb);
 
-            // // TODO: temporary node
-            // if(!LRUCache::sanityCheckStored(mainOctreeCpy)){
-            //     updatesCache.display(true);
-            //     println("\n\n");
-            //     LRUCache::displayStored();
-            //     println("\n\n");
-            //     println("Sanity check failed for the stored cache");
-            //     exit(EXIT_FAILURE);
-            // }
+        // // TODO: temporary node
+        // if(!LRUCache::sanityCheckStored(mainOctreeCpy)){
+        //     updatesCache.display(true);
+        //     println("\n\n");
+        //     LRUCache::displayStored();
+        //     println("\n\n");
+        //     println("Sanity check failed for the stored cache");
+        //     exit(EXIT_FAILURE);
+        // }
     };
 
     // root_node->display();
@@ -211,7 +212,7 @@ void OctreeNodeSerializable::init(const OctreeNode* node, bool node_only){
 }
 
 void OctreeNodeSerializable::serialize(const std::string& filepath) const {
-    std::ofstream file(filepath, std::ios::binary);
+    std::ofstream file(filepath, std::ios::binary | std::ios::trunc);
 
     if (!file.is_open()) {
         println("Failed to open the file {} to serialize an octree node", filepath);
@@ -237,6 +238,14 @@ void OctreeNodeSerializable::serialize(const std::string& filepath) const {
     uint64_t voxels_size = voxels.size();
     file.write(reinterpret_cast<const char*>(&voxels_size), sizeof(voxels_size));
     file.write(voxels.data(), voxels_size);
+
+    // Write aabb
+    file.write(reinterpret_cast<const char*>(&aabb.mins.x), sizeof(float));
+    file.write(reinterpret_cast<const char*>(&aabb.mins.y), sizeof(float));
+    file.write(reinterpret_cast<const char*>(&aabb.mins.z), sizeof(float));
+    file.write(reinterpret_cast<const char*>(&aabb.maxs.x), sizeof(float));
+    file.write(reinterpret_cast<const char*>(&aabb.maxs.y), sizeof(float));
+    file.write(reinterpret_cast<const char*>(&aabb.maxs.z), sizeof(float));
 
     file.close();
 }
@@ -273,6 +282,14 @@ OctreeNodeSerializable OctreeNodeSerializable::deserialize(const std::string& fi
     new_node.voxels.resize(voxels_size);
     file.read(new_node.voxels.data(), voxels_size);
 
+    // Read aabb
+    file.read(reinterpret_cast<char*>(&new_node.aabb.mins.x), sizeof(float));
+    file.read(reinterpret_cast<char*>(&new_node.aabb.mins.y), sizeof(float));
+    file.read(reinterpret_cast<char*>(&new_node.aabb.mins.z), sizeof(float));
+    file.read(reinterpret_cast<char*>(&new_node.aabb.maxs.x), sizeof(float));
+    file.read(reinterpret_cast<char*>(&new_node.aabb.maxs.y), sizeof(float));
+    file.read(reinterpret_cast<char*>(&new_node.aabb.maxs.z), sizeof(float));
+
     return new_node;
 }
 
@@ -280,6 +297,19 @@ OctreeNode* OctreeNodeSerializable::toLeafNode(const AABB& node_aabb) const{
     OctreeNode* new_node = new OctreeNode();
     new_node->counter = counter;
     new_node->children_ids = children_ids;
+    // new_node->aabb = new AABB(node_aabb);
+    if(aabb != node_aabb){
+        println("Loading the wrong node:");
+        println("    expected: .mins = ({}, {}, {}), .maxs = ({}, {}, {})",
+            node_aabb.mins.x, node_aabb.mins.y, node_aabb.mins.z,
+            node_aabb.maxs.x, node_aabb.maxs.y, node_aabb.maxs.z
+        );
+        println("    got: .mins = ({}, {}, {}), .maxs = ({}, {}, {})",
+            aabb.mins.x, aabb.mins.y, aabb.mins.z,
+            aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
+        );
+        exit(EXIT_FAILURE);
+    }
     new_node->aabb = new AABB(node_aabb);
 
     if(points != ""){
@@ -335,28 +365,29 @@ OctreeNode* OctreeNodeSerializable::toOctreeNodes(
 
         std::string filepath = getNodeFilePath(cur_aabb);
         OctreeNodeSerializable new_serializable_node = OctreeNodeSerializable::deserialize(filepath);
-        // LRUCache::unmark(cur_aabb);
+        LRUCache::unmark(cur_aabb);
         OctreeNode* new_node = new_serializable_node.toLeafNode(cur_aabb);
 
         if(!node_only){
             // new_node->display(id, level, true);
             for(uint32_t child_id = 0; child_id < 8; child_id++){
-                if(new_serializable_node.children & (0x01 << child_id)){
+                // if(new_serializable_node.children & (0x01 << child_id)){
                     // cur_aabb.shrink((NodePosition)child_id);
                     
                     // TODO: temporary code
-                    AABB child_aabb = {};
+                    std::optional<AABB> child_aabb = nullopt;
                     {
                         std::lock_guard<std::mutex> lock(aabb_relationship_map_mtx);
-                        child_aabb = aabb_relationship_map[cur_aabb][child_id].value();
+                        child_aabb = aabb_relationship_map[cur_aabb][child_id];
                     }
-
-                    recursion(child_aabb, child_id, level+1);
-                    // recursion(cur_aabb, child_id, level+1);
-                    // Fill up children pointers
-                    std::string child_filepath = getNodeFilePath(child_aabb);
-                    new_node->children[child_id] = map[child_filepath];
-                }
+                    if(child_aabb.has_value()){
+                        recursion(child_aabb.value(), child_id, level+1);
+                        // recursion(cur_aabb, child_id, level+1);
+                        // Fill up children pointers
+                        std::string child_filepath = getNodeFilePath(child_aabb.value());
+                        new_node->children[child_id] = map[child_filepath];
+                    }
+                // }
             }
         }
 
@@ -397,14 +428,14 @@ void updateUpdatesCache(OctreeNode* root_octree){
         }
 
         if(cur_node->updated){
-            updatesCache.add(*cur_node->aabb, true);
+            updatesCache->add(*cur_node->aabb, true);
         }
 
     };
 
     recursionAddToCache(root_octree);
 
-    uint32_t cpt = 0;
+    uint32_t cpt_stored = 0;
 
     // Traverse octree and remove nodes that were just serialized
     std::function<bool(OctreeNode*, uint32_t, uint32_t)> 
@@ -420,12 +451,12 @@ void updateUpdatesCache(OctreeNode* root_octree){
             }
         }
 
-        bool is_in_cache = updatesCache.contains(*cur_node->aabb);
+        bool is_in_cache = updatesCache->contains(*cur_node->aabb);
         bool to_remove = false;
         if(!is_in_cache){
             storeOctree(cur_node, true);
-            cpt++;
-            to_remove = !visibilityCache.contains(*cur_node->aabb, true);
+            cpt_stored++;
+            to_remove = !visibilityCache->contains(*cur_node->aabb, true);
         }
 
         // bool is_in_cache = false;
@@ -448,17 +479,19 @@ void updateUpdatesCache(OctreeNode* root_octree){
     // std::lock_guard<std::mutex> lock_test(updatesCache.mtx);
     recursionRemoveNodes(root_octree, 0, 0);
 
+    // updatesCache->display(true);
+
     // println("\n//////////////////////////////////////////////////");
 	// println("/////////// Octree after cache update ////////////");
 	// println("//////////////////////////////////////////////////\n");
     // root_octree->display();
     // static int cpt = 0;
-    // if(++cpt >= 2){
+    // if(++cpt >= 40){
     //     exit(EXIT_FAILURE);
     // }
 
-    // if(cpt){
-    //     println("nb stored nodes = {}", cpt);
+    // if(cpt_stored){
+    //     println("nb stored nodes = {}", cpt_stored);
     // }
 
 }

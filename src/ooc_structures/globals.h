@@ -75,8 +75,8 @@ constexpr NodePosition FIRST_NODE_POSITION = FrontTopLeft;
 /// The temporary files directory to store nodes in disk
 const std::string TEMPORARY_DIRECTORY = format("{}/build/tmp", PROJECT_SOURCE_DIR);
 
-// constexpr bool CPU_PARALLELISED = true;
-constexpr bool CPU_PARALLELISED = false;
+constexpr bool CPU_PARALLELISED = true;
+// constexpr bool CPU_PARALLELISED = false;
 
 /// The maximum size for the batches vectors
 extern uint32_t BATCHES_QUEUE_SIZE;
@@ -434,7 +434,9 @@ void displayBuffers();
 
 /// The size of the LRU cache
 // constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 16;
+// constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 32;
 constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 128;
+// constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 256;
 // constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 1024;
 // constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 4096;
 
@@ -451,7 +453,9 @@ struct LRUCache {
 	static std::mutex stored_set_mtx;
 	static std::unordered_set<AABB, AABB::Hash> stored_set;
 
-	const uint32_t CACHE_SIZE;
+	// const uint32_t CACHE_SIZE;
+	// TODO: to remove
+	uint32_t CACHE_SIZE = 0;
 	uint64_t counter = 0;
 	std::vector<std::optional<CacheEntry>> cache = {};
 	std::unordered_map<AABB, uint32_t, AABB::Hash> cache_map = {};
@@ -462,6 +466,8 @@ struct LRUCache {
 		: name(name), CACHE_SIZE(cache_size){
 		cache = std::vector<std::optional<CacheEntry>>(cache_size, nullopt);
 	}
+
+	LRUCache(const LRUCache& cpy): LRUCache(cpy.name, cpy.CACHE_SIZE){}
 
 
 	/// Add a node to the cache and return the id of a node if it has been removed from the cache
@@ -492,8 +498,8 @@ struct LRUCache {
 	static bool sanityCheckStored(const OctreeNode* root_node);
 };
 
-extern LRUCache updatesCache;
-extern LRUCache visibilityCache;
+extern std::shared_ptr<LRUCache> updatesCache;
+extern std::shared_ptr<LRUCache> visibilityCache;
 
 
 extern std::mutex aabb_relationship_map_mtx;

@@ -91,7 +91,7 @@ OctreeNode* uptadeOctree(OctreeNode* main_root, uint32_t nb_new_levels){
 
 		// Create the correct child
 		new_parent->children[node_position] = cur_child;
-		new_parent->children_ids |= 0x01 << node_position;
+		// new_parent->children_ids |= 0x01 << node_position;
 
 		auto fillOccupancyGrid = [&](AABB& cur_aabb, const Chunk* child_chunk_list){
 			while(child_chunk_list){

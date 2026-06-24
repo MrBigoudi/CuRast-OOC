@@ -45,6 +45,5 @@ void simLodInsertion(
 /// SimLOD loading pass
 void simLodLoad(
     OctreeNode* main_root, 
-    std::shared_ptr<vector<Point>>& points,
-    std::shared_ptr<vector<Point>>& spilled_points
+    std::shared_ptr<vector<Point>>& points
 );

@@ -71,8 +71,8 @@ std::unordered_set<AABB, AABB::Hash> getVisibleNodes(const Frustum& frustum){
     std::unordered_set<AABB, AABB::Hash> res = {};
 
     {
-        std::lock_guard<std::mutex> lock_cache(updatesCache.mtx);
-        for(const auto& [aabb, _id] : updatesCache.cache_map){
+        std::lock_guard<std::mutex> lock_cache(updatesCache->mtx);
+        for(const auto& [aabb, _id] : updatesCache->cache_map){
             if(frustum.doesIntersect(aabb)){
                 res.insert(aabb);
             }
@@ -110,7 +110,7 @@ std::vector<AABB> orderNodes(
     }
 
     // println("before ordering: vis cache size = {}, updates cache size = {}, stored nodes = {}, nb_nodes = {}", 
-    //     visibilityCache.getSize(), updatesCache.getSize(), LRUCache::stored_set.size(), size
+    //     visibilityCache->getSize(), updatesCache->getSize(), LRUCache::stored_set.size(), size
     // );
 
     // // TODO: can we do better than O(n2) ?
@@ -204,7 +204,7 @@ std::vector<AABB> orderNodes(
     recursion(root);
 
     // println("after ordering: vis cache size = {}, updates cache size = {}, stored nodes = {}, nb_nodes = {}", 
-    //     visibilityCache.getSize(), updatesCache.getSize(), LRUCache::stored_set.size(), res.size()
+    //     visibilityCache->getSize(), updatesCache->getSize(), LRUCache::stored_set.size(), res.size()
     // );
 
     return res;
@@ -214,8 +214,8 @@ std::vector<AABB> orderNodes(
 
 /// Fill the visibility cache with the ordered nodes
 void fillVisibilityCache(const std::vector<AABB>& nodes, OctreeNode* root_octree){
-    // println("before add: vis cache size = {}, updates cache size = {}, stored nodes = {}, nb_nodes = {}", 
-    //     visibilityCache.getSize(), updatesCache.getSize(), LRUCache::stored_set.size(), nodes.size()
+    // println("before add: vis cache size = {}, updates cache size = {}, stored nodes = {}, nb visible nodes = {}, total nb nodes = {}", 
+    //     visibilityCache->getSize(), updatesCache->getSize(), LRUCache::stored_set.size(), nodes.size(), aabb_relationship_map.size()
     // );
     
     // uint32_t first_index = 0;
@@ -223,19 +223,19 @@ void fillVisibilityCache(const std::vector<AABB>& nodes, OctreeNode* root_octree
     uint32_t last_index = min(first_index + LRU_VISIBILITY_CACHE_SIZE, uint32_t(nodes.size()));
 
     for(uint32_t i = first_index; i<last_index; i++){
-        visibilityCache.add(nodes[i], true);
+        visibilityCache->add(nodes[i], true);
     }
 
-    // println("after add: vis cache size = {}, updates cache size = {}, stored nodes = {}, nb_nodes = {}", 
-    //     visibilityCache.getSize(), updatesCache.getSize(), LRUCache::stored_set.size(), nodes.size()
+    // println("after add: vis cache size = {}, updates cache size = {}, stored nodes = {}, nb visible nodes = {}, total nb nodes = {}", 
+    //     visibilityCache->getSize(), updatesCache->getSize(), LRUCache::stored_set.size(), nodes.size(), aabb_relationship_map.size()
     // );
 
     // println();
     // println();
-    // updatesCache.display(true);
+    // updatesCache->display(true);
     // println();
     // println();
-    // visibilityCache.display(true);
+    // visibilityCache->display(true);
     // println();
     // println();
 
@@ -263,11 +263,11 @@ void fillVisibilityCache(const std::vector<AABB>& nodes, OctreeNode* root_octree
 	// println("//////////////////////////////////////////////////////////");
 	// println("//////////////////////////////////////////////////////////\n");
 
-    // if(!updatesCache.sanityCheck(root_octree)){
+    // if(!updatesCache->sanityCheck(root_octree)){
     //     println("Sanity check failed for the updates cache");
     //     exit(EXIT_FAILURE);
     // }
-    // if(!visibilityCache.sanityCheck(root_octree)){
+    // if(!visibilityCache->sanityCheck(root_octree)){
     //     println("Sanity check failed for the visibility cache");
     //     exit(EXIT_FAILURE);
     // }
@@ -278,7 +278,7 @@ void fillVisibilityCache(const std::vector<AABB>& nodes, OctreeNode* root_octree
     // Also load all the nodes that need to be loaded
     std::function<bool(OctreeNode*, uint32_t, uint32_t)> recursion = [&](OctreeNode* cur_node, uint32_t id, uint32_t level) -> bool {
         const AABB& aabb = *cur_node->aabb;
-        bool in_vis_cache = visibilityCache.contains(aabb, true);
+        bool in_vis_cache = visibilityCache->contains(aabb, true);
 
         if(!CuRastSettings::freezeVisibleNodes){
             cur_node->is_visible = in_vis_cache;
@@ -304,22 +304,23 @@ void fillVisibilityCache(const std::vector<AABB>& nodes, OctreeNode* root_octree
                     child_aabb = aabb_relationship_map[*cur_node->aabb][child_id].value();
                 }
 
-                if(visibilityCache.contains(child_aabb, true) && LRUCache::hasBeenStored(child_aabb)){
+                if(visibilityCache->contains(child_aabb, true) && LRUCache::hasBeenStored(child_aabb)){
                     cur_node->children[child_id] = loadOctree(child_aabb, true);
                     recursion(cur_node->children[child_id], child_id, level+1);
                 }
             }
         }
 
-        return !in_vis_cache && !updatesCache.contains(aabb, true) ;
+        return !in_vis_cache && !updatesCache->contains(aabb, true) ;
     };
 
-    // std::lock_guard<std::mutex> lock_test(updatesCache.mtx);
+    // std::lock_guard<std::mutex> lock_test(updatesCache->mtx);
     recursion(root_octree, 0, 0);
 
-    // println("end: vis cache size = {}, updates cache size = {}, stored nodes = {}, nb_nodes = {}", 
-    //     visibilityCache.getSize(), updatesCache.getSize(), LRUCache::stored_set.size(), nodes.size()
+    // println("before add: vis cache size = {}, updates cache size = {}, stored nodes = {}, nb visible nodes = {}, total nb nodes = {}", 
+    //     visibilityCache->getSize(), updatesCache->getSize(), LRUCache::stored_set.size(), nodes.size(), aabb_relationship_map.size()
     // );
+    // println();
 }
 
 
@@ -345,6 +346,18 @@ void updateVisibilityCache(const mat4& view, const mat4& proj){
 	if(!octree_ref){return;}
 
 
+    // // TODO: to remove
+    // {
+    //     uint32_t cpt = 0;
+    //     for(auto& [aabb, _id] : updatesCache->cache_map){
+    //         if(LRUCache::hasBeenStored(aabb)){
+    //             cpt++;
+    //         }
+    //     }
+    //     println("{} nodes are both stored and in cache", cpt);
+    // }
+
+
     Frustum frustum = Frustum(proj * view);
     // frustum.display();
 
@@ -365,8 +378,8 @@ void updateVisibilityCache(const mat4& view, const mat4& proj){
     //     std::unordered_set<AABB, AABB::Hash> invisible_nodes = {};
     //     invisible_nodes.reserve(LRU_CACHE_SIZE);
     //     {
-    //         std::lock_guard<std::mutex> lock_cache(updatesCache.mtx);
-    //         for(const auto& [aabb, _id] : updatesCache.cache_map){
+    //         std::lock_guard<std::mutex> lock_cache(updatesCache->mtx);
+    //         for(const auto& [aabb, _id] : updatesCache->cache_map){
     //             if(!frustum.doesIntersect(aabb)){
     //                 invisible_nodes.insert(aabb);
     //             }
@@ -411,8 +424,8 @@ void updateVisibilityCache(const mat4& view, const mat4& proj){
     fillVisibilityCache(ordered_nodes, octree_ref.get());
 
     // if(just_freezed){
-    //     updatesCache.display(true);
-    //     visibilityCache.display(true);
+    //     updatesCache->display(true);
+    //     visibilityCache->display(true);
     // }
 
     // exit(EXIT_FAILURE);
