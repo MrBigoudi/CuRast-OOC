@@ -300,6 +300,7 @@ void createCudaMemory(CuRast* editor, CUcontext* context, std::shared_ptr<Octree
 		new_node.level = level;
 		new_node.is_large = cur_node->is_large;
 		new_node.is_visible = cur_node->is_visible;
+		new_node.children_visibility = cur_node->children_visibility;
 		new_node.is_cut = cur_node->is_cut;
 		// TODO: for debug purposes
 		new_node.cpu_debug_visibility = cur_node->is_visible;

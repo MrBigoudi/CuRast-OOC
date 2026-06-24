@@ -374,6 +374,61 @@ void drawVoxel(
     }
 }
 
+
+__device__
+vec3 getPointNormalizedCoordinates(const CAABB* aabb, const vec3& position) {
+    return vec3(
+        (position.x - aabb->mins.x) / (aabb->maxs.x - aabb->mins.x),
+        (position.y - aabb->mins.y) / (aabb->maxs.y - aabb->mins.y),
+        (position.z - aabb->mins.z) / (aabb->maxs.z - aabb->mins.z)
+    );
+}
+
+__device__
+uint32_t getNextChildIndex(const CAABB* aabb, const vec3& position) {
+    vec3 normalized_coordinates = getPointNormalizedCoordinates(aabb, position);
+    bool is_front = normalized_coordinates.z >= 0.5f;
+    bool is_top = normalized_coordinates.y >= 0.5f;
+    bool is_right = normalized_coordinates.x >= 0.5f;
+    if(is_right){
+        if(is_top){
+            if(is_front){
+                // return NodePosition::FrontTopRight;
+                return 1;
+            } else {
+                // return NodePosition::BackTopRight;
+                return 5;
+            }
+        } else {
+            if(is_front){
+                // return NodePosition::FrontBottomRight;
+                return 3;
+            } else {
+                // return NodePosition::BackBottomRight;
+                return 7;
+            }
+        }
+    } else {
+        if(is_top){
+            if(is_front){
+                // return NodePosition::FrontTopLeft;
+                return 0;
+            } else {
+                // return NodePosition::BackTopLeft;
+                return 4;
+            }
+        } else {
+            if(is_front){
+                // return NodePosition::FrontBottomLeft;
+                return 2;
+            } else {
+                // return NodePosition::BackBottomLeft;
+                return 6;
+            }
+        }
+    }
+}
+
 __device__
 void drawAllVoxels(
     COctreeNode* node,
@@ -382,7 +437,8 @@ void drawAllVoxels(
     mat4 world,
     uint32_t nb_points,
     uint32_t max_lod_level,
-    bool use_debug_color
+    bool use_debug_color,
+    uint8_t subtrees
 ){
     auto block = cg::this_thread_block();
     CChunk* cur_voxels = node->voxels;
@@ -392,7 +448,7 @@ void drawAllVoxels(
     color_factor = clamp(color_factor, 0.0f, 1.0f);
     uint32_t min_level_color = 0xffffff00; // cyan
     uint32_t max_level_color = 0xff00ffff; // yellow
-    uint32_t color = linearGradient(color_factor, min_level_color, max_level_color);
+    uint32_t color = linearGradient(color_factor, min_level_color, max_level_color);   
 
     while(cur_voxels){
         for(
@@ -401,10 +457,15 @@ void drawAllVoxels(
             i += block.num_threads()
         ){
             CPoint voxel = cur_voxels->points[i];
-            uint32_t voxel_color = use_debug_color ? color : voxel.color;
-            drawVoxel(voxel.position, voxel_color, target, world,
-                voxel_size, nb_points
-            );
+            
+            uint32_t index = getNextChildIndex(aabb, voxel.position);
+
+            if(subtrees & (0x01 << index)){
+                uint32_t voxel_color = use_debug_color ? color : voxel.color;
+                drawVoxel(voxel.position, voxel_color, target, world,
+                    voxel_size, nb_points
+                );
+            }
         }
         
         cur_voxels = cur_voxels->next;
@@ -469,8 +530,20 @@ void kernel_visibilityPass(
     COctreeNode* node = octree.nodes[node_index];
     CAABB* aabb = octree.aabbs[node_index];
 
-    bool intersects_frustum = true; // TODO: add frustum culling
-    node->is_visible = intersects_frustum;
+    // Already added on CPU side
+    // bool intersects_frustum = true; // TODO: add frustum culling
+    // node->is_visible = intersects_frustum;
+    if(!node->is_visible){return;}
+
+    // Draw voxels of not visible children
+    uint32_t max_bound = 8;
+    uint32_t nb_points = min(max_bound, octree.max_lod_level + 1 - node->level);
+    drawAllVoxels(
+        node, aabb, target, 
+        octree.world, nb_points,
+        octree.max_lod_level, octree.use_voxels_debug_color,
+        node->children_visibility ^ 0b11111111
+    );
     
     if(octree.debug_lod_to_render == -1){
         node->is_large = isLargerThanMinSpanning(octree.min_pixel_span, aabb, target, octree.world);
@@ -494,14 +567,16 @@ void kernel_drawOctreeLarge(
     COctreeNode* node = octree.nodes[node_index];
 
     if(octree.debug_lod_to_render == -1){
+        if(!node->is_visible){return;}
         if(!node->is_large){return;}
 
         bool has_points = node->points && node->points->size > 0;
         if(has_points && node->is_visible){
             drawAllPoints(node, target, octree.world);
         }
-        node->is_visible = false;
+        // node->is_visible = false;
 
+        // Update flags
         for(uint32_t i=0; i<8; i++){
             COctreeNode* child = node->children[i];
             if(!child){continue;}
@@ -527,12 +602,15 @@ void kernel_drawOctreeSmall(
     COctreeNode* node = octree.nodes[node_index];
     CAABB* aabb = octree.aabbs[node_index];
 
+    if(!node->is_visible){return;}
+
     if(octree.debug_lod_to_render != -1){
         if(node->level == octree.debug_lod_to_render){
             drawAllVoxels(
                 node, aabb, target, 
                 octree.world, octree.voxels_nb_points_per_axis,
-                octree.max_lod_level, octree.use_voxels_debug_color
+                octree.max_lod_level, octree.use_voxels_debug_color,
+                0b11111111
             );
             drawAllPoints(node, target, octree.world);
         }
@@ -544,11 +622,12 @@ void kernel_drawOctreeSmall(
             drawAllVoxels(
                 node, aabb, target, 
                 octree.world, octree.voxels_nb_points_per_axis,
-                octree.max_lod_level, octree.use_voxels_debug_color
+                octree.max_lod_level, octree.use_voxels_debug_color,
+                0b11111111
             );
         }
     }
 
-    node->is_visible = false;
+    // node->is_visible = false;
     node->is_large = false;
 }

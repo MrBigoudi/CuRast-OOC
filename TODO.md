@@ -1,25 +1,22 @@
 # TODO list
 
-## Next small steps
+## Next steps (in priority order)
 
-- Batch the memcpy on loadingtogpu
+- Implement frustum culling on GPU side (or just disable non-visible nodes)
+- Add a settings file to avoid recompiling everytime
 - Clean the code + improve comments
-- Implement frustum culling
-- Automatically get CPU / GPU capacities to set the constants
-
-## Next big steps
-
-- Replace list with fixed size array to prepare for GPU side
-- Add a way to flag not visible nodes from GPU side
+- Create uniform structure for better structuring in cuda code / gui
+- Measure timings and memory usage more precisely 
+- Batch the memcpy on loadingtogpu (ie separate memalloc from memcpy)
 
 ## Coding part
 
-- Add a settings file to avoid recompiling everytime
 - Add parameters to the UI (max nb batches, points per batches, etc...)
-- Create uniform structure for better structuring in cuda code / gui
+- Automatically fetch CPU / GPU capacities to set the constants
 - Add a way to (manually ?) select the node to store / load
 - Fix Vulkan segfault on quit
 - supress warnings
+- Replace list with fixed size array to prepare for GPU side
 
 ## Research part
 
@@ -27,7 +24,6 @@
 - Find which node to store (is LRU best strategy)
 - Find a way to compress stored nodes
 - Improve Color-filtering
-- Find a way to not use occupancy grid
 - Find a way to load closest batches first
 - Improve on linked-list approach ?
 

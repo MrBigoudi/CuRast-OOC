@@ -276,17 +276,21 @@ void fillVisibilityCache(const std::vector<AABB>& nodes, OctreeNode* root_octree
     // Remove all nodes that are not in any of the other caches
     // No need to store them as if they were not in the updates cache they were not updated since last load
     // Also load all the nodes that need to be loaded
-    std::function<bool(OctreeNode*, uint32_t, uint32_t)> recursion = [&](OctreeNode* cur_node, uint32_t id, uint32_t level) -> bool {
+    std::function<bool(OctreeNode*, uint32_t, uint32_t, bool*)> recursion = [&](OctreeNode* cur_node, uint32_t id, uint32_t level, bool* is_visible) -> bool {
         const AABB& aabb = *cur_node->aabb;
         bool in_vis_cache = visibilityCache->contains(aabb, true);
-
+        
         if(!CuRastSettings::freezeVisibleNodes){
+            *is_visible = in_vis_cache;
             cur_node->is_visible = in_vis_cache;
+            cur_node->children_visibility = 0b00000000;
         }
 
         for(uint32_t child_id = 0; child_id < 8; child_id++){
+            bool child_is_visible = false;
+
             if(cur_node->children[child_id]){
-                if(recursion(cur_node->children[child_id], child_id, level+1)){
+                if(recursion(cur_node->children[child_id], child_id, level+1, &child_is_visible)){
                     delete(cur_node->children[child_id]);
                     cur_node->children[child_id] = nullptr;
                 }
@@ -306,16 +310,24 @@ void fillVisibilityCache(const std::vector<AABB>& nodes, OctreeNode* root_octree
 
                 if(visibilityCache->contains(child_aabb, true) && LRUCache::hasBeenStored(child_aabb)){
                     cur_node->children[child_id] = loadOctree(child_aabb, true);
-                    recursion(cur_node->children[child_id], child_id, level+1);
+                    recursion(cur_node->children[child_id], child_id, level+1, &child_is_visible);
                 }
             }
+
+            cur_node->children_visibility |= (uint32_t(child_is_visible) << child_id);
+
         }
 
         return !in_vis_cache && !updatesCache->contains(aabb, true) ;
     };
 
     // std::lock_guard<std::mutex> lock_test(updatesCache->mtx);
-    recursion(root_octree, 0, 0);
+    bool root_visible = false;
+    recursion(root_octree, 0, 0, &root_visible);
+    if(!root_visible){
+        println("Root should alwasy be visible");
+        exit(EXIT_FAILURE);
+    }
 
     // println("before add: vis cache size = {}, updates cache size = {}, stored nodes = {}, nb visible nodes = {}, total nb nodes = {}", 
     //     visibilityCache->getSize(), updatesCache->getSize(), LRUCache::stored_set.size(), nodes.size(), aabb_relationship_map.size()

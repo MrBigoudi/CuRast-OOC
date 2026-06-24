@@ -273,6 +273,7 @@ struct OctreeNode {
 
 	uint32_t counter = 0;
 	uint8_t children_ids = 0b00000000;
+	uint8_t children_visibility = 0b00000000;
 
 	bool from_split = false;
 	bool from_bottom_up = false;

@@ -359,6 +359,8 @@ struct COccupancyGrid {
 struct COctreeNode {
 	uint16_t counter;
 	uint8_t children_ids;
+	uint8_t children_visibility = 0b00000000;
+	
 	uint8_t level;
 	bool is_large = false;
 	bool is_visible = false;
