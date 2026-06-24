@@ -24,8 +24,14 @@ struct SNCOctree : public SceneNode{
 
 	uint32_t num_nodes = 0;
 	uint32_t max_lod_level = 0;
+	uint64_t nb_points = 0;
+
+	uint64_t octree_id = 0;
+	bool need_to_be_executed = false;
+
+	CUstream stream;
 	
-	SNCOctree(string name) : SceneNode(name){
+	SNCOctree(string name, uint64_t octree_id) : SceneNode(name), octree_id(octree_id){
 		
 	}
 
@@ -46,34 +52,34 @@ struct SNCOctree : public SceneNode{
 				);
 			}
 		};
-		
+
 		for(CUdeviceptr& ptr : cptr_nodes){
-			cuda_status = cuMemFree(ptr);
+			cuda_status = cuMemFreeAsync(ptr, stream);
 			cudaCheck(cuda_status, "cptr_nodes");
 		}
 		for(CUdeviceptr& ptr : cptr_aabbs){
-			cuda_status = cuMemFree(ptr);
+			cuda_status = cuMemFreeAsync(ptr, stream);
 			cudaCheck(cuda_status, "cptr_aabbs");
 		}
 		for(CUdeviceptr& ptr : cptr_chunks){
-			cuda_status = cuMemFree(ptr);
+			cuda_status = cuMemFreeAsync(ptr, stream);
 			cudaCheck(cuda_status, "cptr_chunks");
 		}
 		for(CUdeviceptr& ptr : cptr_occupancy_grids){
-			cuda_status = cuMemFree(ptr);
+			cuda_status = cuMemFreeAsync(ptr, stream);
 			cudaCheck(cuda_status, "cptr_occupancy_grids");
 		}
 
-		cuda_status = cuMemFree(nodes);
+		cuda_status = cuMemFreeAsync(nodes, stream);
 		cudaCheck(cuda_status, "nodes");
 
-		cuda_status = cuMemFree(aabbs);
+		cuda_status = cuMemFreeAsync(aabbs, stream);
 		cudaCheck(cuda_status, "aabbs");
 
-		cuda_status = cuMemFree(chunks);
+		cuda_status = cuMemFreeAsync(chunks, stream);
 		cudaCheck(cuda_status, "chunks");
 
-		cuda_status = cuMemFree(occupancy_grids);
+		cuda_status = cuMemFreeAsync(occupancy_grids, stream);
 		cudaCheck(cuda_status, "occupancy_grids");
 	}
 
@@ -93,5 +99,22 @@ struct SNCOctree : public SceneNode{
 		return total;
 	}
 
+	bool isDoneLoadingToGpu() {
+		// Have a peek at the stream
+		// returns cudaSuccess if the stream is empty
+		// returns cudaErrorNotReady if the stream is not empty
+		CUresult status = cuStreamQuery(stream);
 
+		switch (status) {
+			case CUDA_SUCCESS:
+				return true;
+			case CUDA_ERROR_NOT_READY:
+				return false;
+			default:
+				println("Error on Octree's cuda stream");
+				exit(EXIT_FAILURE);
+		};
+
+		return false;
+	}
 };

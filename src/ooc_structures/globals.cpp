@@ -48,11 +48,31 @@ vec3 AABB::getPointWorldCoordinates(const vec3& normalized_position) const {
 
 
 bool AABB::contains(const vec3& position) const {
-    return position.x >= mins.x && position.x <= maxs.x
-        && position.y >= mins.y && position.y <= maxs.y
-        && position.z >= mins.z && position.z <= maxs.z
+    return position.x > mins.x && position.x < maxs.x
+        && position.y > mins.y && position.y < maxs.y
+        && position.z > mins.z && position.z < maxs.z
     ;
 }
+
+bool AABB::isParentOf(const AABB& aabb) const {
+    vec3 sizes = aabb.getSize() * 0.5f;
+    vec3 centroid = aabb.getCentroid();
+    vec3 positions[7] = {
+        centroid,
+        centroid - vec3(sizes.x, 0, 0),
+        centroid + vec3(sizes.x, 0, 0),
+        centroid - vec3(0, sizes.y, 0),
+        centroid + vec3(0, sizes.y, 0),
+        centroid - vec3(0, 0, sizes.y),
+        centroid + vec3(0, 0, sizes.z)
+    };
+    
+    for(const vec3& point : positions){
+        if(!contains(point)){return false;}
+    }
+    return true;
+}
+
 
 vec3 AABB::getCentroid() const {
     return 0.5f*(mins + maxs);
@@ -223,7 +243,7 @@ void updateNodePosition(NodePosition& position){
 
 uint32_t OctreeNode::getNbPoints() const {
     uint32_t res = 0;
-    shared_ptr<Chunk> point_chunk = points;
+    Chunk* point_chunk = points;
     while(point_chunk){
         res += point_chunk->size;
         point_chunk = point_chunk->next;
@@ -233,7 +253,7 @@ uint32_t OctreeNode::getNbPoints() const {
 
 uint32_t OctreeNode::getNbVoxels() const {
     uint32_t res = 0;
-    shared_ptr<Chunk> voxel_chunk = voxels;
+    Chunk* voxel_chunk = voxels;
     while(voxel_chunk){
         res += voxel_chunk->size;
         voxel_chunk = voxel_chunk->next;
@@ -241,9 +261,27 @@ uint32_t OctreeNode::getNbVoxels() const {
     return res;
 }
 
+uint32_t OctreeNode::getDepth() const {
+    uint32_t max_level = 0;
+    
+    std::function<uint32_t(const OctreeNode*)> rec = [&](const OctreeNode* cur_node) -> uint32_t {
+        if(!cur_node){return 0;}
+        uint32_t max_children_depth = 0;
+        for(uint32_t i=0; i<8; i++){
+            uint32_t child_depth = rec(cur_node->children[i]);
+            if(child_depth > max_children_depth){
+                max_children_depth = child_depth;
+            }
+        }
+        return 1+max_children_depth;
+    };
+
+    return rec(this);
+}
+
 void OctreeNode::display(uint32_t id, uint32_t level, bool node_only) const {
-    println("id: {}, level: {}, counter: {}, updated: {}, nbPoints: {}, nbVoxels: {}, points location: 0b{}{}{}{}{}{}{}{}, children: 0b{}{}{}{}{}{}{}{}",
-        id, level, counter, updated, getNbPoints(), getNbVoxels(),
+    println("level: {}, id: {}, counter: {}, updated: {}, nbPoints: {}, nbVoxels: {}, points location: 0b{}{}{}{}{}{}{}{}, children: 0b{}{}{}{}{}{}{}{}",
+        level, id, counter, updated, getNbPoints(), getNbVoxels(),
         uint8_t(bool(children_ids & 0x01 << 0)),
         uint8_t(bool(children_ids & 0x01 << 1)),
         uint8_t(bool(children_ids & 0x01 << 2)),
@@ -261,6 +299,10 @@ void OctreeNode::display(uint32_t id, uint32_t level, bool node_only) const {
         uint8_t(children[6] != nullptr), 
         uint8_t(children[7] != nullptr)
     );
+    println("    aabb: mins = ({}, {}, {}), maxs = ({}, {}, {})",
+        aabb->mins.x, aabb->mins.y, aabb->mins.z,
+        aabb->maxs.x, aabb->maxs.y, aabb->maxs.z
+    );
     if(!node_only){
         for(size_t i=0; i<8; i++){
             if(children[i]){
@@ -272,8 +314,8 @@ void OctreeNode::display(uint32_t id, uint32_t level, bool node_only) const {
 
 bool OctreeNode::operator==(const OctreeNode& rhs) const {
 
-    std::function<bool(const std::shared_ptr<OctreeNode>&, const std::shared_ptr<OctreeNode>&)> recursion = 
-        [&](const std::shared_ptr<OctreeNode>& cur_lhs, const std::shared_ptr<OctreeNode>& cur_rhs) -> bool
+    std::function<bool(const OctreeNode*, const OctreeNode*)> recursion = 
+        [&](const OctreeNode* cur_lhs, const OctreeNode* cur_rhs) -> bool
     {    
         if(cur_lhs->counter != cur_rhs->counter){
             println("OctreeNode::operator==: Wrong counter");
@@ -282,6 +324,23 @@ bool OctreeNode::operator==(const OctreeNode& rhs) const {
         if(cur_lhs->children_ids != cur_rhs->children_ids){
             println("OctreeNode::operator==: Wrong children ids");
             return false;
+        }
+
+        if(!cur_lhs->aabb && cur_rhs->aabb){
+            println("OctreeNode::operator==: Wrong aabb, should be empty");
+            return false;
+        }
+        if(cur_lhs->aabb){
+            if(!cur_rhs->aabb){
+                println("OctreeNode::operator==: Wrong aabb, should not be empty");
+                return false;
+            }
+            const AABB& lhs_aabb = *cur_lhs->aabb;
+            const AABB& rhs_aabb = *cur_rhs->aabb;
+            if(lhs_aabb != rhs_aabb){
+                println("OctreeNode::operator==: Wrong aabbs");
+                return false;
+            }
         }
         
         if(!cur_lhs->points && cur_rhs->points){
@@ -293,8 +352,8 @@ bool OctreeNode::operator==(const OctreeNode& rhs) const {
                 println("OctreeNode::operator==: Wrong points, should not be empty");
                 return false;
             }
-            const Chunk& lhs_points = *cur_lhs->points.get();
-            const Chunk& rhs_points = *cur_rhs->points.get();
+            const Chunk& lhs_points = *cur_lhs->points;
+            const Chunk& rhs_points = *cur_rhs->points;
             if(lhs_points != rhs_points){
                 println("OctreeNode::operator==: Wrong points");
                 return false;
@@ -310,8 +369,8 @@ bool OctreeNode::operator==(const OctreeNode& rhs) const {
                 println("OctreeNode::operator==: Wrong voxels, should not be empty");
                 return false;
             }
-            const Chunk& lhs_voxels = *cur_lhs->voxels.get();
-            const Chunk& rhs_voxels = *cur_rhs->voxels.get();
+            const Chunk& lhs_voxels = *cur_lhs->voxels;
+            const Chunk& rhs_voxels = *cur_rhs->voxels;
             if(lhs_voxels != rhs_voxels){
                 println("OctreeNode::operator==: Wrong voxels");
                 return false;
@@ -327,8 +386,8 @@ bool OctreeNode::operator==(const OctreeNode& rhs) const {
                 println("OctreeNode::operator==: Wrong occupancy grid, should not be empty");
                 return false;
             }
-            const OccupancyGrid& lhs_grid = *cur_lhs->occupancy.get();
-            const OccupancyGrid& rhs_grid = *cur_rhs->occupancy.get();
+            const OccupancyGrid& lhs_grid = *cur_lhs->occupancy;
+            const OccupancyGrid& rhs_grid = *cur_rhs->occupancy;
             if(lhs_grid != rhs_grid){
                 println("OctreeNode::operator==: Wrong occupancy grid");
                 return false;
@@ -345,8 +404,8 @@ bool OctreeNode::operator==(const OctreeNode& rhs) const {
                 println("OctreeNode::operator==: Wrong child, should be empty");
                 return false;
             }
-            const std::shared_ptr<OctreeNode>& lhs_child = cur_lhs->children[i];
-            const std::shared_ptr<OctreeNode>& rhs_child = cur_rhs->children[i];
+            const OctreeNode* lhs_child = cur_lhs->children[i];
+            const OctreeNode* rhs_child = cur_rhs->children[i];
             if(!recursion(lhs_child, rhs_child)){
                 println("OctreeNode::operator==: Wrong child");
                 return false;
@@ -356,7 +415,7 @@ bool OctreeNode::operator==(const OctreeNode& rhs) const {
         return true;
     };
 
-    return recursion(std::make_shared<OctreeNode>(*this), std::make_shared<OctreeNode>(rhs));
+    return recursion(this, &rhs);
 }
 
 
@@ -371,17 +430,19 @@ bool Chunk::operator==(const Chunk& rhs) const{
             const Point& rhs_point = rhs_chunk->points[i];
             if(lhs_point != rhs_point){return false;}
         }
-        lhs_chunk = lhs_chunk->next.get();
-        rhs_chunk = rhs_chunk->next.get();
+        lhs_chunk = lhs_chunk->next;
+        rhs_chunk = rhs_chunk->next;
     }
     if(rhs_chunk){return false;}
     return true;
 }
 
 
-
+uint64_t simLodOctreeCounter = 0;
 std::string getSimLodOctreeName(bool generate_new_name){
-    if(generate_new_name){simLodOctreeCounter++;}
+    if(generate_new_name){
+        simLodOctreeCounter++;
+    }
     return format("{}_{}", simLodOctreeName, simLodOctreeCounter);
 }
 
@@ -393,6 +454,7 @@ std::string getSimLodOctreeName(bool generate_new_name){
 vector<std::shared_ptr<Timing>> timingsList = {};
 
 uint32_t BATCHES_QUEUE_SIZE = 1000;
+uint32_t elapsedFrames = 0;
 
 
 /// Variables tracking when the octree can be sent to GPU
@@ -400,6 +462,15 @@ uint32_t BATCHES_QUEUE_SIZE = 1000;
 std::binary_semaphore octreeReadyToBeSent{0};
 /// Initialized as ready to be updated
 std::binary_semaphore octreeReadyToBeUpdated{1};
+/// Initialized as not being sent
+std::binary_semaphore octreeNotBeingSent{1};
+
+std::mutex isUpdatingMtx;
+
+uint64_t loadCounter = 0;
+std::mutex loadCounterMtx;
+
+bool lodUpdated = false;
 
 /// The queue of batches
 std::deque<std::shared_ptr<PointBatch>> batchesQueue(BATCHES_QUEUE_SIZE, nullptr);
@@ -407,9 +478,8 @@ std::deque<std::mutex> batchesQueueMutexes(BATCHES_QUEUE_SIZE);
 std::mutex updateSceneMutex;
 
 /// The main octree
-std::shared_ptr<OctreeNode> mainOctree = std::make_shared<OctreeNode>();
-/// The main bounding box
-std::shared_ptr<AABB> mainAABB = nullptr;
+std::shared_ptr<OctreeNode> mainOctree = nullptr;
+OctreeNode* mainOctreeCpy = nullptr;
 
 /// The buffer of spilled points
 std::shared_ptr<vector<Point>> spilledPoints = std::make_shared<vector<Point>>(vector<Point>());
@@ -421,20 +491,15 @@ std::shared_ptr<vector<Point>> backlogVoxels = std::make_shared<vector<Point>>(v
 /// The backlog buffer for the nodes corresponding to the new voxels
 std::shared_ptr<vector<OctreeNode*>> backlogVoxelsNodes = std::make_shared<vector<OctreeNode*>>(vector<OctreeNode*>());
 
-/// The LRU cache for the nodes
-std::array<std::optional<CacheEntry>, LRU_CACHE_SIZE> lruCache = {nullopt};
-std::unordered_map<AABB, uint32_t, AABB::Hash> lruMapInCache = {};
-std::unordered_set<AABB, AABB::Hash> lruMapStored = {};
-uint64_t lruCounter = 0;
-
-
+uint64_t NB_POINTS = 0;
+bool MAIN_LOOP_IS_TERMINATING = false;
+std::mutex mainLoopIsTerminatingMtx;
 
 
 
 std::shared_ptr<Timing> addTiming(string name, bool start_now, uint32_t level){
     std::shared_ptr<Timing> new_timing = std::make_shared<Timing>(name, start_now, level);
-    std::mutex mtx;
-    std::lock_guard<std::mutex> lock(mtx);
+    std::lock_guard<std::mutex> lock(timingsMtx);
     timingsList.push_back(new_timing);
     return timingsList.back();
 }
@@ -505,61 +570,60 @@ void displayBuffers(){
 	println("///////////////////////////////////////////////////\n");
 }
 
-void displayCache(){
-    println("\n///////////////////////////////////////////////////");
-	println("////////////////////// Cache //////////////////////");
-	println("///////////////////////////////////////////////////\n");
-	for(std::optional<CacheEntry>& entry : lruCache){
-        if(entry.has_value()){
-            std::string output = format("mins = ({}, {}, {}), maxs = ({}, {}, {})",
-                entry->second->mins.x, 
-                entry->second->mins.y, 
-                entry->second->mins.z, 
-                entry->second->maxs.x, 
-                entry->second->maxs.y, 
-                entry->second->maxs.z
-            );
-            println("- [ {} ]: {}", entry->first, output);
-        } else {
-            println("- [ null ]");
-        }
-    }
-    println("\n///////////////////////////////////////////////////");
-	println("///////////////////////////////////////////////////");
-	println("///////////////////////////////////////////////////\n");
-}
 
 
-std::optional<std::shared_ptr<AABB>> addToCache(const std::shared_ptr<AABB>& aabb){
+
+
+
+
+
+
+
+
+///////////////////////////////////////////////////////////////////////////////
+/////////////////////////// LRU CACHING SHENANIGANS ///////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+
+/// The LRU cache for the nodes
+std::shared_ptr<LRUCache> updatesCache = std::make_shared<LRUCache>("updates cache", LRU_UPDATES_CACHE_SIZE);
+std::shared_ptr<LRUCache> visibilityCache = std::make_shared<LRUCache>("visibility cache", LRU_VISIBILITY_CACHE_SIZE);
+std::mutex LRUCache::stored_set_mtx;
+std::unordered_set<AABB, AABB::Hash> LRUCache::stored_set = {};
+
+std::mutex LRUCache::test_mtx;
+
+std::optional<AABB> LRUCache::add(const AABB& aabb, bool sync){
+    auto lock_guard = sync ? std::unique_lock<std::mutex>(mtx) : std::unique_lock<std::mutex>();
     bool already_in_cache = false;
 
     // Reset every counters if needed
-    if(lruCounter == UINT64_MAX){
-        for(uint32_t cache_id = 0; cache_id < LRU_CACHE_SIZE; cache_id++){
-            if(lruCache[cache_id]){
-                CacheEntry& entry = lruCache[cache_id].value();
+    if(counter == UINT64_MAX){
+        println("Cache counter reseting");
+        for(uint32_t cache_id = 0; cache_id < CACHE_SIZE; cache_id++){
+            if(cache[cache_id]){
+                CacheEntry& entry = cache[cache_id].value();
                 entry.first = 0;
-                if(*entry.second == *aabb){
+                if(entry.second == aabb){
                     entry.first = 1;
                     already_in_cache = true;
                 }
             }
         }
-        lruCounter = 0;
+        counter = 0;
     }
-    lruCounter++;
+    counter++;
     if(already_in_cache){return nullopt;}
 
     // Check if already in cache
     uint32_t new_id = 0;
     uint64_t min_counter = UINT64_MAX;
-    for(uint32_t cache_id = 0; cache_id < LRU_CACHE_SIZE; cache_id++){
-        if(lruCache[cache_id]){
-            CacheEntry& entry = lruCache[cache_id].value();
+    for(uint32_t cache_id = 0; cache_id < CACHE_SIZE; cache_id++){
+        if(cache[cache_id]){
+            CacheEntry& entry = cache[cache_id].value();
 
             // Check if already in cache
-            if(*entry.second == *aabb){
-                entry.first = lruCounter;
+            if(entry.second == aabb){
+                entry.first = counter;
                 return nullopt;
             }
 
@@ -570,26 +634,352 @@ std::optional<std::shared_ptr<AABB>> addToCache(const std::shared_ptr<AABB>& aab
             }
         } else {
             // Found empty space
-            lruCache[cache_id] = {lruCounter, aabb};
-            lruMapInCache.insert_or_assign(*aabb, cache_id);
+            cache[cache_id] = {counter, aabb};
+            cache_map[aabb] = cache_id;
             return nullopt;
         }
     }
 
     // If not in cache, create new entry
-    std::shared_ptr<AABB> old_entry = lruCache[new_id]->second;
-    CacheEntry new_entry = {lruCounter, aabb};
-    lruCache[new_id] = new_entry;
-    lruMapInCache.insert_or_assign(*aabb, new_id);
-    lruMapInCache.erase(*old_entry);
+    const AABB old_entry = cache[new_id]->second;
+    cache[new_id] = {counter, aabb};
+    cache_map[aabb] = new_id;
+    cache_map.erase(old_entry);
 
-    return std::optional<std::shared_ptr<AABB>>(old_entry);
+    return std::optional<AABB>(old_entry);
 }
 
-std::optional<uint32_t> getCacheIndex(const std::shared_ptr<AABB>& aabb){
-    return lruMapInCache.contains(*aabb) ? std::optional<uint32_t>(lruMapInCache.at(*aabb)) : nullopt;
+std::optional<uint32_t> LRUCache::getIndex(const AABB& aabb, bool sync) {
+    auto lock_guard = sync ? std::unique_lock<std::mutex>(mtx) : std::unique_lock<std::mutex>();
+    return cache_map.contains(aabb) ? std::optional<uint32_t>(cache_map.at(aabb)) : nullopt;
 }
 
-bool hasBeenStored(const std::shared_ptr<AABB>& aabb){
-    return lruMapStored.contains(*aabb);
+bool LRUCache::contains(const AABB& aabb, bool sync ) {
+    auto lock_guard = sync ? std::unique_lock<std::mutex>(mtx) : std::unique_lock<std::mutex>();
+    return getIndex(aabb).has_value();
+}
+
+uint32_t LRUCache::getSize() const {
+    uint32_t nb_elements = 0;
+    for(auto& entry : cache){
+        nb_elements += uint32_t(entry.has_value());
+    }
+    return nb_elements;
+}
+
+
+void LRUCache::display(bool sync) {
+    auto lock_guard = sync ? std::unique_lock<std::mutex>(mtx) : std::unique_lock<std::mutex>();
+
+    std::string pad = std::string(max(int32_t(name.size())-2, 0), '/');
+    println("////////////////////////////////////////////////{}", pad);
+	println("////////////////////// {} //////////////////////", name);
+	println("////////////////////////////////////////////////{}\n", pad);
+	for(const std::optional<CacheEntry>& entry : cache){
+        if(entry.has_value()){
+            std::string output = format("mins = ({}, {}, {}), maxs = ({}, {}, {})",
+                entry->second.mins.x, 
+                entry->second.mins.y, 
+                entry->second.mins.z, 
+                entry->second.maxs.x, 
+                entry->second.maxs.y, 
+                entry->second.maxs.z
+            );
+            println("- [ {} ]: {}", entry->first, output);
+        } else {
+            // println("- [ null ]");
+        }
+    }
+	println("\n////////////////////////////////////////////////{}", pad);
+    println("////////////////////////////////////////////////{}", pad);
+	println("////////////////////////////////////////////////{}\n", pad);
+}
+
+void LRUCache::displayStored(){
+    std::lock_guard<std::mutex> lock(stored_set_mtx);
+
+    println("//////////////////////////////////////////////////////////");
+	println("////////////////////// Stored Nodes //////////////////////");
+	println("//////////////////////////////////////////////////////////\n");
+	for(const AABB& aabb : stored_set){
+        std::string output = format("mins = ({}, {}, {}), maxs = ({}, {}, {})",
+            aabb.mins.x, 
+            aabb.mins.y, 
+            aabb.mins.z, 
+            aabb.maxs.x, 
+            aabb.maxs.y, 
+            aabb.maxs.z
+        );
+        println("- {}", output);
+    }
+	println("\n//////////////////////////////////////////////////////////");
+	println("//////////////////////////////////////////////////////////");
+	println("//////////////////////////////////////////////////////////\n");
+}
+
+
+bool LRUCache::hasBeenStored(const AABB& aabb){
+    std::lock_guard<std::mutex> lock(stored_set_mtx);
+    return stored_set.contains(aabb);
+}
+
+void LRUCache::mark(const AABB& aabb){
+    std::lock_guard<std::mutex> lock(stored_set_mtx);
+
+    // // TODO: to remove
+    // {
+    //     std::string output = format("mins = ({}, {}, {}), maxs = ({}, {}, {})",
+    //         aabb.mins.x, 
+    //         aabb.mins.y, 
+    //         aabb.mins.z, 
+    //         aabb.maxs.x, 
+    //         aabb.maxs.y, 
+    //         aabb.maxs.z
+    //     );
+    //     if(stored_set.contains(aabb)){
+    //         println("AABB: {} was already stored", output);
+    //     } else {
+    //         println("AABB: {} has been stored", output);
+    //     }
+    // }
+
+    stored_set.insert(aabb);
+}
+
+void LRUCache::unmark(const AABB& aabb){
+    std::lock_guard<std::mutex> lock(stored_set_mtx);
+
+    // // TODO: to remove
+    // {
+    //     static std::unordered_set<AABB, AABB::Hash> tmp_loaded = {};
+    //     std::string output = format("mins = ({}, {}, {}), maxs = ({}, {}, {})",
+    //         aabb.mins.x, 
+    //         aabb.mins.y, 
+    //         aabb.mins.z, 
+    //         aabb.maxs.x, 
+    //         aabb.maxs.y, 
+    //         aabb.maxs.z
+    //     );
+    //     if(tmp_loaded.contains(aabb)){
+    //         println("AABB: {} was already loaded", output);
+    //     } else {
+    //         println("AABB: {} has been loaded", output);
+    //     }
+    //     tmp_loaded.insert(aabb);
+    // }
+
+    stored_set.erase(aabb);
+}
+
+bool LRUCache::isInACache(const AABB& aabb, bool sync){
+    return updatesCache->contains(aabb, sync) 
+        || visibilityCache->contains(aabb, sync)
+        // TODO: add other caches if necessary
+    ;
+}
+bool LRUCache::isInAllCaches(const AABB& aabb, bool sync){
+    return updatesCache->contains(aabb, sync) 
+        && visibilityCache->contains(aabb, sync)
+        // TODO: add other caches if necessary
+    ;
+}
+
+
+bool LRUCache::sanityCheck(const OctreeNode* root_node) {
+    if(!contains(*root_node->aabb, true)){
+        println("ERROR: cache should always contain the root node");
+        return false;
+    }
+
+    std::unordered_set<AABB, AABB::Hash> correct = {};
+    std::function<void(const AABB&)> recursion = [&](const AABB& cur_aabb){
+        if(contains(cur_aabb, true)){
+            correct.insert(cur_aabb);
+            for(uint32_t child_id = 0; child_id < 8; child_id++){
+                // TODO: temporary code
+                if(aabb_relationship_map[cur_aabb][child_id].has_value()){
+                    recursion(aabb_relationship_map[cur_aabb][child_id].value());
+                }
+            }
+        }
+    };
+    recursion(*root_node->aabb);
+    // std::function<void(const OctreeNode*)> recursion = [&](const OctreeNode* cur_node){
+    //     if(!cur_node){return;}
+    //     if(contains(*cur_node->aabb, true)){
+    //         correct.insert(*cur_node->aabb);
+    //         for(uint32_t child_id = 0; child_id < 8; child_id++){
+    //             recursion(cur_node->children[child_id]);
+    //         }
+    //     }
+    // };
+    // recursion(root_node);
+
+    uint32_t expected = getSize();
+    uint32_t found = correct.size();
+    if(found != expected){
+        println("ERROR: invalid elements in cache, expected {} elements from the octree, found {}",
+            expected, found
+        );
+        std::unordered_set<AABB, AABB::Hash> incorrect = {};
+        for(auto& [aabb, id] : cache_map){
+            if(!correct.contains(aabb)){
+                incorrect.insert(aabb);
+            }
+        }
+        assert(incorrect.size() + found == expected);
+        println("Correct elements in cache:");
+        for(const AABB& aabb : correct){
+            println("    mins = ({}, {}, {}), maxs = ({}, {}, {})",
+                aabb.mins.x, aabb.mins.y, aabb.mins.z,
+                aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
+            );
+        }
+        println();
+        println("Incorrect elements in cache:");
+        for(const AABB& aabb : incorrect){
+            println("    mins = ({}, {}, {}), maxs = ({}, {}, {})",
+                aabb.mins.x, aabb.mins.y, aabb.mins.z,
+                aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
+            );
+        }
+        return false;
+    };
+
+    return true;
+}
+
+bool LRUCache::sanityCheckStored(const OctreeNode* root_node) {
+    std::lock_guard<std::mutex> lock(stored_set_mtx);
+
+    std::unordered_set<AABB, AABB::Hash> roots = {};
+    std::function<void(const AABB&)> roots_recursion = [&](const AABB& cur_aabb){
+        if(!stored_set.contains(cur_aabb)){
+            for(uint32_t child_id = 0; child_id < 8; child_id++){
+                // TODO: temporary code
+                if(aabb_relationship_map[cur_aabb][child_id].has_value()){
+                    roots_recursion(aabb_relationship_map[cur_aabb][child_id].value());
+                }
+            }
+        } else {
+            roots.insert(cur_aabb);
+        }
+    };
+    roots_recursion(*root_node->aabb);
+
+    std::unordered_set<AABB, AABB::Hash> correct = {};
+    std::function<void(const AABB&)> recursion = [&](const AABB& cur_aabb){
+        if(stored_set.contains(cur_aabb)){
+            correct.insert(cur_aabb);
+            for(uint32_t child_id = 0; child_id < 8; child_id++){
+                AABB child_aabb = AABB(cur_aabb);
+                child_aabb.shrink((NodePosition)child_id);
+                recursion(child_aabb);
+            }
+        }
+    };
+    for(const AABB& root : roots){
+        recursion(root);
+    }
+
+    uint32_t expected = stored_set.size();
+    uint32_t found = correct.size();
+    if(found != expected){
+        println("ERROR: invalid elements in stored cache, expected {} elements from the octree, found {} correct elements",
+            expected, found
+        );
+
+        println("Roots found:");
+        for(const AABB& aabb : roots){
+            println("    mins = ({}, {}, {}), maxs = ({}, {}, {})",
+                aabb.mins.x, aabb.mins.y, aabb.mins.z,
+                aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
+            );
+        }
+
+        std::unordered_set<AABB, AABB::Hash> incorrect = {};
+        for(const AABB& aabb : stored_set){
+            if(!correct.contains(aabb)){
+                incorrect.insert(aabb);
+            }
+        }
+        assert(incorrect.size() + found == expected);
+        println("Correct elements in stored cache:");
+        for(const AABB& aabb : correct){
+            println("    mins = ({}, {}, {}), maxs = ({}, {}, {})",
+                aabb.mins.x, aabb.mins.y, aabb.mins.z,
+                aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
+            );
+        }
+        println();
+        println("Incorrect elements in stored cache:");
+        for(const AABB& aabb : incorrect){
+            println("    mins = ({}, {}, {}), maxs = ({}, {}, {})",
+                aabb.mins.x, aabb.mins.y, aabb.mins.z,
+                aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
+            );
+        }
+        return false;
+    };
+
+    return true;
+}
+
+std::unordered_map<AABB, std::array<std::optional<AABB>, 8>, AABB::Hash> aabb_relationship_map = {};
+std::mutex aabb_relationship_map_mtx;
+std::unordered_map<AABB, AABB, AABB::Hash> aabb_parent_map = {};
+std::mutex aabb_parent_map_mtx;
+std::unordered_map<AABB, std::mutex, AABB::Hash> aabb_mutex_map = {};
+
+
+
+
+
+
+
+
+
+///////////////////////////////////////////////////////////////////////////////
+/////////////////////// CUDA UNIFIED MEMORY SHENANIGANS ///////////////////////
+///////////////////////////////////////////////////////////////////////////////
+
+std::vector<std::shared_ptr<std::vector<vec3>>> unified_positions = {};
+std::vector<std::shared_ptr<std::vector<uint32_t>>> unified_colors = {};
+
+CFullOctreeUnifiedBuilder unifiedOctreeBuilder = {};
+void CFullOctreeUnifiedBuilder::update() {
+    nodes.clear();
+    num_nodes = 0;
+    max_lod_level = 0;
+
+    std::function<void(OctreeNode*, uint8_t)> recursion = [&](
+        OctreeNode* cur_node, uint8_t level
+    ) -> void {
+
+        if(cur_node){
+            max_lod_level = std::max(max_lod_level, uint32_t(level));
+            num_nodes++;
+            cur_node->level = level;
+            cur_node->is_large = false;
+            cur_node->is_visible = false;
+            cur_node->is_cut = false;
+            nodes.push_back(cur_node);
+
+            for(uint32_t child = 0; child < 8; child++){
+                recursion(cur_node->children[child], level+1);
+            }
+        }
+    };
+
+    recursion(mainOctree.get(), 0);
+}
+
+
+CFullOctreeUnified CFullOctreeUnifiedBuilder::build() {
+    CFullOctreeUnified res = {};
+    res.nodes = (COctreeNodeUnified**)nodes.data();
+    res.num_nodes = num_nodes;
+    res.max_lod_level = max_lod_level;
+    res.world = mat4(1.f);
+    return res;
 }

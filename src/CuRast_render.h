@@ -7,6 +7,8 @@
 #include "VKRenderer.h"
 #include "TextureManager.h"
 
+#include "ooc_structures/globals.h"
+
 using namespace std;
 
 CudaVirtualMemory* cvm_framebuffer = nullptr;
@@ -104,8 +106,13 @@ void drawPoints(Scene* scene, View view, RenderTarget& target){
 
 		CPointcloud cpc;
 		cpc.world     = node->transform_global;
-		cpc.positions = (vec3*)node->cptr_positions;
-		cpc.colors    = (uint32_t*)node->cptr_colors;
+		if(CuRastSettings::useUnifiedMemory){
+			cpc.positions = (vec3*)node->ptr_positions;
+			cpc.colors    = (uint32_t*)node->ptr_colors;
+		} else {
+			cpc.positions = (vec3*)node->cptr_positions;
+			cpc.colors    = (uint32_t*)node->cptr_colors;
+		}
 		cpc.numPoints = node->numPoints;
 
 		prog->launch("kernel_drawPointcloud", {&cpc, &target}, cpc.numPoints);
@@ -113,18 +120,23 @@ void drawPoints(Scene* scene, View view, RenderTarget& target){
 	});
 }
 
-void drawOctreeAABB(Scene* scene, View view, RenderTarget& target){
+void drawOctreeAABB(Scene* scene, View view, RenderTarget& target, bool use_visibility_debug_color = false){
 	static CudaModularProgram* prog = new CudaModularProgram({"./src/kernels/octree.cu"});
 
+	std::lock_guard<std::mutex> lock_scene(updateSceneMutex);
 	scene->forEach<SNCOctree>([&](SNCOctree* octree){
-
+		// Sanity check
+		if(!octree){return;}
+		if(!octree->isDoneLoadingToGpu()){return;}
 		CFullOctree cfo;
 		cfo.world     = octree->transform_global;
 		cfo.nodes     = (COctreeNode**)(octree->nodes);
 		cfo.aabbs     = (CAABB**)(octree->aabbs);
 		cfo.chunks    = (CChunk**)(octree->chunks);
+
 		cfo.num_nodes = octree->num_nodes;
 		cfo.max_lod_level = octree->max_lod_level;
+		cfo.use_aabb_debug_color = use_visibility_debug_color;
 
 		prog->launch("kernel_drawOctreeAABB", {&cfo, &target}, cfo.num_nodes);
 	});
@@ -136,8 +148,13 @@ void drawOctree(Scene* scene, View view, RenderTarget& target,
 ){
 	static CudaModularProgram* prog = new CudaModularProgram({"./src/kernels/octree.cu"});
 
+	std::lock_guard<std::mutex> lock_scene(updateSceneMutex);
     scene->forEach<SNCOctree>([&](SNCOctree* octree){
-        CFullOctree cfo;
+		// Sanity check
+		if(!octree){return;}
+		if(!octree->isDoneLoadingToGpu()){return;}
+
+		CFullOctree cfo;
         cfo.world     = octree->transform_global;
         cfo.nodes     = (COctreeNode**)(octree->nodes);
         cfo.aabbs     = (CAABB**)(octree->aabbs);
@@ -149,21 +166,6 @@ void drawOctree(Scene* scene, View view, RenderTarget& target,
 		cfo.voxels_nb_points_per_axis = uint32_t(voxels_nb_points);
 		cfo.min_pixel_span = min_pixel_span;
 		cfo.use_voxels_debug_color = use_voxels_debug_color;
-
-		// println("nb nodes: {}, nb aabbs: {}, nb chunks: {}, nb nodes: {}",
-		// 	octree->cptr_nodes.size(), octree->cptr_aabbs.size(), octree->cptr_chunks.size(), octree->num_nodes
-		// );
-
-		// for(uint32_t i=0; i<10; i++){
-		// 	CAABB res = {};
-		// 	cuMemcpyDtoH(&res, octree->cptr_aabbs[i], sizeof(CAABB));
-		// 	println("- DEVICE: AABB[{}] = mins({}, {}, {}), maxs({}, {}, {})", i,
-		// 		res.mins.x, res.mins.y, res.mins.z,
-		// 		res.maxs.x, res.maxs.y, res.maxs.z
-		// 	);
-		// }
-		// exit(EXIT_FAILURE);
-		// prog->launch("kernel_drawOctree", {&cfo, &target}, cfo.num_nodes);
         
         uint32_t numThreads = cfo.num_nodes * C_OCTREE_RENDER_BLOCK_SIZE;
 		OptionalLaunchSettings launch_settings = {
@@ -175,6 +177,32 @@ void drawOctree(Scene* scene, View view, RenderTarget& target,
 		prog->launch("kernel_drawOctreeLarge", {&cfo, &target}, launch_settings);
 		prog->launch("kernel_drawOctreeSmall", {&cfo, &target}, launch_settings);
     });
+}
+
+void drawOctreeAABBUnified(Scene* scene, View view, RenderTarget& target, CFullOctreeUnified& cfo){
+	static CudaModularProgram* prog = new CudaModularProgram({"./src/kernels/octreeUnified.cu"});
+	prog->launch("kernel_drawOctreeAABB", {&cfo, &target}, cfo.num_nodes);
+}
+
+void drawOctreeUnified(Scene* scene, View view, RenderTarget& target, CFullOctreeUnified& cfo, 
+	int32_t debug_lod = -1, int32_t voxels_nb_points = 1, float min_pixel_span = 64.,
+	bool use_voxels_debug_color = false
+){
+	static CudaModularProgram* prog = new CudaModularProgram({"./src/kernels/octreeUnified.cu"});
+	cfo.debug_lod_to_render = debug_lod;
+	cfo.voxels_nb_points_per_axis = uint32_t(voxels_nb_points);
+	cfo.min_pixel_span = min_pixel_span;
+	cfo.use_voxels_debug_color = use_voxels_debug_color;
+        
+	uint32_t numThreads = cfo.num_nodes * C_OCTREE_RENDER_BLOCK_SIZE;
+	OptionalLaunchSettings launch_settings = {
+		.gridsize = cfo.num_nodes,
+		.blocksize = C_OCTREE_RENDER_BLOCK_SIZE
+	};
+
+	prog->launch("kernel_visibilityPass", {&cfo, &target}, launch_settings);
+	prog->launch("kernel_drawOctreeLarge", {&cfo, &target}, launch_settings);
+	prog->launch("kernel_drawOctreeSmall", {&cfo, &target}, launch_settings);
 }
 
 
@@ -670,18 +698,39 @@ void CuRast::draw(Scene* scene, vector<View> views){
 		// 	Timer::recordDuration("kernel_drawHeightmap", custart, Timer::recordCudaTimestamp());
 		// }
 
+		CFullOctreeUnified cfo = {};
+		if(CuRastSettings::useUnifiedMemory){
+			unifiedOctreeBuilder.update();
+			cfo = unifiedOctreeBuilder.build();
+		}
+
 		if(CuRastSettings::bruteForceRendering){
 			drawPoints(scene, view, target);
 		} else {
-			drawOctree(scene, view, target, 
-				CuRastSettings::debugLodToRender, 
-				CuRastSettings::voxelsPointsPerAxis,
-				CuRastSettings::minPixelSpan,
-				CuRastSettings::voxelsDebugColor
-			);
+			if(CuRastSettings::useUnifiedMemory){
+				drawOctreeUnified(scene, view, target, cfo,
+					CuRastSettings::debugLodToRender, 
+					CuRastSettings::voxelsPointsPerAxis,
+					CuRastSettings::minPixelSpan,
+					CuRastSettings::voxelsDebugColor
+				);
+			} else {
+				drawOctree(scene, view, target, 
+					CuRastSettings::debugLodToRender, 
+					CuRastSettings::voxelsPointsPerAxis,
+					CuRastSettings::minPixelSpan,
+					CuRastSettings::voxelsDebugColor
+				);
+			}
 		}
 		if(CuRastSettings::showBoundingBoxes){
-			drawOctreeAABB(scene, view, target);
+			if(CuRastSettings::useUnifiedMemory){
+				drawOctreeAABBUnified(scene, view, target, cfo);
+			} else {
+				drawOctreeAABB(scene, view, target, 
+					CuRastSettings::showVisibleNodes
+				);
+			}
 		}
 
 
@@ -693,29 +742,38 @@ void CuRast::draw(Scene* scene, vector<View> views){
 			uint64_t nb_octrees = 0;
 			uint64_t nb_batches  = 0;
 			uint64_t nb_points  = 0;
+			uint64_t nb_points_octree = 0;
 			uint64_t points_gpu_memory  = 0;
 
-			scene->forEach<SNCOctree>([&](SNCOctree* node){
-				octrees.push_back(node);
-				nb_octrees++;
-			});
-			scene->forEach<SNCPoints>([&](SNCPoints* node){
-				batches.push_back(node);
-				nb_batches++;
-				nb_points += node->numPoints;
-				points_gpu_memory += node->getGpuMemoryUsage();
-			});
+			{
+				std::lock_guard<std::mutex> lock(updateSceneMutex);
+				scene->forEach<SNCOctree>([&](SNCOctree* node){
+					if(node->name != getSimLodOctreeName()){return;}
+					octrees.push_back(node);
+					nb_octrees++;
+					nb_points_octree = node->nb_points;
+				});
+				scene->forEach<SNCPoints>([&](SNCPoints* node){
+					batches.push_back(node);
+					nb_batches++;
+					nb_points += node->numPoints;
+					points_gpu_memory += node->getGpuMemoryUsage();
+				});
+				if(nb_points == 0){
+					nb_points = nb_points_octree;
+				}
+			}
 
 			auto formatMemSize = [&](uint64_t size_bytes) -> std::string {
 				uint64_t nb_bytes = size_bytes;
-				uint64_t nb_tbs = uint64_t(floor(nb_bytes / 1'000'000'000'000));
-				nb_bytes -= nb_tbs * 1'000'000'000'000;
-				uint64_t nb_gbs = uint64_t(floor(nb_bytes / 1'000'000'000));
-				nb_bytes -= nb_gbs * 1'000'000'000;
-				uint64_t nb_mbs = uint64_t(floor(nb_bytes / 1'000'000));
-				nb_bytes -= nb_mbs * 1'000'000;
-				uint64_t nb_kbs = uint64_t(floor(nb_bytes / 1'000));
-				nb_bytes -= nb_kbs * 1'000;
+				uint64_t nb_tbs = uint64_t(floor(nb_bytes / 1'024 / 1'024 / 1'024 / 1'024));
+				nb_bytes -= nb_tbs * 1'024 * 1'024 * 1'024 * 1'024;
+				uint64_t nb_gbs = uint64_t(floor(nb_bytes / 1'024 / 1'024 / 1'024));
+				nb_bytes -= nb_gbs * 1'024 * 1'024 * 1'024;
+				uint64_t nb_mbs = uint64_t(floor(nb_bytes / 1'024 / 1'024));
+				nb_bytes -= nb_mbs * 1'024 * 1'024;
+				uint64_t nb_kbs = uint64_t(floor(nb_bytes / 1'024));
+				nb_bytes -= nb_kbs * 1'024;
 
 				if(nb_tbs){return format("{:5} {:3L}T {:3L}G {:3L}M {:3L}k {:3L}b", "", nb_tbs, nb_gbs, nb_mbs, nb_kbs, nb_bytes);}
 				if(nb_gbs){return format("{:10} {:3L}G {:3L}M {:3L}k {:3L}b", "", nb_gbs, nb_mbs, nb_kbs, nb_bytes);}
@@ -728,7 +786,7 @@ void CuRast::draw(Scene* scene, vector<View> views){
 			dvlist.push_back({"# total octrees          ", format("{:30L}", nb_octrees)});
 			for(uint32_t i=0; i<nb_octrees; i++){
 				SNCOctree* node = octrees[i];
-				dvlist.push_back({format("    octree #{}", i), ""});
+				dvlist.push_back({format("    octree #{}", node->counter), ""});
 				dvlist.push_back({"     - # nodes           ", format("{:30L}", node->cptr_nodes.size())});
 				dvlist.push_back({"     - # chunks          ", format("{:30L}", node->cptr_chunks.size())});
 				dvlist.push_back({"     - # occupancy grids ", format("{:30L}", node->cptr_occupancy_grids.size())});
@@ -739,7 +797,8 @@ void CuRast::draw(Scene* scene, vector<View> views){
 			// Batches info
 			dvlist.push_back({"\n# total batches          ", format("{:30L}", nb_batches)});
 			dvlist.push_back({"# total points           ", format("{:30L}", nb_points)});
-			dvlist.push_back({"batches GPU memory usage ", formatMemSize(points_gpu_memory)});			
+			dvlist.push_back({"batches GPU memory usage ", formatMemSize(points_gpu_memory)});
+			
 		}
 
 

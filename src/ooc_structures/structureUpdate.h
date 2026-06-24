@@ -5,36 +5,46 @@
 
 /// Init the main octree
 void initOctree(
-    std::shared_ptr<AABB>& main_aabb, 
+    OctreeNode* root_node, 
     std::shared_ptr<vector<Point>>& points
 );
 
 /// Grow the octree
 uint32_t growOctree(
-    const std::shared_ptr<AABB>& main_aabb, 
+    OctreeNode* root_node, 
     const std::shared_ptr<vector<Point>>& points
 );
 
 /// Bottom up update of the octree
 /// Creates nb_new_levels inner nodes
-void uptadeOctree(
-    std::shared_ptr<OctreeNode>& main_root, 
-    std::shared_ptr<AABB>& main_aabb, 
+/// Returns the new root
+OctreeNode* uptadeOctree(
+    OctreeNode* main_root,
     uint32_t nb_new_levels
 );
 
 
 /// TODO: temporary function
 /// Load an octree to gpu memory
-void loadOctreeOnGPU(std::shared_ptr<OctreeNode>& main_octree, std::shared_ptr<AABB>& main_aabb,
-    CuRast* editor, bool bypass_semaphore = false
+void loadOctreeOnGPU(CuRast* editor, CUcontext* context, 
+    bool bypass_semaphore = false
 );
+void createCudaMemory(CuRast* editor, CUcontext* context, std::shared_ptr<OctreeNode>& input_octree);
+std::optional<uint32_t> allocateChunks(std::shared_ptr<SNCOctree>& octree, const Chunk* root, uint32_t* chunk_counter);
+
 /// TODO: temporary function
 /// Frees the unused octrees on gpu memory
-void freeOctreesOnGPU(CuRast* editor, bool force_free = false);
+void freeOctreesOnGPU(CuRast* editor);
+/// Frees the last unused octree on gpu memory
+/// If given a caller, only frees the memory when the caller is done loading
+void freePreviousOctreeOnGPU(CuRast* editor, std::shared_ptr<SNCOctree> caller);
 
 
 /// Add new batches to the octree
-void addPointBatches(std::shared_ptr<OctreeNode>& main_octree, std::shared_ptr<AABB>& main_aabb);
+void addPointBatches();
 /// Asynchronously update the octree
-void updateOctreeRoutine(std::shared_ptr<OctreeNode>& main_octree, std::shared_ptr<AABB>& main_aabb);
+void updateOctreeRoutine();
+
+
+/// TODO: test to get culled nodes from GPU
+void getCulledNodes();

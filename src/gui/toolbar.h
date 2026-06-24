@@ -150,21 +150,30 @@ void CuRast::makeToolbar(){
 				ImGui::SameLine();
 				ImGui::Checkbox("Brute force rendering", &CuRastSettings::bruteForceRendering);
 
-				ImGui::Checkbox("Auto-free unused octree GPU memory", &CuRastSettings::autoFreeOldOctreeMemoryOnGPU);
+				ImGui::Checkbox("Auto-free GPU memory", &CuRastSettings::autoFreeOldOctreeMemoryOnGPU);
 				ImGui::SameLine();
 				ImGui::BeginDisabled(CuRastSettings::autoFreeOldOctreeMemoryOnGPU);
-					ImGui::Checkbox("Free unused octree GPU memory", &CuRastSettings::freeOldOctreeMemoryOnGPU);
+					ImGui::Checkbox("Manual-free GPU memory", &CuRastSettings::freeOldOctreeMemoryOnGPU);
 				ImGui::EndDisabled();
 
-				ImGui::SetNextItemWidth(200.0f);
-				ImGui::SliderInt("Max batches per update", &CuRastSettings::maxBatchesPerUpdate, 1, 64);
-				ImGui::SameLine();
-				ImGui::SetNextItemWidth(200.0f);
-				ImGui::SliderInt("Max batch size", &CuRastSettings::maxBatchSize, 10'000, 1'000'000'000);
+				// ImGui::SetNextItemWidth(200.0f);
+				// ImGui::SliderInt("Max batches per update", &CuRastSettings::maxBatchesPerUpdate, 1, 64);
+				// ImGui::SameLine();
+				// ImGui::SetNextItemWidth(200.0f);
+				// ImGui::SliderInt("Max batch size", &CuRastSettings::maxBatchSize, 10'000, 1'000'000'000);
 
 				ImGui::Checkbox("Store octree on disk", &CuRastSettings::storeOctree);
 				ImGui::SameLine();
 				ImGui::Checkbox("Load octree from disk", &CuRastSettings::loadOctree);
+
+				ImGui::BeginDisabled(!CuRastSettings::showBoundingBoxes);
+					ImGui::Checkbox("Show visible nodes", &CuRastSettings::showVisibleNodes);
+					ImGui::SameLine();
+					ImGui::Checkbox("Freeze visible nodes", &CuRastSettings::freezeVisibleNodes);
+				ImGui::EndDisabled();
+				// ImGui::BeginDisabled(true);
+				// 	ImGui::Checkbox("Use unified memory", &CuRastSettings::useUnifiedMemory);
+				// ImGui::EndDisabled();
 
 				// ImGui::Checkbox("Frustum culling", &CuRastSettings::enableFrustumCulling);
 				// ImGui::SameLine();

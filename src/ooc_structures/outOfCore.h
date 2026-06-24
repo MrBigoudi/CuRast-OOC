@@ -25,29 +25,27 @@ struct ChunkSerializable {
 	std::vector<uint32_t> sizes = {};
 
     ChunkSerializable(){};
-    ChunkSerializable(const std::shared_ptr<Chunk>& root_chunk);
+    ChunkSerializable(const Chunk* root_chunk);
     void serialize(const std::string& filepath) const;
     static ChunkSerializable deserialize(const std::string& filepath);
-    std::shared_ptr<Chunk> toChunk() const;
+    Chunk* toChunk() const;
 };
 
 /// A serializable node
 struct OctreeNodeSerializable {
-	uint16_t counter = 0;
+	uint32_t counter = 0;
 	uint8_t children = 0b00000000;
 	uint8_t children_ids = 0b00000000;
 	std::string points = "";
 	std::string voxels = "";
+    AABB aabb = {};
 
     OctreeNodeSerializable(){};
 
     /// Serializes all points, voxels and grids
-    static void init(
-        const std::shared_ptr<OctreeNode>& full_octree, 
-        const AABB& node_aabb, bool node_only
-    );
+    static void init(const OctreeNode* node, bool node_only);
 
-    static std::shared_ptr<OctreeNode> toOctreeNodes(
+    static OctreeNode* toOctreeNodes(
         const AABB& root_aabb, bool node_only
     );
 
@@ -55,7 +53,7 @@ struct OctreeNodeSerializable {
         // helpers
         void serialize(const std::string& filepath) const;
         static OctreeNodeSerializable deserialize(const std::string& filepath);
-        std::shared_ptr<OctreeNode> toLeafNode(const AABB& node_aabb) const;
+        OctreeNode* toLeafNode(const AABB& node_aabb) const;
 };
 
 
@@ -83,14 +81,11 @@ std::string getChunkFilePath(const AABB& aabb, bool is_voxel);
 ///////////////////////////////////////////////////////////////////////////////
 
 /// Store an octree node given it's AABB and the main octree
-void storeOctree(const std::shared_ptr<OctreeNode>& full_octree, 
-    const std::shared_ptr<AABB>& node_aabb,
-    bool node_only = false
-);
+void storeOctree(const OctreeNode* node, bool node_only = false);
 
 /// Load an octree from a file
 /// Recursively loads all root node's children
-std::shared_ptr<OctreeNode> loadOctree(const std::shared_ptr<AABB>& root_aabb, bool node_only = false);
+OctreeNode* loadOctree(const AABB& root_aabb, bool node_only = false);
 
-/// Add nodes to cache after octree update
-void updateCache(std::shared_ptr<OctreeNode>& root_octree, std::shared_ptr<AABB>& root_aabb);
+/// Add nodes to the updates cache after octree update
+void updateUpdatesCache(OctreeNode* root_octree);

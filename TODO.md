@@ -2,22 +2,24 @@
 
 ## Next small steps
 
-- Add a way to (manually ?) select the node to store / load
-- Add a way to flag not visible nodes from GPU side
-- Add a way to reload a node
-- Add parameters to the UI (max nb batches, points per batches, etc...)
+- Batch the memcpy on loadingtogpu
+- Clean the code + improve comments
 - Implement frustum culling
-- Create uniform structure for better structuring in cuda code / gui
-- supress warnings
+- Automatically get CPU / GPU capacities to set the constants
 
 ## Next big steps
 
-- Implement LRU caching
+- Replace list with fixed size array to prepare for GPU side
+- Add a way to flag not visible nodes from GPU side
 
 ## Coding part
 
+- Add a settings file to avoid recompiling everytime
+- Add parameters to the UI (max nb batches, points per batches, etc...)
+- Create uniform structure for better structuring in cuda code / gui
+- Add a way to (manually ?) select the node to store / load
 - Fix Vulkan segfault on quit
-- Rebuild occupancy grid on load
+- supress warnings
 
 ## Research part
 

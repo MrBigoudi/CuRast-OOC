@@ -363,6 +363,9 @@ struct COctreeNode {
 	bool is_large = false;
 	bool is_visible = false;
 	bool is_cut = false;
+
+	bool cpu_debug_visibility = false;
+	
 	CChunk* points;
 	CChunk* voxels;
 	COccupancyGrid* occupancy;
@@ -377,9 +380,68 @@ struct CFullOctree {
 	COccupancyGrid** occupancy_grids;
 	uint32_t num_nodes;
 	uint32_t max_lod_level;
+
 	// TODO: put inside uniforms structure
 	int32_t debug_lod_to_render;
 	uint32_t voxels_nb_points_per_axis;
 	float min_pixel_span;
 	bool use_voxels_debug_color;
+	bool use_aabb_debug_color;
+};
+
+
+
+
+/// TODO: refactor
+/// Tests unified memory
+
+
+struct CAABBUnified;
+struct CPointUnified;
+struct COccupancyGridUnified;
+struct CChunkUnified;
+struct COctreeNodeUnified;
+
+struct CFullOctreeUnified {
+	mat4 world;
+	COctreeNodeUnified** nodes;
+	uint32_t num_nodes;
+	uint32_t max_lod_level;
+	
+	int32_t debug_lod_to_render;
+	uint32_t voxels_nb_points_per_axis;
+	float min_pixel_span;
+	bool use_voxels_debug_color;
+};
+struct CAABBUnified {
+	vec3 mins = {INFINITY, INFINITY, INFINITY};
+	vec3 maxs = {-INFINITY, -INFINITY, -INFINITY};
+};
+struct CPointUnified {
+	vec3 position = vec3();
+	uint8_t color[4] = {0,0,0,0};
+};
+struct COccupancyGridUnified {
+	uint32_t values[C_GRID_NUM_CELLS] = {0};
+};
+struct CChunkUnified {
+	CPointUnified points[C_POINTS_PER_CHUNK] = {CPointUnified()};
+	uint32_t size = 0;
+	CChunkUnified* next = nullptr;
+};
+struct COctreeNodeUnified {
+	COctreeNodeUnified* children[8] = {nullptr};
+	uint16_t counter = 0;
+	uint8_t children_ids = 0b00000000;
+	CChunkUnified* points = nullptr;
+	CChunkUnified* voxels = nullptr;
+	COccupancyGridUnified* occupancy = nullptr;
+	bool from_split = false;
+	bool from_bottom_up = false;
+	bool updated = false;
+	CAABBUnified* aabb = nullptr;
+	uint8_t level = 0;
+	bool is_large = false;
+	bool is_visible = false;
+	bool is_cut = false;
 };

@@ -36,6 +36,8 @@
 #include "ooc_structures/simLod.h"
 #include "ooc_structures/loader.h"
 #include "ooc_structures/outOfCore.h"
+#include "ooc_structures/visibility.h"
+
 
 using namespace std; // YOLO
 
@@ -313,7 +315,7 @@ void initScene() {
 				if(done){break;}
 			}
 			while(true){
-				addPointBatches(mainOctree, mainAABB);
+				addPointBatches();
 				bool done = true;
 				for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
 					if(batchesQueue[i] && batchesQueue[i]->state != BatchState::Inserted){
@@ -333,7 +335,7 @@ void initScene() {
 				if(done){break;}
 			}
 			clearUnusedBatches();
-			loadOctreeOnGPU(mainOctree, mainAABB, CuRast::instance);
+			loadOctreeOnGPU(CuRast::instance, &context);
 		} else {
 			std::thread thread_loadLion([&](std::string file){
 				initLoadPointBatches(file);
@@ -357,6 +359,58 @@ void initScene() {
 	// loadPolygraphenewerkLeibzigInstances();
 	// loadVenice();
 	loadLion();
+
+	// // TODO: to remove
+	// {
+
+	// 	glm::mat4 view = {
+	// 		0.7640781, -0.18694586, 0.6174431, -0, 
+	// 		0.6451238, 0.22141676, -0.7312933, 0, 
+	// 		2.7755576e-17, 0.9570924, 0.2897829, -0, 
+	// 		-0.0581906, -4.6564403, -8.021537, 1
+	// 	};
+	// 	glm::mat4 proj = {
+	// 		0.9742786, 0, 0, 0, 
+	// 		0, 1.7320509, 0, 0, 
+	// 		0, 0, 0, -1, 
+	// 		0, 0, 0.01, 0
+	// 	};
+	// 	updateVisibilityCache(view, proj);
+				
+	// 	println("First lion loaded");
+	// 	std::shared_ptr<OctreeNode> first_octree = mainOctree;
+	// 	std::shared_ptr<LRUCache> first_cache = updatesCache;
+	// 	mainOctree = nullptr;
+	// 	uint32_t correct_size = 1024;
+	// 	updatesCache = std::make_shared<LRUCache>("updates cache", correct_size);
+	// 	visibilityCache = std::make_shared<LRUCache>("visibility cache", LRU_VISIBILITY_CACHE_SIZE);
+	// 	LRUCache::stored_set = {};
+	// 	aabb_relationship_map.clear();
+	// 	aabb_mutex_map.clear();
+	// 	aabb_parent_map.clear();
+
+	// 	loadLion();
+	// 	updateVisibilityCache(view, proj);
+	// 	println("Second lion loaded");
+
+	// 	if(*mainOctree != *first_octree){
+	// 		println("The two octrees should be similar: ");
+	// 		println("Original octree: cache size = {}", LRU_UPDATES_CACHE_SIZE);
+	// 		first_octree->display();
+	// 		println("\n\n\n\n\n\n\n\n\n");
+	// 		println("Correct octree: cache size = {}", correct_size);
+	// 		mainOctree->display();
+	// 		{
+	// 			std::lock_guard<std::mutex> lock(mainLoopIsTerminatingMtx);
+	// 			MAIN_LOOP_IS_TERMINATING = true;
+	// 			// Destroy temporary folder
+	// 			std::filesystem::remove_all(TEMPORARY_DIRECTORY);
+	// 		}
+	// 		exit(EXIT_FAILURE);
+	// 	}
+	// }
+
+
 	// loadTemple();
 }
 
@@ -471,7 +525,7 @@ int main(int argc, char** argv){
 					if(done){break;}
 				}
 				while(true){
-					addPointBatches(mainOctree, mainAABB);
+					addPointBatches();
 					bool done = true;
 					for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
 						if(batchesQueue[i] && batchesQueue[i]->state != BatchState::Inserted){
@@ -491,7 +545,7 @@ int main(int argc, char** argv){
 					if(done){break;}
 				}
 				clearUnusedBatches();
-				loadOctreeOnGPU(mainOctree, mainAABB, CuRast::instance);
+				loadOctreeOnGPU(CuRast::instance, &context);
 			}
 		});
 	};
@@ -525,7 +579,7 @@ int main(int argc, char** argv){
 
 		// Octree update routine
 		std::thread thread_octree_update([&](){
-			updateOctreeRoutine(mainOctree, mainAABB);
+			updateOctreeRoutine();
 		});
 		thread_octree_update.detach();
 
@@ -541,11 +595,21 @@ int main(int argc, char** argv){
 		thread_load_points_on_gpu.detach();
 	}
 
+	bool was_unified_set = CuRastSettings::useUnifiedMemory;
+
 	VKRenderer::loop(
 		[&]() {
 			update();
 			CuRast::instance->update();
 			
+			{
+				if(!was_unified_set && CuRastSettings::useUnifiedMemory){
+					println("Using unified memory...");
+					cudaDeviceSynchronize();
+				}
+				was_unified_set = CuRastSettings::useUnifiedMemory;
+			}
+
 			DeviceState* state = CuRast::instance->deviceState;
 			double stage1_millies = double(state->nanotime_stage_1 - state->nanotime_start) / 1'000'000.0;
 			double stage2_millies = double(state->nanotime_stage_2 - state->nanotime_stage_1) / 1'000'000.0;
@@ -556,52 +620,170 @@ int main(int argc, char** argv){
 
 			// TODO: to remove
 			{
-				static std::shared_ptr<AABB> test_stored_aabb = nullptr;
+				static AABB* test_stored_aabb = nullptr;
 
 				// Testing stuff
 				if(CuRastSettings::storeOctree){
 					// mainOctree->display();
-					test_stored_aabb = std::make_shared<AABB>(*mainAABB);
 					println("Start storing octree");
-					storeOctree(mainOctree, test_stored_aabb);
+					storeOctree(mainOctree.get());
+					test_stored_aabb = mainOctree->aabb;
 					println("Done storing octree");
 					CuRastSettings::storeOctree = false;
 				}
 				if(CuRastSettings::loadOctree){
 					println("Start loading octree");
-					std::shared_ptr<OctreeNode> octree = loadOctree(test_stored_aabb);
+					OctreeNode* octree = loadOctree(*test_stored_aabb);
 					println("Done loading octree");
 					CuRastSettings::loadOctree = false;
 					
-					if(*mainOctree.get() == *octree.get()){
+					if(*mainOctree == *octree){
 						println("loaded == original, serialisation / deserialisation worked");
 					} else {
 						println("ERROR: loaded != original, serialisation / deserialisation failed");
 					}
 
-					mainOctree = octree;
-					mainAABB = test_stored_aabb;
+					mainOctree = std::shared_ptr<OctreeNode>(octree);
 
 					cuCtxSetCurrent(context);
-					loadOctreeOnGPU(mainOctree, mainAABB, CuRast::instance, true);
+					loadOctreeOnGPU(CuRast::instance, &context, true);
 				}
 			}
 
-			if(CPU_PARALLELISED){
-				// Send things GPU side
-				loadOctreeOnGPU(mainOctree, mainAABB, CuRast::instance);
+			// // TODO: to remove
+			// {
+			// 	static OctreeNode* random_node = nullptr; 
+			// 	static uint32_t random_depth = 0;
+			// 	static std::vector<NodePosition> random_path = {};
+
+			// 	// Testing stuff
+			// 	if(CuRastSettings::storeOctree){
+			// 		println("Start getting random node");
+			// 		random_node = mainOctree.get();
+			// 		random_device rd;
+			// 		mt19937 gen(rd());
+			// 		uniform_int_distribution<> distrib(2, mainOctree->getDepth());
+			// 		random_depth = distrib(gen);
+			// 		random_path = {};
+
+			// 		for(uint32_t i=1; i<random_depth; i++){
+			// 			uniform_int_distribution<> child_distrib(0, 8);
+			// 			uint32_t random_child = child_distrib(gen);
+			// 			bool found = false;
+			// 			for(uint32_t j=0; j<8; j++){
+			// 				uint32_t cur_child = (random_child + j) % 8;
+			// 				if(random_node->children[cur_child]){
+			// 					random_path.push_back((NodePosition)cur_child);
+			// 					random_node = random_node->children[cur_child];
+			// 					found = true;
+			// 					break;
+			// 				}
+			// 			}
+			// 			if(!found){break;}
+			// 		}
+			// 		printf("Random path: ");
+			// 		for(uint32_t i=0; i<random_path.size(); i++){
+			// 			printf("%d, ", random_path[i]);
+			// 		}
+			// 		println();
+
+			// 		// mainOctree->display();
+			// 		println("Start storing octree");
+			// 		storeOctree(random_node, true);
+			// 		println("Done storing octree");
+			// 		CuRastSettings::storeOctree = false;
+			// 	}
+			// 	if(CuRastSettings::loadOctree && random_node){
+			// 		println("Start loading octree");
+			// 		OctreeNode* octree = loadOctree(*random_node->aabb, true);
+			// 		CuRastSettings::loadOctree = false;
+
+			// 		mainOctree->display();
+
+			// 		println("Loaded single node:");
+			// 		octree->display(random_path.back(), random_path.size(), true);
+			// 		println();
+
+			// 		random_node = mainOctree.get();
+			// 		for(uint32_t i=0; i<random_path.size()-1; i++){
+			// 			random_node = random_node->children[random_path[i]];
+			// 		}
+			// 		println("Loaded subtree:");
+			// 		for(uint32_t i=0; i<8; i++){
+			// 			// octree->children[i] = random_node->children[random_path.back()]->children[i];
+			// 			if(random_node->children[random_path.back()]->children[i]){
+			// 				const AABB& aabb = *random_node->children[random_path.back()]->children[i]->aabb;
+			// 				if(LRUCache::hasBeenStored(aabb)){
+			// 					octree->children[i] = loadOctree(aabb);
+			// 				} else {
+			// 					octree->children[i] = random_node->children[random_path.back()]->children[i];
+			// 				}
+			// 				octree->children[i]->display(i, random_path.size()+1);
+			// 			}
+			// 		}
+			// 		println("Done loading octree");
+
+			// 		if(*random_node->children[random_path.back()] == *octree){
+			// 			println("loaded == original, serialisation / deserialisation worked");
+			// 		} else {
+			// 			println("ERROR: loaded != original, serialisation / deserialisation failed");
+			// 		}
+			// 		random_node->children[random_path.back()] = octree;
+
+
+			// 		cuCtxSetCurrent(context);
+			// 		loadOctreeOnGPU(CuRast::instance, &context, true);
+			// 	}
+			// }
+
+			if(elapsedFrames >= SEND_DATA_EVERY_X_FRAMES){
+				elapsedFrames = 0;
+				updateVisibilityCache(VKRenderer::view.view, VKRenderer::view.proj);
+				loadOctreeOnGPU(CuRast::instance, &context);
 			}
+
 			freeOctreesOnGPU(CuRast::instance);
+			elapsedFrames++;
+
+			// { // TODO: remove, just for debugging
+
+			// 	// https://forums.developer.nvidia.com/t/best-way-to-report-memory-consumption-in-cuda/21042
+			// 	static double freeDB = 0.;
+			// 	uint64_t free_byte, total_byte = 0;
+			// 	double free_db, total_db, used_db = 0.;
+
+			// 	CURuntime::assertCudaSuccess(cuMemGetInfo(&free_byte, &total_byte));
+			// 	free_db = (double)free_byte; total_db = (double)total_byte; used_db = total_db - free_db;
+			// 	free_db /= (1024 * 1024); total_db /= (1024 * 1024); used_db /= (1024 * 1024);
+			// 	// Only display if changes bigger than X Mb
+			// 	if(abs(freeDB - floor(free_db)) >= 10){
+			// 		println("GPU usage\n    Total: {:L} Mb\n    InUse: {:L} Mb\n    Available: {:L} Mb",
+			// 			total_db, used_db, free_db
+			// 		);
+			// 		freeDB = floor(free_db);
+			// 	}
+			// }
 		},
-		[&]() {CuRast::instance->render();},
+		[&]() {
+			CuRast::instance->render();
+		},
 		[&]() {CuRast::instance->postFrame();}
 	);
+
+	{
+		std::lock_guard<std::mutex> lock(mainLoopIsTerminatingMtx);
+		MAIN_LOOP_IS_TERMINATING = true;
+		// Destroy temporary folder
+		std::filesystem::remove_all(TEMPORARY_DIRECTORY);
+	}
 
 	displayTimings();
 	displayBuffers();
 
-	// Destroy temporary folder
-	std::filesystem::remove_all(TEMPORARY_DIRECTORY);
+	if(mainOctreeCpy){
+		delete(mainOctreeCpy);
+		mainOctreeCpy = nullptr;
+	}
 
 	VKRenderer::destroy();
 }

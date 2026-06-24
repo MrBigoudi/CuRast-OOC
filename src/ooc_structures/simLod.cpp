@@ -3,7 +3,7 @@
 
 #include <unordered_set>
 
-void simLodUpdate(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>& main_aabb, std::shared_ptr<vector<Point>>& points){
+void simLodUpdate(OctreeNode* main_root, std::shared_ptr<vector<Point>>& points){
 	std::shared_ptr<Timing> count_split_timing = addTiming("simlod count/split loop", true, 1);
 
 	// println("//////////////////////////////////////////////////");
@@ -11,25 +11,18 @@ void simLodUpdate(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>&
 	// println("//////////////////////////////////////////////////");
 	// main_root->display();
 
-	uint32_t inner_cpt = 0;
+	std::shared_ptr<Timing> timing = addTiming("simlod load", true, 1);
+	simLodLoad(main_root, points);
+	timing->stop_clock();
+
+	// println("//////////////////////////////////////////////////");
+	// println("////////// Octree after simlod load //////////");
+	// println("//////////////////////////////////////////////////");
+	// main_root->display();
+
 	while(true){
-		std::shared_ptr<Timing> timing = addTiming("simlod load", true, 2);
-		simLodLoad(main_root, main_aabb, points, spilledPoints);
-		timing->stop_clock();
-
-		// println("//////////////////////////////////////////////////");
-		// println("////////// Octree after simlod load //////////");
-		// println("//////////////////////////////////////////////////");
-		// main_root->display();
-		// {
-		// 	static int cpt = 0;
-		// 	if(cpt++ >= 30){
-		// 		exit(EXIT_FAILURE);
-		// 	}
-		// }
-
-		timing = addTiming("simlod count", true, 2);
-		simLodCount(main_root, main_aabb, points, spilledPoints, spillingNodes);
+		std::shared_ptr<Timing> timing = addTiming("simlod count", true, 2);
+		simLodCount(main_root, points, spilledPoints, spillingNodes);
 		timing->stop_clock();
 
 		if(spillingNodes->size() == 0){
@@ -49,8 +42,6 @@ void simLodUpdate(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>&
 		// println("////////// Octree after simlod splitting /////////");
 		// println("//////////////////////////////////////////////////");
 		// main_root->display();
-		
-		inner_cpt++;
 	}
 	count_split_timing->stop_clock();
 
@@ -60,8 +51,8 @@ void simLodUpdate(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>&
 	// main_root->display();
 
 
-	std::shared_ptr<Timing> timing = addTiming("simlod voxel sampling", true, 1);
-	simLodVoxelSampling(main_root, main_aabb, points, spilledPoints, backlogVoxels, backlogVoxelsNodes);
+	timing = addTiming("simlod voxel sampling", true, 1);
+	simLodVoxelSampling(main_root, points, spilledPoints, backlogVoxels, backlogVoxelsNodes);
 	timing->stop_clock();
 
 	// println("//////////////////////////////////////////////////");
@@ -71,7 +62,7 @@ void simLodUpdate(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>&
 	
 
 	timing = addTiming("simlod insertion", true, 1);
-	simLodInsertion(main_root, main_aabb, points, spilledPoints, backlogVoxels, backlogVoxelsNodes);
+	simLodInsertion(main_root, points, spilledPoints, backlogVoxels, backlogVoxelsNodes);
 	timing->stop_clock();
 
 	// println("//////////////////////////////////////////////////");
@@ -93,44 +84,23 @@ void simLodUpdate(std::shared_ptr<OctreeNode>& main_root, std::shared_ptr<AABB>&
 
 
 void simLodCount(
-    std::shared_ptr<OctreeNode>& main_root, 
-    std::shared_ptr<AABB>& main_aabb, 
+    OctreeNode* main_root,
     std::shared_ptr<vector<Point>>& points,
     std::shared_ptr<vector<Point>>& spilled_points,
     std::shared_ptr<vector<OctreeNode*>>& spilling_nodes
 ){
 
-	mutex mtx;
+	std::mutex mtx_counter, mtx_spilling_nodes;
 
-	auto countPoint = [&](Point& point){
+	auto countPoint = [&](Point& point, std::mutex& mtx_counter, std::mutex& mtx_spilling_nodes){
 		// Reach corresponding leaf
-		std::shared_ptr<OctreeNode> leaf = main_root;
-		AABB current_aabb = AABB(*main_aabb);
+		OctreeNode* leaf = main_root;
 
 		uint8_t level = 1;
 
 		while(true){
 			// Find next child
-			NodePosition child_index = current_aabb.getNextChildIndex(point.position);
-			AABB old_aabb = current_aabb;
-			current_aabb.shrink(child_index);
-			leaf->children_ids |= 0x01 << child_index;
-
-			if(!current_aabb.contains(point.position)){
-				println("Error SimLOD count: the point should always be contained in the next AABB");
-				println("\tpoint position: ({}, {}, {})", point.position.x, point.position.y, point.position.z);
-				println("\tpoint new index: {}", uint32_t(child_index));
-				println("\told AABB: mins({}, {}, {}), maxs({}, {}, {})", 
-					old_aabb.mins.x, old_aabb.mins.y, old_aabb.mins.z,
-					old_aabb.maxs.x, old_aabb.maxs.y, old_aabb.maxs.z
-				);
-				println("\tnew AABB: mins({}, {}, {}), maxs({}, {}, {})", 
-					current_aabb.mins.x, current_aabb.mins.y, current_aabb.mins.z,
-					current_aabb.maxs.x, current_aabb.maxs.y, current_aabb.maxs.z
-				);
-				println("skipping point...");
-				return;
-			}
+			NodePosition child_index = leaf->aabb->getNextChildIndex(point.position);
 
 			// If not leaf continue
 			if(leaf->children[child_index]){
@@ -142,6 +112,8 @@ void simLodCount(
 				}
 				level++;
 			} else {
+				leaf->children_ids |= 0x01 << child_index;
+
 				// Skip if the point was already accepted at this level
 				if(point.color[3] == level){return;}
 
@@ -151,17 +123,16 @@ void simLodCount(
 				{
 					// Sync read / write to counter
 					// uint16_t old_counter = leaf->counter.fetch_add(1u);
-					uint16_t old_counter = 0;
+					uint32_t old_counter = 0;
 					
 					{
-						std::lock_guard<std::mutex> lock(mtx);
+						std::lock_guard<std::mutex> lock_counter(mtx_counter);
 						old_counter = leaf->counter;
+						leaf->counter = min(old_counter + 1u, MAX_POINTS_PER_LEAF + 1u);
 					}
-					leaf->counter++;
 					if(old_counter == MAX_POINTS_PER_LEAF){
-						// leaf->counter.store(MAX_POINTS_PER_LEAF + 1u);
-						leaf->counter = MAX_POINTS_PER_LEAF + 1u;
-						spilling_nodes->push_back(leaf.get());
+						std::lock_guard<std::mutex> lock_spilling(mtx_spilling_nodes);
+						spilling_nodes->push_back(leaf);
 					}
 				}
 
@@ -172,10 +143,10 @@ void simLodCount(
 
 	if(!CPU_PARALLELISED){
 		for(Point& point : *points){
-			countPoint(point);
+			countPoint(point, mtx_counter, mtx_spilling_nodes);
 		}
 		for(Point& point : *spilled_points){
-			countPoint(point);		
+			countPoint(point, mtx_counter, mtx_spilling_nodes);		
 		}
 	} else {
 		vector<uint32_t> first_indices = {};
@@ -188,11 +159,11 @@ void simLodCount(
 		std::for_each(std::execution::par, first_indices.begin(), first_indices.end(), [&](uint32_t index){
 			for(uint32_t i=0; i<step_size; i++){
 				if((index + i) >= nb_points){break;}
-				countPoint((*points)[index + i]);
+				countPoint((*points)[index + i], mtx_counter, mtx_spilling_nodes);
 			}
 			for(uint32_t i=0; i<step_size; i++){
 				if((index + i) >= nb_spilled_points){break;}
-				countPoint((*spilled_points)[index + i]);
+				countPoint((*spilled_points)[index + i], mtx_counter, mtx_spilling_nodes);
 			}
 		});
 	}
@@ -207,60 +178,109 @@ void simLodSplit(
     std::shared_ptr<vector<Point>>& spilled_points,
     std::shared_ptr<vector<OctreeNode*>>& spilling_nodes
 ){
-	for(uint32_t node_id = 0; node_id < spilling_nodes->size(); node_id++){
-		OctreeNode*& spilling_node = (*spilling_nodes)[node_id];
+
+	mutex mtx_spilled_points;
+
+	auto lambda = [&](OctreeNode*& spilling_node){
+	// for(uint32_t node_id = 0; node_id < spilling_nodes->size(); node_id++){
+		// OctreeNode*& spilling_node = (*spilling_nodes)[node_id];
 		uint8_t spilling_node_children = spilling_node->children_ids;
 
 		// spilling_node->is_leaf = false;
 		spilling_node->counter = 0;
+		spilling_node->children_ids = 0;
 		if(!spilling_node->occupancy){
-			spilling_node->occupancy = std::make_shared<OccupancyGrid>();
+			spilling_node->occupancy = new OccupancyGrid();
 		}
 
 		for(uint32_t j=0; j<8; j++){
 			// Create necessary empty children
-			if(!spilling_node->children[j] && (0x01 << j) & spilling_node_children){
-				std::shared_ptr<OctreeNode> empty_child = std::make_shared<OctreeNode>();
+			bool can_be_spilled = (0x01 << j) & spilling_node_children;
+			if(!spilling_node->children[j] && can_be_spilled){
+				OctreeNode* empty_child = new OctreeNode();
+				empty_child->aabb = new AABB(*spilling_node->aabb);
+				empty_child->aabb->shrink((NodePosition)j);
 				empty_child->from_split = true;
 				// empty_child->is_leaf = true;
 				spilling_node->children[j] = empty_child;
+
+				// TODO: temporary code
+				{
+					std::lock_guard<std::mutex> lock(aabb_relationship_map_mtx);
+
+					if(aabb_relationship_map[*spilling_node->aabb][j]){
+						std::string output = format("mins = ({}, {}, {}), maxs = ({}, {}, {})",
+							empty_child->aabb->mins.x, 
+							empty_child->aabb->mins.y, 
+							empty_child->aabb->mins.z, 
+							empty_child->aabb->maxs.x, 
+							empty_child->aabb->maxs.y, 
+							empty_child->aabb->maxs.z
+						);
+						println("Weird 1: AABB {}, should have been loaded in simlodload", output);
+					}
+					if(aabb_relationship_map.contains(*empty_child->aabb)){
+						println("Weird 2");
+					}
+					if(aabb_parent_map.contains(*empty_child->aabb)){
+						println("Weird 3");
+					}
+
+					aabb_relationship_map[*spilling_node->aabb][j] = *empty_child->aabb;
+					aabb_relationship_map[*empty_child->aabb] = {nullopt};
+					aabb_parent_map[*empty_child->aabb] = *spilling_node->aabb;
+				}
 			}
 		}
 
 		// Add former points to spilled points and free memory
-		std::vector<std::shared_ptr<Chunk>> old_chunks = {spilling_node->points};
-		std::shared_ptr<Chunk> current_chunk = spilling_node->points;
+		Chunk* current_chunk = spilling_node->points;
 		if(!current_chunk){
-			continue;
+			// continue;
+			return;
 		}
 		
-		while(current_chunk->next){
-			current_chunk = current_chunk->next;
-			old_chunks.push_back(current_chunk);
-		}
-		for(int32_t i = old_chunks.size()-1; i >= 0; i--){
-			current_chunk = old_chunks[i];
+		while(current_chunk){
 			for(uint32_t j=0; j<current_chunk->size; j++){
-
 				// Flag the point as not accepted
 				current_chunk->points[j].color[3] = 0;
-
+				std::lock_guard<std::mutex> lock_spilled(mtx_spilled_points);
 				spilled_points->push_back(current_chunk->points[j]);
 			}
-			current_chunk->next = nullptr;
-			current_chunk = nullptr;
-			old_chunks[i] = nullptr;
+			current_chunk = current_chunk->next;
 		}
 
+		delete(spilling_node->points);
 		spilling_node->points = nullptr;
+	};
+
+
+	// // Sanity check
+	// std::unordered_set<OctreeNode*> set = {};
+	// for(OctreeNode*& node : *spilling_nodes){
+	// 	if(set.contains(node)){
+	// 		println("Duplicate spilling nodes should not happen");
+	// 		exit(EXIT_FAILURE);
+	// 	}
+	// 	set.insert(node);
+	// }
+
+	if(!CPU_PARALLELISED){
+		std::for_each(spilling_nodes->begin(), spilling_nodes->end(), [&](OctreeNode*& spilling_node){
+			lambda(spilling_node);
+		});
+	} else {
+		std::for_each(std::execution::par, spilling_nodes->begin(), spilling_nodes->end(), [&](OctreeNode*& spilling_node){
+			lambda(spilling_node);
+		});
 	}
+
 	spilling_nodes->clear();
 }
 
 
 void simLodVoxelSampling(
-    std::shared_ptr<OctreeNode>& main_root, 
-    std::shared_ptr<AABB>& main_aabb, 
+    OctreeNode* main_root,
     std::shared_ptr<vector<Point>>& points,
     std::shared_ptr<vector<Point>>& spilled_points,
     std::shared_ptr<vector<Point>>& backlog_voxels,
@@ -268,36 +288,18 @@ void simLodVoxelSampling(
 ){
 	auto sampleVoxel = [&](Point& point){
 		// Reach all corresponding inner nodes
-		std::shared_ptr<OctreeNode> node = main_root;
-		AABB current_aabb = AABB(*main_aabb);
+		OctreeNode* node = main_root;
 
 		while(true){
 			// if(node->is_leaf){return;}
 			if(!node->occupancy){return;}
 
 			// Find next child
-			NodePosition child_index = current_aabb.getNextChildIndex(point.position);
-			AABB child_aabb = AABB(current_aabb);
-			child_aabb.shrink(child_index);
-			if(!child_aabb.contains(point.position)){
-				println("Error SimLOD voxel sampling: the point should always be contained in the next AABB");
-				println("\tpoint position: ({}, {}, {})", point.position.x, point.position.y, point.position.z);
-				println("\tpoint new index: {}", uint32_t(child_index));
-				println("\told AABB: mins({}, {}, {}), maxs({}, {}, {})", 
-					current_aabb.mins.x, current_aabb.mins.y, current_aabb.mins.z,
-					current_aabb.maxs.x, current_aabb.maxs.y, current_aabb.maxs.z
-				);
-				println("\tnew AABB: mins({}, {}, {}), maxs({}, {}, {})", 
-					current_aabb.mins.x, current_aabb.mins.y, current_aabb.mins.z,
-					current_aabb.maxs.x, current_aabb.maxs.y, current_aabb.maxs.z
-				);
-				println("skipping point...");
-				return;
-			}
+			NodePosition child_index = node->aabb->getNextChildIndex(point.position);
 			if(!node->children[child_index]){return;}
 
 			// Sample voxel occupancy grid at this location if the node is inner for this point
-			vec3 normalized_coordinates = current_aabb.getPointNormalizedCoordinates(point.position);
+			vec3 normalized_coordinates = node->aabb->getPointNormalizedCoordinates(point.position);
 			uint32_t grid_x = clamp(uint32_t(floor(GRID_SIZE * normalized_coordinates.x)), 0u, GRID_SIZE - 1u);
 			uint32_t grid_y = clamp(uint32_t(floor(GRID_SIZE * normalized_coordinates.y)), 0u, GRID_SIZE - 1u);
 			uint32_t grid_z = clamp(uint32_t(floor(GRID_SIZE * normalized_coordinates.z)), 0u, GRID_SIZE - 1u);
@@ -310,8 +312,8 @@ void simLodVoxelSampling(
 				// Fill up occupancy grid
 				node->occupancy->values[word_index] |= (1u << bit_index);
 				// Create corresponding voxel using this point
-				vec3 world_grid_size = current_aabb.getSize() / float(GRID_SIZE);
-				vec3 voxel_centroid = current_aabb.mins + world_grid_size * vec3(grid_x, grid_y, grid_z) + 0.5f*world_grid_size;
+				vec3 world_grid_size = node->aabb->getSize() / float(GRID_SIZE);
+				vec3 voxel_centroid = node->aabb->mins + world_grid_size * vec3(grid_x, grid_y, grid_z) + 0.5f*world_grid_size;
 				Point new_voxel = {};
 				new_voxel.position = voxel_centroid;
 				new_voxel.color[0] = point.color[0];
@@ -325,11 +327,10 @@ void simLodVoxelSampling(
 				// Add voxel to backlog buffers
 				// node->counter++;
 				backlog_voxels->push_back(new_voxel);
-				backlog_voxels_nodes->push_back(node.get());
+				backlog_voxels_nodes->push_back(node);
 			}
 
 			node = node->children[child_index];
-			current_aabb = AABB(child_aabb);
 		}
 	};
 
@@ -342,52 +343,29 @@ void simLodVoxelSampling(
 }
 
 void simLodInsertion(
-    std::shared_ptr<OctreeNode>& main_root, 
-    std::shared_ptr<AABB>& main_aabb, 
+    OctreeNode* main_root,
     std::shared_ptr<vector<Point>>& points,
     std::shared_ptr<vector<Point>>& spilled_points,
     std::shared_ptr<vector<Point>>& backlog_voxels,
     std::shared_ptr<vector<OctreeNode*>>& backlog_voxels_nodes
 ){
 
-	auto insertPoint = [&](Point& point){
+	auto insertPoint = [&](Point& point, OctreeNode* main_node){
+		OctreeNode* cur_node = main_node;
 		// Reach all corresponding leaves
-		std::shared_ptr<OctreeNode> node = main_root;
-		AABB current_aabb = AABB(*main_aabb);
-
 		while(true){
-			node->updated = true;
-
+			cur_node->updated = true;
 			// Find next child
-			NodePosition child_index = current_aabb.getNextChildIndex(point.position);
-			AABB old_aabb = current_aabb;
-			current_aabb.shrink(child_index);
-
-			if(!current_aabb.contains(point.position)){
-				println("Error SimLOD insertion: the point should always be contained in the next AABB");
-				println("\tpoint position: ({}, {}, {})", point.position.x, point.position.y, point.position.z);
-				println("\tpoint new index: {}", uint32_t(child_index));
-				println("\told AABB: mins({}, {}, {}), maxs({}, {}, {})", 
-					old_aabb.mins.x, old_aabb.mins.y, old_aabb.mins.z,
-					old_aabb.maxs.x, old_aabb.maxs.y, old_aabb.maxs.z
-				);
-				println("\tnew AABB: mins({}, {}, {}), maxs({}, {}, {})", 
-					current_aabb.mins.x, current_aabb.mins.y, current_aabb.mins.z,
-					current_aabb.maxs.x, current_aabb.maxs.y, current_aabb.maxs.z
-				);
-				println("skipping point...");
-				return;
-			}
-
+			NodePosition child_index = cur_node->aabb->getNextChildIndex(point.position);
 			// If leaf insert point in chunks
-			if(node->children[child_index]){
-				node = node->children[child_index];
+			if(cur_node->children[child_index]){
+				cur_node = cur_node->children[child_index];
 			} else {
-				if(!node->points){node->points = std::make_shared<Chunk>();}
-				std::shared_ptr<Chunk> chunk_list = node->points;
+				if(!cur_node->points){cur_node->points = new Chunk();}
+				Chunk* chunk_list = cur_node->points;
 				while(chunk_list->next){chunk_list = chunk_list->next;}
 				if(chunk_list->size == POINTS_PER_CHUNK){
-					chunk_list->next = std::make_shared<Chunk>();
+					chunk_list->next = new Chunk();
 					chunk_list = chunk_list->next;
 				}
 				chunk_list->points[chunk_list->size] = point;
@@ -399,12 +377,11 @@ void simLodInsertion(
 
 	auto insertVoxel = [&](Point& voxel, OctreeNode* node){
 		node->updated = true;
-
-		if(!node->voxels){node->voxels = std::make_shared<Chunk>();}
-		std::shared_ptr<Chunk> chunk_list = node->voxels;
+		if(!node->voxels){node->voxels = new Chunk();}
+		Chunk* chunk_list = node->voxels;
 		while(chunk_list->next){chunk_list = chunk_list->next;}
 		if(chunk_list->size == POINTS_PER_CHUNK){
-			chunk_list->next = std::make_shared<Chunk>();
+			chunk_list->next = new Chunk();
 			chunk_list = chunk_list->next;
 		}
 		chunk_list->points[chunk_list->size] = voxel;
@@ -414,10 +391,10 @@ void simLodInsertion(
 
 	if(!CPU_PARALLELISED){
 		for(Point& point : *points){
-			insertPoint(point);
+			insertPoint(point, main_root);
 		}
 		for(Point& point : *spilled_points){
-			insertPoint(point);		
+			insertPoint(point, main_root);		
 		}
 		uint32_t nb_new_voxels = backlog_voxels->size();
 		for(uint32_t i=0; i<nb_new_voxels; i++){
@@ -432,10 +409,10 @@ void simLodInsertion(
 		});
 
 		for(Point& point : *points){
-			insertPoint(point);
+			insertPoint(point, main_root);
 		}
 		for(Point& point : *spilled_points){
-			insertPoint(point);		
+			insertPoint(point, main_root);		
 		}
 
 		parallel_thread.join();
@@ -446,38 +423,29 @@ void simLodInsertion(
 
 
 void simLodLoad(
-    std::shared_ptr<OctreeNode>& main_root, 
-    std::shared_ptr<AABB>& main_aabb, 
-    std::shared_ptr<vector<Point>>& points,
-    std::shared_ptr<vector<Point>>& spilled_points
+    OctreeNode* main_root,
+    std::shared_ptr<vector<Point>>& points
 ){
 
-	mutex mtx_child, mtx_set;
 	// tmp_ser is here to avoid loading a node multiple time in the parallel context
+	mutex mtx_set;
 	std::unordered_set<AABB, AABB::Hash> tmp_set = {};
 
 
 	// Try to insert all points
-	auto tryInsertPoint = [&](Point& point){
+	auto tryInsertPoint = [&](Point& point, OctreeNode* main_root){
 		// Reach corresponding leaf
-		std::shared_ptr<OctreeNode> leaf = main_root;
-		AABB current_aabb = AABB(*main_aabb);
+		OctreeNode* leaf = main_root;
 
 		uint8_t level = 0;
 
 		while(true){
 			// Find next child
-			NodePosition child_index = current_aabb.getNextChildIndex(point.position);
-			current_aabb.shrink(child_index);
-
-			// Sanitary check
-			if(!current_aabb.contains(point.position)){
-				println("Failed sanity check");
-				return;
-			}
+			NodePosition child_index = leaf->aabb->getNextChildIndex(point.position);
 
 			// If current node is not a leaf continue, else current node becomes child
-			std::shared_ptr<OctreeNode> child = leaf->children[child_index];
+			OctreeNode* child = leaf->children[child_index];
+
 			if(child){
 				leaf = child;
 				// Get node level
@@ -487,30 +455,33 @@ void simLodLoad(
 				}
 				level++;
 			} else {
-				std::shared_ptr<AABB> aabb = std::make_shared<AABB>(current_aabb);
 				// Check if the child has been stored
 				bool has_been_stored = false;
+				// AABB child_aabb = *leaf->aabb;
+				// child_aabb.shrink((NodePosition)child_index);
+				AABB child_aabb = {};
+				// TODO: temporary code
+				{
+					std::lock_guard<std::mutex> lock(aabb_relationship_map_mtx);
+					if(aabb_relationship_map[*leaf->aabb][child_index].has_value()){
+						child_aabb = aabb_relationship_map[*leaf->aabb][child_index].value();
+					} else {
+						return;
+					}
+				}
+				
 				
 				{
-					std::lock_guard<std::mutex> lock_map(mtx_set);
-					std::lock_guard<std::mutex> lock_child(mtx_child);
-					has_been_stored = hasBeenStored(aabb) || tmp_set.contains(current_aabb);
-				}
-
-				// If the child has not been stored, we've reached the end of the loop
-				if(!has_been_stored){return;}
-
-				// Else, we load the child and make it the current node
-				{
-					std::lock_guard<std::mutex> lock_map(mtx_set);
-					if(!tmp_set.contains(current_aabb)){
-						tmp_set.insert(current_aabb);
-						std::lock_guard<std::mutex> lock_child(mtx_child);
-						leaf->children[child_index] = loadOctree(aabb, true);
+					std::lock_guard<std::mutex> lock(mtx_set);
+					if(!tmp_set.contains(child_aabb)){
+						// Load the child and make it the current node
+						tmp_set.insert(child_aabb);
+						leaf->children[child_index] = loadOctree(child_aabb, true);
 					}
 				}
 
 				leaf = leaf->children[child_index];
+
 				if(!leaf){
 					println("At this point in the SimLodLoad, the leaf should never be null");
 					exit(EXIT_FAILURE);
@@ -528,28 +499,23 @@ void simLodLoad(
 
 	if(!CPU_PARALLELISED){
 		for(Point& point : *points){
-			tryInsertPoint(point);
-		}
-		for(Point& point : *spilled_points){
-			tryInsertPoint(point);		
+			tryInsertPoint(point, main_root);
 		}
 	} else {
 		vector<uint32_t> first_indices = {};
 		uint32_t step_size = 100'000u;
 		uint32_t nb_points = points->size();
-		uint32_t nb_spilled_points = spilled_points->size();
-		uint32_t max_nb_points = max(nb_points, nb_spilled_points);
-		for(uint32_t i=0; i<max_nb_points; i+=step_size){first_indices.push_back(i);}
+		for(uint32_t i=0; i<nb_points; i+=step_size){first_indices.push_back(i);}
 
 		std::for_each(std::execution::par, first_indices.begin(), first_indices.end(), [&](uint32_t index){
 			for(uint32_t i=0; i<step_size; i++){
 				if((index + i) >= nb_points){break;}
-				tryInsertPoint((*points)[index + i]);
-			}
-			for(uint32_t i=0; i<step_size; i++){
-				if((index + i) >= nb_spilled_points){break;}
-				tryInsertPoint((*spilled_points)[index + i]);
+				tryInsertPoint((*points)[index + i], main_root);
 			}
 		});
 	}
+
+	// if(!tmp_set.empty()){
+	// 	println("nb loaded nodes = {}", tmp_set.size());
+	// }
 }
