@@ -685,7 +685,6 @@ int main(int argc, char** argv){
 			// 		for(uint32_t i=0; i<random_path.size(); i++){
 			// 			printf("%d, ", random_path[i]);
 			// 		}
-			// 		println();
 
 			// 		// mainOctree->display();
 			// 		println("Start storing octree");
@@ -702,7 +701,6 @@ int main(int argc, char** argv){
 
 			// 		println("Loaded single node:");
 			// 		octree->display(random_path.back(), random_path.size(), true);
-			// 		println();
 
 			// 		random_node = mainOctree.get();
 			// 		for(uint32_t i=0; i<random_path.size()-1; i++){

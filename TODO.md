@@ -2,7 +2,6 @@
 
 ## Next steps (in priority order)
 
-- Implement frustum culling on GPU side (or just disable non-visible nodes)
 - Add a settings file to avoid recompiling everytime
 - Clean the code + improve comments
 - Create uniform structure for better structuring in cuda code / gui

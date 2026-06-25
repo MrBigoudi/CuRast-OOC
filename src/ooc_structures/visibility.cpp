@@ -62,7 +62,7 @@ void Frustum::display() const {
             planes[i].normal.x, planes[i].normal.y, planes[i].normal.z, planes[i].constant
         );
     }
-    println();
+    println("");
 }
 
 
@@ -230,20 +230,20 @@ void fillVisibilityCache(const std::vector<AABB>& nodes, OctreeNode* root_octree
     //     visibilityCache->getSize(), updatesCache->getSize(), LRUCache::stored_set.size(), nodes.size(), aabb_relationship_map.size()
     // );
 
-    // println();
-    // println();
+    // println("");
+    // println("");
     // updatesCache->display(true);
-    // println();
-    // println();
+    // println("");
+    // println("");
     // visibilityCache->display(true);
-    // println();
-    // println();
+    // println("");
+    // println("");
 
     // LRUCache::displayStored();
     // // println("Octree before: ");
     // // root_octree->display();
-    // println();
-    // println();
+    // println("");
+    // println("");
 
     // println("//////////////////////////////////////////////////////////");
 	// println("///////////////////// Ordered stored /////////////////////");
@@ -332,7 +332,7 @@ void fillVisibilityCache(const std::vector<AABB>& nodes, OctreeNode* root_octree
     // println("before add: vis cache size = {}, updates cache size = {}, stored nodes = {}, nb visible nodes = {}, total nb nodes = {}", 
     //     visibilityCache->getSize(), updatesCache->getSize(), LRUCache::stored_set.size(), nodes.size(), aabb_relationship_map.size()
     // );
-    // println();
+    // println("");
 }
 
 
@@ -387,7 +387,7 @@ void updateVisibilityCache(const mat4& view, const mat4& proj){
     //         aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
     //     );
     // }
-    // println();
+    // println("");
 
     // {
     //     // TODO: to remove
@@ -416,7 +416,7 @@ void updateVisibilityCache(const mat4& view, const mat4& proj){
     //             aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
     //         );
     //     }
-    //     println();
+    //     println("");
     // }
 
 
@@ -432,7 +432,7 @@ void updateVisibilityCache(const mat4& view, const mat4& proj){
     //             aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
     //         );
     //     }
-    //     println();
+    //     println("");
     // }
 
 

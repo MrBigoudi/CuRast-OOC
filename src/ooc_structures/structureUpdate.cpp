@@ -311,23 +311,6 @@ void createCudaMemory(CuRast* editor, CUcontext* context, std::shared_ptr<Octree
 		if(chunk_first_voxels.has_value()){
 			new_node.voxels = (CChunk*)octree->cptr_chunks[chunk_first_voxels.value()];
 		}
-		if(cur_node->occupancy){
-			// Allocate occupancy grid
-			COccupancyGrid tmp = {};
-			for(uint32_t i=0; i<C_GRID_NUM_CELLS; i++){
-				tmp.values[i] = cur_node->occupancy->values[i];
-			}
-			octree->cptr_occupancy_grids.push_back(CUdeviceptr());
-			if(CPU_PARALLELISED){
-				cuMemAllocAsync(&octree->cptr_occupancy_grids[occupancy_grids_counter], sizeof(COccupancyGrid), octree->stream);
-				cuMemcpyHtoDAsync(octree->cptr_occupancy_grids[occupancy_grids_counter], &tmp, sizeof(COccupancyGrid), octree->stream);
-			} else {
-				cuMemAlloc(&octree->cptr_occupancy_grids[occupancy_grids_counter], sizeof(COccupancyGrid));
-				cuMemcpyHtoD(octree->cptr_occupancy_grids[occupancy_grids_counter], &tmp, sizeof(COccupancyGrid));
-			}
-			new_node.occupancy = (COccupancyGrid*)octree->cptr_occupancy_grids[occupancy_grids_counter];
-			occupancy_grids_counter++;
-		}
 		if(level > max_lod_level){
 			max_lod_level = level;
 		}

@@ -835,7 +835,7 @@ bool LRUCache::sanityCheck(const OctreeNode* root_node) {
                 aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
             );
         }
-        println();
+        println("");
         println("Incorrect elements in cache:");
         for(const AABB& aabb : incorrect){
             println("    mins = ({}, {}, {}), maxs = ({}, {}, {})",
@@ -911,7 +911,7 @@ bool LRUCache::sanityCheckStored(const OctreeNode* root_node) {
                 aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
             );
         }
-        println();
+        println("");
         println("Incorrect elements in stored cache:");
         for(const AABB& aabb : incorrect){
             println("    mins = ({}, {}, {}), maxs = ({}, {}, {})",
