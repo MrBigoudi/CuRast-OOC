@@ -286,57 +286,6 @@ struct OctreeNode {
 
 
 
-///////////////////////////////////////////////////////////////////////////////
-////////////////////////// GLOBAL EXTERNAL VARIABLES //////////////////////////
-///////////////////////////////////////////////////////////////////////////////
-
-struct GlobalVariables {
-	/// The queue of batches
-	static std::deque<std::shared_ptr<PointBatch>> batchesQueue;
-	static std::deque<std::mutex> batchesQueueMutexes;
-
-	/// The buffer of spilled points
-	static std::shared_ptr<vector<Point>> spilledPoints;
-	/// The buffer of spilling nodes
-	static std::shared_ptr<vector<OctreeNode*>> spillingNodes;
-
-	/// The backlog buffer for new voxels
-	static std::shared_ptr<vector<Point>> backlogVoxels;
-	/// The backlog buffer for the nodes corresponding to the new voxels
-	static std::shared_ptr<vector<OctreeNode*>> backlogVoxelsNodes;
-
-
-	static uint32_t elapsedFrames;
-	static uint64_t nbPoints;
-	static bool mainLoopIsTerminating;
-	static std::mutex mainLoopIsTerminatingMtx;
-	/// Counter for the number of octree created
-	static uint64_t simLodOctreeCounter;
-
-	/// Variables tracking when the octree can be sent to GPU
-	static std::binary_semaphore octreeReadyToBeSent;
-	static std::binary_semaphore octreeReadyToBeUpdated;
-	static std::binary_semaphore octreeNotBeingSent;
-	static std::mutex isUpdatingMtx;
-
-	static uint64_t loadCounter;
-	static std::mutex loadCounterMtx;
-
-	static bool lodUpdated;
-
-	/// The queue of batches
-	static std::mutex updateSceneMutex;
-
-	/// The main octree
-	static std::shared_ptr<OctreeNode> mainOctree;
-	static OctreeNode* mainOctreeCpy;
-
-	static std::string getSimLodOctreeName(bool generate_new_name = false);
-	static void init();
-};
-
-
-
 
 /// The hash map to store timings
 struct Timing {
@@ -387,21 +336,6 @@ void displayBuffers();
 ///////////////////////////////////////////////////////////////////////////////
 /////////////////////////// LRU CACHING SHENANIGANS ///////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
-
-/// The size of the LRU cache
-// constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 16;
-// constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 32;
-constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 128;
-// constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 256;
-// constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 1024;
-// constexpr uint32_t LRU_UPDATES_CACHE_SIZE = 4096;
-
-// constexpr uint32_t LRU_VISIBILITY_CACHE_SIZE = 16;
-// constexpr uint32_t LRU_VISIBILITY_CACHE_SIZE = 32;
-// constexpr uint32_t LRU_VISIBILITY_CACHE_SIZE = 128;
-constexpr uint32_t LRU_VISIBILITY_CACHE_SIZE = 512;
-// constexpr uint32_t LRU_VISIBILITY_CACHE_SIZE = 1024;
-// constexpr uint32_t LRU_VISIBILITY_CACHE_SIZE = 4096;
 
 typedef std::pair<uint64_t, AABB> CacheEntry;
 
@@ -455,16 +389,6 @@ struct LRUCache {
 	static bool sanityCheckStored(const OctreeNode* root_node);
 };
 
-extern std::shared_ptr<LRUCache> updatesCache;
-extern std::shared_ptr<LRUCache> visibilityCache;
-
-
-extern std::mutex aabb_relationship_map_mtx;
-extern std::unordered_map<AABB, std::array<std::optional<AABB>, 8>, AABB::Hash> aabb_relationship_map;
-extern std::mutex aabb_parent_map_mtx;
-extern std::unordered_map<AABB, AABB, AABB::Hash> aabb_parent_map;
-extern std::unordered_map<AABB, std::mutex, AABB::Hash> aabb_mutex_map;
-
 
 ///////////////////////////////////////////////////////////////////////////////
 /////////////////////// CUDA UNIFIED MEMORY SHENANIGANS ///////////////////////
@@ -482,3 +406,66 @@ struct CFullOctreeUnifiedBuilder {
 	CFullOctreeUnified build();
 };
 extern CFullOctreeUnifiedBuilder unifiedOctreeBuilder;
+
+
+
+
+///////////////////////////////////////////////////////////////////////////////
+////////////////////////// GLOBAL EXTERNAL VARIABLES //////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+
+struct GlobalVariables {
+	/// The queue of batches
+	static std::deque<std::shared_ptr<PointBatch>> batchesQueue;
+	static std::deque<std::mutex> batchesQueueMutexes;
+
+	/// The buffer of spilled points
+	static std::shared_ptr<vector<Point>> spilledPoints;
+	/// The buffer of spilling nodes
+	static std::shared_ptr<vector<OctreeNode*>> spillingNodes;
+
+	/// The backlog buffer for new voxels
+	static std::shared_ptr<vector<Point>> backlogVoxels;
+	/// The backlog buffer for the nodes corresponding to the new voxels
+	static std::shared_ptr<vector<OctreeNode*>> backlogVoxelsNodes;
+
+
+	static uint32_t elapsedFrames;
+	static uint64_t nbPoints;
+	static bool mainLoopIsTerminating;
+	static std::mutex mainLoopIsTerminatingMtx;
+	/// Counter for the number of octree created
+	static uint64_t simLodOctreeCounter;
+
+	/// Variables tracking when the octree can be sent to GPU
+	static std::binary_semaphore octreeReadyToBeSent;
+	static std::binary_semaphore octreeReadyToBeUpdated;
+	static std::binary_semaphore octreeNotBeingSent;
+	static std::mutex isUpdatingMtx;
+
+	static uint64_t loadCounter;
+	static std::mutex loadCounterMtx;
+
+	static bool lodUpdated;
+
+	/// The queue of batches
+	static std::mutex updateSceneMutex;
+
+	/// The main octree
+	static std::shared_ptr<OctreeNode> mainOctree;
+	static OctreeNode* mainOctreeCpy;
+
+	/// The LRU caches
+	static std::shared_ptr<LRUCache> updatesCache;
+	static std::shared_ptr<LRUCache> visibilityCache;
+
+
+	static std::mutex aabb_relationship_map_mtx;
+	static std::unordered_map<AABB, std::array<std::optional<AABB>, 8>, AABB::Hash> aabb_relationship_map;
+	static std::mutex aabb_parent_map_mtx;
+	static std::unordered_map<AABB, AABB, AABB::Hash> aabb_parent_map;
+	static std::unordered_map<AABB, std::mutex, AABB::Hash> aabb_mutex_map;
+
+	static std::string getSimLodOctreeName(bool generate_new_name = false);
+	static void init();
+};

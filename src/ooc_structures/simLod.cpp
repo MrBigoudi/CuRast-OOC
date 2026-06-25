@@ -206,9 +206,9 @@ void simLodSplit(
 
 				// TODO: temporary code
 				{
-					std::lock_guard<std::mutex> lock(aabb_relationship_map_mtx);
+					std::lock_guard<std::mutex> lock(GlobalVariables::aabb_relationship_map_mtx);
 
-					if(aabb_relationship_map[*spilling_node->aabb][j]){
+					if(GlobalVariables::aabb_relationship_map[*spilling_node->aabb][j]){
 						std::string output = format("mins = ({}, {}, {}), maxs = ({}, {}, {})",
 							empty_child->aabb->mins.x, 
 							empty_child->aabb->mins.y, 
@@ -219,16 +219,16 @@ void simLodSplit(
 						);
 						println("Weird 1: AABB {}, should have been loaded in simlodload", output);
 					}
-					if(aabb_relationship_map.contains(*empty_child->aabb)){
+					if(GlobalVariables::aabb_relationship_map.contains(*empty_child->aabb)){
 						println("Weird 2");
 					}
-					if(aabb_parent_map.contains(*empty_child->aabb)){
+					if(GlobalVariables::aabb_parent_map.contains(*empty_child->aabb)){
 						println("Weird 3");
 					}
 
-					aabb_relationship_map[*spilling_node->aabb][j] = *empty_child->aabb;
-					aabb_relationship_map[*empty_child->aabb] = {nullopt};
-					aabb_parent_map[*empty_child->aabb] = *spilling_node->aabb;
+					GlobalVariables::aabb_relationship_map[*spilling_node->aabb][j] = *empty_child->aabb;
+					GlobalVariables::aabb_relationship_map[*empty_child->aabb] = {nullopt};
+					GlobalVariables::aabb_parent_map[*empty_child->aabb] = *spilling_node->aabb;
 				}
 			}
 		}
@@ -474,9 +474,9 @@ void simLodLoad(
 				AABB child_aabb = {};
 				// TODO: temporary code
 				{
-					std::lock_guard<std::mutex> lock(aabb_relationship_map_mtx);
-					if(aabb_relationship_map[*leaf->aabb][child_index].has_value()){
-						child_aabb = aabb_relationship_map[*leaf->aabb][child_index].value();
+					std::lock_guard<std::mutex> lock(GlobalVariables::aabb_relationship_map_mtx);
+					if(GlobalVariables::aabb_relationship_map[*leaf->aabb][child_index].has_value()){
+						child_aabb = GlobalVariables::aabb_relationship_map[*leaf->aabb][child_index].value();
 					} else {
 						return;
 					}

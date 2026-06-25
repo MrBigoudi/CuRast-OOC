@@ -479,6 +479,15 @@ std::mutex GlobalVariables::updateSceneMutex;
 std::shared_ptr<OctreeNode> GlobalVariables::mainOctree = nullptr;
 OctreeNode* GlobalVariables::mainOctreeCpy = nullptr;
 
+/// The LRU cache for the nodes
+std::shared_ptr<LRUCache> GlobalVariables::updatesCache = nullptr;
+std::shared_ptr<LRUCache> GlobalVariables::visibilityCache = nullptr;
+std::unordered_map<AABB, std::array<std::optional<AABB>, 8>, AABB::Hash> GlobalVariables::aabb_relationship_map = {};
+std::mutex GlobalVariables::aabb_relationship_map_mtx;
+std::unordered_map<AABB, AABB, AABB::Hash> GlobalVariables::aabb_parent_map = {};
+std::mutex GlobalVariables::aabb_parent_map_mtx;
+std::unordered_map<AABB, std::mutex, AABB::Hash> GlobalVariables::aabb_mutex_map = {};
+
 std::string GlobalVariables::getSimLodOctreeName(bool generate_new_name){
     if(generate_new_name){
         simLodOctreeCounter++;
@@ -499,13 +508,10 @@ void GlobalVariables::init(){
     backlogVoxels = std::make_shared<vector<Point>>(vector<Point>());
     /// The backlog buffer for the nodes corresponding to the new voxels
     backlogVoxelsNodes = std::make_shared<vector<OctreeNode*>>(vector<OctreeNode*>());
+
+    updatesCache = std::make_shared<LRUCache>("updates cache", OocSimLodSettings::LRU_UPDATES_CACHE_SIZE);
+    visibilityCache = std::make_shared<LRUCache>("visibility cache", OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE);
 }
-
-
-///////////////////////////////////////////////////////////////////////////////
-////////////////////////////// GLOBAL VARIABLES ///////////////////////////////
-///////////////////////////////////////////////////////////////////////////////
-
 
 
 
@@ -602,12 +608,10 @@ void displayBuffers(){
 /////////////////////////// LRU CACHING SHENANIGANS ///////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
 
-/// The LRU cache for the nodes
-std::shared_ptr<LRUCache> updatesCache = std::make_shared<LRUCache>("updates cache", LRU_UPDATES_CACHE_SIZE);
-std::shared_ptr<LRUCache> visibilityCache = std::make_shared<LRUCache>("visibility cache", LRU_VISIBILITY_CACHE_SIZE);
+
+
 std::mutex LRUCache::stored_set_mtx;
 std::unordered_set<AABB, AABB::Hash> LRUCache::stored_set = {};
-
 std::mutex LRUCache::test_mtx;
 
 std::optional<AABB> LRUCache::add(const AABB& aabb, bool sync){
@@ -790,14 +794,14 @@ void LRUCache::unmark(const AABB& aabb){
 }
 
 bool LRUCache::isInACache(const AABB& aabb, bool sync){
-    return updatesCache->contains(aabb, sync) 
-        || visibilityCache->contains(aabb, sync)
+    return GlobalVariables::updatesCache->contains(aabb, sync) 
+        || GlobalVariables::visibilityCache->contains(aabb, sync)
         // TODO: add other caches if necessary
     ;
 }
 bool LRUCache::isInAllCaches(const AABB& aabb, bool sync){
-    return updatesCache->contains(aabb, sync) 
-        && visibilityCache->contains(aabb, sync)
+    return GlobalVariables::updatesCache->contains(aabb, sync) 
+        && GlobalVariables::visibilityCache->contains(aabb, sync)
         // TODO: add other caches if necessary
     ;
 }
@@ -815,8 +819,8 @@ bool LRUCache::sanityCheck(const OctreeNode* root_node) {
             correct.insert(cur_aabb);
             for(uint32_t child_id = 0; child_id < 8; child_id++){
                 // TODO: temporary code
-                if(aabb_relationship_map[cur_aabb][child_id].has_value()){
-                    recursion(aabb_relationship_map[cur_aabb][child_id].value());
+                if(GlobalVariables::aabb_relationship_map[cur_aabb][child_id].has_value()){
+                    recursion(GlobalVariables::aabb_relationship_map[cur_aabb][child_id].value());
                 }
             }
         }
@@ -875,8 +879,8 @@ bool LRUCache::sanityCheckStored(const OctreeNode* root_node) {
         if(!stored_set.contains(cur_aabb)){
             for(uint32_t child_id = 0; child_id < 8; child_id++){
                 // TODO: temporary code
-                if(aabb_relationship_map[cur_aabb][child_id].has_value()){
-                    roots_recursion(aabb_relationship_map[cur_aabb][child_id].value());
+                if(GlobalVariables::aabb_relationship_map[cur_aabb][child_id].has_value()){
+                    roots_recursion(GlobalVariables::aabb_relationship_map[cur_aabb][child_id].value());
                 }
             }
         } else {
@@ -942,14 +946,6 @@ bool LRUCache::sanityCheckStored(const OctreeNode* root_node) {
 
     return true;
 }
-
-std::unordered_map<AABB, std::array<std::optional<AABB>, 8>, AABB::Hash> aabb_relationship_map = {};
-std::mutex aabb_relationship_map_mtx;
-std::unordered_map<AABB, AABB, AABB::Hash> aabb_parent_map = {};
-std::mutex aabb_parent_map_mtx;
-std::unordered_map<AABB, std::mutex, AABB::Hash> aabb_mutex_map = {};
-
-
 
 
 

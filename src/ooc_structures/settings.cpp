@@ -31,6 +31,8 @@ uint32_t OocSimLodSettings::MIN_BATCHES_PER_OCTREE_UPDATE;
 uint32_t OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE;
 uint32_t OocSimLodSettings::MAX_ATTEMPTS_BEFORE_IGNORING_MIN_VARIABLES;
 uint32_t OocSimLodSettings::MAX_POINTS_PER_LEAF;
+uint32_t OocSimLodSettings::LRU_UPDATES_CACHE_SIZE;
+uint32_t OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE;
 
 
 
@@ -55,6 +57,8 @@ void OocSimLodSettings::init(){
 
     /// Octree properties
     MAX_POINTS_PER_LEAF = init_field<uint32_t>("MAX_POINTS_PER_LEAF", 50'000);
+    LRU_UPDATES_CACHE_SIZE = init_field<uint32_t>("LRU_UPDATES_CACHE_SIZE", 512);
+    LRU_VISIBILITY_CACHE_SIZE = init_field<uint32_t>("LRU_VISIBILITY_CACHE_SIZE", 512);
 }
 
 
@@ -91,6 +95,8 @@ void OocSimLodSettings::display(){
     println("");
     println("Octree properties:");
     println("    - MAX_POINTS_PER_LEAF: {}", MAX_POINTS_PER_LEAF);
+    println("    - LRU_UPDATES_CACHE_SIZE: {}", LRU_UPDATES_CACHE_SIZE);
+    println("    - LRU_VISIBILITY_CACHE_SIZE: {}", LRU_VISIBILITY_CACHE_SIZE);
 
 
 	println("\n//////////////////////////////////////////////////////////");

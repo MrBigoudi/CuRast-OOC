@@ -71,8 +71,8 @@ std::unordered_set<AABB, AABB::Hash> getVisibleNodes(const Frustum& frustum){
     std::unordered_set<AABB, AABB::Hash> res = {};
 
     {
-        std::lock_guard<std::mutex> lock_cache(updatesCache->mtx);
-        for(const auto& [aabb, _id] : updatesCache->cache_map){
+        std::lock_guard<std::mutex> lock_cache(GlobalVariables::GlobalVariables::updatesCache->mtx);
+        for(const auto& [aabb, _id] : GlobalVariables::GlobalVariables::updatesCache->cache_map){
             if(frustum.doesIntersect(aabb)){
                 res.insert(aabb);
             }
@@ -168,11 +168,11 @@ std::vector<AABB> orderNodes(
             // TODO: temporary code
             AABB child_aabb = {};
             {
-                std::lock_guard<std::mutex> lock(aabb_relationship_map_mtx);
-                if(!aabb_relationship_map[cur_node->aabb][child_id].has_value()){
+                std::lock_guard<std::mutex> lock(GlobalVariables::aabb_relationship_map_mtx);
+                if(!GlobalVariables::aabb_relationship_map[cur_node->aabb][child_id].has_value()){
                     continue;
                 }
-                child_aabb = aabb_relationship_map[cur_node->aabb][child_id].value();
+                child_aabb = GlobalVariables::aabb_relationship_map[cur_node->aabb][child_id].value();
             }
 
             if(visible_nodes.contains(child_aabb)){
@@ -219,11 +219,11 @@ void fillVisibilityCache(const std::vector<AABB>& nodes, OctreeNode* root_octree
     // );
     
     // uint32_t first_index = 0;
-    uint32_t first_index = uint32_t(max(int32_t(nodes.size()) - int32_t(LRU_VISIBILITY_CACHE_SIZE), 0));
-    uint32_t last_index = min(first_index + LRU_VISIBILITY_CACHE_SIZE, uint32_t(nodes.size()));
+    uint32_t first_index = uint32_t(max(int32_t(nodes.size()) - int32_t(GlobalVariables::visibilityCache->CACHE_SIZE), 0));
+    uint32_t last_index = min(first_index + GlobalVariables::visibilityCache->CACHE_SIZE, uint32_t(nodes.size()));
 
     for(uint32_t i = first_index; i<last_index; i++){
-        visibilityCache->add(nodes[i], true);
+        GlobalVariables::visibilityCache->add(nodes[i], true);
     }
 
     // println("after add: vis cache size = {}, updates cache size = {}, stored nodes = {}, nb visible nodes = {}, total nb nodes = {}", 
@@ -278,7 +278,7 @@ void fillVisibilityCache(const std::vector<AABB>& nodes, OctreeNode* root_octree
     // Also load all the nodes that need to be loaded
     std::function<bool(OctreeNode*, uint32_t, uint32_t, bool*)> recursion = [&](OctreeNode* cur_node, uint32_t id, uint32_t level, bool* is_visible) -> bool {
         const AABB& aabb = *cur_node->aabb;
-        bool in_vis_cache = visibilityCache->contains(aabb, true);
+        bool in_vis_cache = GlobalVariables::visibilityCache->contains(aabb, true);
         
         if(!CuRastSettings::freezeVisibleNodes){
             *is_visible = in_vis_cache;
@@ -301,14 +301,14 @@ void fillVisibilityCache(const std::vector<AABB>& nodes, OctreeNode* root_octree
                 // TODO: temporary code
                 AABB child_aabb = {};
                 {
-                    std::lock_guard<std::mutex> lock(aabb_relationship_map_mtx);
-                    if(!aabb_relationship_map[*cur_node->aabb][child_id].has_value()){
+                    std::lock_guard<std::mutex> lock(GlobalVariables::aabb_relationship_map_mtx);
+                    if(!GlobalVariables::aabb_relationship_map[*cur_node->aabb][child_id].has_value()){
                         continue;
                     }
-                    child_aabb = aabb_relationship_map[*cur_node->aabb][child_id].value();
+                    child_aabb = GlobalVariables::aabb_relationship_map[*cur_node->aabb][child_id].value();
                 }
 
-                if(visibilityCache->contains(child_aabb, true) && LRUCache::hasBeenStored(child_aabb)){
+                if(GlobalVariables::visibilityCache->contains(child_aabb, true) && LRUCache::hasBeenStored(child_aabb)){
                     cur_node->children[child_id] = loadOctree(child_aabb, true);
                     recursion(cur_node->children[child_id], child_id, level+1, &child_is_visible);
                 }
@@ -318,7 +318,7 @@ void fillVisibilityCache(const std::vector<AABB>& nodes, OctreeNode* root_octree
 
         }
 
-        return !in_vis_cache && !updatesCache->contains(aabb, true) ;
+        return !in_vis_cache && !GlobalVariables::updatesCache->contains(aabb, true) ;
     };
 
     // std::lock_guard<std::mutex> lock_test(updatesCache->mtx);

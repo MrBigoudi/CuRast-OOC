@@ -52,8 +52,8 @@ void initOctree(OctreeNode* root_node, std::shared_ptr<vector<Point>>& points){
 
 	// TODO: temporary code
 	{
-		std::lock_guard<std::mutex> lock(aabb_relationship_map_mtx);
-		aabb_relationship_map[*root_node->aabb] = {nullopt};
+		std::lock_guard<std::mutex> lock(GlobalVariables::aabb_relationship_map_mtx);
+		GlobalVariables::aabb_relationship_map[*root_node->aabb] = {nullopt};
 	}
 }
 
@@ -156,10 +156,10 @@ OctreeNode* uptadeOctree(OctreeNode* main_root, uint32_t nb_new_levels){
 
 		// TODO: temporary code
 		{
-			std::lock_guard<std::mutex> lock(aabb_relationship_map_mtx);
-			aabb_relationship_map[*new_parent->aabb] = {nullopt};
-			aabb_relationship_map[*new_parent->aabb][node_position] = *cur_child->aabb;
-			aabb_parent_map[*cur_child->aabb] = *new_parent->aabb;
+			std::lock_guard<std::mutex> lock(GlobalVariables::aabb_relationship_map_mtx);
+			GlobalVariables::aabb_relationship_map[*new_parent->aabb] = {nullopt};
+			GlobalVariables::aabb_relationship_map[*new_parent->aabb][node_position] = *cur_child->aabb;
+			GlobalVariables::aabb_parent_map[*cur_child->aabb] = *new_parent->aabb;
 		}
 
 		cur_child = new_parent;

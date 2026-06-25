@@ -380,8 +380,8 @@ OctreeNode* OctreeNodeSerializable::toOctreeNodes(
                     // TODO: temporary code
                     std::optional<AABB> child_aabb = nullopt;
                     {
-                        std::lock_guard<std::mutex> lock(aabb_relationship_map_mtx);
-                        child_aabb = aabb_relationship_map[cur_aabb][child_id];
+                        std::lock_guard<std::mutex> lock(GlobalVariables::aabb_relationship_map_mtx);
+                        child_aabb = GlobalVariables::aabb_relationship_map[cur_aabb][child_id];
                     }
                     if(child_aabb.has_value()){
                         recursion(child_aabb.value(), child_id, level+1);
@@ -406,14 +406,14 @@ OctreeNode* OctreeNodeSerializable::toOctreeNodes(
 
 void storeOctree(const OctreeNode* node, bool node_only
 ){
-    std::lock_guard<std::mutex> lock(aabb_mutex_map[*node->aabb]);
+    std::lock_guard<std::mutex> lock(GlobalVariables::aabb_mutex_map[*node->aabb]);
     OctreeNodeSerializable::init(node, node_only);
     // println("Done storing octree");
 }
 
 OctreeNode* loadOctree(const AABB& root_aabb, bool node_only){
     // println("Start loading octree");
-    std::lock_guard<std::mutex> lock(aabb_mutex_map[root_aabb]);
+    std::lock_guard<std::mutex> lock(GlobalVariables::aabb_mutex_map[root_aabb]);
     OctreeNode* res = OctreeNodeSerializable::toOctreeNodes(root_aabb, node_only);
     // println("Done loading octree");
     return res;
@@ -434,7 +434,7 @@ void updateUpdatesCache(OctreeNode* root_octree){
         }
 
         if(cur_node->updated){
-            updatesCache->add(*cur_node->aabb, true);
+            GlobalVariables::updatesCache->add(*cur_node->aabb, true);
         }
 
     };
@@ -457,12 +457,12 @@ void updateUpdatesCache(OctreeNode* root_octree){
             }
         }
 
-        bool is_in_cache = updatesCache->contains(*cur_node->aabb);
+        bool is_in_cache = GlobalVariables::updatesCache->contains(*cur_node->aabb);
         bool to_remove = false;
         if(!is_in_cache){
             storeOctree(cur_node, true);
             cpt_stored++;
-            to_remove = !visibilityCache->contains(*cur_node->aabb, true);
+            to_remove = !GlobalVariables::visibilityCache->contains(*cur_node->aabb, true);
         }
 
         // bool is_in_cache = false;

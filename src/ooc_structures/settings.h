@@ -78,6 +78,11 @@ struct OocSimLodSettings {
 
     /// The maximum number of points in a leaf node
     static uint32_t MAX_POINTS_PER_LEAF;
+
+    /// The size of the LRU updates cache
+    static uint32_t LRU_UPDATES_CACHE_SIZE;
+    /// The size of the LRU visibility cache
+    static uint32_t LRU_VISIBILITY_CACHE_SIZE;
     
 
 
