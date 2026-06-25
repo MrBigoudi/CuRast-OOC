@@ -37,6 +37,7 @@
 #include "ooc_structures/loader.h"
 #include "ooc_structures/outOfCore.h"
 #include "ooc_structures/visibility.h"
+#include "ooc_structures/settings.h"
 
 
 using namespace std; // YOLO
@@ -302,13 +303,13 @@ void initScene() {
 		Runtime::controls->radius = 5.584;
 		Runtime::controls->target = { 0.679, -0.714, 5.163};
 
-		if(!CPU_PARALLELISED){
+		if(!OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 			initLoadPointBatches(file);
 			while(true){
 				loadPointsInBatches();
 				bool done = true;
-				for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
-					if(batchesQueue[i] && batchesQueue[i]->state != BatchState::Loaded){
+				for(uint32_t i=0; i<OocSimLodSettings::BATCHES_LIST_SIZE; i++){
+					if(GlobalVariables::batchesQueue[i] && GlobalVariables::batchesQueue[i]->state != BatchState::Loaded){
 						done = false;
 					}
 				}
@@ -317,8 +318,8 @@ void initScene() {
 			while(true){
 				addPointBatches();
 				bool done = true;
-				for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
-					if(batchesQueue[i] && batchesQueue[i]->state != BatchState::Inserted){
+				for(uint32_t i=0; i<OocSimLodSettings::BATCHES_LIST_SIZE; i++){
+					if(GlobalVariables::batchesQueue[i] && GlobalVariables::batchesQueue[i]->state != BatchState::Inserted){
 						done = false;
 					}
 				}
@@ -327,8 +328,8 @@ void initScene() {
 			while(true){
 				loadBatchesOnGPU(CuRast::instance);
 				bool done = true;
-				for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
-					if(batchesQueue[i] && batchesQueue[i]->state != BatchState::ToRemove){
+				for(uint32_t i=0; i<OocSimLodSettings::BATCHES_LIST_SIZE; i++){
+					if(GlobalVariables::batchesQueue[i] && GlobalVariables::batchesQueue[i]->state != BatchState::ToRemove){
 						done = false;
 					}
 				}
@@ -402,7 +403,7 @@ void initScene() {
 	// 		mainOctree->display();
 	// 		{
 	// 			std::lock_guard<std::mutex> lock(mainLoopIsTerminatingMtx);
-	// 			MAIN_LOOP_IS_TERMINATING = true;
+	// 			mainLoopIsTerminating = true;
 	// 			// Destroy temporary folder
 	// 			std::filesystem::remove_all(TEMPORARY_DIRECTORY);
 	// 		}
@@ -517,8 +518,8 @@ int main(int argc, char** argv){
 				while(true){
 					loadPointsInBatches();
 					bool done = true;
-					for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
-						if(batchesQueue[i] && batchesQueue[i]->state != BatchState::Loaded){
+					for(uint32_t i=0; i<OocSimLodSettings::BATCHES_LIST_SIZE; i++){
+						if(GlobalVariables::batchesQueue[i] && GlobalVariables::batchesQueue[i]->state != BatchState::Loaded){
 							done = false;
 						}
 					}
@@ -527,8 +528,8 @@ int main(int argc, char** argv){
 				while(true){
 					addPointBatches();
 					bool done = true;
-					for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
-						if(batchesQueue[i] && batchesQueue[i]->state != BatchState::Inserted){
+					for(uint32_t i=0; i<OocSimLodSettings::BATCHES_LIST_SIZE; i++){
+						if(GlobalVariables::batchesQueue[i] && GlobalVariables::batchesQueue[i]->state != BatchState::Inserted){
 							done = false;
 						}
 					}
@@ -537,8 +538,8 @@ int main(int argc, char** argv){
 				while(true){
 					loadBatchesOnGPU(CuRast::instance);
 					bool done = true;
-					for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
-						if(batchesQueue[i] && batchesQueue[i]->state != BatchState::ToRemove){
+					for(uint32_t i=0; i<OocSimLodSettings::BATCHES_LIST_SIZE; i++){
+						if(GlobalVariables::batchesQueue[i] && GlobalVariables::batchesQueue[i]->state != BatchState::ToRemove){
 							done = false;
 						}
 					}
@@ -551,7 +552,7 @@ int main(int argc, char** argv){
 	};
 
 	VKRenderer::onFileDrop([&](vector<string> files){
-		if(CPU_PARALLELISED){
+		if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 			std::for_each(std::execution::par, files.begin(), files.end(), 
 				[&](string& file){
 					if(iEndsWith(file, ".las") || iEndsWith(file, ".laz")){
@@ -567,12 +568,14 @@ int main(int argc, char** argv){
 		}
 	});
 
-	// Create temporary folder
-	std::filesystem::create_directories(TEMPORARY_DIRECTORY);
 
+	// Create Global things
+	OocSimLodSettings::init();
+	GlobalVariables::init();
+	std::filesystem::create_directories(OocSimLodSettings::TEMPORARY_NODE_STORAGE_DIRECTORY);
 	initScene();
 
-	if(CPU_PARALLELISED){
+	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 		// Loading points routine
 		std::thread thread_loading_points(loadPointcloudRoutine);
 		thread_loading_points.detach();
@@ -626,8 +629,8 @@ int main(int argc, char** argv){
 				if(CuRastSettings::storeOctree){
 					// mainOctree->display();
 					println("Start storing octree");
-					storeOctree(mainOctree.get());
-					test_stored_aabb = mainOctree->aabb;
+					storeOctree(GlobalVariables::mainOctree.get());
+					test_stored_aabb = GlobalVariables::mainOctree->aabb;
 					println("Done storing octree");
 					CuRastSettings::storeOctree = false;
 				}
@@ -637,13 +640,13 @@ int main(int argc, char** argv){
 					println("Done loading octree");
 					CuRastSettings::loadOctree = false;
 					
-					if(*mainOctree == *octree){
+					if(*GlobalVariables::mainOctree == *octree){
 						println("loaded == original, serialisation / deserialisation worked");
 					} else {
 						println("ERROR: loaded != original, serialisation / deserialisation failed");
 					}
 
-					mainOctree = std::shared_ptr<OctreeNode>(octree);
+					GlobalVariables::mainOctree = std::shared_ptr<OctreeNode>(octree);
 
 					cuCtxSetCurrent(context);
 					loadOctreeOnGPU(CuRast::instance, &context, true);
@@ -734,14 +737,14 @@ int main(int argc, char** argv){
 			// 	}
 			// }
 
-			if(elapsedFrames >= SEND_DATA_EVERY_X_FRAMES){
-				elapsedFrames = 0;
+			if(GlobalVariables::elapsedFrames >= OocSimLodSettings::NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE){
+				GlobalVariables::elapsedFrames = 0;
 				updateVisibilityCache(VKRenderer::view.view, VKRenderer::view.proj);
 				loadOctreeOnGPU(CuRast::instance, &context);
 			}
 
 			freeOctreesOnGPU(CuRast::instance);
-			elapsedFrames++;
+			GlobalVariables::elapsedFrames++;
 
 			// { // TODO: remove, just for debugging
 
@@ -769,18 +772,19 @@ int main(int argc, char** argv){
 	);
 
 	{
-		std::lock_guard<std::mutex> lock(mainLoopIsTerminatingMtx);
-		MAIN_LOOP_IS_TERMINATING = true;
+		std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
+		GlobalVariables::mainLoopIsTerminating = true;
 		// Destroy temporary folder
-		std::filesystem::remove_all(TEMPORARY_DIRECTORY);
+		std::filesystem::remove_all(OocSimLodSettings::TEMPORARY_NODE_STORAGE_DIRECTORY);
 	}
 
 	displayTimings();
 	displayBuffers();
+	OocSimLodSettings::display();
 
-	if(mainOctreeCpy){
-		delete(mainOctreeCpy);
-		mainOctreeCpy = nullptr;
+	if(GlobalVariables::mainOctreeCpy){
+		delete(GlobalVariables::mainOctreeCpy);
+		GlobalVariables::mainOctreeCpy = nullptr;
 	}
 
 	VKRenderer::destroy();

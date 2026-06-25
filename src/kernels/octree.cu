@@ -442,7 +442,7 @@ void drawAllVoxels(
 ){
     auto block = cg::this_thread_block();
     CChunk* cur_voxels = node->voxels;
-    vec3 voxel_size = (aabb->maxs - aabb->mins) / float(C_GRID_SIZE);
+    vec3 voxel_size = (aabb->maxs - aabb->mins) / float(OocSimLodSettings::GRID_SIZE_PER_DIMENSION);
 
     float color_factor = float(node->level) / float(max(max_lod_level, 1));
     color_factor = clamp(color_factor, 0.0f, 1.0f);

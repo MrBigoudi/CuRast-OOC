@@ -62,7 +62,7 @@ void initOctree(OctreeNode* root_node, std::shared_ptr<vector<Point>>& points){
 uint32_t growOctree(OctreeNode* root_node, const std::shared_ptr<vector<Point>>& points){
 	uint32_t nb_new_levels = 0;
 	AABB new_aabb = AABB(*root_node->aabb);
-	NodePosition node_position = FIRST_NODE_POSITION;
+	NodePosition node_position = FrontTopLeft;
 	// For each point in a batch check if fits in current AABB
 	for(const Point& point : *points){
 		while(!new_aabb.contains(point.position)){
@@ -79,7 +79,7 @@ uint32_t growOctree(OctreeNode* root_node, const std::shared_ptr<vector<Point>>&
 
 OctreeNode* uptadeOctree(OctreeNode* main_root, uint32_t nb_new_levels){
 	OctreeNode* cur_child = main_root;
-	NodePosition node_position = FIRST_NODE_POSITION;
+	NodePosition node_position = FrontTopLeft;
 	for(uint32_t i=0; i<nb_new_levels; i++){
 		// Create new parent
 		OctreeNode* new_parent = new OctreeNode();
@@ -100,10 +100,22 @@ OctreeNode* uptadeOctree(OctreeNode* main_root, uint32_t nb_new_levels){
 
 					// Sample voxel occupancy grid at this location
 					vec3 normalized_coordinates = cur_aabb.getPointNormalizedCoordinates(point.position);
-					uint32_t grid_x = clamp(uint32_t(floor(GRID_SIZE * normalized_coordinates.x)), 0u, GRID_SIZE - 1u);
-					uint32_t grid_y = clamp(uint32_t(floor(GRID_SIZE * normalized_coordinates.y)), 0u, GRID_SIZE - 1u);
-					uint32_t grid_z = clamp(uint32_t(floor(GRID_SIZE * normalized_coordinates.z)), 0u, GRID_SIZE - 1u);
-					uint32_t index = grid_x + GRID_SIZE * (grid_y + GRID_SIZE * grid_z);
+					uint32_t grid_x = clamp(
+						uint32_t(floor(OocSimLodSettings::GRID_SIZE_PER_DIMENSION * normalized_coordinates.x)), 
+						0u, 
+						OocSimLodSettings::GRID_SIZE_PER_DIMENSION - 1u
+					);
+					uint32_t grid_y = clamp(
+						uint32_t(floor(OocSimLodSettings::GRID_SIZE_PER_DIMENSION * normalized_coordinates.y)), 
+						0u, 
+						OocSimLodSettings::GRID_SIZE_PER_DIMENSION - 1u
+					);
+					uint32_t grid_z = clamp(
+						uint32_t(floor(OocSimLodSettings::GRID_SIZE_PER_DIMENSION * normalized_coordinates.z)), 
+						0u, 
+						OocSimLodSettings::GRID_SIZE_PER_DIMENSION - 1u
+					);
+					uint32_t index = grid_x + OocSimLodSettings::GRID_SIZE_PER_DIMENSION * (grid_y + OocSimLodSettings::GRID_SIZE_PER_DIMENSION * grid_z);
 					uint32_t word_index = index >> 5u;
 					uint32_t bit_index = index & 31u;
 					bool is_cell_occupied = (new_parent->occupancy->values[word_index] & (1u << bit_index)) != 0;
@@ -112,7 +124,7 @@ OctreeNode* uptadeOctree(OctreeNode* main_root, uint32_t nb_new_levels){
 					if(!is_cell_occupied){
 						new_parent->occupancy->values[word_index] |= (1u << bit_index);
 						// Create corresponding voxel using this point
-						vec3 world_grid_size = cur_aabb.getSize() / float(GRID_SIZE);
+						vec3 world_grid_size = cur_aabb.getSize() / float(OocSimLodSettings::GRID_SIZE_PER_DIMENSION);
 						vec3 voxel_centroid = cur_aabb.mins + world_grid_size * vec3(grid_x, grid_y, grid_z) + 0.5f*world_grid_size;
 						Point new_voxel = {};
 						new_voxel.position = voxel_centroid;
@@ -124,7 +136,7 @@ OctreeNode* uptadeOctree(OctreeNode* main_root, uint32_t nb_new_levels){
 						if(!new_parent->voxels){new_parent->voxels =  new Chunk();}
 						Chunk* parent_chunk_list = new_parent->voxels;
 						while(parent_chunk_list->next){parent_chunk_list = parent_chunk_list->next;}
-						if(parent_chunk_list->size == POINTS_PER_CHUNK){
+						if(parent_chunk_list->size == OocSimLodSettings::NB_POINTS_PER_CHUNK){
 							parent_chunk_list->next =  new Chunk();
 							parent_chunk_list = parent_chunk_list->next;
 						}
@@ -158,12 +170,12 @@ OctreeNode* uptadeOctree(OctreeNode* main_root, uint32_t nb_new_levels){
 
 
 void freeOctreesOnGPU(CuRast* editor){
-	std::string main_octree_name = getSimLodOctreeName();
+	std::string main_octree_name = GlobalVariables::getSimLodOctreeName();
 
 	bool delete_all = CuRastSettings::freeOldOctreeMemoryOnGPU;
 	std::vector<SNCOctree*> octrees = {};
 	{
-		std::lock_guard<std::mutex> lock_scene(updateSceneMutex);
+		std::lock_guard<std::mutex> lock_scene(GlobalVariables::updateSceneMutex);
 		editor->scene.forEach<SNCOctree>([&](SNCOctree* node){
 			if(node->need_to_be_executed || (delete_all && node->name != main_octree_name)){
 				octrees.push_back(node);
@@ -176,7 +188,7 @@ void freeOctreesOnGPU(CuRast* editor){
 
 	
 	for(SNCOctree* octree : octrees){
-		std::lock_guard<std::mutex> lock_scene(updateSceneMutex);
+		std::lock_guard<std::mutex> lock_scene(GlobalVariables::updateSceneMutex);
 		editor->scene.world->remove(octree);
 	}
 }
@@ -186,7 +198,7 @@ void freePreviousOctreeOnGPU(CuRast* editor, std::shared_ptr<SNCOctree> caller){
 	while(!caller->isDoneLoadingToGpu()){}
 
 	SNCOctree* previous_octree = nullptr;	{
-		std::lock_guard<std::mutex> lock_scene(updateSceneMutex);
+		std::lock_guard<std::mutex> lock_scene(GlobalVariables::updateSceneMutex);
 		editor->scene.forEach<SNCOctree>([&](SNCOctree* node){
 			if(node->octree_id == (octree_id-1)){
 				node->need_to_be_executed = true;
@@ -227,7 +239,7 @@ std::optional<uint32_t> allocateChunks(std::shared_ptr<SNCOctree>& octree, const
 			tmp.next = (CChunk*)octree->cptr_chunks[*chunk_counter-1];
 		}
 		octree->cptr_chunks.push_back(CUdeviceptr());
-		if(CPU_PARALLELISED){
+		if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 			cuMemAllocAsync(&octree->cptr_chunks[*chunk_counter], sizeof(CChunk), octree->stream);
 			cuMemcpyHtoDAsync(octree->cptr_chunks[*chunk_counter], &tmp, sizeof(CChunk), octree->stream);
 		} else {
@@ -247,18 +259,21 @@ std::optional<uint32_t> allocateChunks(std::shared_ptr<SNCOctree>& octree, const
 
 void createCudaMemory(CuRast* editor, CUcontext* context, std::shared_ptr<OctreeNode>& input_octree){
 	// Create cuda memory pointers
-	std::shared_ptr<SNCOctree> octree = make_shared<SNCOctree>(getSimLodOctreeName(true), simLodOctreeCounter);
+	std::shared_ptr<SNCOctree> octree = make_shared<SNCOctree>(
+		GlobalVariables::getSimLodOctreeName(true), 
+		GlobalVariables::simLodOctreeCounter
+	);
 	octree->cptr_nodes = {};
 	octree->cptr_aabbs = {};
 	octree->cptr_chunks = {};
-	octree->cptr_occupancy_grids = {};
+	// octree->cptr_occupancy_grids = {};
 	cuCtxSetCurrent(*context);
 	CUresult cuda_status = cuStreamCreate(&octree->stream, CU_STREAM_NON_BLOCKING);
 
 	// Create enough chunks
 	uint32_t chunk_counter = 0;
 	uint32_t nodes_counter = 0;
-	uint32_t occupancy_grids_counter = 0;
+	// uint32_t occupancy_grids_counter = 0;
 	uint32_t max_lod_level = 0;
 
 	std::function<CUdeviceptr(const OctreeNode*, uint8_t)> recursive = [&](
@@ -327,7 +342,7 @@ void createCudaMemory(CuRast* editor, CUcontext* context, std::shared_ptr<Octree
 
 		// Create cuda pointers
 		CUdeviceptr cptr_node, cptr_aabb;
-		if(CPU_PARALLELISED){
+		if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 			cuMemAllocAsync(&cptr_node, sizeof(COctreeNode), octree->stream); 
 			cuMemAllocAsync(&cptr_aabb, sizeof(CAABB), octree->stream);
 			cuMemcpyHtoDAsync(cptr_node, &new_node, sizeof(COctreeNode), octree->stream);
@@ -353,19 +368,19 @@ void createCudaMemory(CuRast* editor, CUcontext* context, std::shared_ptr<Octree
 
 	octree->num_nodes = nodes_counter;
 	octree->max_lod_level = max_lod_level;
-	octree->nb_points = NB_POINTS;
+	octree->nb_points = GlobalVariables::nbPoints;
 
 
 	// Copy arrays of pointers to GPU
-	if(CPU_PARALLELISED){
+	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 		cuMemAllocAsync(&octree->aabbs, octree->cptr_aabbs.size() * sizeof(CUdeviceptr), octree->stream);
 		cuMemcpyHtoDAsync(octree->aabbs, octree->cptr_aabbs.data(), octree->cptr_aabbs.size() * sizeof(CUdeviceptr), octree->stream);
 		cuMemAllocAsync(&octree->chunks, octree->cptr_chunks.size() * sizeof(CUdeviceptr), octree->stream);
 		cuMemcpyHtoDAsync(octree->chunks, octree->cptr_chunks.data(), octree->cptr_chunks.size() * sizeof(CUdeviceptr), octree->stream);
 		cuMemAllocAsync(&octree->nodes, octree->cptr_nodes.size() * sizeof(CUdeviceptr), octree->stream);
 		cuMemcpyHtoDAsync(octree->nodes, octree->cptr_nodes.data(), octree->cptr_nodes.size() * sizeof(CUdeviceptr), octree->stream);
-		cuMemAllocAsync(&octree->occupancy_grids, octree->cptr_occupancy_grids.size() * sizeof(CUdeviceptr), octree->stream);
-		cuMemcpyHtoDAsync(octree->occupancy_grids, octree->cptr_occupancy_grids.data(), octree->cptr_occupancy_grids.size() * sizeof(CUdeviceptr), octree->stream);
+		// cuMemAllocAsync(&octree->occupancy_grids, octree->cptr_occupancy_grids.size() * sizeof(CUdeviceptr), octree->stream);
+		// cuMemcpyHtoDAsync(octree->occupancy_grids, octree->cptr_occupancy_grids.data(), octree->cptr_occupancy_grids.size() * sizeof(CUdeviceptr), octree->stream);
 	} else {
 		cuMemAlloc(&octree->aabbs, octree->cptr_aabbs.size() * sizeof(CUdeviceptr));
 		cuMemcpyHtoD(octree->aabbs, octree->cptr_aabbs.data(), octree->cptr_aabbs.size() * sizeof(CUdeviceptr));
@@ -373,11 +388,11 @@ void createCudaMemory(CuRast* editor, CUcontext* context, std::shared_ptr<Octree
 		cuMemcpyHtoD(octree->chunks, octree->cptr_chunks.data(), octree->cptr_chunks.size() * sizeof(CUdeviceptr));
 		cuMemAlloc(&octree->nodes, octree->cptr_nodes.size() * sizeof(CUdeviceptr));
 		cuMemcpyHtoD(octree->nodes, octree->cptr_nodes.data(), octree->cptr_nodes.size() * sizeof(CUdeviceptr));
-		cuMemAlloc(&octree->occupancy_grids, octree->cptr_occupancy_grids.size() * sizeof(CUdeviceptr));
-		cuMemcpyHtoD(octree->occupancy_grids, octree->cptr_occupancy_grids.data(), octree->cptr_occupancy_grids.size() * sizeof(CUdeviceptr));
+		// cuMemAlloc(&octree->occupancy_grids, octree->cptr_occupancy_grids.size() * sizeof(CUdeviceptr));
+		// cuMemcpyHtoD(octree->occupancy_grids, octree->cptr_occupancy_grids.data(), octree->cptr_occupancy_grids.size() * sizeof(CUdeviceptr));
 	}
 	{
-		std::lock_guard<std::mutex> lock_scene(updateSceneMutex);
+		std::lock_guard<std::mutex> lock_scene(GlobalVariables::updateSceneMutex);
 		editor->scene.world->children.push_back(octree);
 	}
 
@@ -394,7 +409,7 @@ void createCudaMemory(CuRast* editor, CUcontext* context, std::shared_ptr<Octree
 void loadOctreeOnGPU(CuRast* editor, CUcontext* context, 
     bool bypass_semaphore
 ){
-	// if(CPU_PARALLELISED && !bypass_semaphore){
+	// if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL && !bypass_semaphore){
 	// 	// If the mainOctree / mainAABB are being updated (see `addPointBatches`)
 	// 	// Do not block but do not send data to the GPU
 	// 	// Acquire => semaphore_counter -= 1
@@ -403,15 +418,15 @@ void loadOctreeOnGPU(CuRast* editor, CUcontext* context,
 	// // println("semaphore SENDING acquired");
 	
 	std::shared_ptr<OctreeNode> octree_ref = nullptr;
-	if(CPU_PARALLELISED && !bypass_semaphore){
-		std::lock_guard<std::mutex> lock_send(isUpdatingMtx);
-		octree_ref = mainOctree;
+	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL && !bypass_semaphore){
+		std::lock_guard<std::mutex> lock_send(GlobalVariables::isUpdatingMtx);
+		octree_ref = GlobalVariables::mainOctree;
 	} else {
-		octree_ref = mainOctree;
+		octree_ref = GlobalVariables::mainOctree;
 	}
 	if(!octree_ref){return;}
 
-	std::shared_ptr<Timing> timing = addTiming("send octree to GPU ", true);
+	std::shared_ptr<Timing> timing = Timing::addTiming("send octree to GPU ", true);
 
 	// uint64_t load_id = 0;
 	// {
@@ -441,7 +456,7 @@ void loadOctreeOnGPU(CuRast* editor, CUcontext* context,
 	// 	// Release => semaphore_counter += 1
 	// 	octreeNotBeingSent.release();
 	// }, editor, context, octree_ref, load_id);
-	// if(!CPU_PARALLELISED){
+	// if(!OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 	// 	thread_load_to_gpu.join();
 	// } else {
 	// 	thread_load_to_gpu.detach();
@@ -449,7 +464,7 @@ void loadOctreeOnGPU(CuRast* editor, CUcontext* context,
 	cudaDeviceSynchronize();
 	createCudaMemory(editor, context, octree_ref);
 
-	// if(CPU_PARALLELISED && !bypass_semaphore){
+	// if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL && !bypass_semaphore){
 	// 	// Release the semaphore when every GPU side structures is done being built
 	// 	// Rlease => semaphore_counter += 1
 	// 	octreeReadyToBeUpdated.release();
@@ -468,22 +483,21 @@ void loadOctreeOnGPU(CuRast* editor, CUcontext* context,
 
 
 void addPointBatches(){
-	std::vector<uint32_t> batches_indices(CuRastSettings::maxBatchesPerUpdate, 0);
+	std::vector<uint32_t> batches_indices(OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE, 0);
 	uint32_t last_index = 0;
 
-	for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
-		std::lock_guard<std::mutex> lock(batchesQueueMutexes[i]);
-		if(batchesQueue[i] && batchesQueue[i]->state == BatchState::Loaded){
+	for(uint32_t i=0; i<OocSimLodSettings::BATCHES_LIST_SIZE; i++){
+		std::lock_guard<std::mutex> lock(GlobalVariables::batchesQueueMutexes[i]);
+		if(GlobalVariables::batchesQueue[i] && GlobalVariables::batchesQueue[i]->state == BatchState::Loaded){
 			batches_indices[last_index] = i;
 			last_index++;
-			if(last_index >= CuRastSettings::maxBatchesPerUpdate){break;}
+			if(last_index >= OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE){break;}
 		}
 	}
 	if(last_index == 0){return;}
 	static uint32_t lastUpdateAttempt = 0;
-	if(CPU_PARALLELISED && batches_indices.size() < CuRastSettings::minBatchesPerUpdate){
-		// println("counter: {}", lastUpdateAttempt);
-		if(lastUpdateAttempt < 256){
+	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL && batches_indices.size() < OocSimLodSettings::MIN_BATCHES_PER_OCTREE_UPDATE){
+		if(lastUpdateAttempt < OocSimLodSettings::MAX_ATTEMPTS_BEFORE_IGNORING_MIN_VARIABLES){
 			lastUpdateAttempt++;
 			return;
 		} 
@@ -493,19 +507,19 @@ void addPointBatches(){
 	auto first = batches_indices.begin();
 	auto last = first + last_index;
 
-	if(!mainOctree){
-		std::shared_ptr<Timing> timing = addTiming("init octree", true);
-		std::lock_guard<std::mutex> lock_send(isUpdatingMtx);
-		mainOctree = std::make_shared<OctreeNode>();
-		mainOctree->aabb = new AABB();
+	if(!GlobalVariables::mainOctree){
+		std::shared_ptr<Timing> timing = Timing::addTiming("init octree", true);
+		std::lock_guard<std::mutex> lock_send(GlobalVariables::isUpdatingMtx);
+		GlobalVariables::mainOctree = std::make_shared<OctreeNode>();
+		GlobalVariables::mainOctree->aabb = new AABB();
 		uint32_t batch_index = batches_indices[0];
-		std::lock_guard<std::mutex> lock(batchesQueueMutexes[batch_index]);
-		initOctree(mainOctree.get(), batchesQueue[batch_index]->points);
+		std::lock_guard<std::mutex> lock(GlobalVariables::batchesQueueMutexes[batch_index]);
+		initOctree(GlobalVariables::mainOctree.get(), GlobalVariables::batchesQueue[batch_index]->points);
 		timing->stop_clock();
 
 		// Copy octree once at the beginning
-		timing = addTiming("copy initial octree", true);
-		mainOctreeCpy = new OctreeNode(*mainOctree);
+		timing = Timing::addTiming("copy initial octree", true);
+		GlobalVariables::mainOctreeCpy = new OctreeNode(*GlobalVariables::mainOctree);
 		timing->stop_clock();
 	}
 
@@ -519,7 +533,7 @@ void addPointBatches(){
 	// mainOctree->display();
 
 	// Update the temporary octree
-	std::shared_ptr<Timing> timing = addTiming("compute max new level", true);
+	std::shared_ptr<Timing> timing = Timing::addTiming("compute max new level", true);
 	// Compute max new level needed per batch
 	vector<uint32_t> tmp_new_levels = vector<uint32_t>(last_index, 0);
 	// In parallel
@@ -528,17 +542,17 @@ void addPointBatches(){
 		auto first_of_indices = indices.begin();
 		auto last_of_indices = indices.end();
 		std::iota(first_of_indices, last_of_indices, 0);
-		if(CPU_PARALLELISED){
+		if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 			std::for_each(std::execution::par, first_of_indices, last_of_indices, [&](uint32_t index){
-				std::shared_ptr<PointBatch> batch = batchesQueue[batches_indices[index]];
-				std::lock_guard<std::mutex> lock(batchesQueueMutexes[batches_indices[index]]);
-				tmp_new_levels[index] = growOctree(mainOctreeCpy, batch->points);
+				std::shared_ptr<PointBatch> batch = GlobalVariables::batchesQueue[batches_indices[index]];
+				std::lock_guard<std::mutex> lock(GlobalVariables::batchesQueueMutexes[batches_indices[index]]);
+				tmp_new_levels[index] = growOctree(GlobalVariables::mainOctreeCpy, batch->points);
 			});
 		} else {
 			std::for_each(first_of_indices, last_of_indices, [&](uint32_t index){
-				std::shared_ptr<PointBatch> batch = batchesQueue[batches_indices[index]];
-				std::lock_guard<std::mutex> lock(batchesQueueMutexes[batches_indices[index]]);
-				tmp_new_levels[index] = growOctree(mainOctreeCpy, batch->points);
+				std::shared_ptr<PointBatch> batch = GlobalVariables::batchesQueue[batches_indices[index]];
+				std::lock_guard<std::mutex> lock(GlobalVariables::batchesQueueMutexes[batches_indices[index]]);
+				tmp_new_levels[index] = growOctree(GlobalVariables::mainOctreeCpy, batch->points);
 			});
 		}
 	}
@@ -550,7 +564,7 @@ void addPointBatches(){
 	// mainOctreeCpy->display();
 
 
-	timing = addTiming("update octree bottom up", true);
+	timing = Timing::addTiming("update octree bottom up", true);
 	// In single thread
 	{
 		uint32_t nb_new_levels = 0;
@@ -558,7 +572,7 @@ void addPointBatches(){
 			nb_new_levels = max(nb_new_levels, level);
 		}
 		// println("Max new level: {}", nb_new_levels);
-		mainOctreeCpy = uptadeOctree(mainOctreeCpy, nb_new_levels);
+		GlobalVariables::mainOctreeCpy = uptadeOctree(GlobalVariables::mainOctreeCpy, nb_new_levels);
 	}
 	timing->stop_clock();
 
@@ -568,13 +582,13 @@ void addPointBatches(){
 	// mainOctreeCpy->display();
 
 
-	timing = addTiming("simlod update", true);
+	timing = Timing::addTiming("simlod update", true);
 	// TODO: In parallel
 	{
 		std::for_each(first, last, [&](uint32_t index){
-			std::lock_guard<std::mutex> lock(batchesQueueMutexes[index]);
-			std::shared_ptr<PointBatch> batch = batchesQueue[index];
-			simLodUpdate(mainOctreeCpy, batch->points);
+			std::lock_guard<std::mutex> lock(GlobalVariables::batchesQueueMutexes[index]);
+			std::shared_ptr<PointBatch> batch = GlobalVariables::batchesQueue[index];
+			simLodUpdate(GlobalVariables::mainOctreeCpy, batch->points);
 		});
 	}
 	timing->stop_clock();
@@ -584,8 +598,8 @@ void addPointBatches(){
 	// println("//////////////////////////////////////////////////");
 	// mainOctreeCpy->display();
 
-	timing = addTiming("update cache", true);
-	updateUpdatesCache(mainOctreeCpy);
+	timing = Timing::addTiming("update cache", true);
+	updateUpdatesCache(GlobalVariables::mainOctreeCpy);
 	timing->stop_clock();
 	// displayCache();
 
@@ -598,37 +612,37 @@ void addPointBatches(){
 	// println("//////////////////////////////////////////////////");
 	// mainOctreeCpy->display();
 
-	// if(CPU_PARALLELISED){
+	// if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 	// 	// Block if the mainOctree / mainAABB are being send to the GPU (see `loadOctreeOnGPU`)
 	// 	// Acquire => semaphore_counter -= 1
 	// 	octreeReadyToBeUpdated.acquire();
 	// 	// println("semaphore UPDATING acquired");
 	// }
 
-	if(CPU_PARALLELISED){
-		std::lock_guard<std::mutex> lock_send(isUpdatingMtx);
-		mainOctree = std::make_shared<OctreeNode>(*mainOctreeCpy);
-		lodUpdated = true;
+	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+		std::lock_guard<std::mutex> lock_send(GlobalVariables::isUpdatingMtx);
+		GlobalVariables::mainOctree = std::make_shared<OctreeNode>(*GlobalVariables::mainOctreeCpy);
+		GlobalVariables::lodUpdated = true;
 	} else {
-		mainOctree = std::make_shared<OctreeNode>(*mainOctreeCpy);
+		GlobalVariables::mainOctree = std::make_shared<OctreeNode>(*GlobalVariables::mainOctreeCpy);
 	}
 	
-	// if(CPU_PARALLELISED){
+	// if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 	// 	// Release the semaphore when not using mainOctree / mainAABB anymore
 	// 	// Rlease => semaphore_counter += 1
 	// 	octreeReadyToBeSent.release();
 	// 	// println("semaphore SENDING released");
 	// }
 
-	if(CPU_PARALLELISED){
+	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 		std::for_each(std::execution::par, first, last, [&](uint32_t index){
-			std::lock_guard<std::mutex> lock(batchesQueueMutexes[index]);
-			batchesQueue[index]->state = BatchState::Inserted;
+			std::lock_guard<std::mutex> lock(GlobalVariables::batchesQueueMutexes[index]);
+			GlobalVariables::batchesQueue[index]->state = BatchState::Inserted;
 		});
 	} else {
 		std::for_each(first, last, [&](uint32_t index){
-			std::lock_guard<std::mutex> lock(batchesQueueMutexes[index]);
-			batchesQueue[index]->state = BatchState::Inserted;
+			std::lock_guard<std::mutex> lock(GlobalVariables::batchesQueueMutexes[index]);
+			GlobalVariables::batchesQueue[index]->state = BatchState::Inserted;
 		});
 	}
 };

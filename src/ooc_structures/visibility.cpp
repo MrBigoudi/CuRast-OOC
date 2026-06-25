@@ -353,11 +353,11 @@ void updateVisibilityCache(const mat4& view, const mat4& proj){
 
 
     std::shared_ptr<OctreeNode> octree_ref = nullptr;
-	if(CPU_PARALLELISED){
-		std::lock_guard<std::mutex> lock_send(isUpdatingMtx);
-		octree_ref = mainOctree;
+	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+		std::lock_guard<std::mutex> lock_send(GlobalVariables::isUpdatingMtx);
+		octree_ref = GlobalVariables::mainOctree;
 	} else {
-		octree_ref = mainOctree;
+		octree_ref = GlobalVariables::mainOctree;
 	}
 	if(!octree_ref){return;}
 
@@ -436,7 +436,7 @@ void updateVisibilityCache(const mat4& view, const mat4& proj){
     // }
 
 
-    std::lock_guard<std::mutex> lock_send(isUpdatingMtx);
+    std::lock_guard<std::mutex> lock_send(GlobalVariables::isUpdatingMtx);
     fillVisibilityCache(ordered_nodes, octree_ref.get());
 
     // if(just_freezed){

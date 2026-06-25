@@ -1,0 +1,59 @@
+# Modify this file to update the global OocSimLodSettings
+
+
+
+#########################################################################
+############################# MISCELLANEOUS #############################
+#########################################################################
+
+# Tells if the program should be entirely sequential or as parallelised as possible
+IS_RUNNING_IN_PARALLEL = true
+# IS_RUNNING_IN_PARALLEL = false
+
+# The number of frames between each GPU data transfer and visibility update
+NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE = 200
+
+
+
+#########################################################################
+############################## BATCH SIZES ##############################
+#########################################################################
+
+# The size of the batches list
+BATCHES_LIST_SIZE = 1_024
+
+# The maximum number of points per batches
+# MAX_POINTS_PER_BATCHES = 10_000
+# MAX_POINTS_PER_BATCHES = 100_000
+MAX_POINTS_PER_BATCHES = 1_000_000
+
+# The minimum number of batches that can be loaded from disk at once
+MIN_BATCHES_PER_LOAD = 1
+# The maximum number of batches that can be loaded from disk at once
+MAX_BATCHES_PER_LOAD = 100
+# MAX_BATCHES_PER_LOAD = 1000
+
+# The minimum number of batches that can be loaded to the GPU at once
+# A batch is loaded as a collection of points on the GPU only for the brute-force comparison
+MIN_BATCHES_PER_GPU_LOAD = 1
+# The maximum number of batches that can be loaded to the GPU at once
+MAX_BATCHES_PER_GPU_LOAD = 100
+# MAX_BATCHES_PER_GPU_LOAD = 200
+
+# The minimum number of batches that should be added at the same time in the octree
+MIN_BATCHES_PER_OCTREE_UPDATE = 1
+# The maximum number of batches that should be added at the same time in the octree
+MAX_BATCHES_PER_OCTREE_UPDATE = 1
+
+# The number of attempts after which the minimum variables are ignored
+MAX_ATTEMPTS_BEFORE_IGNORING_MIN_VARIABLES = 24
+
+
+
+#########################################################################
+########################### OCTREE PROPERTIES ###########################
+#########################################################################
+
+# The maximum number of points in a leaf node
+MAX_POINTS_PER_LEAF = 50_000
+# MAX_POINTS_PER_LEAF = 250_000

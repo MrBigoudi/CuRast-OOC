@@ -438,12 +438,67 @@ bool Chunk::operator==(const Chunk& rhs) const{
 }
 
 
-uint64_t simLodOctreeCounter = 0;
-std::string getSimLodOctreeName(bool generate_new_name){
+
+///////////////////////////////////////////////////////////////////////////////
+////////////////////////// GLOBAL EXTERNAL VARIABLES //////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+
+std::deque<std::shared_ptr<PointBatch>> GlobalVariables::batchesQueue = {};
+std::deque<std::mutex> GlobalVariables::batchesQueueMutexes = {};
+std::shared_ptr<vector<Point>> GlobalVariables::spilledPoints = {};
+std::shared_ptr<vector<OctreeNode*>> GlobalVariables::spillingNodes = {};
+std::shared_ptr<vector<Point>> GlobalVariables::backlogVoxels = {};
+std::shared_ptr<vector<OctreeNode*>> GlobalVariables::backlogVoxelsNodes = {};
+
+
+uint32_t GlobalVariables::elapsedFrames = 0;
+uint64_t GlobalVariables::nbPoints = 0;
+bool GlobalVariables::mainLoopIsTerminating = false;
+std::mutex GlobalVariables::mainLoopIsTerminatingMtx;
+uint64_t GlobalVariables::simLodOctreeCounter = 0;
+
+/// Variables tracking when the octree can be sent to GPU
+/// Initialized as not ready to be sent
+std::binary_semaphore GlobalVariables::octreeReadyToBeSent{0};
+/// Initialized as ready to be updated
+std::binary_semaphore GlobalVariables::octreeReadyToBeUpdated{1};
+/// Initialized as not being sent
+std::binary_semaphore GlobalVariables::octreeNotBeingSent{1};
+
+std::mutex GlobalVariables::isUpdatingMtx;
+
+uint64_t GlobalVariables::loadCounter = 0;
+std::mutex GlobalVariables::loadCounterMtx;
+
+bool GlobalVariables::lodUpdated = false;
+
+/// The queue of batches
+std::mutex GlobalVariables::updateSceneMutex;
+
+/// The main octree
+std::shared_ptr<OctreeNode> GlobalVariables::mainOctree = nullptr;
+OctreeNode* GlobalVariables::mainOctreeCpy = nullptr;
+
+std::string GlobalVariables::getSimLodOctreeName(bool generate_new_name){
     if(generate_new_name){
         simLodOctreeCounter++;
     }
-    return format("{}_{}", simLodOctreeName, simLodOctreeCounter);
+    return format("MainOctreeSimLOD_{}", simLodOctreeCounter);
+}
+
+void GlobalVariables::init(){
+    /// The queue of batches
+    batchesQueue = std::deque<std::shared_ptr<PointBatch>>(OocSimLodSettings::BATCHES_LIST_SIZE, nullptr);
+    batchesQueueMutexes = std::deque<std::mutex>(OocSimLodSettings::BATCHES_LIST_SIZE);
+    /// The buffer of spilled points
+    spilledPoints = std::make_shared<vector<Point>>(vector<Point>());
+    /// The buffer of spilling nodes
+    spillingNodes = std::make_shared<vector<OctreeNode*>>(vector<OctreeNode*>());
+
+    /// The backlog buffer for new voxels
+    backlogVoxels = std::make_shared<vector<Point>>(vector<Point>());
+    /// The backlog buffer for the nodes corresponding to the new voxels
+    backlogVoxelsNodes = std::make_shared<vector<OctreeNode*>>(vector<OctreeNode*>());
 }
 
 
@@ -451,53 +506,16 @@ std::string getSimLodOctreeName(bool generate_new_name){
 ////////////////////////////// GLOBAL VARIABLES ///////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
 
-vector<std::shared_ptr<Timing>> timingsList = {};
-
-uint32_t BATCHES_QUEUE_SIZE = 1000;
-uint32_t elapsedFrames = 0;
-
-
-/// Variables tracking when the octree can be sent to GPU
-/// Initialized as not ready to be sent
-std::binary_semaphore octreeReadyToBeSent{0};
-/// Initialized as ready to be updated
-std::binary_semaphore octreeReadyToBeUpdated{1};
-/// Initialized as not being sent
-std::binary_semaphore octreeNotBeingSent{1};
-
-std::mutex isUpdatingMtx;
-
-uint64_t loadCounter = 0;
-std::mutex loadCounterMtx;
-
-bool lodUpdated = false;
-
-/// The queue of batches
-std::deque<std::shared_ptr<PointBatch>> batchesQueue(BATCHES_QUEUE_SIZE, nullptr);
-std::deque<std::mutex> batchesQueueMutexes(BATCHES_QUEUE_SIZE);
-std::mutex updateSceneMutex;
-
-/// The main octree
-std::shared_ptr<OctreeNode> mainOctree = nullptr;
-OctreeNode* mainOctreeCpy = nullptr;
-
-/// The buffer of spilled points
-std::shared_ptr<vector<Point>> spilledPoints = std::make_shared<vector<Point>>(vector<Point>());
-/// The buffer of spilling nodes
-std::shared_ptr<vector<OctreeNode*>> spillingNodes = std::make_shared<vector<OctreeNode*>>(vector<OctreeNode*>());
-
-/// The backlog buffer for new voxels
-std::shared_ptr<vector<Point>> backlogVoxels = std::make_shared<vector<Point>>(vector<Point>());
-/// The backlog buffer for the nodes corresponding to the new voxels
-std::shared_ptr<vector<OctreeNode*>> backlogVoxelsNodes = std::make_shared<vector<OctreeNode*>>(vector<OctreeNode*>());
-
-uint64_t NB_POINTS = 0;
-bool MAIN_LOOP_IS_TERMINATING = false;
-std::mutex mainLoopIsTerminatingMtx;
 
 
 
-std::shared_ptr<Timing> addTiming(string name, bool start_now, uint32_t level){
+
+
+
+vector<std::shared_ptr<Timing>> Timing::timingsList = {};
+std::mutex Timing::timingsMtx;
+
+std::shared_ptr<Timing> Timing::addTiming(string name, bool start_now, uint32_t level){
     std::shared_ptr<Timing> new_timing = std::make_shared<Timing>(name, start_now, level);
     std::lock_guard<std::mutex> lock(timingsMtx);
     timingsList.push_back(new_timing);
@@ -508,7 +526,7 @@ void displayTimings(){
 	println("///////////////////////////////////////////////////");
 	println("///////////////////// Timings /////////////////////");
 	println("///////////////////////////////////////////////////\n");
-	for (auto& timing : timingsList){
+	for (auto& timing : Timing::timingsList){
 		uint64_t us = timing->duration.count();
 		uint64_t s = uint64_t(us / 1'000'000);
 		uint64_t ms = uint64_t((us - (s*1'000'000)) / 1'000);
@@ -535,12 +553,12 @@ void displayBuffers(){
     uint32_t nb_loaded = 0;
     uint32_t nb_inserted = 0;
     uint32_t nb_to_remove = 0;
-    for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
-        if(!batchesQueue[i]){
+    for(uint32_t i=0; i<OocSimLodSettings::BATCHES_LIST_SIZE; i++){
+        if(!GlobalVariables::batchesQueue[i]){
             nb_empty++;
             continue;
         }
-        switch(batchesQueue[i]->state){
+        switch(GlobalVariables::batchesQueue[i]->state){
             case Empty:
                 println("Error: there should not be a batch with an Empty state...");
                 break;
@@ -560,10 +578,10 @@ void displayBuffers(){
         }
     }
     println("- batches: {} empty, {} to load, {} loaded, {} inserted, {} to remove", nb_empty, nb_to_load, nb_loaded, nb_inserted, nb_to_remove);
-    println("- spilledPoints: {} elements", (*spilledPoints).size());
-    println("- spillingNodes: {} elements", (*spillingNodes).size());
-    println("- backlogVoxels: {} elements", (*backlogVoxels).size());
-    println("- backlogVoxelsNodes: {} elements", (*backlogVoxelsNodes).size());
+    println("- spilledPoints: {} elements", (*GlobalVariables::spilledPoints).size());
+    println("- spillingNodes: {} elements", (*GlobalVariables::spillingNodes).size());
+    println("- backlogVoxels: {} elements", (*GlobalVariables::backlogVoxels).size());
+    println("- backlogVoxelsNodes: {} elements", (*GlobalVariables::backlogVoxelsNodes).size());
 
     println("\n///////////////////////////////////////////////////");
 	println("///////////////////////////////////////////////////");
@@ -971,7 +989,7 @@ void CFullOctreeUnifiedBuilder::update() {
         }
     };
 
-    recursion(mainOctree.get(), 0);
+    recursion(GlobalVariables::mainOctree.get(), 0);
 }
 
 

@@ -39,14 +39,14 @@ std::string getFileName(const AABB& aabb){
     return res;
 }
 std::string getNodeFilePath(const AABB& aabb){
-    return format("{}/{}.node", TEMPORARY_DIRECTORY, getFileName(aabb));
+    return format("{}/{}.node", OocSimLodSettings::TEMPORARY_NODE_STORAGE_DIRECTORY, getFileName(aabb));
 }
 std::string getOccupancyFilePath(const AABB& aabb){
-    return format("{}/{}.grid", TEMPORARY_DIRECTORY, getFileName(aabb));
+    return format("{}/{}.grid", OocSimLodSettings::TEMPORARY_NODE_STORAGE_DIRECTORY, getFileName(aabb));
 }
 std::string getChunkFilePath(const AABB& aabb, bool is_voxel){
     return format( "{}/{}.{}", 
-        TEMPORARY_DIRECTORY, getFileName(aabb),
+        OocSimLodSettings::TEMPORARY_NODE_STORAGE_DIRECTORY, getFileName(aabb),
         is_voxel ? "voxels" : "points"
     );
 }
@@ -65,7 +65,7 @@ ChunkSerializable::ChunkSerializable(const Chunk* root_chunk){
         uint32_t cur_size = cur_chunk->size;
         sizes.push_back(cur_size);
 
-        std::array<Point, POINTS_PER_CHUNK> new_points = {};
+        std::array<Point, OocSimLodSettings::NB_POINTS_PER_CHUNK> new_points = {};
         for(uint32_t i=0; i<cur_size; i++){
             new_points[i] = cur_chunk->points[i];
         }
@@ -80,7 +80,7 @@ void ChunkSerializable::serialize(const std::string& filepath) const {
     ofstream file(filepath, ios::binary | std::ios::trunc);
     if(!file.is_open()){
         println("Failed to open the file {} to serialize a chunk", filepath);
-        if(!MAIN_LOOP_IS_TERMINATING){
+        if(!GlobalVariables::mainLoopIsTerminating){
             exit(EXIT_FAILURE);
         }
     }
@@ -92,7 +92,7 @@ void ChunkSerializable::serialize(const std::string& filepath) const {
 
         file.write(
             reinterpret_cast<const char*>(points[i].data()),
-            POINTS_PER_CHUNK * sizeof(Point)
+            OocSimLodSettings::NB_POINTS_PER_CHUNK * sizeof(Point)
         );
     }
 
@@ -106,12 +106,12 @@ ChunkSerializable ChunkSerializable::deserialize(const std::string& filepath){
     ifstream file(filepath, ios::binary);
     if(!file.is_open()){
         println("Failed to open the file {} to deserialize a chunk", filepath);
-        if(!MAIN_LOOP_IS_TERMINATING){
+        if(!GlobalVariables::mainLoopIsTerminating){
             exit(EXIT_FAILURE);
         }
     }
 
-    size_t nb_chunks;
+    size_t nb_chunks = 0;
     file.read(reinterpret_cast<char*>(&nb_chunks), sizeof(nb_chunks));
 
     new_chunk.sizes.resize(nb_chunks);
@@ -123,7 +123,7 @@ ChunkSerializable ChunkSerializable::deserialize(const std::string& filepath){
 
         file.read(
             reinterpret_cast<char*>(new_chunk.points[i].data()),
-            POINTS_PER_CHUNK * sizeof(Point)
+            OocSimLodSettings::NB_POINTS_PER_CHUNK * sizeof(Point)
         );
     }
     
@@ -138,7 +138,7 @@ Chunk* ChunkSerializable::toChunk() const{
 
     for(int32_t chunk_id=nb_chunks-1; chunk_id>=0; chunk_id--){
         uint32_t cur_size = sizes[chunk_id];
-        const std::array<Point, POINTS_PER_CHUNK>& cur_points = points[chunk_id];
+        const std::array<Point, OocSimLodSettings::NB_POINTS_PER_CHUNK>& cur_points = points[chunk_id];
 
         Chunk* new_chunk = new Chunk();
         new_chunk->size = cur_size;
@@ -160,7 +160,7 @@ Chunk* ChunkSerializable::toChunk() const{
 ///////////////////////////////////////////////////////////////////////////////
 
 void OctreeNodeSerializable::init(const OctreeNode* node, bool node_only){
-    std::lock_guard<std::mutex> lock(mainLoopIsTerminatingMtx);
+    std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
 
     std::function<void (const OctreeNode*)> recursion = [&](const OctreeNode* cur_node){
         OctreeNodeSerializable new_node = {};
@@ -212,7 +212,7 @@ void OctreeNodeSerializable::serialize(const std::string& filepath) const {
 
     if (!file.is_open()) {
         println("Failed to open the file {} to serialize an octree node", filepath);
-        if(!MAIN_LOOP_IS_TERMINATING){
+        if(!GlobalVariables::mainLoopIsTerminating){
             exit(EXIT_FAILURE);
         }
     }
@@ -244,14 +244,14 @@ void OctreeNodeSerializable::serialize(const std::string& filepath) const {
 }
 
 OctreeNodeSerializable OctreeNodeSerializable::deserialize(const std::string& filepath) {
-    std::lock_guard<std::mutex> lock(mainLoopIsTerminatingMtx);
+    std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
     OctreeNodeSerializable new_node = {};
 
     std::ifstream file(filepath, std::ios::binary);
 
     if (!file.is_open()) {
         println("Failed to open the file {} to deserialize an octree node", filepath);
-        if(!MAIN_LOOP_IS_TERMINATING){
+        if(!GlobalVariables::mainLoopIsTerminating){
             exit(EXIT_FAILURE);
         }
     }
@@ -328,12 +328,24 @@ OctreeNode* OctreeNodeSerializable::toLeafNode(const AABB& node_aabb) const{
 
                     // Sample voxel occupancy grid at this location
                     vec3 normalized_coordinates = node_aabb.getPointNormalizedCoordinates(point.position);
-                    uint32_t grid_x = clamp(uint32_t(floor(GRID_SIZE * normalized_coordinates.x)), 0u, GRID_SIZE - 1u);
-                    uint32_t grid_y = clamp(uint32_t(floor(GRID_SIZE * normalized_coordinates.y)), 0u, GRID_SIZE - 1u);
-                    uint32_t grid_z = clamp(uint32_t(floor(GRID_SIZE * normalized_coordinates.z)), 0u, GRID_SIZE - 1u);
-                    uint32_t index = grid_x + GRID_SIZE * (grid_y + GRID_SIZE * grid_z);
-                    uint32_t word_index = index >> 5u;
-                    uint32_t bit_index = index & 31u;
+					uint32_t grid_x = clamp(
+						uint32_t(floor(OocSimLodSettings::GRID_SIZE_PER_DIMENSION * normalized_coordinates.x)), 
+						0u, 
+						OocSimLodSettings::GRID_SIZE_PER_DIMENSION - 1u
+					);
+					uint32_t grid_y = clamp(
+						uint32_t(floor(OocSimLodSettings::GRID_SIZE_PER_DIMENSION * normalized_coordinates.y)), 
+						0u, 
+						OocSimLodSettings::GRID_SIZE_PER_DIMENSION - 1u
+					);
+					uint32_t grid_z = clamp(
+						uint32_t(floor(OocSimLodSettings::GRID_SIZE_PER_DIMENSION * normalized_coordinates.z)), 
+						0u, 
+						OocSimLodSettings::GRID_SIZE_PER_DIMENSION - 1u
+					);
+					uint32_t index = grid_x + OocSimLodSettings::GRID_SIZE_PER_DIMENSION * (grid_y + OocSimLodSettings::GRID_SIZE_PER_DIMENSION * grid_z);
+					uint32_t word_index = index >> 5u;
+					uint32_t bit_index = index & 31u;
                     new_node->occupancy->values[word_index] |= (1u << bit_index);
                 }
                 cur_chunk = cur_chunk->next;

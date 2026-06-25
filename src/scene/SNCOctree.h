@@ -15,12 +15,12 @@ struct SNCOctree : public SceneNode{
 	vector<CUdeviceptr> cptr_nodes;
 	vector<CUdeviceptr> cptr_aabbs;
     vector<CUdeviceptr> cptr_chunks;
-    vector<CUdeviceptr> cptr_occupancy_grids;
+    // vector<CUdeviceptr> cptr_occupancy_grids;
 
 	CUdeviceptr nodes;
 	CUdeviceptr aabbs;
 	CUdeviceptr chunks;
-	CUdeviceptr occupancy_grids;
+	// CUdeviceptr occupancy_grids;
 
 	uint32_t num_nodes = 0;
 	uint32_t max_lod_level = 0;
@@ -65,10 +65,10 @@ struct SNCOctree : public SceneNode{
 			cuda_status = cuMemFreeAsync(ptr, stream);
 			cudaCheck(cuda_status, "cptr_chunks");
 		}
-		for(CUdeviceptr& ptr : cptr_occupancy_grids){
-			cuda_status = cuMemFreeAsync(ptr, stream);
-			cudaCheck(cuda_status, "cptr_occupancy_grids");
-		}
+		// for(CUdeviceptr& ptr : cptr_occupancy_grids){
+		// 	cuda_status = cuMemFreeAsync(ptr, stream);
+		// 	cudaCheck(cuda_status, "cptr_occupancy_grids");
+		// }
 
 		cuda_status = cuMemFreeAsync(nodes, stream);
 		cudaCheck(cuda_status, "nodes");
@@ -79,8 +79,8 @@ struct SNCOctree : public SceneNode{
 		cuda_status = cuMemFreeAsync(chunks, stream);
 		cudaCheck(cuda_status, "chunks");
 
-		cuda_status = cuMemFreeAsync(occupancy_grids, stream);
-		cudaCheck(cuda_status, "occupancy_grids");
+		// cuda_status = cuMemFreeAsync(occupancy_grids, stream);
+		// cudaCheck(cuda_status, "occupancy_grids");
 	}
 
 	uint64_t getGpuMemoryUsage() override {
@@ -89,12 +89,11 @@ struct SNCOctree : public SceneNode{
 		total += cptr_nodes.size() * sizeof(COctreeNode);
 		total += cptr_aabbs.size() * sizeof(CAABB);
 		total += cptr_chunks.size() * sizeof(CChunk);
-		total += cptr_occupancy_grids.size() * sizeof(COccupancyGrid);
 
 		total += sizeof(nodes);
 		total += sizeof(aabbs);
 		total += sizeof(chunks);
-		total += sizeof(occupancy_grids);
+		// total += sizeof(occupancy_grids);
 
 		return total;
 	}

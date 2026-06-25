@@ -123,7 +123,7 @@ void drawPoints(Scene* scene, View view, RenderTarget& target){
 void drawOctreeAABB(Scene* scene, View view, RenderTarget& target, bool use_visibility_debug_color = false){
 	static CudaModularProgram* prog = new CudaModularProgram({"./src/kernels/octree.cu"});
 
-	std::lock_guard<std::mutex> lock_scene(updateSceneMutex);
+	std::lock_guard<std::mutex> lock_scene(GlobalVariables::updateSceneMutex);
 	scene->forEach<SNCOctree>([&](SNCOctree* octree){
 		// Sanity check
 		if(!octree){return;}
@@ -148,7 +148,7 @@ void drawOctree(Scene* scene, View view, RenderTarget& target,
 ){
 	static CudaModularProgram* prog = new CudaModularProgram({"./src/kernels/octree.cu"});
 
-	std::lock_guard<std::mutex> lock_scene(updateSceneMutex);
+	std::lock_guard<std::mutex> lock_scene(GlobalVariables::updateSceneMutex);
     scene->forEach<SNCOctree>([&](SNCOctree* octree){
 		// Sanity check
 		if(!octree){return;}
@@ -159,7 +159,6 @@ void drawOctree(Scene* scene, View view, RenderTarget& target,
         cfo.nodes     = (COctreeNode**)(octree->nodes);
         cfo.aabbs     = (CAABB**)(octree->aabbs);
         cfo.chunks    = (CChunk**)(octree->chunks);
-        cfo.occupancy_grids = (COccupancyGrid**)(octree->occupancy_grids);
         cfo.num_nodes = octree->num_nodes;
         cfo.max_lod_level = octree->max_lod_level;
 		cfo.debug_lod_to_render = debug_lod;
@@ -746,9 +745,9 @@ void CuRast::draw(Scene* scene, vector<View> views){
 			uint64_t points_gpu_memory  = 0;
 
 			{
-				std::lock_guard<std::mutex> lock(updateSceneMutex);
+				std::lock_guard<std::mutex> lock(GlobalVariables::updateSceneMutex);
 				scene->forEach<SNCOctree>([&](SNCOctree* node){
-					if(node->name != getSimLodOctreeName()){return;}
+					if(node->name != GlobalVariables::getSimLodOctreeName()){return;}
 					octrees.push_back(node);
 					nb_octrees++;
 					nb_points_octree = node->nb_points;
@@ -789,7 +788,7 @@ void CuRast::draw(Scene* scene, vector<View> views){
 				dvlist.push_back({format("    octree #{}", node->counter), ""});
 				dvlist.push_back({"     - # nodes           ", format("{:30L}", node->cptr_nodes.size())});
 				dvlist.push_back({"     - # chunks          ", format("{:30L}", node->cptr_chunks.size())});
-				dvlist.push_back({"     - # occupancy grids ", format("{:30L}", node->cptr_occupancy_grids.size())});
+				// dvlist.push_back({"     - # occupancy grids ", format("{:30L}", node->cptr_occupancy_grids.size())});
 				dvlist.push_back({"     - GPU memory usage  ", formatMemSize(node->getGpuMemoryUsage())});
 				// dvlist.push_back({"\t#visible nodes         ", format("{:40L}", uint64_t(numVisibleNodes))});
 			}

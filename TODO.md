@@ -2,9 +2,9 @@
 
 ## Next steps (in priority order)
 
-- Add a settings file to avoid recompiling everytime
-- Clean the code + improve comments
+- Change the HostDeviceInterface to make settings work on GPU side as well
 - Create uniform structure for better structuring in cuda code / gui
+- Clean the code + improve comments
 - Measure timings and memory usage more precisely 
 - Batch the memcpy on loadingtogpu (ie separate memalloc from memcpy)
 

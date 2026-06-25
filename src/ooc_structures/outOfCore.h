@@ -21,7 +21,7 @@ struct OctreeNodeSerializable;
 /// A serializable chunk
 struct ChunkSerializable {
 	/// All chunk have the same physical size even if empty
-	std::vector<std::array<Point, POINTS_PER_CHUNK>> points = {};
+	std::vector<std::array<Point, OocSimLodSettings::NB_POINTS_PER_CHUNK>> points = {};
 	std::vector<uint32_t> sizes = {};
 
     ChunkSerializable(){};

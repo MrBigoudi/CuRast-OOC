@@ -327,12 +327,9 @@ extern __constant__ RenderTarget c_target;
 
 
 // TODO: test code to remove
-constexpr uint16_t C_MAX_POINTS_PER_LEAF = 50'000;
-constexpr uint32_t C_POINTS_PER_CHUNK = 1'024;
+#include "../ooc_structures/settings.h"
 constexpr uint32_t C_OCTREE_RENDER_BLOCK_SIZE = 256;
-constexpr uint32_t C_GRID_SIZE = 128;
-constexpr uint32_t C_GRID_NUM_CELLS = C_GRID_SIZE * C_GRID_SIZE * C_GRID_SIZE / 32u;
-constexpr uint32_t C_MAX_ALLOCATED_CHUNKS = 1'000;
+
 struct CAABB {
 	vec3 mins = {INFINITY, INFINITY, INFINITY};
 	vec3 maxs = {-INFINITY, -INFINITY, -INFINITY};
@@ -349,12 +346,9 @@ struct CVoxel {
 	uint32_t color;
 };
 struct CChunk{
-	CPoint points[C_POINTS_PER_CHUNK];
+	CPoint points[OocSimLodSettings::NB_POINTS_PER_CHUNK];
 	uint32_t size;
 	CChunk* next;
-};
-struct COccupancyGrid {
-	uint32_t values[C_GRID_NUM_CELLS];
 };
 struct COctreeNode {
 	uint16_t counter;
@@ -378,7 +372,6 @@ struct CFullOctree {
 	COctreeNode** nodes;
 	CAABB** aabbs;
 	CChunk** chunks;
-	COccupancyGrid** occupancy_grids;
 	uint32_t num_nodes;
 	uint32_t max_lod_level;
 
@@ -423,10 +416,10 @@ struct CPointUnified {
 	uint8_t color[4] = {0,0,0,0};
 };
 struct COccupancyGridUnified {
-	uint32_t values[C_GRID_NUM_CELLS] = {0};
+	uint32_t values[OocSimLodSettings::GRID_SIZE / 32u] = {0};
 };
 struct CChunkUnified {
-	CPointUnified points[C_POINTS_PER_CHUNK] = {CPointUnified()};
+	CPointUnified points[OocSimLodSettings::NB_POINTS_PER_CHUNK] = {CPointUnified()};
 	uint32_t size = 0;
 	CChunkUnified* next = nullptr;
 };

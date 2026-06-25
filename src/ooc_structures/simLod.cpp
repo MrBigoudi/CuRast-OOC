@@ -4,14 +4,14 @@
 #include <unordered_set>
 
 void simLodUpdate(OctreeNode* main_root, std::shared_ptr<vector<Point>>& points){
-	std::shared_ptr<Timing> count_split_timing = addTiming("simlod count/split loop", true, 1);
+	std::shared_ptr<Timing> count_split_timing = Timing::addTiming("simlod count/split loop", true, 1);
 
 	// println("//////////////////////////////////////////////////");
 	// println("////////// Octree before simlod update ///////////");
 	// println("//////////////////////////////////////////////////");
 	// main_root->display();
 
-	std::shared_ptr<Timing> timing = addTiming("simlod load", true, 1);
+	std::shared_ptr<Timing> timing = Timing::addTiming("simlod load", true, 1);
 	simLodLoad(main_root, points);
 	timing->stop_clock();
 
@@ -21,11 +21,11 @@ void simLodUpdate(OctreeNode* main_root, std::shared_ptr<vector<Point>>& points)
 	// main_root->display();
 
 	while(true){
-		std::shared_ptr<Timing> timing = addTiming("simlod count", true, 2);
-		simLodCount(main_root, points, spilledPoints, spillingNodes);
+		std::shared_ptr<Timing> timing = Timing::addTiming("simlod count", true, 2);
+		simLodCount(main_root, points, GlobalVariables::spilledPoints, GlobalVariables::spillingNodes);
 		timing->stop_clock();
 
-		if(spillingNodes->size() == 0){
+		if(GlobalVariables::spillingNodes->size() == 0){
 			break;
 		}
 		
@@ -34,8 +34,8 @@ void simLodUpdate(OctreeNode* main_root, std::shared_ptr<vector<Point>>& points)
 		// println("//////////////////////////////////////////////////");
 		// main_root->display();
 
-		timing = addTiming("simlod split", true, 2);
-		simLodSplit(spilledPoints, spillingNodes);
+		timing = Timing::addTiming("simlod split", true, 2);
+		simLodSplit(GlobalVariables::spilledPoints, GlobalVariables::spillingNodes);
 		timing->stop_clock();
 
 		// println("//////////////////////////////////////////////////");
@@ -51,8 +51,8 @@ void simLodUpdate(OctreeNode* main_root, std::shared_ptr<vector<Point>>& points)
 	// main_root->display();
 
 
-	timing = addTiming("simlod voxel sampling", true, 1);
-	simLodVoxelSampling(main_root, points, spilledPoints, backlogVoxels, backlogVoxelsNodes);
+	timing = Timing::addTiming("simlod voxel sampling", true, 1);
+	simLodVoxelSampling(main_root, points, GlobalVariables::spilledPoints, GlobalVariables::backlogVoxels, GlobalVariables::backlogVoxelsNodes);
 	timing->stop_clock();
 
 	// println("//////////////////////////////////////////////////");
@@ -61,8 +61,8 @@ void simLodUpdate(OctreeNode* main_root, std::shared_ptr<vector<Point>>& points)
 	// main_root->display();
 	
 
-	timing = addTiming("simlod insertion", true, 1);
-	simLodInsertion(main_root, points, spilledPoints, backlogVoxels, backlogVoxelsNodes);
+	timing = Timing::addTiming("simlod insertion", true, 1);
+	simLodInsertion(main_root, points, GlobalVariables::spilledPoints, GlobalVariables::backlogVoxels, GlobalVariables::backlogVoxelsNodes);
 	timing->stop_clock();
 
 	// println("//////////////////////////////////////////////////");
@@ -72,11 +72,11 @@ void simLodUpdate(OctreeNode* main_root, std::shared_ptr<vector<Point>>& points)
 
 
 	// Clean buffers
-	timing = addTiming("simlod buffer cleaning", true, 1);
-	spilledPoints->clear();
-	spillingNodes->clear();
-	backlogVoxels->clear();
-	backlogVoxelsNodes->clear();
+	timing = Timing::addTiming("simlod buffer cleaning", true, 1);
+	GlobalVariables::spilledPoints->clear();
+	GlobalVariables::spillingNodes->clear();
+	GlobalVariables::backlogVoxels->clear();
+	GlobalVariables::backlogVoxelsNodes->clear();
 	timing->stop_clock();
 
 }
@@ -128,9 +128,9 @@ void simLodCount(
 					{
 						std::lock_guard<std::mutex> lock_counter(mtx_counter);
 						old_counter = leaf->counter;
-						leaf->counter = min(old_counter + 1u, MAX_POINTS_PER_LEAF + 1u);
+						leaf->counter = min(old_counter + 1u, OocSimLodSettings::MAX_POINTS_PER_LEAF + 1u);
 					}
-					if(old_counter == MAX_POINTS_PER_LEAF){
+					if(old_counter == OocSimLodSettings::MAX_POINTS_PER_LEAF){
 						std::lock_guard<std::mutex> lock_spilling(mtx_spilling_nodes);
 						spilling_nodes->push_back(leaf);
 					}
@@ -141,7 +141,7 @@ void simLodCount(
 		}
 	};
 
-	if(!CPU_PARALLELISED){
+	if(!OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 		for(Point& point : *points){
 			countPoint(point, mtx_counter, mtx_spilling_nodes);
 		}
@@ -265,7 +265,7 @@ void simLodSplit(
 	// 	set.insert(node);
 	// }
 
-	if(!CPU_PARALLELISED){
+	if(!OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 		std::for_each(spilling_nodes->begin(), spilling_nodes->end(), [&](OctreeNode*& spilling_node){
 			lambda(spilling_node);
 		});
@@ -300,10 +300,22 @@ void simLodVoxelSampling(
 
 			// Sample voxel occupancy grid at this location if the node is inner for this point
 			vec3 normalized_coordinates = node->aabb->getPointNormalizedCoordinates(point.position);
-			uint32_t grid_x = clamp(uint32_t(floor(GRID_SIZE * normalized_coordinates.x)), 0u, GRID_SIZE - 1u);
-			uint32_t grid_y = clamp(uint32_t(floor(GRID_SIZE * normalized_coordinates.y)), 0u, GRID_SIZE - 1u);
-			uint32_t grid_z = clamp(uint32_t(floor(GRID_SIZE * normalized_coordinates.z)), 0u, GRID_SIZE - 1u);
-			uint32_t index = grid_x + GRID_SIZE * (grid_y + GRID_SIZE * grid_z);
+			uint32_t grid_x = clamp(
+				uint32_t(floor(OocSimLodSettings::GRID_SIZE_PER_DIMENSION * normalized_coordinates.x)), 
+				0u, 
+				OocSimLodSettings::GRID_SIZE_PER_DIMENSION - 1u
+			);
+			uint32_t grid_y = clamp(
+				uint32_t(floor(OocSimLodSettings::GRID_SIZE_PER_DIMENSION * normalized_coordinates.y)), 
+				0u, 
+				OocSimLodSettings::GRID_SIZE_PER_DIMENSION - 1u
+			);
+			uint32_t grid_z = clamp(
+				uint32_t(floor(OocSimLodSettings::GRID_SIZE_PER_DIMENSION * normalized_coordinates.z)), 
+				0u, 
+				OocSimLodSettings::GRID_SIZE_PER_DIMENSION - 1u
+			);
+			uint32_t index = grid_x + OocSimLodSettings::GRID_SIZE_PER_DIMENSION * (grid_y + OocSimLodSettings::GRID_SIZE_PER_DIMENSION * grid_z);
 			uint32_t word_index = index >> 5u;
 			uint32_t bit_index = index & 31u;
 			bool is_cell_occupied = (node->occupancy->values[word_index] & (1u << bit_index)) != 0;
@@ -312,7 +324,7 @@ void simLodVoxelSampling(
 				// Fill up occupancy grid
 				node->occupancy->values[word_index] |= (1u << bit_index);
 				// Create corresponding voxel using this point
-				vec3 world_grid_size = node->aabb->getSize() / float(GRID_SIZE);
+				vec3 world_grid_size = node->aabb->getSize() / float(OocSimLodSettings::GRID_SIZE_PER_DIMENSION);
 				vec3 voxel_centroid = node->aabb->mins + world_grid_size * vec3(grid_x, grid_y, grid_z) + 0.5f*world_grid_size;
 				Point new_voxel = {};
 				new_voxel.position = voxel_centroid;
@@ -364,7 +376,7 @@ void simLodInsertion(
 				if(!cur_node->points){cur_node->points = new Chunk();}
 				Chunk* chunk_list = cur_node->points;
 				while(chunk_list->next){chunk_list = chunk_list->next;}
-				if(chunk_list->size == POINTS_PER_CHUNK){
+				if(chunk_list->size == OocSimLodSettings::NB_POINTS_PER_CHUNK){
 					chunk_list->next = new Chunk();
 					chunk_list = chunk_list->next;
 				}
@@ -380,7 +392,7 @@ void simLodInsertion(
 		if(!node->voxels){node->voxels = new Chunk();}
 		Chunk* chunk_list = node->voxels;
 		while(chunk_list->next){chunk_list = chunk_list->next;}
-		if(chunk_list->size == POINTS_PER_CHUNK){
+		if(chunk_list->size == OocSimLodSettings::NB_POINTS_PER_CHUNK){
 			chunk_list->next = new Chunk();
 			chunk_list = chunk_list->next;
 		}
@@ -389,7 +401,7 @@ void simLodInsertion(
 		return;
 	};
 
-	if(!CPU_PARALLELISED){
+	if(!OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 		for(Point& point : *points){
 			insertPoint(point, main_root);
 		}
@@ -497,7 +509,7 @@ void simLodLoad(
 		}
 	};
 
-	if(!CPU_PARALLELISED){
+	if(!OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 		for(Point& point : *points){
 			tryInsertPoint(point, main_root);
 		}
