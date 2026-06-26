@@ -351,7 +351,7 @@ struct CChunk{
 	CChunk* next;
 };
 struct COctreeNode {
-	uint16_t counter;
+	uint32_t counter;
 	uint8_t children_ids;
 	uint8_t children_visibility = 0b00000000;
 

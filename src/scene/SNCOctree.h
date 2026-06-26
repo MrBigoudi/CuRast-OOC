@@ -30,7 +30,7 @@ struct SNCOctree : public SceneNode{
 	bool need_to_be_executed = false;
 
 	CUstream stream;
-	
+
 	SNCOctree(string name, uint64_t octree_id) : SceneNode(name), octree_id(octree_id){
 		
 	}
@@ -55,14 +55,17 @@ struct SNCOctree : public SceneNode{
 
 		for(CUdeviceptr& ptr : cptr_nodes){
 			cuda_status = cuMemFreeAsync(ptr, stream);
+			// cuda_status = cuMemFree(ptr);
 			cudaCheck(cuda_status, "cptr_nodes");
 		}
 		for(CUdeviceptr& ptr : cptr_aabbs){
 			cuda_status = cuMemFreeAsync(ptr, stream);
+			// cuda_status = cuMemFree(ptr);
 			cudaCheck(cuda_status, "cptr_aabbs");
 		}
 		for(CUdeviceptr& ptr : cptr_chunks){
 			cuda_status = cuMemFreeAsync(ptr, stream);
+			// cuda_status = cuMemFree(ptr);
 			cudaCheck(cuda_status, "cptr_chunks");
 		}
 		// for(CUdeviceptr& ptr : cptr_occupancy_grids){
@@ -71,12 +74,15 @@ struct SNCOctree : public SceneNode{
 		// }
 
 		cuda_status = cuMemFreeAsync(nodes, stream);
+		// cuda_status = cuMemFree(nodes);
 		cudaCheck(cuda_status, "nodes");
 
 		cuda_status = cuMemFreeAsync(aabbs, stream);
+		// cuda_status = cuMemFree(aabbs);
 		cudaCheck(cuda_status, "aabbs");
 
 		cuda_status = cuMemFreeAsync(chunks, stream);
+		// cuda_status = cuMemFree(chunks);
 		cudaCheck(cuda_status, "chunks");
 
 		// cuda_status = cuMemFreeAsync(occupancy_grids, stream);

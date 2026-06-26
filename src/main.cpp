@@ -336,7 +336,6 @@ void initScene() {
 				if(done){break;}
 			}
 			clearUnusedBatches();
-			loadOctreeOnGPU(CuRast::instance, &context);
 		} else {
 			std::thread thread_loadLion([&](std::string file){
 				initLoadPointBatches(file);
@@ -546,7 +545,6 @@ int main(int argc, char** argv){
 					if(done){break;}
 				}
 				clearUnusedBatches();
-				loadOctreeOnGPU(CuRast::instance, &context);
 			}
 		});
 	};
@@ -737,7 +735,7 @@ int main(int argc, char** argv){
 			// 	}
 			// }
 
-			if(GlobalVariables::elapsedFrames >= OocSimLodSettings::NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE){
+			if(GlobalVariables::elapsedFrames > OocSimLodSettings::NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE){
 				GlobalVariables::elapsedFrames = 0;
 				updateVisibilityCache(VKRenderer::view.view, VKRenderer::view.proj);
 				loadOctreeOnGPU(CuRast::instance, &context);

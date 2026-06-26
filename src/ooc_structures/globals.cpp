@@ -280,8 +280,20 @@ uint32_t OctreeNode::getDepth() const {
 }
 
 void OctreeNode::display(uint32_t id, uint32_t level, bool node_only) const {
-    println("level: {}, id: {}, counter: {}, updated: {}, nbPoints: {}, nbVoxels: {}, points location: 0b{}{}{}{}{}{}{}{}, children: 0b{}{}{}{}{}{}{}{}",
-        level, id, counter, updated, getNbPoints(), getNbVoxels(),
+    println("level: {}, id: {}, counter: {}, \
+        updated: {}, nbPoints: {}, nbVoxels: {}, \
+        visibility: {}, children visibility: 0b{}{}{}{}{}{}{}{}, \
+        points location: 0b{}{}{}{}{}{}{}{}, children: 0b{}{}{}{}{}{}{}{}",
+
+        level, id, counter, updated, getNbPoints(), getNbVoxels(), is_visible,
+        uint8_t(bool(children_visibility & 0x01 << 0)),
+        uint8_t(bool(children_visibility & 0x01 << 1)),
+        uint8_t(bool(children_visibility & 0x01 << 2)),
+        uint8_t(bool(children_visibility & 0x01 << 3)),
+        uint8_t(bool(children_visibility & 0x01 << 4)),
+        uint8_t(bool(children_visibility & 0x01 << 5)),
+        uint8_t(bool(children_visibility & 0x01 << 6)),
+        uint8_t(bool(children_visibility & 0x01 << 7)),
         uint8_t(bool(children_ids & 0x01 << 0)),
         uint8_t(bool(children_ids & 0x01 << 1)),
         uint8_t(bool(children_ids & 0x01 << 2)),
@@ -492,7 +504,9 @@ std::string GlobalVariables::getSimLodOctreeName(bool generate_new_name){
     if(generate_new_name){
         simLodOctreeCounter++;
     }
-    return format("MainOctreeSimLOD_{}", simLodOctreeCounter);
+    std::string name = format("MainOctreeSimLOD_{}", simLodOctreeCounter);
+    // println("Octree name: {}", name);
+    return name;
 }
 
 void GlobalVariables::init(){

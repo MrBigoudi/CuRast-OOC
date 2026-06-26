@@ -653,37 +653,3 @@ void updateOctreeRoutine(){
 		addPointBatches();
 	}
 }
-
-
-
-
-
-
-
-
-// void mainLoop(){
-// 	// Init everything
-// 	// while true:
-// 		// CPU side, in parallel:
-// 			// - Load points on CPU
-// 			// - Upload points to GPU
-// 			// - Run render / grow / update kernels
-// 		// GPU side:
-// 			// - Render
-// 			// - Grow, for every thread in parallel, compute nb new levels
-// 			// - One thread creates the new children
-// 			// - Update
-// }
-
-
-
-void getCulledNodes(){
-	// TODO:
-	// Fetch all nodes in frustum (DFS list)
-		// If node not in tree && node stored
-			// Load node
-			// Update LRU
-	// If new nodes loaded
-		// Send new octree to GPU
-			
-}

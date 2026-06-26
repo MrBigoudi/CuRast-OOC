@@ -288,6 +288,15 @@ bool isLargerThanMinSpanning(
 	RenderTarget target,
     mat4 world
 ){
+
+    // Check if Camera inside the node
+    vec3 cam = target.cameraPos;
+    bool cam_inside = cam.x > aabb->mins.x && cam.x < aabb->maxs.x
+        && cam.y > aabb->mins.y && cam.y < aabb->maxs.y
+        && cam.z > aabb->mins.z && cam.z < aabb->maxs.z
+    ;
+    if(cam_inside){return true;}
+
     float smin_x = 0.;
     float smax_x = 0.;
     float smin_y = 0.;
@@ -530,9 +539,7 @@ void kernel_visibilityPass(
     COctreeNode* node = octree.nodes[node_index];
     CAABB* aabb = octree.aabbs[node_index];
 
-    // Already added on CPU side
-    // bool intersects_frustum = true; // TODO: add frustum culling
-    // node->is_visible = intersects_frustum;
+    // Frustum culling already done on CPU side
     if(!node->is_visible){return;}
 
     // Draw voxels of not visible children
@@ -574,7 +581,6 @@ void kernel_drawOctreeLarge(
         if(has_points && node->is_visible){
             drawAllPoints(node, target, octree.world);
         }
-        // node->is_visible = false;
 
         // Update flags
         for(uint32_t i=0; i<8; i++){
@@ -615,9 +621,8 @@ void kernel_drawOctreeSmall(
             drawAllPoints(node, target, octree.world);
         }
     } else {
-        bool should_draw = !node->is_large && node->is_visible && node->is_cut;
         bool is_minimal_draw = (node->level == 0) && !node->is_large;
-        if(should_draw || is_minimal_draw){
+        if(node->is_cut || is_minimal_draw){
             drawAllPoints(node, target, octree.world);
             drawAllVoxels(
                 node, aabb, target, 
@@ -627,7 +632,4 @@ void kernel_drawOctreeSmall(
             );
         }
     }
-
-    // node->is_visible = false;
-    node->is_large = false;
 }

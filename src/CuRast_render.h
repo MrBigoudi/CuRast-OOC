@@ -785,7 +785,7 @@ void CuRast::draw(Scene* scene, vector<View> views){
 			dvlist.push_back({"# total octrees          ", format("{:30L}", nb_octrees)});
 			for(uint32_t i=0; i<nb_octrees; i++){
 				SNCOctree* node = octrees[i];
-				dvlist.push_back({format("    octree #{}", node->counter), ""});
+				dvlist.push_back({format("    octree '{}'", node->name), ""});
 				dvlist.push_back({"     - # nodes           ", format("{:30L}", node->cptr_nodes.size())});
 				dvlist.push_back({"     - # chunks          ", format("{:30L}", node->cptr_chunks.size())});
 				// dvlist.push_back({"     - # occupancy grids ", format("{:30L}", node->cptr_occupancy_grids.size())});

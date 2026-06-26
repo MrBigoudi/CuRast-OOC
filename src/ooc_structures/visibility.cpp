@@ -263,11 +263,11 @@ void fillVisibilityCache(const std::vector<AABB>& nodes, OctreeNode* root_octree
 	// println("//////////////////////////////////////////////////////////");
 	// println("//////////////////////////////////////////////////////////\n");
 
-    // if(!updatesCache->sanityCheck(root_octree)){
+    // if(!GlobalVariables::updatesCache->sanityCheck(root_octree)){
     //     println("Sanity check failed for the updates cache");
     //     exit(EXIT_FAILURE);
     // }
-    // if(!visibilityCache->sanityCheck(root_octree)){
+    // if(!GlobalVariables::visibilityCache->sanityCheck(root_octree)){
     //     println("Sanity check failed for the visibility cache");
     //     exit(EXIT_FAILURE);
     // }
@@ -325,12 +325,13 @@ void fillVisibilityCache(const std::vector<AABB>& nodes, OctreeNode* root_octree
     bool root_visible = false;
     recursion(root_octree, 0, 0, &root_visible);
     if(!root_visible){
-        println("Root should alwasy be visible");
+        println("Root should always be visible");
         exit(EXIT_FAILURE);
     }
 
-    // println("before add: vis cache size = {}, updates cache size = {}, stored nodes = {}, nb visible nodes = {}, total nb nodes = {}", 
-    //     visibilityCache->getSize(), updatesCache->getSize(), LRUCache::stored_set.size(), nodes.size(), aabb_relationship_map.size()
+    // println("end: vis cache size = {}, updates cache size = {}, stored nodes = {}, nb visible nodes = {}, total nb nodes = {}", 
+    //     GlobalVariables::visibilityCache->getSize(), GlobalVariables::updatesCache->getSize(), 
+    //     LRUCache::stored_set.size(), nodes.size(), GlobalVariables::aabb_relationship_map.size()
     // );
     // println("");
 }
