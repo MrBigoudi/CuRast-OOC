@@ -105,14 +105,14 @@ void drawBoundingBox(RenderTarget target, mat4 world, CAABBUnified* aabb, uint32
         worldMax.z = max(worldMax.z, worldPos.z);
     };
 
-    sample({aabb->mins.x, aabb->mins.y, aabb->mins.z});
-    sample({aabb->mins.x, aabb->mins.y, aabb->maxs.z});
-    sample({aabb->mins.x, aabb->maxs.y, aabb->mins.z});
-    sample({aabb->mins.x, aabb->maxs.y, aabb->maxs.z});
-    sample({aabb->maxs.x, aabb->mins.y, aabb->mins.z});
-    sample({aabb->maxs.x, aabb->mins.y, aabb->maxs.z});
-    sample({aabb->maxs.x, aabb->maxs.y, aabb->mins.z});
-    sample({aabb->maxs.x, aabb->maxs.y, aabb->maxs.z});
+    sample({aabb.mins.x, aabb.mins.y, aabb.mins.z});
+    sample({aabb.mins.x, aabb.mins.y, aabb.maxs.z});
+    sample({aabb.mins.x, aabb.maxs.y, aabb.mins.z});
+    sample({aabb.mins.x, aabb.maxs.y, aabb.maxs.z});
+    sample({aabb.maxs.x, aabb.mins.y, aabb.mins.z});
+    sample({aabb.maxs.x, aabb.mins.y, aabb.maxs.z});
+    sample({aabb.maxs.x, aabb.maxs.y, aabb.mins.z});
+    sample({aabb.maxs.x, aabb.maxs.y, aabb.maxs.z});
 
     // BOTTOM
     drawLine(target, {worldMin.x, worldMin.y, worldMin.z}, {worldMax.x, worldMin.y, worldMin.z}, color);
@@ -301,7 +301,7 @@ bool isLargerThanMinSpanning(
     float smin_y = 0.;
     float smax_y = 0.;
     float depth = 0.;
-    getScreenSpaceSquare(aabb->mins, aabb->maxs, 
+    getScreenSpaceSquare(aabb.mins, aabb.maxs, 
         target, world, 
         &smin_x, &smax_x, &smin_y, &smax_y, &depth
     );
@@ -394,7 +394,7 @@ void drawAllVoxels(
     auto block = cg::this_thread_block();
     CChunkUnified* cur_voxels = node->voxels;
     CAABBUnified* aabb = node->aabb;
-    vec3 voxel_size = (aabb->maxs - aabb->mins) / float(C_GRID_SIZE);
+    vec3 voxel_size = (aabb.maxs - aabb.mins) / float(C_GRID_SIZE);
 
     float color_factor = float(node->level) / float(max(max_lod_level, 1));
     color_factor = clamp(color_factor, 0.0f, 1.0f);

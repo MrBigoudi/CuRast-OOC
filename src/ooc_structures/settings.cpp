@@ -74,6 +74,7 @@ void OocSimLodSettings::display(){
     println("    - TEMPORARY_NODE_STORAGE_DIRECTORY: {}", TEMPORARY_NODE_STORAGE_DIRECTORY);
     println("    - NB_POINTS_PER_CHUNK: {}", NB_POINTS_PER_CHUNK);
     println("    - GRID_SIZE_PER_DIMENSION: {}", GRID_SIZE_PER_DIMENSION);
+    println("    - PER_NODE_KERNEL_BLOCK_SIZE: {}", PER_NODE_KERNEL_BLOCK_SIZE);
 
     println("");
     println("Miscellaneous:");

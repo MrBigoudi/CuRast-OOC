@@ -168,11 +168,11 @@ std::vector<AABB> orderNodes(
             // TODO: temporary code
             AABB child_aabb = {};
             {
-                std::lock_guard<std::mutex> lock(GlobalVariables::aabb_relationship_map_mtx);
-                if(!GlobalVariables::aabb_relationship_map[cur_node->aabb][child_id].has_value()){
+                std::lock_guard<std::mutex> lock(GlobalVariables::aabbRelationshipMapMtx);
+                if(!GlobalVariables::aabbRelationshipMap[cur_node->aabb][child_id].has_value()){
                     continue;
                 }
-                child_aabb = GlobalVariables::aabb_relationship_map[cur_node->aabb][child_id].value();
+                child_aabb = GlobalVariables::aabbRelationshipMap[cur_node->aabb][child_id].value();
             }
 
             if(visible_nodes.contains(child_aabb)){
@@ -215,7 +215,7 @@ std::vector<AABB> orderNodes(
 /// Fill the visibility cache with the ordered nodes
 void fillVisibilityCache(const std::vector<AABB>& nodes, OctreeNode* root_octree){
     // println("before add: vis cache size = {}, updates cache size = {}, stored nodes = {}, nb visible nodes = {}, total nb nodes = {}", 
-    //     visibilityCache->getSize(), updatesCache->getSize(), LRUCache::stored_set.size(), nodes.size(), aabb_relationship_map.size()
+    //     visibilityCache->getSize(), updatesCache->getSize(), LRUCache::stored_set.size(), nodes.size(), aabbRelationshipMap.size()
     // );
     
     // uint32_t first_index = 0;
@@ -227,7 +227,7 @@ void fillVisibilityCache(const std::vector<AABB>& nodes, OctreeNode* root_octree
     }
 
     // println("after add: vis cache size = {}, updates cache size = {}, stored nodes = {}, nb visible nodes = {}, total nb nodes = {}", 
-    //     visibilityCache->getSize(), updatesCache->getSize(), LRUCache::stored_set.size(), nodes.size(), aabb_relationship_map.size()
+    //     visibilityCache->getSize(), updatesCache->getSize(), LRUCache::stored_set.size(), nodes.size(), aabbRelationshipMap.size()
     // );
 
     // println("");
@@ -277,7 +277,7 @@ void fillVisibilityCache(const std::vector<AABB>& nodes, OctreeNode* root_octree
     // No need to store them as if they were not in the updates cache they were not updated since last load
     // Also load all the nodes that need to be loaded
     std::function<bool(OctreeNode*, uint32_t, uint32_t, bool*)> recursion = [&](OctreeNode* cur_node, uint32_t id, uint32_t level, bool* is_visible) -> bool {
-        const AABB& aabb = *cur_node->aabb;
+        const AABB& aabb = cur_node->aabb;
         bool in_vis_cache = GlobalVariables::visibilityCache->contains(aabb, true);
         
         if(!CuRastSettings::freezeVisibleNodes){
@@ -301,11 +301,11 @@ void fillVisibilityCache(const std::vector<AABB>& nodes, OctreeNode* root_octree
                 // TODO: temporary code
                 AABB child_aabb = {};
                 {
-                    std::lock_guard<std::mutex> lock(GlobalVariables::aabb_relationship_map_mtx);
-                    if(!GlobalVariables::aabb_relationship_map[*cur_node->aabb][child_id].has_value()){
+                    std::lock_guard<std::mutex> lock(GlobalVariables::aabbRelationshipMapMtx);
+                    if(!GlobalVariables::aabbRelationshipMap[cur_node->aabb][child_id].has_value()){
                         continue;
                     }
-                    child_aabb = GlobalVariables::aabb_relationship_map[*cur_node->aabb][child_id].value();
+                    child_aabb = GlobalVariables::aabbRelationshipMap[cur_node->aabb][child_id].value();
                 }
 
                 if(GlobalVariables::visibilityCache->contains(child_aabb, true) && LRUCache::hasBeenStored(child_aabb)){
@@ -331,7 +331,7 @@ void fillVisibilityCache(const std::vector<AABB>& nodes, OctreeNode* root_octree
 
     // println("end: vis cache size = {}, updates cache size = {}, stored nodes = {}, nb visible nodes = {}, total nb nodes = {}", 
     //     GlobalVariables::visibilityCache->getSize(), GlobalVariables::updatesCache->getSize(), 
-    //     LRUCache::stored_set.size(), nodes.size(), GlobalVariables::aabb_relationship_map.size()
+    //     LRUCache::stored_set.size(), nodes.size(), GlobalVariables::aabbRelationshipMap.size()
     // );
     // println("");
 }
@@ -422,7 +422,7 @@ void updateVisibilityCache(const mat4& view, const mat4& proj){
 
 
     vec3 cameraPos = vec3(glm::inverse(view) * vec4(0.0f, 0.0f, 0.0f, 1.0f));
-    std::vector<AABB> ordered_nodes = orderNodes(*octree_ref->aabb, visible_nodes, cameraPos);
+    std::vector<AABB> ordered_nodes = orderNodes(octree_ref->aabb, visible_nodes, cameraPos);
 
     // // TODO: just for debugging
     // if(just_freezed){

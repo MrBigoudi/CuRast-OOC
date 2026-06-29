@@ -5,7 +5,6 @@
 #include <iostream>
 #include <iomanip>
 #include <algorithm>
-#include <unordered_set>
 
 ///////////////////////////////////////////////////////////////////////////////
 ////////////////////////////// HELPER FUNCTIONS ///////////////////////////////
@@ -166,31 +165,31 @@ void OctreeNodeSerializable::init(const OctreeNode* node, bool node_only){
         OctreeNodeSerializable new_node = {};
         new_node.counter = cur_node->counter;
         new_node.children_ids = cur_node->children_ids;
-        new_node.aabb = *cur_node->aabb;
+        new_node.aabb = cur_node->aabb;
         
         if(!node_only){
             for(uint32_t child_id = 0; child_id < 8; child_id++){
                 if(cur_node->children[child_id]){
                     new_node.children |= (0x01 << child_id);
-                    std::string new_filepath = getNodeFilePath(*cur_node->children[child_id]->aabb);
+                    std::string new_filepath = getNodeFilePath(cur_node->children[child_id]->aabb);
                     recursion(cur_node->children[child_id]);
                 }
             }
         }
 
         if(cur_node->points){
-            new_node.points = getChunkFilePath(*cur_node->aabb, false);
+            new_node.points = getChunkFilePath(cur_node->aabb, false);
             ChunkSerializable serializable = ChunkSerializable(cur_node->points);
             serializable.serialize(new_node.points);
         }
         if(cur_node->voxels){
-            new_node.voxels = getChunkFilePath(*cur_node->aabb, true);
+            new_node.voxels = getChunkFilePath(cur_node->aabb, true);
             ChunkSerializable serializable = ChunkSerializable(cur_node->voxels);
             serializable.serialize(new_node.voxels);
         }
 
-        new_node.serialize(getNodeFilePath(*cur_node->aabb));
-        LRUCache::mark(*cur_node->aabb);
+        new_node.serialize(getNodeFilePath(cur_node->aabb));
+        LRUCache::mark(cur_node->aabb);
 
         // // TODO: temporary node
         // if(!LRUCache::sanityCheckStored(mainOctreeCpy)){
@@ -285,23 +284,9 @@ OctreeNodeSerializable OctreeNodeSerializable::deserialize(const std::string& fi
 }
 
 OctreeNode* OctreeNodeSerializable::toLeafNode(const AABB& node_aabb) const{
-    OctreeNode* new_node = new OctreeNode();
+    OctreeNode* new_node = new OctreeNode(node_aabb);
     new_node->counter = counter;
     new_node->children_ids = children_ids;
-    // new_node->aabb = new AABB(node_aabb);
-    if(aabb != node_aabb){
-        println("Loading the wrong node:");
-        println("    expected: .mins = ({}, {}, {}), .maxs = ({}, {}, {})",
-            node_aabb.mins.x, node_aabb.mins.y, node_aabb.mins.z,
-            node_aabb.maxs.x, node_aabb.maxs.y, node_aabb.maxs.z
-        );
-        println("    got: .mins = ({}, {}, {}), .maxs = ({}, {}, {})",
-            aabb.mins.x, aabb.mins.y, aabb.mins.z,
-            aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
-        );
-        exit(EXIT_FAILURE);
-    }
-    new_node->aabb = new AABB(node_aabb);
 
     if(points != ""){
         ChunkSerializable points_deserialized = ChunkSerializable::deserialize(
@@ -380,8 +365,8 @@ OctreeNode* OctreeNodeSerializable::toOctreeNodes(
                     // TODO: temporary code
                     std::optional<AABB> child_aabb = nullopt;
                     {
-                        std::lock_guard<std::mutex> lock(GlobalVariables::aabb_relationship_map_mtx);
-                        child_aabb = GlobalVariables::aabb_relationship_map[cur_aabb][child_id];
+                        std::lock_guard<std::mutex> lock(GlobalVariables::aabbRelationshipMapMtx);
+                        child_aabb = GlobalVariables::aabbRelationshipMap[cur_aabb][child_id];
                     }
                     if(child_aabb.has_value()){
                         recursion(child_aabb.value(), child_id, level+1);
@@ -406,14 +391,14 @@ OctreeNode* OctreeNodeSerializable::toOctreeNodes(
 
 void storeOctree(const OctreeNode* node, bool node_only
 ){
-    std::lock_guard<std::mutex> lock(GlobalVariables::aabb_mutex_map[*node->aabb]);
+    std::lock_guard<std::mutex> lock(GlobalVariables::aabbMutexMap[node->aabb]);
     OctreeNodeSerializable::init(node, node_only);
     // println("Done storing octree");
 }
 
 OctreeNode* loadOctree(const AABB& root_aabb, bool node_only){
     // println("Start loading octree");
-    std::lock_guard<std::mutex> lock(GlobalVariables::aabb_mutex_map[root_aabb]);
+    std::lock_guard<std::mutex> lock(GlobalVariables::aabbMutexMap[root_aabb]);
     OctreeNode* res = OctreeNodeSerializable::toOctreeNodes(root_aabb, node_only);
     // println("Done loading octree");
     return res;
@@ -434,7 +419,7 @@ void updateUpdatesCache(OctreeNode* root_octree){
         }
 
         if(cur_node->updated){
-            GlobalVariables::updatesCache->add(*cur_node->aabb, true);
+            GlobalVariables::updatesCache->add(cur_node->aabb, true);
         }
 
     };
@@ -457,12 +442,12 @@ void updateUpdatesCache(OctreeNode* root_octree){
             }
         }
 
-        bool is_in_cache = GlobalVariables::updatesCache->contains(*cur_node->aabb);
+        bool is_in_cache = GlobalVariables::updatesCache->contains(cur_node->aabb);
         bool to_remove = false;
         if(!is_in_cache){
             storeOctree(cur_node, true);
             cpt_stored++;
-            to_remove = !GlobalVariables::visibilityCache->contains(*cur_node->aabb, true);
+            to_remove = !GlobalVariables::visibilityCache->contains(cur_node->aabb, true);
         }
 
         // bool is_in_cache = false;

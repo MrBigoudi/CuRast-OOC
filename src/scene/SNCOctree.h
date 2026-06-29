@@ -13,14 +13,10 @@ using glm::ivec2;
 struct SNCOctree : public SceneNode{
 
 	vector<CUdeviceptr> cptr_nodes;
-	vector<CUdeviceptr> cptr_aabbs;
     vector<CUdeviceptr> cptr_chunks;
-    // vector<CUdeviceptr> cptr_occupancy_grids;
 
 	CUdeviceptr nodes;
-	CUdeviceptr aabbs;
 	CUdeviceptr chunks;
-	// CUdeviceptr occupancy_grids;
 
 	uint32_t num_nodes = 0;
 	uint32_t max_lod_level = 0;
@@ -38,6 +34,8 @@ struct SNCOctree : public SceneNode{
 	~SNCOctree() {
 		CUresult cuda_status = CUDA_SUCCESS;
 
+		while(!isDoneLoadingToGpu()){}
+
 		auto cudaCheck = [](CUresult result, string struct_name){
 			const char* name = nullptr;
 			const char* desc = nullptr;
@@ -50,6 +48,7 @@ struct SNCOctree : public SceneNode{
 					name ? name : "unknown",
 					desc ? desc : "unknown"
 				);
+				exit(EXIT_FAILURE);
 			}
 		};
 
@@ -58,48 +57,29 @@ struct SNCOctree : public SceneNode{
 			// cuda_status = cuMemFree(ptr);
 			cudaCheck(cuda_status, "cptr_nodes");
 		}
-		for(CUdeviceptr& ptr : cptr_aabbs){
-			cuda_status = cuMemFreeAsync(ptr, stream);
-			// cuda_status = cuMemFree(ptr);
-			cudaCheck(cuda_status, "cptr_aabbs");
-		}
 		for(CUdeviceptr& ptr : cptr_chunks){
 			cuda_status = cuMemFreeAsync(ptr, stream);
 			// cuda_status = cuMemFree(ptr);
 			cudaCheck(cuda_status, "cptr_chunks");
 		}
-		// for(CUdeviceptr& ptr : cptr_occupancy_grids){
-		// 	cuda_status = cuMemFreeAsync(ptr, stream);
-		// 	cudaCheck(cuda_status, "cptr_occupancy_grids");
-		// }
 
 		cuda_status = cuMemFreeAsync(nodes, stream);
 		// cuda_status = cuMemFree(nodes);
 		cudaCheck(cuda_status, "nodes");
 
-		cuda_status = cuMemFreeAsync(aabbs, stream);
-		// cuda_status = cuMemFree(aabbs);
-		cudaCheck(cuda_status, "aabbs");
-
 		cuda_status = cuMemFreeAsync(chunks, stream);
 		// cuda_status = cuMemFree(chunks);
 		cudaCheck(cuda_status, "chunks");
-
-		// cuda_status = cuMemFreeAsync(occupancy_grids, stream);
-		// cudaCheck(cuda_status, "occupancy_grids");
 	}
 
 	uint64_t getGpuMemoryUsage() override {
 		uint64_t total = 0;
 		
 		total += cptr_nodes.size() * sizeof(COctreeNode);
-		total += cptr_aabbs.size() * sizeof(CAABB);
 		total += cptr_chunks.size() * sizeof(CChunk);
 
 		total += sizeof(nodes);
-		total += sizeof(aabbs);
 		total += sizeof(chunks);
-		// total += sizeof(occupancy_grids);
 
 		return total;
 	}
@@ -117,6 +97,15 @@ struct SNCOctree : public SceneNode{
 				return false;
 			default:
 				println("Error on Octree's cuda stream");
+				const char* name = nullptr;
+				const char* desc = nullptr;
+				cuGetErrorName(status, &name);
+				cuGetErrorString(status, &desc);
+
+				println(stderr, "CUDA error {} ({}): {}\n ",
+					int(status),
+					name ? name : "unknown",
+					desc ? desc : "unknown");
 				exit(EXIT_FAILURE);
 		};
 

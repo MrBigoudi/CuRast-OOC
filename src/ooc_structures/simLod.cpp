@@ -4,8 +4,6 @@
 #include <unordered_set>
 
 void simLodUpdate(OctreeNode* main_root, std::shared_ptr<vector<Point>>& points){
-	std::shared_ptr<Timing> count_split_timing = Timing::addTiming("simlod count/split loop", true, 1);
-
 	// println("//////////////////////////////////////////////////");
 	// println("////////// Octree before simlod update ///////////");
 	// println("//////////////////////////////////////////////////");
@@ -20,6 +18,7 @@ void simLodUpdate(OctreeNode* main_root, std::shared_ptr<vector<Point>>& points)
 	// println("//////////////////////////////////////////////////");
 	// main_root->display();
 
+	std::shared_ptr<Timing> count_split_timing = Timing::addTiming("simlod count/split loop", true, 1);
 	while(true){
 		std::shared_ptr<Timing> timing = Timing::addTiming("simlod count", true, 2);
 		simLodCount(main_root, points, GlobalVariables::spilledPoints, GlobalVariables::spillingNodes);
@@ -100,7 +99,7 @@ void simLodCount(
 
 		while(true){
 			// Find next child
-			NodePosition child_index = leaf->aabb->getNextChildIndex(point.position);
+			NodePosition child_index = leaf->aabb.getNextChildIndex(point.position);
 
 			// If not leaf continue
 			if(leaf->children[child_index]){
@@ -197,38 +196,35 @@ void simLodSplit(
 			// Create necessary empty children
 			bool can_be_spilled = (0x01 << j) & spilling_node_children;
 			if(!spilling_node->children[j] && can_be_spilled){
-				OctreeNode* empty_child = new OctreeNode();
-				empty_child->aabb = new AABB(*spilling_node->aabb);
-				empty_child->aabb->shrink((NodePosition)j);
-				empty_child->from_split = true;
-				// empty_child->is_leaf = true;
+				OctreeNode* empty_child = new OctreeNode(spilling_node->aabb);
+				empty_child->aabb.shrink((NodePosition)j);
 				spilling_node->children[j] = empty_child;
 
 				// TODO: temporary code
 				{
-					std::lock_guard<std::mutex> lock(GlobalVariables::aabb_relationship_map_mtx);
+					std::lock_guard<std::mutex> lock(GlobalVariables::aabbRelationshipMapMtx);
 
-					if(GlobalVariables::aabb_relationship_map[*spilling_node->aabb][j]){
+					if(GlobalVariables::aabbRelationshipMap[spilling_node->aabb][j]){
 						std::string output = format("mins = ({}, {}, {}), maxs = ({}, {}, {})",
-							empty_child->aabb->mins.x, 
-							empty_child->aabb->mins.y, 
-							empty_child->aabb->mins.z, 
-							empty_child->aabb->maxs.x, 
-							empty_child->aabb->maxs.y, 
-							empty_child->aabb->maxs.z
+							empty_child->aabb.mins.x, 
+							empty_child->aabb.mins.y, 
+							empty_child->aabb.mins.z, 
+							empty_child->aabb.maxs.x, 
+							empty_child->aabb.maxs.y, 
+							empty_child->aabb.maxs.z
 						);
 						println("Weird 1: AABB {}, should have been loaded in simlodload", output);
 					}
-					if(GlobalVariables::aabb_relationship_map.contains(*empty_child->aabb)){
+					if(GlobalVariables::aabbRelationshipMap.contains(empty_child->aabb)){
 						println("Weird 2");
 					}
-					if(GlobalVariables::aabb_parent_map.contains(*empty_child->aabb)){
+					if(GlobalVariables::aabbParentMap.contains(empty_child->aabb)){
 						println("Weird 3");
 					}
 
-					GlobalVariables::aabb_relationship_map[*spilling_node->aabb][j] = *empty_child->aabb;
-					GlobalVariables::aabb_relationship_map[*empty_child->aabb] = {nullopt};
-					GlobalVariables::aabb_parent_map[*empty_child->aabb] = *spilling_node->aabb;
+					GlobalVariables::aabbRelationshipMap[spilling_node->aabb][j] = empty_child->aabb;
+					GlobalVariables::aabbRelationshipMap[empty_child->aabb] = {nullopt};
+					GlobalVariables::aabbParentMap[empty_child->aabb] = spilling_node->aabb;
 				}
 			}
 		}
@@ -295,11 +291,11 @@ void simLodVoxelSampling(
 			if(!node->occupancy){return;}
 
 			// Find next child
-			NodePosition child_index = node->aabb->getNextChildIndex(point.position);
+			NodePosition child_index = node->aabb.getNextChildIndex(point.position);
 			if(!node->children[child_index]){return;}
 
 			// Sample voxel occupancy grid at this location if the node is inner for this point
-			vec3 normalized_coordinates = node->aabb->getPointNormalizedCoordinates(point.position);
+			vec3 normalized_coordinates = node->aabb.getPointNormalizedCoordinates(point.position);
 			uint32_t grid_x = clamp(
 				uint32_t(floor(OocSimLodSettings::GRID_SIZE_PER_DIMENSION * normalized_coordinates.x)), 
 				0u, 
@@ -324,8 +320,8 @@ void simLodVoxelSampling(
 				// Fill up occupancy grid
 				node->occupancy->values[word_index] |= (1u << bit_index);
 				// Create corresponding voxel using this point
-				vec3 world_grid_size = node->aabb->getSize() / float(OocSimLodSettings::GRID_SIZE_PER_DIMENSION);
-				vec3 voxel_centroid = node->aabb->mins + world_grid_size * vec3(grid_x, grid_y, grid_z) + 0.5f*world_grid_size;
+				vec3 world_grid_size = node->aabb.getSize() / float(OocSimLodSettings::GRID_SIZE_PER_DIMENSION);
+				vec3 voxel_centroid = node->aabb.mins + world_grid_size * vec3(grid_x, grid_y, grid_z) + 0.5f*world_grid_size;
 				Point new_voxel = {};
 				new_voxel.position = voxel_centroid;
 				new_voxel.color[0] = point.color[0];
@@ -368,7 +364,7 @@ void simLodInsertion(
 		while(true){
 			cur_node->updated = true;
 			// Find next child
-			NodePosition child_index = cur_node->aabb->getNextChildIndex(point.position);
+			NodePosition child_index = cur_node->aabb.getNextChildIndex(point.position);
 			// If leaf insert point in chunks
 			if(cur_node->children[child_index]){
 				cur_node = cur_node->children[child_index];
@@ -453,7 +449,7 @@ void simLodLoad(
 
 		while(true){
 			// Find next child
-			NodePosition child_index = leaf->aabb->getNextChildIndex(point.position);
+			NodePosition child_index = leaf->aabb.getNextChildIndex(point.position);
 
 			// If current node is not a leaf continue, else current node becomes child
 			OctreeNode* child = leaf->children[child_index];
@@ -474,9 +470,9 @@ void simLodLoad(
 				AABB child_aabb = {};
 				// TODO: temporary code
 				{
-					std::lock_guard<std::mutex> lock(GlobalVariables::aabb_relationship_map_mtx);
-					if(GlobalVariables::aabb_relationship_map[*leaf->aabb][child_index].has_value()){
-						child_aabb = GlobalVariables::aabb_relationship_map[*leaf->aabb][child_index].value();
+					std::lock_guard<std::mutex> lock(GlobalVariables::aabbRelationshipMapMtx);
+					if(GlobalVariables::aabbRelationshipMap[leaf->aabb][child_index].has_value()){
+						child_aabb = GlobalVariables::aabbRelationshipMap[leaf->aabb][child_index].value();
 					} else {
 						return;
 					}

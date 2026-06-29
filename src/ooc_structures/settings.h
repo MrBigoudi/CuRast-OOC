@@ -28,6 +28,11 @@ struct OocSimLodSettings {
         * GRID_SIZE_PER_DIMENSION
     ;
 
+    /// The number of threads per block
+    /// Each node will be given an entire block of thread to render all of its points
+    static constexpr uint32_t PER_NODE_KERNEL_BLOCK_SIZE = 256;
+    // static constexpr uint32_t PER_NODE_KERNEL_BLOCK_SIZE = 512;
+
 
 
     /////////////////////////////////////////////////////////////////////////

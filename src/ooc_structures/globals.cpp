@@ -280,10 +280,10 @@ uint32_t OctreeNode::getDepth() const {
 }
 
 void OctreeNode::display(uint32_t id, uint32_t level, bool node_only) const {
-    println("level: {}, id: {}, counter: {}, \
-        updated: {}, nbPoints: {}, nbVoxels: {}, \
-        visibility: {}, children visibility: 0b{}{}{}{}{}{}{}{}, \
-        points location: 0b{}{}{}{}{}{}{}{}, children: 0b{}{}{}{}{}{}{}{}",
+    println("level: {}, id: {}, counter: {}, "
+        "updated: {}, nbPoints: {}, nbVoxels: {}, "
+        "visibility: {}, children visibility: 0b{}{}{}{}{}{}{}{}, "
+        "points location: 0b{}{}{}{}{}{}{}{}, children: 0b{}{}{}{}{}{}{}{}",
 
         level, id, counter, updated, getNbPoints(), getNbVoxels(), is_visible,
         uint8_t(bool(children_visibility & 0x01 << 0)),
@@ -312,8 +312,8 @@ void OctreeNode::display(uint32_t id, uint32_t level, bool node_only) const {
         uint8_t(children[7] != nullptr)
     );
     println("    aabb: mins = ({}, {}, {}), maxs = ({}, {}, {})",
-        aabb->mins.x, aabb->mins.y, aabb->mins.z,
-        aabb->maxs.x, aabb->maxs.y, aabb->maxs.z
+        aabb.mins.x, aabb.mins.y, aabb.mins.z,
+        aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
     );
     if(!node_only){
         for(size_t i=0; i<8; i++){
@@ -338,21 +338,9 @@ bool OctreeNode::operator==(const OctreeNode& rhs) const {
             return false;
         }
 
-        if(!cur_lhs->aabb && cur_rhs->aabb){
-            println("OctreeNode::operator==: Wrong aabb, should be empty");
+       if(cur_lhs->aabb != cur_rhs->aabb){
+            println("OctreeNode::operator==: Wrong aabbs");
             return false;
-        }
-        if(cur_lhs->aabb){
-            if(!cur_rhs->aabb){
-                println("OctreeNode::operator==: Wrong aabb, should not be empty");
-                return false;
-            }
-            const AABB& lhs_aabb = *cur_lhs->aabb;
-            const AABB& rhs_aabb = *cur_rhs->aabb;
-            if(lhs_aabb != rhs_aabb){
-                println("OctreeNode::operator==: Wrong aabbs");
-                return false;
-            }
         }
         
         if(!cur_lhs->points && cur_rhs->points){
@@ -494,11 +482,13 @@ OctreeNode* GlobalVariables::mainOctreeCpy = nullptr;
 /// The LRU cache for the nodes
 std::shared_ptr<LRUCache> GlobalVariables::updatesCache = nullptr;
 std::shared_ptr<LRUCache> GlobalVariables::visibilityCache = nullptr;
-std::unordered_map<AABB, std::array<std::optional<AABB>, 8>, AABB::Hash> GlobalVariables::aabb_relationship_map = {};
-std::mutex GlobalVariables::aabb_relationship_map_mtx;
-std::unordered_map<AABB, AABB, AABB::Hash> GlobalVariables::aabb_parent_map = {};
-std::mutex GlobalVariables::aabb_parent_map_mtx;
-std::unordered_map<AABB, std::mutex, AABB::Hash> GlobalVariables::aabb_mutex_map = {};
+std::unordered_map<AABB, std::array<std::optional<AABB>, 8>, AABB::Hash> GlobalVariables::aabbRelationshipMap = {};
+std::mutex GlobalVariables::aabbRelationshipMapMtx;
+std::unordered_map<AABB, AABB, AABB::Hash> GlobalVariables::aabbParentMap = {};
+std::unordered_map<AABB, std::mutex, AABB::Hash> GlobalVariables::aabbMutexMap = {};
+
+/// The global allocated memory (for batches)
+BatchedMemory GlobalVariables::batchedMemory = {};
 
 std::string GlobalVariables::getSimLodOctreeName(bool generate_new_name){
     if(generate_new_name){
@@ -525,6 +515,8 @@ void GlobalVariables::init(){
 
     updatesCache = std::make_shared<LRUCache>("updates cache", OocSimLodSettings::LRU_UPDATES_CACHE_SIZE);
     visibilityCache = std::make_shared<LRUCache>("visibility cache", OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE);
+
+    batchedMemory.init();
 }
 
 
@@ -822,7 +814,7 @@ bool LRUCache::isInAllCaches(const AABB& aabb, bool sync){
 
 
 bool LRUCache::sanityCheck(const OctreeNode* root_node) {
-    if(!contains(*root_node->aabb, true)){
+    if(!contains(root_node->aabb, true)){
         println("ERROR: cache should always contain the root node");
         return false;
     }
@@ -833,13 +825,13 @@ bool LRUCache::sanityCheck(const OctreeNode* root_node) {
             correct.insert(cur_aabb);
             for(uint32_t child_id = 0; child_id < 8; child_id++){
                 // TODO: temporary code
-                if(GlobalVariables::aabb_relationship_map[cur_aabb][child_id].has_value()){
-                    recursion(GlobalVariables::aabb_relationship_map[cur_aabb][child_id].value());
+                if(GlobalVariables::aabbRelationshipMap[cur_aabb][child_id].has_value()){
+                    recursion(GlobalVariables::aabbRelationshipMap[cur_aabb][child_id].value());
                 }
             }
         }
     };
-    recursion(*root_node->aabb);
+    recursion(root_node->aabb);
     // std::function<void(const OctreeNode*)> recursion = [&](const OctreeNode* cur_node){
     //     if(!cur_node){return;}
     //     if(contains(*cur_node->aabb, true)){
@@ -893,15 +885,15 @@ bool LRUCache::sanityCheckStored(const OctreeNode* root_node) {
         if(!stored_set.contains(cur_aabb)){
             for(uint32_t child_id = 0; child_id < 8; child_id++){
                 // TODO: temporary code
-                if(GlobalVariables::aabb_relationship_map[cur_aabb][child_id].has_value()){
-                    roots_recursion(GlobalVariables::aabb_relationship_map[cur_aabb][child_id].value());
+                if(GlobalVariables::aabbRelationshipMap[cur_aabb][child_id].has_value()){
+                    roots_recursion(GlobalVariables::aabbRelationshipMap[cur_aabb][child_id].value());
                 }
             }
         } else {
             roots.insert(cur_aabb);
         }
     };
-    roots_recursion(*root_node->aabb);
+    roots_recursion(root_node->aabb);
 
     std::unordered_set<AABB, AABB::Hash> correct = {};
     std::function<void(const AABB&)> recursion = [&](const AABB& cur_aabb){
@@ -960,6 +952,114 @@ bool LRUCache::sanityCheckStored(const OctreeNode* root_node) {
 
     return true;
 }
+
+
+///////////////////////////////////////////////////////////////////////////////
+////////////////////////// MEMORY BATCHING ALLOCATOR //////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+
+
+void BatchedMemory::init(){
+    uint64_t max_nb_nodes = OocSimLodSettings::LRU_UPDATES_CACHE_SIZE
+        + OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE
+    ;
+    uint64_t max_nb_chunks = 
+        float(OocSimLodSettings::MAX_POINTS_PER_LEAF) / float(OocSimLodSettings::NB_POINTS_PER_CHUNK)
+        * max_nb_nodes
+    ;
+
+    memory_size = max_nb_nodes * sizeof(OctreeNode) + max_nb_chunks * sizeof(Chunk);
+    allocated_memory = (char*)malloc(memory_size);
+
+    reset();
+}
+
+void BatchedMemory::reset(){
+    next_space_pointer = 0;
+    srcs.clear();
+    dsts.clear();
+    sizes.clear();
+}
+
+BatchedMemory::~BatchedMemory(){
+    free(allocated_memory);
+}
+
+void BatchedMemory::addFutureCopy(void* src, CUdeviceptr dst, size_t size){
+    srcs.push_back((CUdeviceptr)src);
+    dsts.push_back(dst);
+    sizes.push_back(size);
+
+    // println("Future copy added: src = {}, dst = {}, size = {}", src, dst, size);
+}
+
+void BatchedMemory::copyMemory(CUcontext* context, CUstream* stream) {
+    size_t batch_size = dsts.size();
+
+    CUmemcpyAttributes attributes = CUmemcpyAttributes();
+    attributes.srcAccessOrder = CU_MEMCPY_SRC_ACCESS_ORDER_STREAM;
+    size_t attributes_idxs = 0;
+    size_t nb_attributes = 1;
+
+	CUresult cuda_status = CUDA_SUCCESS;
+    cuda_status = cuMemcpyBatchAsync((CUdeviceptr*)dsts.data(), (CUdeviceptr*)srcs.data(), 
+        (size_t*)sizes.data(), batch_size,
+        &attributes, &attributes_idxs, nb_attributes, *stream
+    );
+    CURuntime::assertCudaSuccess(cuda_status);
+
+    if(!OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+        cudaDeviceSynchronize();
+    }
+}
+
+void BatchedMemory::display() const {
+    for(uint32_t i=0; i<srcs.size(); i++){
+        char* src = (char*)srcs[i];
+        if(sizes[i] == sizeof(CChunk)){
+            println("Chunk: size = {}", ((CChunk*)src)->size);
+        } else if(sizes[i] == sizeof(COctreeNode)){
+            COctreeNode* node = (COctreeNode*)src;
+            println("level: {}, counter: {}, updated: {}, visibility: {}, children visibility: 0b{}{}{}{}{}{}{}{}, points location: 0b{}{}{}{}{}{}{}{}, children: 0b{}{}{}{}{}{}{}{}",
+                node->level, node->counter, node->updated, node->is_visible,
+                uint8_t(bool(node->children_visibility & 0x01 << 0)),
+                uint8_t(bool(node->children_visibility & 0x01 << 1)),
+                uint8_t(bool(node->children_visibility & 0x01 << 2)),
+                uint8_t(bool(node->children_visibility & 0x01 << 3)),
+                uint8_t(bool(node->children_visibility & 0x01 << 4)),
+                uint8_t(bool(node->children_visibility & 0x01 << 5)),
+                uint8_t(bool(node->children_visibility & 0x01 << 6)),
+                uint8_t(bool(node->children_visibility & 0x01 << 7)),
+                uint8_t(bool(node->children_ids & 0x01 << 0)),
+                uint8_t(bool(node->children_ids & 0x01 << 1)),
+                uint8_t(bool(node->children_ids & 0x01 << 2)),
+                uint8_t(bool(node->children_ids & 0x01 << 3)),
+                uint8_t(bool(node->children_ids & 0x01 << 4)),
+                uint8_t(bool(node->children_ids & 0x01 << 5)),
+                uint8_t(bool(node->children_ids & 0x01 << 6)),
+                uint8_t(bool(node->children_ids & 0x01 << 7)),
+                uint8_t(node->children[0] != nullptr), 
+                uint8_t(node->children[1] != nullptr), 
+                uint8_t(node->children[2] != nullptr), 
+                uint8_t(node->children[3] != nullptr),
+                uint8_t(node->children[4] != nullptr), 
+                uint8_t(node->children[5] != nullptr), 
+                uint8_t(node->children[6] != nullptr), 
+                uint8_t(node->children[7] != nullptr)
+            );
+        } else {
+            println("Error: unrecognized size...:");
+            println("    - Expected {} for CChunk", sizeof(CChunk));
+            println("    - Expected {} for COctreeNode", sizeof(COctreeNode));
+            println("    - Got {}", sizes[i]);
+            exit(EXIT_FAILURE);
+        }
+    }
+}
+
+
+
+
 
 
 

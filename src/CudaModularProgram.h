@@ -479,13 +479,7 @@ struct CudaModularProgram{
 			0, launchArgs.stream, args, nullptr);
 
 
-		if (res_launch != CUDA_SUCCESS) {
-			const char* str;
-			cuGetErrorString(res_launch, &str);
-			printf("error: %s \n", str);
-			cout << __FILE__ << " - " << __LINE__ << endl;
-			println("kernel: {}", kernelName);
-		}
+		CURuntime::assertCudaSuccess(res_launch);
 
 		Timer::recordDuration(kernelName, custart, Timer::recordCudaTimestamp());
 	}

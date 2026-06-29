@@ -385,9 +385,9 @@ void initScene() {
 	// 	updatesCache = std::make_shared<LRUCache>("updates cache", correct_size);
 	// 	visibilityCache = std::make_shared<LRUCache>("visibility cache", LRU_VISIBILITY_CACHE_SIZE);
 	// 	LRUCache::stored_set = {};
-	// 	aabb_relationship_map.clear();
-	// 	aabb_mutex_map.clear();
-	// 	aabb_parent_map.clear();
+	// 	aabbRelationshipMap.clear();
+	// 	aabbMutexMap.clear();
+	// 	aabbParentMap.clear();
 
 	// 	loadLion();
 	// 	updateVisibilityCache(view, proj);
@@ -621,7 +621,7 @@ int main(int argc, char** argv){
 
 			// TODO: to remove
 			{
-				static AABB* test_stored_aabb = nullptr;
+				static AABB test_stored_aabb = AABB();
 
 				// Testing stuff
 				if(CuRastSettings::storeOctree){
@@ -634,7 +634,7 @@ int main(int argc, char** argv){
 				}
 				if(CuRastSettings::loadOctree){
 					println("Start loading octree");
-					OctreeNode* octree = loadOctree(*test_stored_aabb);
+					OctreeNode* octree = loadOctree(test_stored_aabb);
 					println("Done loading octree");
 					CuRastSettings::loadOctree = false;
 					

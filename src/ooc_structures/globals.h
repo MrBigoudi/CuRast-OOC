@@ -132,14 +132,6 @@ struct PointBatch {
 	vector<uint32_t> getColors() const;
 };
 
-/// A voxel in intermediate nodes
-struct Voxel {
-	/// Position in the voxel grid
-	uint8_t position[3] = {0,0,0};
-	uint8_t padding;
-	uint8_t color[4] = {0,0,0,0};
-};
-
 struct OccupancyGrid {
 	// gridsize^3 occupancy grid; 1 bit per voxel
 	uint32_t values[OocSimLodSettings::GRID_SIZE / 32] = {0};
@@ -212,20 +204,19 @@ struct OctreeNode {
 	Chunk* points = nullptr;
 	Chunk* voxels = nullptr;
 	OccupancyGrid* occupancy = nullptr;
-	AABB* aabb = nullptr;
+	AABB aabb;
 
 	uint32_t counter = 0;
 	uint8_t children_ids = 0b00000000;
 	uint8_t children_visibility = 0b00000000;
-
-	bool from_split = false;
-	bool from_bottom_up = false;
-	bool updated = false;
 	uint8_t level = 0;
+
+	bool updated = false;
 	bool is_large = false;
 	bool is_visible = false;
 	bool is_cut = false;
 
+	
 
 	uint32_t getNbPoints() const;
 	uint32_t getNbVoxels() const;
@@ -251,11 +242,6 @@ struct OctreeNode {
 			occupancy = nullptr;
 			delete(tmp);
 		}
-		if(aabb){
-			AABB* tmp = aabb;
-			aabb = nullptr;
-			delete(aabb);
-		}
 		for(uint32_t i=0; i<8; i++){
 			if(children[i]){
 				OctreeNode* tmp = children[i];
@@ -265,11 +251,9 @@ struct OctreeNode {
 		}
 	}
 
-	OctreeNode(){}
-	OctreeNode(const OctreeNode& cpy) : counter(cpy.counter), children_ids(cpy.children_ids), 
-		from_split(cpy.from_split), from_bottom_up(cpy.from_bottom_up)
+	OctreeNode(const AABB& aabb):aabb(aabb){}
+	OctreeNode(const OctreeNode& cpy) : aabb(cpy.aabb), counter(cpy.counter), children_ids(cpy.children_ids) 
 	{
-		aabb = cpy.aabb ? new AABB(*cpy.aabb) : nullptr;
 		points = cpy.points ? new Chunk(*cpy.points) : nullptr;
 		voxels = cpy.voxels ? new Chunk(*cpy.voxels) : nullptr;
 		occupancy = cpy.occupancy ? new OccupancyGrid(*cpy.occupancy) : nullptr;
@@ -409,6 +393,54 @@ extern CFullOctreeUnifiedBuilder unifiedOctreeBuilder;
 
 
 
+///////////////////////////////////////////////////////////////////////////////
+////////////////////////// MEMORY BATCHING ALLOCATOR //////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+
+/// A structure to handle batched memory transfers
+struct BatchedMemory {
+    std::vector<CUdeviceptr> srcs = {};
+    std::vector<CUdeviceptr> dsts = {};
+    std::vector<size_t> sizes = {};
+
+    char* allocated_memory = nullptr;
+    uint64_t next_space_pointer = 0;
+	uint64_t memory_size = 0;
+
+    void init();
+
+	void reset();
+
+    ~BatchedMemory();
+
+	template<typename T>
+	T* allocate(){
+		size_t alignment = alignof(T);
+		size_t size = sizeof(T);
+		uint64_t aligned_pointer = next_space_pointer;
+		aligned_pointer += (alignment - (aligned_pointer % alignment)) % alignment; // alignment
+		if(aligned_pointer + size > memory_size){
+			println("Can't allocate more memory:");
+			println("    reached: {}", aligned_pointer + size);
+			println("    max: {}", memory_size);
+			exit(EXIT_FAILURE);
+		}
+		T* res = reinterpret_cast<T*>(allocated_memory + aligned_pointer);
+		// To call the constructor in place
+		new (res) T();
+		next_space_pointer = aligned_pointer + size;
+		// println("next pointer: {}", next_space_pointer);
+		return res;
+	}
+
+    void addFutureCopy(void* src, CUdeviceptr dst, size_t size);
+
+    void copyMemory(CUcontext* context, CUstream* stream);
+
+	void display() const;
+};
+
+
 
 ///////////////////////////////////////////////////////////////////////////////
 ////////////////////////// GLOBAL EXTERNAL VARIABLES //////////////////////////
@@ -460,11 +492,13 @@ struct GlobalVariables {
 	static std::shared_ptr<LRUCache> visibilityCache;
 
 
-	static std::mutex aabb_relationship_map_mtx;
-	static std::unordered_map<AABB, std::array<std::optional<AABB>, 8>, AABB::Hash> aabb_relationship_map;
-	static std::mutex aabb_parent_map_mtx;
-	static std::unordered_map<AABB, AABB, AABB::Hash> aabb_parent_map;
-	static std::unordered_map<AABB, std::mutex, AABB::Hash> aabb_mutex_map;
+	static std::mutex aabbRelationshipMapMtx;
+	static std::unordered_map<AABB, std::array<std::optional<AABB>, 8>, AABB::Hash> aabbRelationshipMap;
+	static std::unordered_map<AABB, AABB, AABB::Hash> aabbParentMap;
+	static std::unordered_map<AABB, std::mutex, AABB::Hash> aabbMutexMap;
+
+	/// The global allocated memory (for batches)
+	static BatchedMemory batchedMemory;
 
 	static std::string getSimLodOctreeName(bool generate_new_name = false);
 	static void init();

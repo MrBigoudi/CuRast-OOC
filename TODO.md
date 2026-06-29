@@ -2,20 +2,20 @@
 
 ## Next steps (in priority order)
 
-- Change the HostDeviceInterface to make settings work on GPU side as well
-- Create uniform structure for better structuring in cuda code / gui
+- Batch the memcpy on loadingtogpu (ie separate memalloc from memcpy)
 - Clean the code + improve comments
 - Measure timings and memory usage more precisely 
-- Batch the memcpy on loadingtogpu (ie separate memalloc from memcpy)
+
 
 ## Coding part
 
-- Add parameters to the UI (max nb batches, points per batches, etc...)
+- Replace exit(EXIT_FAILURE) with exception raise to catch it in the main and clear the temporary folder
+- Allocate memory once on CPU side to avoid new/delete and reuse it on demand
 - Automatically fetch CPU / GPU capacities to set the constants
-- Add a way to (manually ?) select the node to store / load
 - Fix Vulkan segfault on quit
 - supress warnings
 - Replace list with fixed size array to prepare for GPU side
+
 
 ## Research part
 
@@ -25,6 +25,7 @@
 - Improve Color-filtering
 - Find a way to load closest batches first
 - Improve on linked-list approach ?
+
 
 ## Report part
 

@@ -328,7 +328,6 @@ extern __constant__ RenderTarget c_target;
 
 // TODO: test code to remove
 #include "../ooc_structures/settings.h"
-constexpr uint32_t C_OCTREE_RENDER_BLOCK_SIZE = 256;
 
 struct CAABB {
 	vec3 mins = {INFINITY, INFINITY, INFINITY};
@@ -338,12 +337,8 @@ struct CPoint {
 	vec3 position;
 	uint32_t color;
 };
-struct CVoxel {
-	uint8_t x;
-	uint8_t y;
-	uint8_t z;
-	uint8_t padding;
-	uint32_t color;
+struct COccupancyGrid {
+	uint32_t values[OocSimLodSettings::GRID_SIZE / 32] = {0};
 };
 struct CChunk{
 	CPoint points[OocSimLodSettings::NB_POINTS_PER_CHUNK];
@@ -351,26 +346,26 @@ struct CChunk{
 	CChunk* next;
 };
 struct COctreeNode {
-	uint32_t counter;
-	uint8_t children_ids;
-	uint8_t children_visibility = 0b00000000;
+	COctreeNode* children[8] = {nullptr};
+	CChunk* points = nullptr;
+	CChunk* voxels = nullptr;
+	COccupancyGrid* occupancy = nullptr;
+	CAABB aabb = CAABB();
 
-	uint8_t level;
+	uint32_t counter = 0;
+	uint8_t children_ids = 0b00000000;
+	uint8_t children_visibility = 0b00000000;
+	uint8_t level = 0;
+
+	bool updated = false;
 	bool is_large = false;
 	bool is_visible = false;
 	bool is_cut = false;
-
-	bool cpu_debug_visibility = false;
-	
-	CChunk* points;
-	CChunk* voxels;
-	COctreeNode* children[8];
 };
 
 struct CFullOctree {
 	mat4 world;
 	COctreeNode** nodes;
-	CAABB** aabbs;
 	CChunk** chunks;
 	uint32_t num_nodes;
 	uint32_t max_lod_level;
@@ -430,8 +425,6 @@ struct COctreeNodeUnified {
 	CChunkUnified* points = nullptr;
 	CChunkUnified* voxels = nullptr;
 	COccupancyGridUnified* occupancy = nullptr;
-	bool from_split = false;
-	bool from_bottom_up = false;
 	bool updated = false;
 	CAABBUnified* aabb = nullptr;
 	uint8_t level = 0;

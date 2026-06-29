@@ -131,7 +131,6 @@ void drawOctreeAABB(Scene* scene, View view, RenderTarget& target, bool use_visi
 		CFullOctree cfo;
 		cfo.world     = octree->transform_global;
 		cfo.nodes     = (COctreeNode**)(octree->nodes);
-		cfo.aabbs     = (CAABB**)(octree->aabbs);
 		cfo.chunks    = (CChunk**)(octree->chunks);
 
 		cfo.num_nodes = octree->num_nodes;
@@ -157,7 +156,6 @@ void drawOctree(Scene* scene, View view, RenderTarget& target,
 		CFullOctree cfo;
         cfo.world     = octree->transform_global;
         cfo.nodes     = (COctreeNode**)(octree->nodes);
-        cfo.aabbs     = (CAABB**)(octree->aabbs);
         cfo.chunks    = (CChunk**)(octree->chunks);
         cfo.num_nodes = octree->num_nodes;
         cfo.max_lod_level = octree->max_lod_level;
@@ -166,10 +164,10 @@ void drawOctree(Scene* scene, View view, RenderTarget& target,
 		cfo.min_pixel_span = min_pixel_span;
 		cfo.use_voxels_debug_color = use_voxels_debug_color;
         
-        uint32_t numThreads = cfo.num_nodes * C_OCTREE_RENDER_BLOCK_SIZE;
+        uint32_t numThreads = cfo.num_nodes * OocSimLodSettings::PER_NODE_KERNEL_BLOCK_SIZE;
 		OptionalLaunchSettings launch_settings = {
 			.gridsize = cfo.num_nodes,
-			.blocksize = C_OCTREE_RENDER_BLOCK_SIZE
+			.blocksize = OocSimLodSettings::PER_NODE_KERNEL_BLOCK_SIZE
 		};
 
 		prog->launch("kernel_visibilityPass", {&cfo, &target}, launch_settings);
@@ -193,10 +191,10 @@ void drawOctreeUnified(Scene* scene, View view, RenderTarget& target, CFullOctre
 	cfo.min_pixel_span = min_pixel_span;
 	cfo.use_voxels_debug_color = use_voxels_debug_color;
         
-	uint32_t numThreads = cfo.num_nodes * C_OCTREE_RENDER_BLOCK_SIZE;
+	uint32_t numThreads = cfo.num_nodes * OocSimLodSettings::PER_NODE_KERNEL_BLOCK_SIZE;
 	OptionalLaunchSettings launch_settings = {
 		.gridsize = cfo.num_nodes,
-		.blocksize = C_OCTREE_RENDER_BLOCK_SIZE
+		.blocksize = OocSimLodSettings::PER_NODE_KERNEL_BLOCK_SIZE
 	};
 
 	prog->launch("kernel_visibilityPass", {&cfo, &target}, launch_settings);
