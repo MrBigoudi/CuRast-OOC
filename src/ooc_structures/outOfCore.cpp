@@ -190,16 +190,6 @@ void OctreeNodeSerializable::init(const OctreeNode* node, bool node_only){
 
         new_node.serialize(getNodeFilePath(cur_node->aabb));
         LRUCache::mark(cur_node->aabb);
-
-        // // TODO: temporary node
-        // if(!LRUCache::sanityCheckStored(mainOctreeCpy)){
-        //     updatesCache.display(true);
-        //     println("\n\n");
-        //     LRUCache::displayStored();
-        //     println("\n\n");
-        //     println("Sanity check failed for the stored cache");
-        //     exit(EXIT_FAILURE);
-        // }
     };
 
     // root_node->display();
@@ -358,24 +348,20 @@ OctreeNode* OctreeNodeSerializable::toOctreeNodes(
 
         if(!node_only){
             // new_node->display(id, level, true);
-            for(uint32_t child_id = 0; child_id < 8; child_id++){
-                // if(new_serializable_node.children & (0x01 << child_id)){
-                    // cur_aabb.shrink((NodePosition)child_id);
-                    
-                    // TODO: temporary code
-                    std::optional<AABB> child_aabb = nullopt;
-                    {
-                        std::lock_guard<std::mutex> lock(GlobalVariables::aabbRelationshipMapMtx);
-                        child_aabb = GlobalVariables::aabbRelationshipMap[cur_aabb][child_id];
-                    }
-                    if(child_aabb.has_value()){
-                        recursion(child_aabb.value(), child_id, level+1);
-                        // recursion(cur_aabb, child_id, level+1);
-                        // Fill up children pointers
-                        std::string child_filepath = getNodeFilePath(child_aabb.value());
-                        new_node->children[child_id] = map[child_filepath];
-                    }
-                // }
+            for(uint32_t child_id = 0; child_id < 8; child_id++){                    
+                // TODO: temporary code
+                std::optional<AABB> child_aabb = nullopt;
+                {
+                    std::lock_guard<std::mutex> lock(GlobalVariables::aabbRelationshipMapMtx);
+                    child_aabb = GlobalVariables::aabbRelationshipMap[cur_aabb][child_id];
+                }
+                if(child_aabb.has_value()){
+                    recursion(child_aabb.value(), child_id, level+1);
+                    // recursion(cur_aabb, child_id, level+1);
+                    // Fill up children pointers
+                    std::string child_filepath = getNodeFilePath(child_aabb.value());
+                    new_node->children[child_id] = map[child_filepath];
+                }
             }
         }
 
@@ -407,8 +393,7 @@ OctreeNode* loadOctree(const AABB& root_aabb, bool node_only){
 
 /// Add nodes to cache after octree update
 void updateUpdatesCache(OctreeNode* root_octree){
-    std::lock_guard<std::mutex> lock(LRUCache::test_mtx);
-
+    std::lock_guard<std::mutex> lock(LRUCache::caches_sync_mtx);
 
     // Traverse octree and add newly updated aabbs to the cache
     std::function<void(const OctreeNode*)> recursionAddToCache = [&](const OctreeNode* cur_node){
@@ -419,7 +404,7 @@ void updateUpdatesCache(OctreeNode* root_octree){
         }
 
         if(cur_node->updated){
-            GlobalVariables::updatesCache->add(cur_node->aabb, true);
+            GlobalVariables::updatesCache->add(cur_node->aabb);
         }
 
     };
@@ -447,42 +432,12 @@ void updateUpdatesCache(OctreeNode* root_octree){
         if(!is_in_cache){
             storeOctree(cur_node, true);
             cpt_stored++;
-            to_remove = !GlobalVariables::visibilityCache->contains(cur_node->aabb, true);
+            to_remove = !GlobalVariables::visibilityCache->contains(cur_node->aabb);
         }
-
-        // bool is_in_cache = false;
-        // for (auto it = lruUpdatesCache.begin(); it != lruUpdatesCache.end(); it++){
-        //     if((*it).has_value() && *(*it)->second == *cur_aabb){
-        //         is_in_cache = true;
-        //         break;
-        //     }
-        // }
 
         cur_node->updated = false;
         return to_remove;
     };
 
-    // println("\n//////////////////////////////////////////////////");
-	// println("/////////// Octree before cache update ///////////");
-	// println("//////////////////////////////////////////////////\n");
-	// root_octree->display();
-
-    // std::lock_guard<std::mutex> lock_test(updatesCache.mtx);
     recursionRemoveNodes(root_octree, 0, 0);
-
-    // updatesCache->display(true);
-
-    // println("\n//////////////////////////////////////////////////");
-	// println("/////////// Octree after cache update ////////////");
-	// println("//////////////////////////////////////////////////\n");
-    // root_octree->display();
-    // static int cpt = 0;
-    // if(++cpt >= 40){
-    //     exit(EXIT_FAILURE);
-    // }
-
-    // if(cpt_stored){
-    //     println("nb stored nodes = {}", cpt_stored);
-    // }
-
 }

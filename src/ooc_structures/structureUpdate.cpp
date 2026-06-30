@@ -411,13 +411,10 @@ void addPointBatches(){
 	// println("///////////// OctreeCpy before update ////////////");
 	// println("//////////////////////////////////////////////////");
 	// mainOctreeCpy->display();
-	// println("//////////////////////////////////////////////////");
-	// println("////////////// Octree before update //////////////");
-	// println("//////////////////////////////////////////////////");
-	// mainOctree->display();
 
 	// Update the temporary octree
 	std::shared_ptr<Timing> timing = Timing::addTiming("compute max new level", true);
+	
 	// Compute max new level needed per batch
 	vector<uint32_t> tmp_new_levels = vector<uint32_t>(last_index, 0);
 	// In parallel
@@ -446,7 +443,6 @@ void addPointBatches(){
 	// println("//////////// Octree after grow octree ////////////");
 	// println("//////////////////////////////////////////////////");
 	// mainOctreeCpy->display();
-
 
 	timing = Timing::addTiming("update octree bottom up", true);
 	// In single thread
@@ -485,23 +481,11 @@ void addPointBatches(){
 	timing = Timing::addTiming("update cache", true);
 	updateUpdatesCache(GlobalVariables::mainOctreeCpy);
 	timing->stop_clock();
-	// displayCache();
-
-	// if(!LRUCache::sanityCheckStored(*mainOctreeCpy->aabb)){
-    //     println("Sanity check failed for the stored cache");
-    // }
 
 	// println("//////////////////////////////////////////////////");
 	// println("/////////// Octree after cache update ///////////");
 	// println("//////////////////////////////////////////////////");
 	// mainOctreeCpy->display();
-
-	// if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-	// 	// Block if the mainOctree / mainAABB are being send to the GPU (see `loadOctreeOnGPU`)
-	// 	// Acquire => semaphore_counter -= 1
-	// 	octreeReadyToBeUpdated.acquire();
-	// 	// println("semaphore UPDATING acquired");
-	// }
 
 	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 		std::lock_guard<std::mutex> lock_send(GlobalVariables::isUpdatingMtx);
@@ -509,13 +493,6 @@ void addPointBatches(){
 	} else {
 		GlobalVariables::mainOctree = std::make_shared<OctreeNode>(*GlobalVariables::mainOctreeCpy);
 	}
-	
-	// if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-	// 	// Release the semaphore when not using mainOctree / mainAABB anymore
-	// 	// Rlease => semaphore_counter += 1
-	// 	octreeReadyToBeSent.release();
-	// 	// println("semaphore SENDING released");
-	// }
 
 	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 		std::for_each(std::execution::par, first, last, [&](uint32_t index){

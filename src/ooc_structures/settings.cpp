@@ -17,10 +17,14 @@ T init_field(const std::string& toml_entry, const T default_value) {
     return toml::find_or<T>(SETTINGS_TOML_DATA, toml_entry, default_value);
 }
 
+///////////////////////////////////////////////////////////////////////////////
+///////////////////////// STATIC ELEMENTS DECLARATION /////////////////////////
+///////////////////////////////////////////////////////////////////////////////
 
-/// Static element declarations
 bool OocSimLodSettings::IS_RUNNING_IN_PARALLEL;
 uint32_t OocSimLodSettings::NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE;
+bool OocSimLodSettings::MEASURE_TIMINGS;
+
 uint32_t OocSimLodSettings::BATCHES_LIST_SIZE;
 uint32_t OocSimLodSettings::MAX_POINTS_PER_BATCHES;
 uint32_t OocSimLodSettings::MIN_BATCHES_PER_LOAD;
@@ -30,9 +34,11 @@ uint32_t OocSimLodSettings::MAX_BATCHES_PER_GPU_LOAD;
 uint32_t OocSimLodSettings::MIN_BATCHES_PER_OCTREE_UPDATE;
 uint32_t OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE;
 uint32_t OocSimLodSettings::MAX_ATTEMPTS_BEFORE_IGNORING_MIN_VARIABLES;
+
 uint32_t OocSimLodSettings::MAX_POINTS_PER_LEAF;
 uint32_t OocSimLodSettings::LRU_UPDATES_CACHE_SIZE;
 uint32_t OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE;
+
 bool OocSimLodSettings::SHOW_BOUNDING_BOXES_AT_STARTUP;
 bool OocSimLodSettings::BRUTE_FORCE_RENDERING_AT_STARTUP;
 int32_t OocSimLodSettings::DEBUG_LOD_TO_RENDER_AT_STARTUP;
@@ -51,6 +57,7 @@ void OocSimLodSettings::init(){
     /// Miscellaneous
     IS_RUNNING_IN_PARALLEL = init_field<bool>("IS_RUNNING_IN_PARALLEL", false);
     NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE = init_field<uint32_t>("NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE", 60);
+    MEASURE_TIMINGS = init_field<bool>("MEASURE_TIMINGS", false);
 
     /// Batch sizes
     BATCHES_LIST_SIZE = init_field<uint32_t>("BATCHES_LIST_SIZE", 1'024);
@@ -106,6 +113,7 @@ void OocSimLodSettings::display(){
     println("Miscellaneous:");
     println("    - IS_RUNNING_IN_PARALLEL: {}", IS_RUNNING_IN_PARALLEL);
     println("    - NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE: {}", NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE);
+    println("    - MEASURE_TIMINGS: {}", MEASURE_TIMINGS);
 
     println("");
     println("Batch sizes:");

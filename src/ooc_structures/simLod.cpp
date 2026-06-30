@@ -10,7 +10,8 @@ void simLodUpdate(OctreeNode* main_root, std::shared_ptr<vector<Point>>& points)
 	// main_root->display();
 
 	std::shared_ptr<Timing> timing = Timing::addTiming("simlod load", true, 1);
-	simLodLoad(main_root, points);
+	// simLodLoad(main_root, points);
+	simLodLoadV2(main_root, points);
 	timing->stop_clock();
 
 	// println("//////////////////////////////////////////////////");
@@ -21,7 +22,8 @@ void simLodUpdate(OctreeNode* main_root, std::shared_ptr<vector<Point>>& points)
 	std::shared_ptr<Timing> count_split_timing = Timing::addTiming("simlod count/split loop", true, 1);
 	while(true){
 		std::shared_ptr<Timing> timing = Timing::addTiming("simlod count", true, 2);
-		simLodCount(main_root, points, GlobalVariables::spilledPoints, GlobalVariables::spillingNodes);
+		// simLodCount(main_root, points, GlobalVariables::spilledPoints, GlobalVariables::spillingNodes);
+		simLodCountV2(main_root, points, GlobalVariables::spilledPoints, GlobalVariables::spillingNodes);
 		timing->stop_clock();
 
 		if(GlobalVariables::spillingNodes->size() == 0){
@@ -464,9 +466,6 @@ void simLodLoad(
 				level++;
 			} else {
 				// Check if the child has been stored
-				bool has_been_stored = false;
-				// AABB child_aabb = *leaf->aabb;
-				// child_aabb.shrink((NodePosition)child_index);
 				AABB child_aabb = {};
 				// TODO: temporary code
 				{
@@ -526,4 +525,126 @@ void simLodLoad(
 	// if(!tmp_set.empty()){
 	// 	println("nb loaded nodes = {}", tmp_set.size());
 	// }
+}
+
+
+
+
+
+void simLodLoadV2(
+    OctreeNode* main_root,
+    std::shared_ptr<vector<Point>>& points
+){
+
+	std::vector<OctreeNode*> all_nodes = GlobalVariables::getAllNodes(main_root);
+
+	// Try to insert all points
+	auto tryInsertPoints = [&](OctreeNode* cur_node, std::shared_ptr<vector<Point>>& points){
+		std::vector<OctreeNode*> loaded_children = {cur_node};
+		uint32_t nb_nodes = 1;
+
+		for(const Point& point : *points){
+			for(uint32_t i = 0; i < nb_nodes; i++){
+				OctreeNode* node = loaded_children[i];
+				if(!node->aabb.contains(point.position)){continue;}
+
+				// Check if the child is already loaded
+				NodePosition child_index = node->aabb.getNextChildIndex(point.position);
+				OctreeNode* child = node->children[child_index];
+				if(child){continue;}
+
+				// Check if the child has been stored
+				AABB child_aabb = {};
+				{
+					std::lock_guard<std::mutex> lock(GlobalVariables::aabbRelationshipMapMtx);
+					if(GlobalVariables::aabbRelationshipMap[node->aabb][child_index].has_value()){
+						child_aabb = GlobalVariables::aabbRelationshipMap[node->aabb][child_index].value();
+					} else {
+						continue;
+					}
+				}
+
+				// Load the child
+				node->children[child_index] = loadOctree(child_aabb, true);
+				loaded_children.push_back(node->children[child_index]);
+				nb_nodes++;
+			}
+		}
+	};
+
+	if(!OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+		std::for_each(all_nodes.begin(), all_nodes.end(), [&](OctreeNode* node){
+			tryInsertPoints(node, points);
+		});
+	} else {
+		std::for_each(std::execution::par, all_nodes.begin(), all_nodes.end(), [&](OctreeNode* node){
+			tryInsertPoints(node, points);
+		});
+	}
+}
+
+void simLodCountV2(
+    OctreeNode* main_root,
+    std::shared_ptr<vector<Point>>& points,
+    std::shared_ptr<vector<Point>>& spilled_points,
+    std::shared_ptr<vector<OctreeNode*>>& spilling_nodes
+){
+	std::vector<std::pair<OctreeNode*, uint8_t>> all_nodes = GlobalVariables::getAllPartialLeavesWithLevels(main_root, 1);
+	uint32_t nb_nodes = all_nodes.size();
+	std::vector<bool> already_spilled = std::vector<bool>(nb_nodes, false);
+	std::vector<uint32_t> indices(nb_nodes);
+	std::iota(indices.begin(), indices.end(), 0);
+
+	auto countPoints = [&](uint32_t index, std::shared_ptr<vector<Point>> points) {
+		OctreeNode* cur_node = all_nodes[index].first;
+
+		for(Point& point : *points){
+			if(!cur_node->aabb.contains(point.position)){continue;}
+			NodePosition child_index = cur_node->aabb.getNextChildIndex(point.position);
+			if(cur_node->children[child_index]){continue;}
+
+			cur_node->children_ids |= 0x01 << child_index;
+
+			// Flag the point to not count it again on the next iteration
+			uint8_t level = all_nodes[index].second;
+			if(level == UINT8_MAX){
+				println("The octree has reached it's maximum depth size...");
+				exit(EXIT_FAILURE);
+			}
+
+			// Only one of the node should be able to write on the point as it only arrives to one leaf
+			if(point.color[3] == level){continue;}
+			point.color[3] = level;
+
+			if(!already_spilled[index]){
+				cur_node->counter++;
+				if(cur_node->counter == OocSimLodSettings::MAX_POINTS_PER_LEAF){
+					already_spilled[index] = true;
+				}
+			}
+		}
+	};
+
+	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+		// First count in parallel
+		std::for_each(std::execution::par, indices.begin(), indices.end(), [&](uint32_t index){
+			countPoints(index, points);
+			countPoints(index, spilled_points);
+		});
+		// Then sequentially add the nodes in the spilling nodes pool
+		std::for_each(indices.begin(), indices.end(), [&](uint32_t index){
+			if(already_spilled[index]){
+				spilling_nodes->push_back(all_nodes[index].first);
+			}
+		});
+	} else {
+		// Counting and Adding to the spilling nodes pool happen at the same time
+		std::for_each(indices.begin(), indices.end(), [&](uint32_t index){
+			countPoints(index, points);
+			countPoints(index, spilled_points);
+			if(already_spilled[index]){
+				spilling_nodes->push_back(all_nodes[index].first);
+			}
+		});
+	}
 }

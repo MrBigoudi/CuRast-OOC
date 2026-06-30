@@ -13,6 +13,9 @@ IS_RUNNING_IN_PARALLEL = true
 ### The number of frames between each GPU data transfer and visibility update
 NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE = 200
 
+### Measure the timings
+MEASURE_TIMINGS = true
+# MEASURE_TIMINGS = false
 
 
 #########################################################################

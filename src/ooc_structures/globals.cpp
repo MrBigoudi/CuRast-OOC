@@ -467,9 +467,6 @@ std::binary_semaphore GlobalVariables::octreeNotBeingSent{1};
 
 std::mutex GlobalVariables::isUpdatingMtx;
 
-uint64_t GlobalVariables::loadCounter = 0;
-std::mutex GlobalVariables::loadCounterMtx;
-
 /// The queue of batches
 std::mutex GlobalVariables::updateSceneMutex;
 
@@ -518,6 +515,112 @@ void GlobalVariables::init(CuRast* instance, CUcontext* context){
 }
 
 
+void GlobalVariables::destroy(CuRast* instance, CUcontext* context){
+    cudaDeviceSynchronize();
+
+    {
+		std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
+		GlobalVariables::mainLoopIsTerminating = true;
+		// Destroy temporary folder
+		std::filesystem::remove_all(OocSimLodSettings::TEMPORARY_NODE_STORAGE_DIRECTORY);
+	}
+
+    cudaDeviceSynchronize();
+    batchedMemory.destroy();
+
+    cudaDeviceSynchronize();
+    if(mainOctreeCpy){
+		delete(mainOctreeCpy);
+		mainOctreeCpy = nullptr;
+	}
+}
+
+
+std::vector<OctreeNode*> GlobalVariables::getAllNodes(OctreeNode* root){
+    uint32_t guessed_nb_nodes = OocSimLodSettings::LRU_UPDATES_CACHE_SIZE + OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE;
+    std::vector<OctreeNode*> res = {};
+    res.reserve(guessed_nb_nodes);
+
+    std::function<void(OctreeNode*)> recursion = [&](OctreeNode* cur_node){
+        if(!cur_node){return;}
+        res.push_back(cur_node);
+        for(uint32_t child = 0; child < 8; child++){
+            recursion(cur_node->children[child]);
+        }
+    };
+    
+    recursion(root);
+    return res;
+}
+
+std::vector<std::pair<OctreeNode*, uint8_t>> GlobalVariables::getAllNodesWithLevel(OctreeNode* root, uint8_t initial_level){
+    uint32_t guessed_nb_nodes = OocSimLodSettings::LRU_UPDATES_CACHE_SIZE + OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE;
+    std::vector<std::pair<OctreeNode*, uint8_t>> res = {};
+    res.reserve(guessed_nb_nodes);
+
+    std::function<void(OctreeNode*, uint8_t)> recursion = [&](OctreeNode* cur_node, uint8_t level){
+        if(!cur_node){return;}
+        res.push_back({cur_node, level});
+        for(uint32_t child = 0; child < 8; child++){
+            recursion(cur_node->children[child], level + 1);
+        }
+    };
+    
+    recursion(root, initial_level);
+    return res;
+}
+
+std::vector<OctreeNode*> GlobalVariables::getAllPartialLeaves(OctreeNode* root){
+    uint32_t guessed_nb_nodes = OocSimLodSettings::LRU_UPDATES_CACHE_SIZE + OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE;
+    std::vector<OctreeNode*> res = {};
+    res.reserve(guessed_nb_nodes);
+
+    std::function<void(OctreeNode*)> recursion = [&](OctreeNode* cur_node){
+        if(!cur_node){return;}
+
+        bool is_complete = true;
+        for(uint32_t child = 0; child < 8; child++){
+            if(!cur_node->children[child]){
+                is_complete = false;
+            } else {
+                recursion(cur_node->children[child]);
+            }
+        }
+
+        if(!is_complete){
+            res.push_back(cur_node);
+        }
+    };
+    
+    recursion(root);
+    return res;
+}
+
+std::vector<std::pair<OctreeNode*, uint8_t>> GlobalVariables::getAllPartialLeavesWithLevels(OctreeNode* root, uint8_t initial_level){
+    uint32_t guessed_nb_nodes = OocSimLodSettings::LRU_UPDATES_CACHE_SIZE + OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE;
+    std::vector<std::pair<OctreeNode*, uint8_t>> res = {};
+    res.reserve(guessed_nb_nodes);
+
+    std::function<void(OctreeNode*, uint8_t)> recursion = [&](OctreeNode* cur_node, uint8_t level){
+        if(!cur_node){return;}
+
+        bool is_complete = true;
+        for(uint32_t child = 0; child < 8; child++){
+            if(!cur_node->children[child]){
+                is_complete = false;
+            } else {
+                recursion(cur_node->children[child], level + 1);
+            }
+        }
+
+        if(!is_complete){
+            res.push_back({cur_node, level});
+        }
+    };
+    
+    recursion(root, initial_level);
+    return res;
+}
 
 
 
@@ -526,6 +629,9 @@ vector<std::shared_ptr<Timing>> Timing::timingsList = {};
 std::mutex Timing::timingsMtx;
 
 std::shared_ptr<Timing> Timing::addTiming(string name, bool start_now, uint32_t level){
+    if(!OocSimLodSettings::MEASURE_TIMINGS){
+        return std::make_shared<Timing>(name, start_now, level);
+    }
     std::shared_ptr<Timing> new_timing = std::make_shared<Timing>(name, start_now, level);
     std::lock_guard<std::mutex> lock(timingsMtx);
     timingsList.push_back(new_timing);
@@ -533,6 +639,7 @@ std::shared_ptr<Timing> Timing::addTiming(string name, bool start_now, uint32_t 
 }
 
 void displayTimings(){
+    if(!OocSimLodSettings::MEASURE_TIMINGS){return;}
 	println("///////////////////////////////////////////////////");
 	println("///////////////////// Timings /////////////////////");
 	println("///////////////////////////////////////////////////\n");
@@ -616,10 +723,9 @@ void displayBuffers(){
 
 std::mutex LRUCache::stored_set_mtx;
 std::unordered_set<AABB, AABB::Hash> LRUCache::stored_set = {};
-std::mutex LRUCache::test_mtx;
+std::mutex LRUCache::caches_sync_mtx;
 
-std::optional<AABB> LRUCache::add(const AABB& aabb, bool sync){
-    auto lock_guard = sync ? std::unique_lock<std::mutex>(mtx) : std::unique_lock<std::mutex>();
+std::optional<AABB> LRUCache::add(const AABB& aabb){
     bool already_in_cache = false;
 
     // Reset every counters if needed
@@ -675,13 +781,11 @@ std::optional<AABB> LRUCache::add(const AABB& aabb, bool sync){
     return std::optional<AABB>(old_entry);
 }
 
-std::optional<uint32_t> LRUCache::getIndex(const AABB& aabb, bool sync) {
-    auto lock_guard = sync ? std::unique_lock<std::mutex>(mtx) : std::unique_lock<std::mutex>();
+std::optional<uint32_t> LRUCache::getIndex(const AABB& aabb) {
     return cache_map.contains(aabb) ? std::optional<uint32_t>(cache_map.at(aabb)) : nullopt;
 }
 
-bool LRUCache::contains(const AABB& aabb, bool sync ) {
-    auto lock_guard = sync ? std::unique_lock<std::mutex>(mtx) : std::unique_lock<std::mutex>();
+bool LRUCache::contains(const AABB& aabb ) {
     return getIndex(aabb).has_value();
 }
 
@@ -694,9 +798,7 @@ uint32_t LRUCache::getSize() const {
 }
 
 
-void LRUCache::display(bool sync) {
-    auto lock_guard = sync ? std::unique_lock<std::mutex>(mtx) : std::unique_lock<std::mutex>();
-
+void LRUCache::display() {
     std::string pad = std::string(max(int32_t(name.size())-2, 0), '/');
     println("////////////////////////////////////////////////{}", pad);
 	println("////////////////////// {} //////////////////////", name);
@@ -797,29 +899,30 @@ void LRUCache::unmark(const AABB& aabb){
     stored_set.erase(aabb);
 }
 
-bool LRUCache::isInACache(const AABB& aabb, bool sync){
-    return GlobalVariables::updatesCache->contains(aabb, sync) 
-        || GlobalVariables::visibilityCache->contains(aabb, sync)
+bool LRUCache::isInACache(const AABB& aabb){
+    return GlobalVariables::updatesCache->contains(aabb) 
+        || GlobalVariables::visibilityCache->contains(aabb)
         // TODO: add other caches if necessary
     ;
 }
-bool LRUCache::isInAllCaches(const AABB& aabb, bool sync){
-    return GlobalVariables::updatesCache->contains(aabb, sync) 
-        && GlobalVariables::visibilityCache->contains(aabb, sync)
+bool LRUCache::isInAllCaches(const AABB& aabb){
+    return GlobalVariables::updatesCache->contains(aabb) 
+        && GlobalVariables::visibilityCache->contains(aabb)
         // TODO: add other caches if necessary
     ;
 }
 
 
 bool LRUCache::sanityCheck(const OctreeNode* root_node) {
-    if(!contains(root_node->aabb, true)){
+    std::lock_guard<std::mutex> lock(caches_sync_mtx);
+    if(!contains(root_node->aabb)){
         println("ERROR: cache should always contain the root node");
         return false;
     }
 
     std::unordered_set<AABB, AABB::Hash> correct = {};
     std::function<void(const AABB&)> recursion = [&](const AABB& cur_aabb){
-        if(contains(cur_aabb, true)){
+        if(contains(cur_aabb)){
             correct.insert(cur_aabb);
             for(uint32_t child_id = 0; child_id < 8; child_id++){
                 // TODO: temporary code
@@ -830,16 +933,6 @@ bool LRUCache::sanityCheck(const OctreeNode* root_node) {
         }
     };
     recursion(root_node->aabb);
-    // std::function<void(const OctreeNode*)> recursion = [&](const OctreeNode* cur_node){
-    //     if(!cur_node){return;}
-    //     if(contains(*cur_node->aabb, true)){
-    //         correct.insert(*cur_node->aabb);
-    //         for(uint32_t child_id = 0; child_id < 8; child_id++){
-    //             recursion(cur_node->children[child_id]);
-    //         }
-    //     }
-    // };
-    // recursion(root_node);
 
     uint32_t expected = getSize();
     uint32_t found = correct.size();
@@ -1000,7 +1093,7 @@ void BatchedMemory::reset(){
     sizes.clear();
 }
 
-BatchedMemory::~BatchedMemory(){
+void BatchedMemory::destroy(){
     // CPU free
     free(allocated_memory);
 

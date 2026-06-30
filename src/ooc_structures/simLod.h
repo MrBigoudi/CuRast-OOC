@@ -8,8 +8,24 @@ void simLodUpdate(
     std::shared_ptr<vector<Point>>& points
 );
 
+/// SimLOD loading pass
+void simLodLoad(
+    OctreeNode* main_root, 
+    std::shared_ptr<vector<Point>>& points
+);
+void simLodLoadV2(
+    OctreeNode* main_root, 
+    std::shared_ptr<vector<Point>>& points
+);
+
 /// SimLOD counting pass
 void simLodCount(
+    OctreeNode* main_root, 
+    std::shared_ptr<vector<Point>>& points,
+    std::shared_ptr<vector<Point>>& spilled_points,
+    std::shared_ptr<vector<OctreeNode*>>& spilling_nodes
+);
+void simLodCountV2(
     OctreeNode* main_root, 
     std::shared_ptr<vector<Point>>& points,
     std::shared_ptr<vector<Point>>& spilled_points,
@@ -38,12 +54,4 @@ void simLodInsertion(
     std::shared_ptr<vector<Point>>& spilled_points,
     std::shared_ptr<vector<Point>>& backlog_voxels,
     std::shared_ptr<vector<OctreeNode*>>& backlog_voxels_nodes
-);
-
-
-
-/// SimLOD loading pass
-void simLodLoad(
-    OctreeNode* main_root, 
-    std::shared_ptr<vector<Point>>& points
 );

@@ -327,15 +327,13 @@ typedef std::pair<uint64_t, AABB> CacheEntry;
 struct LRUCache {
 	static std::mutex stored_set_mtx;
 	static std::unordered_set<AABB, AABB::Hash> stored_set;
-
-	static std::mutex test_mtx;
+	static std::mutex caches_sync_mtx;
 
 	const uint32_t CACHE_SIZE;
 	uint64_t counter = 0;
 	std::vector<std::optional<CacheEntry>> cache = {};
 	std::unordered_map<AABB, uint32_t, AABB::Hash> cache_map = {};
 	std::string name = "";
-	std::mutex mtx = {};
 
 	LRUCache(const std::string& name, uint32_t cache_size)
 		: name(name), CACHE_SIZE(cache_size){
@@ -347,13 +345,13 @@ struct LRUCache {
 
 	/// Add a node to the cache and return the id of a node if it has been removed from the cache
 	/// The id of a node is it's AABB
-	std::optional<AABB> add(const AABB& aabb, bool sync = false);
+	std::optional<AABB> add(const AABB& aabb);
 	/// Gets the cache index of a node
-	std::optional<uint32_t> getIndex(const AABB& aabb, bool sync = false);
+	std::optional<uint32_t> getIndex(const AABB& aabb);
 	/// Check if a node is already in cache
-	bool contains(const AABB& aabb, bool sync = false);
+	bool contains(const AABB& aabb);
 	/// Display the LRU cache
-	void display(bool sync = false);
+	void display();
 	/// Returns the number of occupied cell in the cache
 	uint32_t getSize() const;
 	bool sanityCheck(const OctreeNode* root_node);
@@ -365,9 +363,9 @@ struct LRUCache {
 	/// Unmark a node as stored
 	static void unmark(const AABB& aabb);
 	/// Check if a node is in one of the global caches
-	static bool isInACache(const AABB& aabb, bool sync = false);
+	static bool isInACache(const AABB& aabb);
 	/// Check if a node is in all of the global caches
-	static bool isInAllCaches(const AABB& aabb, bool sync = false);
+	static bool isInAllCaches(const AABB& aabb);
 	/// Display all stored nodes
 	static void displayStored();
 	static bool sanityCheckStored(const OctreeNode* root_node);
@@ -415,7 +413,7 @@ struct BatchedMemory {
     void init(CuRast* instance, CUcontext* context);
 	void reset();
 
-    ~BatchedMemory();
+    void destroy();
 
 	template<typename T>
 	std::pair<T*, CUdeviceptr> allocate(){
@@ -483,9 +481,6 @@ struct GlobalVariables {
 	static std::binary_semaphore octreeNotBeingSent;
 	static std::mutex isUpdatingMtx;
 
-	static uint64_t loadCounter;
-	static std::mutex loadCounterMtx;
-
 	/// The queue of batches
 	static std::mutex updateSceneMutex;
 
@@ -508,4 +503,10 @@ struct GlobalVariables {
 
 	static std::string getSimLodOctreeName(bool generate_new_name = false);
 	static void init(CuRast* instance, CUcontext* context);
+	static void destroy(CuRast* instance, CUcontext* context);
+
+	static std::vector<OctreeNode*> getAllNodes(OctreeNode* root);
+	static std::vector<std::pair<OctreeNode*, uint8_t>> getAllNodesWithLevel(OctreeNode* root, uint8_t initial_level = 0);
+	static std::vector<OctreeNode*> getAllPartialLeaves(OctreeNode* root);
+	static std::vector<std::pair<OctreeNode*, uint8_t>> getAllPartialLeavesWithLevels(OctreeNode* root, uint8_t initial_level = 0);
 };

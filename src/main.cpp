@@ -769,21 +769,10 @@ int main(int argc, char** argv){
 		[&]() {CuRast::instance->postFrame();}
 	);
 
-	{
-		std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
-		GlobalVariables::mainLoopIsTerminating = true;
-		// Destroy temporary folder
-		std::filesystem::remove_all(OocSimLodSettings::TEMPORARY_NODE_STORAGE_DIRECTORY);
-	}
-
 	displayTimings();
 	displayBuffers();
 	OocSimLodSettings::display();
 
-	if(GlobalVariables::mainOctreeCpy){
-		delete(GlobalVariables::mainOctreeCpy);
-		GlobalVariables::mainOctreeCpy = nullptr;
-	}
-
+	GlobalVariables::destroy(CuRast::instance, &context);
 	VKRenderer::destroy();
 }

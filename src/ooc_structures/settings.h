@@ -43,6 +43,8 @@ struct OocSimLodSettings {
     static bool IS_RUNNING_IN_PARALLEL;
     /// The number of frames between each GPU data transfer and visibility update
     static uint32_t NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE;
+    /// Measure the timings
+    static bool MEASURE_TIMINGS;
 
 
 
