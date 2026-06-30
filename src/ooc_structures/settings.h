@@ -88,6 +88,29 @@ struct OocSimLodSettings {
     static uint32_t LRU_UPDATES_CACHE_SIZE;
     /// The size of the LRU visibility cache
     static uint32_t LRU_VISIBILITY_CACHE_SIZE;
+
+
+
+    /////////////////////////////////////////////////////////////////////////
+    ///////////////////////// UI INITIAL PARAMETERS /////////////////////////
+    /////////////////////////////////////////////////////////////////////////
+
+    /// Display the bounding boxes 
+    static bool SHOW_BOUNDING_BOXES_AT_STARTUP;
+    /// Send points from batches to the GPU as well and display the complete point cloud
+	static bool BRUTE_FORCE_RENDERING_AT_STARTUP;
+    /// The lod to render, -1 for the dynamic selection
+	static int32_t DEBUG_LOD_TO_RENDER_AT_STARTUP;
+    /// The number of points per axis to draw voxels as a cube of points
+	static int32_t VOXELS_POINTS_PER_AXIS_AT_STARTUP;
+    /// The minimum number of pixels to condider a node large
+	static float MIN_PIXEL_SPAN_AT_STARTUP;
+    /// Use a debug color for the voxels; the color will correspond to the level of the node
+	static bool USE_VOXELS_DEBUG_COLOR_AT_STARTUP;
+    /// Activate the automatic free of unused GPU memory
+    static bool USE_AUTO_FREE_OLD_OCTREE_ON_GPU_AT_STARTUP;
+    /// Use a white color for the visible nodes' bounding boxes
+	static bool DIFFERENTIATE_VISIBLE_NODES_AABB_AT_STARTUP;
     
 
 

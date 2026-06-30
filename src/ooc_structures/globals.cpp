@@ -470,8 +470,6 @@ std::mutex GlobalVariables::isUpdatingMtx;
 uint64_t GlobalVariables::loadCounter = 0;
 std::mutex GlobalVariables::loadCounterMtx;
 
-bool GlobalVariables::lodUpdated = false;
-
 /// The queue of batches
 std::mutex GlobalVariables::updateSceneMutex;
 

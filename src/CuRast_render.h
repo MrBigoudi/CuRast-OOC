@@ -120,7 +120,7 @@ void drawPoints(Scene* scene, View view, RenderTarget& target){
 	});
 }
 
-void drawOctreeAABB(Scene* scene, View view, RenderTarget& target, bool use_visibility_debug_color = false){
+void drawOctreeAABB(Scene* scene, View view, RenderTarget& target){
 	static CudaModularProgram* prog = new CudaModularProgram({"./src/kernels/octree.cu"});
 
 	std::lock_guard<std::mutex> lock_scene(GlobalVariables::updateSceneMutex);
@@ -128,16 +128,13 @@ void drawOctreeAABB(Scene* scene, View view, RenderTarget& target, bool use_visi
 		// Sanity check
 		if(!octree){return;}
 		CFullOctree cfo = octree->toFullOctree();
-		cfo.use_aabb_debug_color = use_visibility_debug_color;
+		cfo.use_aabb_debug_color = CuRastSettings::showVisibleNodes;
 
 		prog->launch("kernel_drawOctreeAABB", {&cfo, &target}, cfo.num_nodes);
 	});
 }
 
-void drawOctree(Scene* scene, View view, RenderTarget& target, 
-	int32_t debug_lod = -1, int32_t voxels_nb_points = 1, float min_pixel_span = 64.,
-	bool use_voxels_debug_color = false
-){
+void drawOctree(Scene* scene, View view, RenderTarget& target){
 	static CudaModularProgram* prog = new CudaModularProgram({"./src/kernels/octree.cu"});
 
 	std::lock_guard<std::mutex> lock_scene(GlobalVariables::updateSceneMutex);
@@ -146,10 +143,10 @@ void drawOctree(Scene* scene, View view, RenderTarget& target,
 		if(!octree){return;}
 		CFullOctree cfo = octree->toFullOctree();
 
-		cfo.debug_lod_to_render = debug_lod;
-		cfo.voxels_nb_points_per_axis = uint32_t(voxels_nb_points);
-		cfo.min_pixel_span = min_pixel_span;
-		cfo.use_voxels_debug_color = use_voxels_debug_color;
+		cfo.debug_lod_to_render = CuRastSettings::debugLodToRender;
+		cfo.voxels_nb_points_per_axis = uint32_t(CuRastSettings::voxelsPointsPerAxis);
+		cfo.min_pixel_span = CuRastSettings::minPixelSpan;
+		cfo.use_voxels_debug_color = CuRastSettings::voxelsDebugColor;
         
         uint32_t numThreads = cfo.num_nodes * OocSimLodSettings::PER_NODE_KERNEL_BLOCK_SIZE;
 		OptionalLaunchSettings launch_settings = {
@@ -168,15 +165,12 @@ void drawOctreeAABBUnified(Scene* scene, View view, RenderTarget& target, CFullO
 	prog->launch("kernel_drawOctreeAABB", {&cfo, &target}, cfo.num_nodes);
 }
 
-void drawOctreeUnified(Scene* scene, View view, RenderTarget& target, CFullOctreeUnified& cfo, 
-	int32_t debug_lod = -1, int32_t voxels_nb_points = 1, float min_pixel_span = 64.,
-	bool use_voxels_debug_color = false
-){
+void drawOctreeUnified(Scene* scene, View view, RenderTarget& target, CFullOctreeUnified& cfo){
 	static CudaModularProgram* prog = new CudaModularProgram({"./src/kernels/octreeUnified.cu"});
-	cfo.debug_lod_to_render = debug_lod;
-	cfo.voxels_nb_points_per_axis = uint32_t(voxels_nb_points);
-	cfo.min_pixel_span = min_pixel_span;
-	cfo.use_voxels_debug_color = use_voxels_debug_color;
+	cfo.debug_lod_to_render = CuRastSettings::debugLodToRender;
+	cfo.voxels_nb_points_per_axis = uint32_t(CuRastSettings::voxelsPointsPerAxis);
+	cfo.min_pixel_span = CuRastSettings::minPixelSpan;
+	cfo.use_voxels_debug_color = CuRastSettings::voxelsDebugColor;
         
 	uint32_t numThreads = cfo.num_nodes * OocSimLodSettings::PER_NODE_KERNEL_BLOCK_SIZE;
 	OptionalLaunchSettings launch_settings = {
@@ -691,30 +685,12 @@ void CuRast::draw(Scene* scene, vector<View> views){
 		if(CuRastSettings::bruteForceRendering){
 			drawPoints(scene, view, target);
 		} else {
-			if(CuRastSettings::useUnifiedMemory){
-				drawOctreeUnified(scene, view, target, cfo,
-					CuRastSettings::debugLodToRender, 
-					CuRastSettings::voxelsPointsPerAxis,
-					CuRastSettings::minPixelSpan,
-					CuRastSettings::voxelsDebugColor
-				);
-			} else {
-				drawOctree(scene, view, target, 
-					CuRastSettings::debugLodToRender, 
-					CuRastSettings::voxelsPointsPerAxis,
-					CuRastSettings::minPixelSpan,
-					CuRastSettings::voxelsDebugColor
-				);
-			}
+			if(CuRastSettings::useUnifiedMemory){ drawOctreeUnified(scene, view, target, cfo); } 
+			else { drawOctree(scene, view, target); }
 		}
 		if(CuRastSettings::showBoundingBoxes){
-			if(CuRastSettings::useUnifiedMemory){
-				drawOctreeAABBUnified(scene, view, target, cfo);
-			} else {
-				drawOctreeAABB(scene, view, target, 
-					CuRastSettings::showVisibleNodes
-				);
-			}
+			if(CuRastSettings::useUnifiedMemory){ drawOctreeAABBUnified(scene, view, target, cfo); } 
+			else { drawOctreeAABB(scene, view, target); }
 		}
 
 
@@ -758,6 +734,7 @@ void CuRast::draw(Scene* scene, vector<View> views){
 				nb_bytes -= nb_mbs * 1'024 * 1'024;
 				uint64_t nb_kbs = uint64_t(floor(nb_bytes / 1'024));
 				nb_bytes -= nb_kbs * 1'024;
+				clamp(nb_bytes, uint64_t(0), uint64_t(999));
 
 				if(nb_tbs){return format("{:5} {:3L}T {:3L}G {:3L}M {:3L}k {:3L}b", "", nb_tbs, nb_gbs, nb_mbs, nb_kbs, nb_bytes);}
 				if(nb_gbs){return format("{:10} {:3L}G {:3L}M {:3L}k {:3L}b", "", nb_gbs, nb_mbs, nb_kbs, nb_bytes);}

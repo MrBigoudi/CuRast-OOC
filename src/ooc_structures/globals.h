@@ -486,8 +486,6 @@ struct GlobalVariables {
 	static uint64_t loadCounter;
 	static std::mutex loadCounterMtx;
 
-	static bool lodUpdated;
-
 	/// The queue of batches
 	static std::mutex updateSceneMutex;
 

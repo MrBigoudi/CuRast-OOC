@@ -506,7 +506,6 @@ void addPointBatches(){
 	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 		std::lock_guard<std::mutex> lock_send(GlobalVariables::isUpdatingMtx);
 		GlobalVariables::mainOctree = std::make_shared<OctreeNode>(*GlobalVariables::mainOctreeCpy);
-		GlobalVariables::lodUpdated = true;
 	} else {
 		GlobalVariables::mainOctree = std::make_shared<OctreeNode>(*GlobalVariables::mainOctreeCpy);
 	}
