@@ -125,6 +125,16 @@ void OocSimLodSettings::display(){
     println("    - LRU_UPDATES_CACHE_SIZE: {}", LRU_UPDATES_CACHE_SIZE);
     println("    - LRU_VISIBILITY_CACHE_SIZE: {}", LRU_VISIBILITY_CACHE_SIZE);
 
+    println("");
+    println("UI initial settings:");
+    println("    - SHOW_BOUNDING_BOXES_AT_STARTUP: {}", SHOW_BOUNDING_BOXES_AT_STARTUP);
+    println("    - BRUTE_FORCE_RENDERING_AT_STARTUP: {}", BRUTE_FORCE_RENDERING_AT_STARTUP);
+    println("    - DEBUG_LOD_TO_RENDER_AT_STARTUP: {}", DEBUG_LOD_TO_RENDER_AT_STARTUP);
+    println("    - VOXELS_POINTS_PER_AXIS_AT_STARTUP: {}", VOXELS_POINTS_PER_AXIS_AT_STARTUP);
+    println("    - MIN_PIXEL_SPAN_AT_STARTUP: {}", MIN_PIXEL_SPAN_AT_STARTUP);
+    println("    - USE_VOXELS_DEBUG_COLOR_AT_STARTUP: {}", USE_VOXELS_DEBUG_COLOR_AT_STARTUP);
+    println("    - USE_AUTO_FREE_OLD_OCTREE_ON_GPU_AT_STARTUP: {}", USE_AUTO_FREE_OLD_OCTREE_ON_GPU_AT_STARTUP);
+    println("    - DIFFERENTIATE_VISIBLE_NODES_AABB_AT_STARTUP: {}", DIFFERENTIATE_VISIBLE_NODES_AABB_AT_STARTUP);
 
 	println("\n//////////////////////////////////////////////////////////");
 	println("//////////////////////////////////////////////////////////");
