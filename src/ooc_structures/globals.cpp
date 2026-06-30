@@ -499,7 +499,7 @@ std::string GlobalVariables::getSimLodOctreeName(bool generate_new_name){
     return name;
 }
 
-void GlobalVariables::init(){
+void GlobalVariables::init(CuRast* instance, CUcontext* context){
     /// The queue of batches
     batchesQueue = std::deque<std::shared_ptr<PointBatch>>(OocSimLodSettings::BATCHES_LIST_SIZE, nullptr);
     batchesQueueMutexes = std::deque<std::mutex>(OocSimLodSettings::BATCHES_LIST_SIZE);
@@ -516,7 +516,7 @@ void GlobalVariables::init(){
     updatesCache = std::make_shared<LRUCache>("updates cache", OocSimLodSettings::LRU_UPDATES_CACHE_SIZE);
     visibilityCache = std::make_shared<LRUCache>("visibility cache", OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE);
 
-    batchedMemory.init();
+    batchedMemory.init(instance, context);
 }
 
 
@@ -959,7 +959,23 @@ bool LRUCache::sanityCheckStored(const OctreeNode* root_node) {
 ///////////////////////////////////////////////////////////////////////////////
 
 
-void BatchedMemory::init(){
+void BatchedMemory::init(CuRast* instance, CUcontext* context){
+    // Sanity check
+    if(sizeof(CChunk) != sizeof(Chunk)
+        || sizeof(COctreeNode) != sizeof(OctreeNode)
+        || alignof(CChunk) != alignof(Chunk)
+        || alignof(COctreeNode) != alignof(OctreeNode)
+        || sizeof(CUdeviceptr) != sizeof(CChunk*)
+        || sizeof(CUdeviceptr) != sizeof(COctreeNode*)
+        || sizeof(CUdeviceptr) != sizeof(Chunk*)
+        || sizeof(CUdeviceptr) != sizeof(OctreeNode*)
+        || sizeof(CChunk*) != sizeof(Chunk*)
+        || sizeof(COctreeNode*) != sizeof(OctreeNode*)
+    ){
+        println("Sizes don't match");
+        exit(EXIT_FAILURE);
+    }
+
     uint64_t max_nb_nodes = OocSimLodSettings::LRU_UPDATES_CACHE_SIZE
         + OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE
     ;
@@ -967,8 +983,13 @@ void BatchedMemory::init(){
         float(OocSimLodSettings::MAX_POINTS_PER_LEAF) / float(OocSimLodSettings::NB_POINTS_PER_CHUNK)
         * max_nb_nodes
     ;
-
     memory_size = max_nb_nodes * sizeof(OctreeNode) + max_nb_chunks * sizeof(Chunk);
+
+    // GPU allocation
+    CUresult cuda_status = cuMemAlloc(&gpu_allocated_memory, memory_size);
+    CURuntime::assertCudaSuccess(cuda_status);
+
+    // CPU allocation
     allocated_memory = (char*)malloc(memory_size);
 
     reset();
@@ -982,22 +1003,23 @@ void BatchedMemory::reset(){
 }
 
 BatchedMemory::~BatchedMemory(){
+    // CPU free
     free(allocated_memory);
+
+    // GPU free
+    // TODO: fix this by creating a cleaning routine on GlobalVariables
+    CUresult cuda_status = cuMemFree(gpu_allocated_memory);
+    CURuntime::assertCudaSuccess(cuda_status);
 }
 
-void BatchedMemory::addFutureCopy(void* src, CUdeviceptr dst, size_t size){
-    srcs.push_back((CUdeviceptr)src);
-    dsts.push_back(dst);
-    sizes.push_back(size);
-
-    // println("Future copy added: src = {}, dst = {}, size = {}", src, dst, size);
-}
 
 void BatchedMemory::copyMemory(CUcontext* context, CUstream* stream) {
     size_t batch_size = dsts.size();
 
     CUmemcpyAttributes attributes = CUmemcpyAttributes();
     attributes.srcAccessOrder = CU_MEMCPY_SRC_ACCESS_ORDER_STREAM;
+    attributes.srcLocHint.type = CU_MEM_LOCATION_TYPE_HOST;
+    attributes.dstLocHint.type = CU_MEM_LOCATION_TYPE_DEVICE;
     size_t attributes_idxs = 0;
     size_t nb_attributes = 1;
 
@@ -1047,12 +1069,6 @@ void BatchedMemory::display() const {
                 uint8_t(node->children[6] != nullptr), 
                 uint8_t(node->children[7] != nullptr)
             );
-        } else {
-            println("Error: unrecognized size...:");
-            println("    - Expected {} for CChunk", sizeof(CChunk));
-            println("    - Expected {} for COctreeNode", sizeof(COctreeNode));
-            println("    - Got {}", sizes[i]);
-            exit(EXIT_FAILURE);
         }
     }
 }

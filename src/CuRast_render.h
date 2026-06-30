@@ -127,14 +127,7 @@ void drawOctreeAABB(Scene* scene, View view, RenderTarget& target, bool use_visi
 	scene->forEach<SNCOctree>([&](SNCOctree* octree){
 		// Sanity check
 		if(!octree){return;}
-		if(!octree->isDoneLoadingToGpu()){return;}
-		CFullOctree cfo;
-		cfo.world     = octree->transform_global;
-		cfo.nodes     = (COctreeNode**)(octree->nodes);
-		cfo.chunks    = (CChunk**)(octree->chunks);
-
-		cfo.num_nodes = octree->num_nodes;
-		cfo.max_lod_level = octree->max_lod_level;
+		CFullOctree cfo = octree->toFullOctree();
 		cfo.use_aabb_debug_color = use_visibility_debug_color;
 
 		prog->launch("kernel_drawOctreeAABB", {&cfo, &target}, cfo.num_nodes);
@@ -151,14 +144,8 @@ void drawOctree(Scene* scene, View view, RenderTarget& target,
     scene->forEach<SNCOctree>([&](SNCOctree* octree){
 		// Sanity check
 		if(!octree){return;}
-		if(!octree->isDoneLoadingToGpu()){return;}
+		CFullOctree cfo = octree->toFullOctree();
 
-		CFullOctree cfo;
-        cfo.world     = octree->transform_global;
-        cfo.nodes     = (COctreeNode**)(octree->nodes);
-        cfo.chunks    = (CChunk**)(octree->chunks);
-        cfo.num_nodes = octree->num_nodes;
-        cfo.max_lod_level = octree->max_lod_level;
 		cfo.debug_lod_to_render = debug_lod;
 		cfo.voxels_nb_points_per_axis = uint32_t(voxels_nb_points);
 		cfo.min_pixel_span = min_pixel_span;
@@ -784,16 +771,16 @@ void CuRast::draw(Scene* scene, vector<View> views){
 			for(uint32_t i=0; i<nb_octrees; i++){
 				SNCOctree* node = octrees[i];
 				dvlist.push_back({format("    octree '{}'", node->name), ""});
-				dvlist.push_back({"     - # nodes           ", format("{:30L}", node->cptr_nodes.size())});
-				dvlist.push_back({"     - # chunks          ", format("{:30L}", node->cptr_chunks.size())});
-				// dvlist.push_back({"     - # occupancy grids ", format("{:30L}", node->cptr_occupancy_grids.size())});
+				dvlist.push_back({"     - # nodes           ", format("{:30L}", node->nb_nodes)});
+				dvlist.push_back({"     - # chunks          ", format("{:30L}", node->nb_chunks)});
+				dvlist.push_back({"     - # voxels          ", format("{:30L}", node->nb_voxels)});
+				dvlist.push_back({"     - # points          ", format("{:30L}", node->nb_points)});
 				dvlist.push_back({"     - GPU memory usage  ", formatMemSize(node->getGpuMemoryUsage())});
-				// dvlist.push_back({"\t#visible nodes         ", format("{:40L}", uint64_t(numVisibleNodes))});
 			}
 
 			// Batches info
 			dvlist.push_back({"\n# total batches          ", format("{:30L}", nb_batches)});
-			dvlist.push_back({"# total points           ", format("{:30L}", nb_points)});
+			dvlist.push_back({"# total points           ", format("{:30L}", GlobalVariables::nbPoints)});
 			dvlist.push_back({"batches GPU memory usage ", formatMemSize(points_gpu_memory)});
 			
 		}

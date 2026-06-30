@@ -403,37 +403,45 @@ struct BatchedMemory {
     std::vector<CUdeviceptr> dsts = {};
     std::vector<size_t> sizes = {};
 
+	// CPU side
     char* allocated_memory = nullptr;
     uint64_t next_space_pointer = 0;
 	uint64_t memory_size = 0;
 
-    void init();
+	// GPU side
+	CUdeviceptr gpu_allocated_memory = 0;
+	CUmemGenericAllocationHandle gpu_allocation_handle = 0;
 
+    void init(CuRast* instance, CUcontext* context);
 	void reset();
 
     ~BatchedMemory();
 
 	template<typename T>
-	T* allocate(){
+	std::pair<T*, CUdeviceptr> allocate(){
 		size_t alignment = alignof(T);
 		size_t size = sizeof(T);
 		uint64_t aligned_pointer = next_space_pointer;
-		aligned_pointer += (alignment - (aligned_pointer % alignment)) % alignment; // alignment
+		aligned_pointer += (alignment - (aligned_pointer % alignment)) % alignment;
 		if(aligned_pointer + size > memory_size){
-			println("Can't allocate more memory:");
-			println("    reached: {}", aligned_pointer + size);
-			println("    max: {}", memory_size);
+			println("Can't allocate more memory...");
 			exit(EXIT_FAILURE);
 		}
-		T* res = reinterpret_cast<T*>(allocated_memory + aligned_pointer);
-		// To call the constructor in place
-		new (res) T();
 		next_space_pointer = aligned_pointer + size;
-		// println("next pointer: {}", next_space_pointer);
-		return res;
+
+		T* res = reinterpret_cast<T*>(allocated_memory + aligned_pointer);
+		new (res) T();
+
+		CUdeviceptr res_gpu = gpu_allocated_memory + aligned_pointer;
+		return {res, res_gpu};
 	}
 
-    void addFutureCopy(void* src, CUdeviceptr dst, size_t size);
+	template<typename T>
+    void addFutureCopy(T* src, CUdeviceptr dst){
+		srcs.push_back((CUdeviceptr)src);
+		dsts.push_back(dst);
+		sizes.push_back(sizeof(T));
+	}
 
     void copyMemory(CUcontext* context, CUstream* stream);
 
@@ -501,5 +509,5 @@ struct GlobalVariables {
 	static BatchedMemory batchedMemory;
 
 	static std::string getSimLodOctreeName(bool generate_new_name = false);
-	static void init();
+	static void init(CuRast* instance, CUcontext* context);
 };

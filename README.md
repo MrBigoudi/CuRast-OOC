@@ -70,7 +70,7 @@ Dependencies:
 Create a build directory via cmake and build the software:
 
 ```
-cmake -B build
+cmake -DCMAKE_BUILD_TYPE=Release -B build
 make -C build
 ./build/CuRast
 ```

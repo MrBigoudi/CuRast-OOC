@@ -32,9 +32,8 @@ void loadOctreeOnGPU(CuRast* editor, CUcontext* context,
 void createCudaMemory(CuRast* editor, CUcontext* context, 
     std::shared_ptr<OctreeNode>& input_octree
 );
-std::optional<uint32_t> allocateChunks(
-    std::shared_ptr<SNCOctree>& octree, const Chunk* root, 
-    uint32_t* chunk_counter
+std::optional<CUdeviceptr> allocateChunks(
+    std::shared_ptr<SNCOctree>& octree, const Chunk* root, bool is_voxel_chunk = false
 );
 
 /// TODO: temporary function

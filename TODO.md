@@ -9,6 +9,7 @@
 
 ## Coding part
 
+- Add initial values of curast settings in the settings toml
 - Replace exit(EXIT_FAILURE) with exception raise to catch it in the main and clear the temporary folder
 - Allocate memory once on CPU side to avoid new/delete and reuse it on demand
 - Automatically fetch CPU / GPU capacities to set the constants

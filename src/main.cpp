@@ -569,7 +569,7 @@ int main(int argc, char** argv){
 
 	// Create Global things
 	OocSimLodSettings::init();
-	GlobalVariables::init();
+	GlobalVariables::init(CuRast::instance, &context);
 	std::filesystem::create_directories(OocSimLodSettings::TEMPORARY_NODE_STORAGE_DIRECTORY);
 	initScene();
 

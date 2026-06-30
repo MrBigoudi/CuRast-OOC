@@ -342,8 +342,8 @@ struct COccupancyGrid {
 };
 struct CChunk{
 	CPoint points[OocSimLodSettings::NB_POINTS_PER_CHUNK];
-	uint32_t size;
-	CChunk* next;
+	uint32_t size = 0;
+	CChunk* next = nullptr;
 };
 struct COctreeNode {
 	COctreeNode* children[8] = {nullptr};
@@ -366,16 +366,15 @@ struct COctreeNode {
 struct CFullOctree {
 	mat4 world;
 	COctreeNode** nodes;
-	CChunk** chunks;
 	uint32_t num_nodes;
 	uint32_t max_lod_level;
 
 	// TODO: put inside uniforms structure
-	int32_t debug_lod_to_render;
-	uint32_t voxels_nb_points_per_axis;
-	float min_pixel_span;
-	bool use_voxels_debug_color;
-	bool use_aabb_debug_color;
+	int32_t debug_lod_to_render = -1;
+	uint32_t voxels_nb_points_per_axis = 1;
+	float min_pixel_span = 0.;
+	bool use_voxels_debug_color = false;
+	bool use_aabb_debug_color = false;
 };
 
 
