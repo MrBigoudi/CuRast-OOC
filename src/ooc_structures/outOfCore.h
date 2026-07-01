@@ -33,12 +33,11 @@ struct ChunkSerializable {
 
 /// A serializable node
 struct OctreeNodeSerializable {
+    AABB aabb = {};
 	uint32_t counter = 0;
-	uint8_t children = 0b00000000;
 	uint8_t children_ids = 0b00000000;
 	std::string points = "";
 	std::string voxels = "";
-    AABB aabb = {};
 
     OctreeNodeSerializable(){};
 
@@ -54,6 +53,33 @@ struct OctreeNodeSerializable {
         void serialize(const std::string& filepath) const;
         static OctreeNodeSerializable deserialize(const std::string& filepath);
         OctreeNode* toLeafNode(const AABB& node_aabb) const;
+};
+
+
+/// The LRU cache for the CPU fallback (before storing on disk)
+struct CPUFallbackCache {
+	/// A cache entry
+	struct Entry {
+        OctreeNodeSerializable serializable_node;
+        std::optional<ChunkSerializable> serializable_points = nullopt;
+        std::optional<ChunkSerializable> serializable_voxels = nullopt;
+        uint32_t cache_counter = 0;
+
+		/// A constructor from an existing node
+		Entry(const OctreeNode* node, uint32_t cache_counter);
+
+		/// Builds an octree node from an entry
+		OctreeNode* toLeafNode() const;
+	};
+
+    uint32_t cache_counter = 0;
+    std::unordered_map<AABB, Entry, AABB::Hash> data_cache = {};
+
+    /// Add a node to the cache
+    /// Optionally return the node that was removed from the cache after the insertion
+
+    /// Get a node from the cache
+    ///
 };
 
 

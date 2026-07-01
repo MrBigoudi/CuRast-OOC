@@ -1,5 +1,7 @@
 #include "globals.h"
 
+#include "outOfCore.h"
+
 bool Point::operator==(const Point& rhs) const {
     if(position != rhs.position){return false;}
     for(uint32_t channel = 0; channel < 4; channel++){
@@ -437,53 +439,49 @@ bool Chunk::operator==(const Chunk& rhs) const{
     return true;
 }
 
+void OctreeNode::rebuildOccupancy() {
+    // Rebuild occupancy
+    if(voxels){
+        occupancy = new OccupancyGrid();
+        const Chunk* cur_chunk = voxels;
+        while(cur_chunk){
+            for(std::uint32_t point_id=0; point_id<cur_chunk->size; point_id++){
+                const Point& point = cur_chunk->points[point_id];
+
+                // Sample voxel occupancy grid at this location
+                vec3 normalized_coordinates = aabb.getPointNormalizedCoordinates(point.position);
+                uint32_t grid_x = clamp(
+                    uint32_t(floor(OocSimLodSettings::GRID_SIZE_PER_DIMENSION * normalized_coordinates.x)), 
+                    0u, 
+                    OocSimLodSettings::GRID_SIZE_PER_DIMENSION - 1u
+                );
+                uint32_t grid_y = clamp(
+                    uint32_t(floor(OocSimLodSettings::GRID_SIZE_PER_DIMENSION * normalized_coordinates.y)), 
+                    0u, 
+                    OocSimLodSettings::GRID_SIZE_PER_DIMENSION - 1u
+                );
+                uint32_t grid_z = clamp(
+                    uint32_t(floor(OocSimLodSettings::GRID_SIZE_PER_DIMENSION * normalized_coordinates.z)), 
+                    0u, 
+                    OocSimLodSettings::GRID_SIZE_PER_DIMENSION - 1u
+                );
+                uint32_t index = grid_x + OocSimLodSettings::GRID_SIZE_PER_DIMENSION * (grid_y + OocSimLodSettings::GRID_SIZE_PER_DIMENSION * grid_z);
+                uint32_t word_index = index >> 5u;
+                uint32_t bit_index = index & 31u;
+                occupancy->values[word_index] |= (1u << bit_index);
+            }
+            cur_chunk = cur_chunk->next;
+        }
+    }
+}
+
+
+
 
 
 ///////////////////////////////////////////////////////////////////////////////
 ////////////////////////// GLOBAL EXTERNAL VARIABLES //////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
-
-std::deque<std::shared_ptr<PointBatch>> GlobalVariables::batchesQueue = {};
-std::deque<std::mutex> GlobalVariables::batchesQueueMutexes = {};
-std::shared_ptr<vector<Point>> GlobalVariables::spilledPoints = {};
-std::shared_ptr<vector<OctreeNode*>> GlobalVariables::spillingNodes = {};
-std::shared_ptr<vector<Point>> GlobalVariables::backlogVoxels = {};
-std::shared_ptr<vector<OctreeNode*>> GlobalVariables::backlogVoxelsNodes = {};
-
-
-uint32_t GlobalVariables::elapsedFrames = 0;
-uint64_t GlobalVariables::nbPoints = 0;
-bool GlobalVariables::mainLoopIsTerminating = false;
-std::mutex GlobalVariables::mainLoopIsTerminatingMtx;
-uint64_t GlobalVariables::simLodOctreeCounter = 0;
-
-/// Variables tracking when the octree can be sent to GPU
-/// Initialized as not ready to be sent
-std::binary_semaphore GlobalVariables::octreeReadyToBeSent{0};
-/// Initialized as ready to be updated
-std::binary_semaphore GlobalVariables::octreeReadyToBeUpdated{1};
-/// Initialized as not being sent
-std::binary_semaphore GlobalVariables::octreeNotBeingSent{1};
-
-std::mutex GlobalVariables::isUpdatingMtx;
-
-/// The queue of batches
-std::mutex GlobalVariables::updateSceneMutex;
-
-/// The main octree
-std::shared_ptr<OctreeNode> GlobalVariables::mainOctree = nullptr;
-OctreeNode* GlobalVariables::mainOctreeCpy = nullptr;
-
-/// The LRU cache for the nodes
-std::shared_ptr<LRUCache> GlobalVariables::updatesCache = nullptr;
-std::shared_ptr<LRUCache> GlobalVariables::visibilityCache = nullptr;
-std::unordered_map<AABB, std::array<std::optional<AABB>, 8>, AABB::Hash> GlobalVariables::aabbRelationshipMap = {};
-std::mutex GlobalVariables::aabbRelationshipMapMtx;
-std::unordered_map<AABB, AABB, AABB::Hash> GlobalVariables::aabbParentMap = {};
-std::unordered_map<AABB, std::mutex, AABB::Hash> GlobalVariables::aabbMutexMap = {};
-
-/// The global allocated memory (for batches)
-BatchedMemory GlobalVariables::batchedMemory = {};
 
 std::string GlobalVariables::getSimLodOctreeName(bool generate_new_name){
     if(generate_new_name){
@@ -510,6 +508,7 @@ void GlobalVariables::init(CuRast* instance, CUcontext* context){
 
     updatesCache = std::make_shared<LRUCache>("updates cache", OocSimLodSettings::LRU_UPDATES_CACHE_SIZE);
     visibilityCache = std::make_shared<LRUCache>("visibility cache", OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE);
+    cpuCache = std::make_shared<CPUFallbackCache>();
 
     batchedMemory.init(instance, context);
 }

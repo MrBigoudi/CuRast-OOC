@@ -90,6 +90,8 @@ struct OocSimLodSettings {
     static uint32_t LRU_UPDATES_CACHE_SIZE;
     /// The size of the LRU visibility cache
     static uint32_t LRU_VISIBILITY_CACHE_SIZE;
+    /// The size of the LRU cpu cache
+    static uint32_t LRU_CPU_CACHE_SIZE;
 
 
 

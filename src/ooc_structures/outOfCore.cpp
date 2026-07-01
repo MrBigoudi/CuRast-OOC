@@ -53,6 +53,50 @@ std::string getChunkFilePath(const AABB& aabb, bool is_voxel){
 
 
 
+/// A constructor from an existing node
+CPUFallbackCache::Entry::Entry(const OctreeNode* node, uint32_t cache_counter) : cache_counter(cache_counter){
+    serializable_node = {};
+    serializable_node.counter = node->counter;
+    serializable_node.children_ids = node->children_ids;
+    serializable_node.aabb = node->aabb;
+
+    if(node->points){
+        serializable_node.points = getChunkFilePath(node->aabb, false);
+        serializable_points = ChunkSerializable(node->points);
+    }
+    if(node->voxels){
+        serializable_node.voxels = getChunkFilePath(node->aabb, true);
+        serializable_voxels = ChunkSerializable(node->voxels);
+    }
+}
+
+/// Builds an octree node from an entry
+OctreeNode* CPUFallbackCache::Entry::toLeafNode() const {
+    const AABB& aabb = serializable_node.aabb;
+    OctreeNode* new_node = new OctreeNode(aabb);
+    new_node->counter = serializable_node.counter;
+    new_node->children_ids = serializable_node.children_ids;
+    new_node->aabb = aabb;
+
+    if(serializable_points.has_value()){
+        new_node->points = serializable_points.value().toChunk();
+    }
+
+    if(serializable_voxels.has_value()){
+        new_node->voxels = serializable_voxels.value().toChunk();
+    }
+
+    new_node->rebuildOccupancy();
+    return new_node;
+}
+
+
+
+
+
+
+
+
 ///////////////////////////////////////////////////////////////////////////////
 ///////////////////////////// CHUNK SERIALIZATION /////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
@@ -162,29 +206,24 @@ void OctreeNodeSerializable::init(const OctreeNode* node, bool node_only){
     std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
 
     std::function<void (const OctreeNode*)> recursion = [&](const OctreeNode* cur_node){
-        OctreeNodeSerializable new_node = {};
-        new_node.counter = cur_node->counter;
-        new_node.children_ids = cur_node->children_ids;
-        new_node.aabb = cur_node->aabb;
+        CPUFallbackCache::Entry tmp_entry = CPUFallbackCache::Entry(node, 0);
         
         if(!node_only){
             for(uint32_t child_id = 0; child_id < 8; child_id++){
                 if(cur_node->children[child_id]){
-                    new_node.children |= (0x01 << child_id);
                     std::string new_filepath = getNodeFilePath(cur_node->children[child_id]->aabb);
                     recursion(cur_node->children[child_id]);
                 }
             }
         }
 
+        OctreeNodeSerializable& new_node = tmp_entry.serializable_node;
         if(cur_node->points){
-            new_node.points = getChunkFilePath(cur_node->aabb, false);
-            ChunkSerializable serializable = ChunkSerializable(cur_node->points);
+            ChunkSerializable& serializable = tmp_entry.serializable_points.value();
             serializable.serialize(new_node.points);
         }
         if(cur_node->voxels){
-            new_node.voxels = getChunkFilePath(cur_node->aabb, true);
-            ChunkSerializable serializable = ChunkSerializable(cur_node->voxels);
+            ChunkSerializable& serializable = tmp_entry.serializable_voxels.value();
             serializable.serialize(new_node.voxels);
         }
 
@@ -208,7 +247,6 @@ void OctreeNodeSerializable::serialize(const std::string& filepath) const {
 
     // Write fixed-size members
     file.write(reinterpret_cast<const char*>(&counter), sizeof(counter));
-    file.write(reinterpret_cast<const char*>(&children), sizeof(children));
     file.write(reinterpret_cast<const char*>(&children_ids), sizeof(children_ids));
 
     // Write points string
@@ -247,7 +285,6 @@ OctreeNodeSerializable OctreeNodeSerializable::deserialize(const std::string& fi
 
     // Read fixed-size members
     file.read(reinterpret_cast<char*>(&new_node.counter), sizeof(new_node.counter));
-    file.read(reinterpret_cast<char*>(&new_node.children), sizeof(new_node.children));
     file.read(reinterpret_cast<char*>(&new_node.children_ids), sizeof(new_node.children_ids));
 
     // Read points string
@@ -277,6 +314,7 @@ OctreeNode* OctreeNodeSerializable::toLeafNode(const AABB& node_aabb) const{
     OctreeNode* new_node = new OctreeNode(node_aabb);
     new_node->counter = counter;
     new_node->children_ids = children_ids;
+    new_node->aabb = node_aabb;
 
     if(points != ""){
         ChunkSerializable points_deserialized = ChunkSerializable::deserialize(
@@ -292,43 +330,7 @@ OctreeNode* OctreeNodeSerializable::toLeafNode(const AABB& node_aabb) const{
         new_node->voxels = voxels_deserialized.toChunk();
     }
 
-    // Rebuild occupancy
-    if(new_node->voxels){
-        new_node->occupancy = new OccupancyGrid();
-        auto fillOccupancy = [&](const Chunk* chunk) {
-            const Chunk* cur_chunk = chunk;
-            while(cur_chunk){
-                for(std::uint32_t point_id=0; point_id<cur_chunk->size; point_id++){
-                    const Point& point = cur_chunk->points[point_id];
-
-                    // Sample voxel occupancy grid at this location
-                    vec3 normalized_coordinates = node_aabb.getPointNormalizedCoordinates(point.position);
-					uint32_t grid_x = clamp(
-						uint32_t(floor(OocSimLodSettings::GRID_SIZE_PER_DIMENSION * normalized_coordinates.x)), 
-						0u, 
-						OocSimLodSettings::GRID_SIZE_PER_DIMENSION - 1u
-					);
-					uint32_t grid_y = clamp(
-						uint32_t(floor(OocSimLodSettings::GRID_SIZE_PER_DIMENSION * normalized_coordinates.y)), 
-						0u, 
-						OocSimLodSettings::GRID_SIZE_PER_DIMENSION - 1u
-					);
-					uint32_t grid_z = clamp(
-						uint32_t(floor(OocSimLodSettings::GRID_SIZE_PER_DIMENSION * normalized_coordinates.z)), 
-						0u, 
-						OocSimLodSettings::GRID_SIZE_PER_DIMENSION - 1u
-					);
-					uint32_t index = grid_x + OocSimLodSettings::GRID_SIZE_PER_DIMENSION * (grid_y + OocSimLodSettings::GRID_SIZE_PER_DIMENSION * grid_z);
-					uint32_t word_index = index >> 5u;
-					uint32_t bit_index = index & 31u;
-                    new_node->occupancy->values[word_index] |= (1u << bit_index);
-                }
-                cur_chunk = cur_chunk->next;
-            }
-        };
-        fillOccupancy(new_node->voxels);
-    }
-
+    new_node->rebuildOccupancy();
     return new_node;
 }
 

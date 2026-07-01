@@ -50,6 +50,7 @@ struct Voxel;
 struct OctreeNode;
 struct Chunk;
 struct OccupancyGrid;
+struct CPUFallbackCache;
 
 
 
@@ -266,6 +267,8 @@ struct OctreeNode {
 
 		assert(cpy == *this);
 	}
+
+	void rebuildOccupancy();
 };
 
 
@@ -323,7 +326,7 @@ void displayBuffers();
 
 typedef std::pair<uint64_t, AABB> CacheEntry;
 
-/// The LRU caches for the UPDATED nodes
+/// The LRU caches for the nodes
 struct LRUCache {
 	static std::mutex stored_set_mtx;
 	static std::unordered_set<AABB, AABB::Hash> stored_set;
@@ -370,6 +373,8 @@ struct LRUCache {
 	static void displayStored();
 	static bool sanityCheckStored(const OctreeNode* root_node);
 };
+
+
 
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -454,52 +459,53 @@ struct BatchedMemory {
 
 struct GlobalVariables {
 	/// The queue of batches
-	static std::deque<std::shared_ptr<PointBatch>> batchesQueue;
-	static std::deque<std::mutex> batchesQueueMutexes;
+	static inline std::deque<std::shared_ptr<PointBatch>> batchesQueue = {};
+	static inline std::deque<std::mutex> batchesQueueMutexes = {};
 
 	/// The buffer of spilled points
-	static std::shared_ptr<vector<Point>> spilledPoints;
+	static inline std::shared_ptr<vector<Point>> spilledPoints = {};
 	/// The buffer of spilling nodes
-	static std::shared_ptr<vector<OctreeNode*>> spillingNodes;
+	static inline std::shared_ptr<vector<OctreeNode*>> spillingNodes = {};
 
 	/// The backlog buffer for new voxels
-	static std::shared_ptr<vector<Point>> backlogVoxels;
+	static inline std::shared_ptr<vector<Point>> backlogVoxels = {};
 	/// The backlog buffer for the nodes corresponding to the new voxels
-	static std::shared_ptr<vector<OctreeNode*>> backlogVoxelsNodes;
+	static inline std::shared_ptr<vector<OctreeNode*>> backlogVoxelsNodes = {};
 
 
-	static uint32_t elapsedFrames;
-	static uint64_t nbPoints;
-	static bool mainLoopIsTerminating;
-	static std::mutex mainLoopIsTerminatingMtx;
+	static inline uint32_t elapsedFrames = 0;
+	static inline uint64_t nbPoints = 0;
+	static inline bool mainLoopIsTerminating = false;
+	static inline std::mutex mainLoopIsTerminatingMtx;
 	/// Counter for the number of octree created
-	static uint64_t simLodOctreeCounter;
+	static inline uint64_t simLodOctreeCounter = 0;
 
 	/// Variables tracking when the octree can be sent to GPU
-	static std::binary_semaphore octreeReadyToBeSent;
-	static std::binary_semaphore octreeReadyToBeUpdated;
-	static std::binary_semaphore octreeNotBeingSent;
-	static std::mutex isUpdatingMtx;
+	static inline std::binary_semaphore octreeReadyToBeSent{0};
+	static inline std::binary_semaphore octreeReadyToBeUpdated{1};
+	static inline std::binary_semaphore octreeNotBeingSent{1};
+	static inline std::mutex isUpdatingMtx;
 
 	/// The queue of batches
-	static std::mutex updateSceneMutex;
+	static inline std::mutex updateSceneMutex;
 
 	/// The main octree
-	static std::shared_ptr<OctreeNode> mainOctree;
-	static OctreeNode* mainOctreeCpy;
+	static inline std::shared_ptr<OctreeNode> mainOctree = nullptr;
+	static inline OctreeNode* mainOctreeCpy = nullptr;
 
 	/// The LRU caches
-	static std::shared_ptr<LRUCache> updatesCache;
-	static std::shared_ptr<LRUCache> visibilityCache;
+	static inline std::shared_ptr<LRUCache> updatesCache = nullptr;
+	static inline std::shared_ptr<LRUCache> visibilityCache = nullptr;
+	static inline std::shared_ptr<CPUFallbackCache> cpuCache = nullptr;
 
 
-	static std::mutex aabbRelationshipMapMtx;
-	static std::unordered_map<AABB, std::array<std::optional<AABB>, 8>, AABB::Hash> aabbRelationshipMap;
-	static std::unordered_map<AABB, AABB, AABB::Hash> aabbParentMap;
-	static std::unordered_map<AABB, std::mutex, AABB::Hash> aabbMutexMap;
+	static inline std::unordered_map<AABB, std::array<std::optional<AABB>, 8>, AABB::Hash> aabbRelationshipMap = {};
+	static inline std::mutex aabbRelationshipMapMtx;
+	static inline std::unordered_map<AABB, AABB, AABB::Hash> aabbParentMap = {};
+	static inline std::unordered_map<AABB, std::mutex, AABB::Hash> aabbMutexMap = {};
 
 	/// The global allocated memory (for batches)
-	static BatchedMemory batchedMemory;
+	static inline BatchedMemory batchedMemory = {};
 
 	static std::string getSimLodOctreeName(bool generate_new_name = false);
 	static void init(CuRast* instance, CUcontext* context);
