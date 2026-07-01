@@ -508,7 +508,7 @@ void GlobalVariables::init(CuRast* instance, CUcontext* context){
 
     updatesCache = std::make_shared<LRUCache>("updates cache", OocSimLodSettings::LRU_UPDATES_CACHE_SIZE);
     visibilityCache = std::make_shared<LRUCache>("visibility cache", OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE);
-    cpuCache = std::make_shared<CPUFallbackCache>();
+    cpuCache = std::make_shared<CPUFallbackCache>(OocSimLodSettings::LRU_CPU_CACHE_SIZE);
 
     batchedMemory.init(instance, context);
 }

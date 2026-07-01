@@ -5,6 +5,7 @@
 - Create a CPU cache that will be a layer between GPU and disk on store / load
 - Rework caches for O(1) insertion with a "round robin method"
 - Rework the maps aabbRelationshipMap and aabbParentMap
+
 - Measure timings and memory usage more precisely 
 - Clean the code + improve comments
 

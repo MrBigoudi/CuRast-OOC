@@ -39,10 +39,12 @@ struct OctreeNodeSerializable {
 	std::string points = "";
 	std::string voxels = "";
 
+    friend CPUFallbackCache;
+
     OctreeNodeSerializable(){};
 
-    /// Serializes all points, voxels and grids
-    static void init(const OctreeNode* node, bool node_only);
+    /// Serializes all nodes, points, and voxels
+    static void serialize(const OctreeNode* node, bool node_only);
 
     static OctreeNode* toOctreeNodes(
         const AABB& root_aabb, bool node_only
@@ -66,20 +68,35 @@ struct CPUFallbackCache {
         uint32_t cache_counter = 0;
 
 		/// A constructor from an existing node
-		Entry(const OctreeNode* node, uint32_t cache_counter);
+		Entry(const OctreeNode* node);
+        /// A constructor which is deserialized from an aabb
+        Entry(const AABB& aabb);
 
 		/// Builds an octree node from an entry
 		OctreeNode* toLeafNode() const;
 	};
 
-    uint32_t cache_counter = 0;
-    std::unordered_map<AABB, Entry, AABB::Hash> data_cache = {};
+    /// The size of the cache
+	const uint32_t CACHE_SIZE;
+
+    /// The global counter for cache update
+    uint64_t counter = 0;
+
+    /// The global cache
+    std::vector<std::shared_ptr<Entry>> cache = {};
+	std::unordered_map<AABB, uint32_t, AABB::Hash> cache_map = {};
+
+    /// Creates a cache given its size
+    CPUFallbackCache(uint32_t cache_size);
 
     /// Add a node to the cache
     /// Optionally return the node that was removed from the cache after the insertion
+    /// Note that new entries should overwrite its previous version if the node was already in cache
+    std::shared_ptr<Entry> add(const std::shared_ptr<Entry>& new_entry);
 
     /// Get a node from the cache
-    ///
+    std::shared_ptr<Entry> get(const AABB& aabb);
+
 };
 
 

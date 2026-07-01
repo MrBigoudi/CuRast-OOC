@@ -81,6 +81,7 @@ LRU_VISIBILITY_CACHE_SIZE = 1024
 
 ### The size of the LRU cpu cache
 LRU_CPU_CACHE_SIZE = 16_384 # ~8G (~500M / 1000 nodes)
+# LRU_CPU_CACHE_SIZE = 1
 
 
 

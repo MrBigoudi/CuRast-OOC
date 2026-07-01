@@ -54,7 +54,7 @@ std::string getChunkFilePath(const AABB& aabb, bool is_voxel){
 
 
 /// A constructor from an existing node
-CPUFallbackCache::Entry::Entry(const OctreeNode* node, uint32_t cache_counter) : cache_counter(cache_counter){
+CPUFallbackCache::Entry::Entry(const OctreeNode* node){
     serializable_node = {};
     serializable_node.counter = node->counter;
     serializable_node.children_ids = node->children_ids;
@@ -70,6 +70,25 @@ CPUFallbackCache::Entry::Entry(const OctreeNode* node, uint32_t cache_counter) :
     }
 }
 
+/// A constructor which is deserialized from an aabb
+CPUFallbackCache::Entry::Entry(const AABB& aabb){
+
+    serializable_node = OctreeNodeSerializable::deserialize(getNodeFilePath(aabb));
+    if(serializable_node.points != ""){
+        ChunkSerializable points_deserialized = ChunkSerializable::deserialize(
+            getChunkFilePath(aabb, false)
+        );
+        serializable_points = points_deserialized.toChunk();
+    }
+
+    if(serializable_node.voxels != ""){
+        ChunkSerializable voxels_deserialized = ChunkSerializable::deserialize(
+            getChunkFilePath(aabb, true)
+        );
+        serializable_voxels = voxels_deserialized.toChunk();
+    }
+}
+
 /// Builds an octree node from an entry
 OctreeNode* CPUFallbackCache::Entry::toLeafNode() const {
     const AABB& aabb = serializable_node.aabb;
@@ -79,20 +98,85 @@ OctreeNode* CPUFallbackCache::Entry::toLeafNode() const {
     new_node->aabb = aabb;
 
     if(serializable_points.has_value()){
-        new_node->points = serializable_points.value().toChunk();
+        new_node->points = serializable_points->toChunk();
     }
 
     if(serializable_voxels.has_value()){
-        new_node->voxels = serializable_voxels.value().toChunk();
+        new_node->voxels = serializable_voxels->toChunk();
     }
 
     new_node->rebuildOccupancy();
     return new_node;
 }
 
+CPUFallbackCache::CPUFallbackCache(uint32_t cache_size): CACHE_SIZE(cache_size){
+    cache = std::vector<std::shared_ptr<Entry>>(cache_size, nullptr);
+}
 
+std::shared_ptr<CPUFallbackCache::Entry> CPUFallbackCache::add(const std::shared_ptr<Entry>& new_entry){
+    bool already_in_cache = false;
 
+    // Reset every counters if needed
+    if(counter == UINT64_MAX){
+        println("Cache counter reseting");
+        for(uint32_t cache_id = 0; cache_id < CACHE_SIZE; cache_id++){
+            if(cache[cache_id]){
+                std::shared_ptr<Entry>& old_entry = cache[cache_id];
+                old_entry->cache_counter = 0;
+                if(old_entry->serializable_node.aabb == new_entry->serializable_node.aabb){
+                    new_entry->cache_counter = 1;
+                    cache[cache_id] = new_entry;
+                    already_in_cache = true;
+                }
+            }
+        }
+        counter = 0;
+    }
+    counter++;
+    if(already_in_cache){return nullptr;}
 
+    // Check if already in cache
+    uint32_t new_id = 0;
+    uint64_t min_counter = UINT64_MAX;
+    for(uint32_t cache_id = 0; cache_id < CACHE_SIZE; cache_id++){
+        if(cache[cache_id]){
+            std::shared_ptr<Entry>& old_entry = cache[cache_id];
+
+            // Check if already in cache
+            if(old_entry->serializable_node.aabb == new_entry->serializable_node.aabb){
+                new_entry->cache_counter = counter;
+                cache[cache_id] = new_entry;
+                return nullptr;
+            }
+
+            // Check if smallest counter
+            if(old_entry->cache_counter < min_counter){
+                min_counter = old_entry->cache_counter;
+                new_id = cache_id;
+            }
+        } else {
+            // Found empty space
+            cache[cache_id] = new_entry;
+            cache_map[new_entry->serializable_node.aabb] = cache_id;
+            return nullptr;
+        }
+    }
+
+    // If not in cache, create new entry
+    const std::shared_ptr<Entry> old_entry = cache[new_id];
+    cache[new_id] = new_entry;
+    cache_map[new_entry->serializable_node.aabb] = new_id;
+    cache_map.erase(old_entry->serializable_node.aabb);
+
+    return old_entry;
+}
+
+std::shared_ptr<CPUFallbackCache::Entry> CPUFallbackCache::get(const AABB& aabb) {
+    if(cache_map.contains(aabb)){
+        return cache[cache_map[aabb]];
+    }
+    return nullptr;
+}
 
 
 
@@ -202,12 +286,10 @@ Chunk* ChunkSerializable::toChunk() const{
 //////////////////////////// OCTREE SERIALIZATION /////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
 
-void OctreeNodeSerializable::init(const OctreeNode* node, bool node_only){
-    std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
-
-    std::function<void (const OctreeNode*)> recursion = [&](const OctreeNode* cur_node){
-        CPUFallbackCache::Entry tmp_entry = CPUFallbackCache::Entry(node, 0);
-        
+void OctreeNodeSerializable::serialize(const OctreeNode* node, bool node_only){
+    // Add the nodes to the CPU cache
+    std::unordered_map<AABB, std::shared_ptr<CPUFallbackCache::Entry>, AABB::Hash> to_store = {};
+    std::function<void (const OctreeNode*)> recursion = [&](const OctreeNode* cur_node){        
         if(!node_only){
             for(uint32_t child_id = 0; child_id < 8; child_id++){
                 if(cur_node->children[child_id]){
@@ -217,22 +299,35 @@ void OctreeNodeSerializable::init(const OctreeNode* node, bool node_only){
             }
         }
 
-        OctreeNodeSerializable& new_node = tmp_entry.serializable_node;
-        if(cur_node->points){
-            ChunkSerializable& serializable = tmp_entry.serializable_points.value();
+        to_store.erase(cur_node->aabb);
+        std::shared_ptr<CPUFallbackCache::Entry> new_entry = std::make_shared<CPUFallbackCache::Entry>(cur_node);
+        std::shared_ptr<CPUFallbackCache::Entry> entry = GlobalVariables::cpuCache->add(new_entry);
+        if(entry){
+            to_store[entry->serializable_node.aabb] = entry;
+        }
+        LRUCache::mark(cur_node->aabb);
+    };
+    recursion(node);
+
+    // Store the nodes that need to be on disk
+    std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
+    for(auto [aabb, entry] : to_store){
+
+        // Block on storing to disk
+        std::lock_guard<std::mutex> lock(GlobalVariables::aabbMutexMap[aabb]);
+
+        OctreeNodeSerializable& new_node = entry->serializable_node;
+        if(entry->serializable_points.has_value()){
+            ChunkSerializable& serializable = entry->serializable_points.value();
             serializable.serialize(new_node.points);
         }
-        if(cur_node->voxels){
-            ChunkSerializable& serializable = tmp_entry.serializable_voxels.value();
+        if(entry->serializable_voxels.has_value()){
+            ChunkSerializable& serializable = entry->serializable_voxels.value();
             serializable.serialize(new_node.voxels);
         }
 
-        new_node.serialize(getNodeFilePath(cur_node->aabb));
-        LRUCache::mark(cur_node->aabb);
+        new_node.serialize(getNodeFilePath(new_node.aabb));
     };
-
-    // root_node->display();
-    recursion(node);
 }
 
 void OctreeNodeSerializable::serialize(const std::string& filepath) const {
@@ -337,16 +432,30 @@ OctreeNode* OctreeNodeSerializable::toLeafNode(const AABB& node_aabb) const{
 OctreeNode* OctreeNodeSerializable::toOctreeNodes(
     const AABB& root_aabb, bool node_only
 ){
-    std::unordered_map<std::string, OctreeNode*> map = {};
+    std::unordered_map<AABB, std::shared_ptr<CPUFallbackCache::Entry>, AABB::Hash> to_store = {};
     
     // Load all nodes indepentenly
-    std::function<void(const AABB, uint32_t, uint32_t)> recursion = 
+    std::function<OctreeNode*(const AABB, uint32_t, uint32_t)> recursion = 
         [&](AABB cur_aabb, uint32_t id, uint32_t level) {
 
-        std::string filepath = getNodeFilePath(cur_aabb);
-        OctreeNodeSerializable new_serializable_node = OctreeNodeSerializable::deserialize(filepath);
-        // LRUCache::unmark(cur_aabb);
-        OctreeNode* new_node = new_serializable_node.toLeafNode(cur_aabb);
+        // Check if the node is in CPU cache
+        to_store.erase(cur_aabb);
+        std::shared_ptr<CPUFallbackCache::Entry> entry = GlobalVariables::cpuCache->get(cur_aabb);
+        if(!entry){
+            // If the node is not in CPU cache, load it from disk
+            std::shared_ptr<CPUFallbackCache::Entry> new_entry = nullptr;
+            {
+                // Block on loading from disk
+                std::lock_guard<std::mutex> lock(GlobalVariables::aabbMutexMap[cur_aabb]);
+                new_entry = std::make_shared<CPUFallbackCache::Entry>(cur_aabb);
+            }
+            std::shared_ptr<CPUFallbackCache::Entry> old_entry = GlobalVariables::cpuCache->add(new_entry);
+            if(old_entry){
+                to_store[old_entry->serializable_node.aabb] = old_entry;
+            }
+            entry = new_entry;
+        }
+        OctreeNode* new_node = entry->toLeafNode();
 
         if(!node_only){
             // new_node->display(id, level, true);
@@ -358,20 +467,37 @@ OctreeNode* OctreeNodeSerializable::toOctreeNodes(
                     child_aabb = GlobalVariables::aabbRelationshipMap[cur_aabb][child_id];
                 }
                 if(child_aabb.has_value()){
-                    recursion(child_aabb.value(), child_id, level+1);
-                    // recursion(cur_aabb, child_id, level+1);
-                    // Fill up children pointers
-                    std::string child_filepath = getNodeFilePath(child_aabb.value());
-                    new_node->children[child_id] = map[child_filepath];
+                    new_node->children[child_id] = recursion(child_aabb.value(), child_id, level+1);
                 }
             }
         }
 
-        map[filepath] = {new_node};
+        return new_node;
     };
 
-    recursion(root_aabb, 0, 0);
-    return map[getNodeFilePath(root_aabb)];
+    OctreeNode* root = recursion(root_aabb, 0, 0);
+
+    // Store the nodes that need to be on disk
+    std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
+    for(auto [aabb, entry] : to_store){
+
+        // Block on storing to disk
+        std::lock_guard<std::mutex> lock(GlobalVariables::aabbMutexMap[aabb]);
+        
+        OctreeNodeSerializable& new_node = entry->serializable_node;
+        if(entry->serializable_points.has_value()){
+            ChunkSerializable& serializable = entry->serializable_points.value();
+            serializable.serialize(new_node.points);
+        }
+        if(entry->serializable_voxels.has_value()){
+            ChunkSerializable& serializable = entry->serializable_voxels.value();
+            serializable.serialize(new_node.voxels);
+        }
+
+        new_node.serialize(getNodeFilePath(new_node.aabb));
+    };
+
+    return root;
 }
 
 
@@ -379,14 +505,12 @@ OctreeNode* OctreeNodeSerializable::toOctreeNodes(
 
 void storeOctree(const OctreeNode* node, bool node_only
 ){
-    std::lock_guard<std::mutex> lock(GlobalVariables::aabbMutexMap[node->aabb]);
-    OctreeNodeSerializable::init(node, node_only);
+    OctreeNodeSerializable::serialize(node, node_only);
     // println("Done storing octree");
 }
 
 OctreeNode* loadOctree(const AABB& root_aabb, bool node_only){
     // println("Start loading octree");
-    std::lock_guard<std::mutex> lock(GlobalVariables::aabbMutexMap[root_aabb]);
     OctreeNode* res = OctreeNodeSerializable::toOctreeNodes(root_aabb, node_only);
     // println("Done loading octree");
     return res;
