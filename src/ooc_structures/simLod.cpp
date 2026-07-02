@@ -64,7 +64,8 @@ void simLodUpdate(OctreeNode* main_root, std::shared_ptr<vector<Point>>& points)
 	
 
 	timing = Timing::addTiming("simlod insertion", true, 1);
-	simLodInsertion(main_root, points, GlobalVariables::spilledPoints, GlobalVariables::backlogVoxels, GlobalVariables::backlogVoxelsNodes);
+	// simLodInsertion(main_root, points, GlobalVariables::spilledPoints, GlobalVariables::backlogVoxels, GlobalVariables::backlogVoxelsNodes);
+	simLodInsertionV2(main_root, points, GlobalVariables::spilledPoints, GlobalVariables::backlogVoxels, GlobalVariables::backlogVoxelsNodes);
 	timing->stop_clock();
 
 	// println("//////////////////////////////////////////////////");
@@ -639,7 +640,7 @@ void simLodVoxelSamplingV2(
     std::shared_ptr<vector<Point>>& backlog_voxels,
     std::shared_ptr<vector<OctreeNode*>>& backlog_voxels_nodes
 ){
-	std::vector<OctreeNode*> all_nodes = GlobalVariables::getAllNodes(main_root);
+	std::vector<OctreeNode*> all_nodes = GlobalVariables::getAllPartialNodes(main_root);
 
 	// Creates all the new voxels
 	auto sampleVoxels = [&](OctreeNode* cur_node, std::shared_ptr<vector<Point>>& cur_points) -> std::vector<Point> {
@@ -714,6 +715,86 @@ void simLodVoxelSamplingV2(
 				backlog_voxels->push_back(voxel);
 				backlog_voxels_nodes->push_back(node);
 			}
+		});
+	}
+}
+
+void simLodInsertionV2(
+    OctreeNode* main_root,
+    std::shared_ptr<vector<Point>>& points,
+    std::shared_ptr<vector<Point>>& spilled_points,
+    std::shared_ptr<vector<Point>>& backlog_voxels,
+    std::shared_ptr<vector<OctreeNode*>>& backlog_voxels_nodes
+){
+	std::vector<OctreeNode*> all_nodes = GlobalVariables::getAllNodes(main_root);
+
+	auto insertPoints = [&](OctreeNode* cur_node, std::shared_ptr<vector<Point>>& cur_points){
+		Chunk* chunk_list = cur_node->points;
+		if(chunk_list){
+			while(chunk_list->next){chunk_list = chunk_list->next;}
+		}
+
+		for(const Point& point : *cur_points){
+			// Skip if the node does not contain this point
+			if(!cur_node->aabb.contains(point.position)){continue;}
+			cur_node->updated = true;
+
+			// Skip if the node is not a leaf for this point
+			NodePosition child_index = cur_node->aabb.getNextChildIndex(point.position);
+			if(cur_node->children[child_index]){continue;}
+
+			// Insert the point to the chunk list
+			if(!chunk_list){
+				cur_node->points = new Chunk();
+				chunk_list = cur_node->points;
+			}
+			if(chunk_list->size == OocSimLodSettings::NB_POINTS_PER_CHUNK){
+				chunk_list->next = new Chunk();
+				chunk_list = chunk_list->next;
+			}
+			chunk_list->points[chunk_list->size] = point;
+			chunk_list->size++;
+		}
+	};
+
+	auto insertVoxels = [&](OctreeNode* cur_node){
+		Chunk* chunk_list = cur_node->voxels;
+		if(chunk_list){
+			while(chunk_list->next){chunk_list = chunk_list->next;}
+		}
+
+		for(uint32_t i=0; i<backlog_voxels->size(); i++){
+			const Point& voxel = (*backlog_voxels)[i];
+			OctreeNode* voxel_node = (*backlog_voxels_nodes)[i];
+
+			if(voxel_node != cur_node){continue;}
+			cur_node->updated = true;
+
+			// Insert the voxel to the chunk list
+			if(!chunk_list){
+				cur_node->voxels = new Chunk();
+				chunk_list = cur_node->voxels;
+			}
+			if(chunk_list->size == OocSimLodSettings::NB_POINTS_PER_CHUNK){
+				chunk_list->next = new Chunk();
+				chunk_list = chunk_list->next;
+			}
+			chunk_list->points[chunk_list->size] = voxel;
+			chunk_list->size++;
+		}
+	};
+
+	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+		std::for_each(std::execution::par, all_nodes.begin(), all_nodes.end(), [&](OctreeNode* node){
+			insertPoints(node, points);
+			insertPoints(node, spilled_points);
+			insertVoxels(node);
+		});
+	} else {
+		std::for_each(all_nodes.begin(), all_nodes.end(), [&](OctreeNode* node){
+			insertPoints(node, points);
+			insertPoints(node, spilled_points);
+			insertVoxels(node);
 		});
 	}
 }

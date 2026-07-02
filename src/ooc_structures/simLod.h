@@ -62,3 +62,10 @@ void simLodInsertion(
     std::shared_ptr<vector<Point>>& backlog_voxels,
     std::shared_ptr<vector<OctreeNode*>>& backlog_voxels_nodes
 );
+void simLodInsertionV2(
+    OctreeNode* main_root, 
+    std::shared_ptr<vector<Point>>& points,
+    std::shared_ptr<vector<Point>>& spilled_points,
+    std::shared_ptr<vector<Point>>& backlog_voxels,
+    std::shared_ptr<vector<OctreeNode*>>& backlog_voxels_nodes
+);
