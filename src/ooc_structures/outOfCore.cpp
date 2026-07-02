@@ -110,71 +110,41 @@ OctreeNode* CPUFallbackCache::Entry::toLeafNode() const {
 }
 
 CPUFallbackCache::CPUFallbackCache(uint32_t cache_size): CACHE_SIZE(cache_size){
-    cache = std::vector<std::shared_ptr<Entry>>(cache_size, nullptr);
 }
 
 std::shared_ptr<CPUFallbackCache::Entry> CPUFallbackCache::add(const std::shared_ptr<Entry>& new_entry){
-    bool already_in_cache = false;
+    auto it = cache_map.find(new_entry->serializable_node.aabb);
 
-    // Reset every counters if needed
-    if(counter == UINT64_MAX){
-        println("Cache counter reseting");
-        for(uint32_t cache_id = 0; cache_id < CACHE_SIZE; cache_id++){
-            if(cache[cache_id]){
-                std::shared_ptr<Entry>& old_entry = cache[cache_id];
-                old_entry->cache_counter = 0;
-                if(old_entry->serializable_node.aabb == new_entry->serializable_node.aabb){
-                    new_entry->cache_counter = 1;
-                    cache[cache_id] = new_entry;
-                    already_in_cache = true;
-                }
-            }
-        }
-        counter = 0;
-    }
-    counter++;
-    if(already_in_cache){return nullptr;}
-
-    // Check if already in cache
-    uint32_t new_id = 0;
-    uint64_t min_counter = UINT64_MAX;
-    for(uint32_t cache_id = 0; cache_id < CACHE_SIZE; cache_id++){
-        if(cache[cache_id]){
-            std::shared_ptr<Entry>& old_entry = cache[cache_id];
-
-            // Check if already in cache
-            if(old_entry->serializable_node.aabb == new_entry->serializable_node.aabb){
-                new_entry->cache_counter = counter;
-                cache[cache_id] = new_entry;
-                return nullptr;
-            }
-
-            // Check if smallest counter
-            if(old_entry->cache_counter < min_counter){
-                min_counter = old_entry->cache_counter;
-                new_id = cache_id;
-            }
-        } else {
-            // Found empty space
-            cache[cache_id] = new_entry;
-            cache_map[new_entry->serializable_node.aabb] = cache_id;
-            return nullptr;
-        }
+    // If the AABB was already in cache, remove its old version from the list
+    if(it != cache_map.end()){
+        cache.erase(it->second);
+        cache_map.erase(it);
     }
 
-    // If not in cache, create new entry
-    const std::shared_ptr<Entry> old_entry = cache[new_id];
-    cache[new_id] = new_entry;
-    cache_map[new_entry->serializable_node.aabb] = new_id;
-    cache_map.erase(old_entry->serializable_node.aabb);
+    std::shared_ptr<Entry> old_entry = nullptr;
+
+    // If the cache is full, remove the last node
+    if(cache_map.size() > CACHE_SIZE){
+        old_entry = cache.back();
+        cache.pop_back();
+        cache_map.erase(old_entry->serializable_node.aabb);
+    }
+
+    // Insert the new node at the front of the list
+    cache.push_front(new_entry);
+    cache_map[new_entry->serializable_node.aabb] = cache.begin();
 
     return old_entry;
 }
 
 std::shared_ptr<CPUFallbackCache::Entry> CPUFallbackCache::get(const AABB& aabb) {
-    if(cache_map.contains(aabb)){
-        return cache[cache_map[aabb]];
+    auto it = cache_map.find(aabb);
+
+    if(it != cache_map.end()){
+        std::shared_ptr<CPUFallbackCache::Entry> output = *it->second;
+        return output;
     }
+
     return nullptr;
 }
 

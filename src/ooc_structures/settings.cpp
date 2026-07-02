@@ -17,40 +17,6 @@ T init_field(const std::string& toml_entry, const T default_value) {
     return toml::find_or<T>(SETTINGS_TOML_DATA, toml_entry, default_value);
 }
 
-///////////////////////////////////////////////////////////////////////////////
-///////////////////////// STATIC ELEMENTS DECLARATION /////////////////////////
-///////////////////////////////////////////////////////////////////////////////
-
-bool OocSimLodSettings::IS_RUNNING_IN_PARALLEL;
-uint32_t OocSimLodSettings::NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE;
-bool OocSimLodSettings::MEASURE_TIMINGS;
-
-uint32_t OocSimLodSettings::BATCHES_LIST_SIZE;
-uint32_t OocSimLodSettings::MAX_POINTS_PER_BATCHES;
-uint32_t OocSimLodSettings::MIN_BATCHES_PER_LOAD;
-uint32_t OocSimLodSettings::MAX_BATCHES_PER_LOAD;
-uint32_t OocSimLodSettings::MIN_BATCHES_PER_GPU_LOAD;
-uint32_t OocSimLodSettings::MAX_BATCHES_PER_GPU_LOAD;
-uint32_t OocSimLodSettings::MIN_BATCHES_PER_OCTREE_UPDATE;
-uint32_t OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE;
-uint32_t OocSimLodSettings::MAX_ATTEMPTS_BEFORE_IGNORING_MIN_VARIABLES;
-
-uint32_t OocSimLodSettings::MAX_POINTS_PER_LEAF;
-uint32_t OocSimLodSettings::LRU_UPDATES_CACHE_SIZE;
-uint32_t OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE;
-uint32_t OocSimLodSettings::LRU_CPU_CACHE_SIZE;
-
-bool OocSimLodSettings::SHOW_BOUNDING_BOXES_AT_STARTUP;
-bool OocSimLodSettings::BRUTE_FORCE_RENDERING_AT_STARTUP;
-int32_t OocSimLodSettings::DEBUG_LOD_TO_RENDER_AT_STARTUP;
-int32_t OocSimLodSettings::VOXELS_POINTS_PER_AXIS_AT_STARTUP;
-float OocSimLodSettings::MIN_PIXEL_SPAN_AT_STARTUP;
-bool OocSimLodSettings::USE_VOXELS_DEBUG_COLOR_AT_STARTUP;
-bool OocSimLodSettings::USE_AUTO_FREE_OLD_OCTREE_ON_GPU_AT_STARTUP;
-bool OocSimLodSettings::DIFFERENTIATE_VISIBLE_NODES_AABB_AT_STARTUP;
-
-
-
 
 
 /// Initialises the settings
@@ -59,6 +25,7 @@ void OocSimLodSettings::init(){
     IS_RUNNING_IN_PARALLEL = init_field<bool>("IS_RUNNING_IN_PARALLEL", false);
     NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE = init_field<uint32_t>("NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE", 60);
     MEASURE_TIMINGS = init_field<bool>("MEASURE_TIMINGS", false);
+    PER_NODE_KERNEL_BLOCK_SIZE = init_field<uint32_t>("PER_NODE_KERNEL_BLOCK_SIZE", 256);
 
     /// Batch sizes
     BATCHES_LIST_SIZE = init_field<uint32_t>("BATCHES_LIST_SIZE", 1'024);
@@ -109,13 +76,13 @@ void OocSimLodSettings::display(){
     println("    - TEMPORARY_NODE_STORAGE_DIRECTORY: {}", TEMPORARY_NODE_STORAGE_DIRECTORY);
     println("    - NB_POINTS_PER_CHUNK: {}", NB_POINTS_PER_CHUNK);
     println("    - GRID_SIZE_PER_DIMENSION: {}", GRID_SIZE_PER_DIMENSION);
-    println("    - PER_NODE_KERNEL_BLOCK_SIZE: {}", PER_NODE_KERNEL_BLOCK_SIZE);
 
     println("");
     println("Miscellaneous:");
     println("    - IS_RUNNING_IN_PARALLEL: {}", IS_RUNNING_IN_PARALLEL);
     println("    - NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE: {}", NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE);
     println("    - MEASURE_TIMINGS: {}", MEASURE_TIMINGS);
+    println("    - PER_NODE_KERNEL_BLOCK_SIZE: {}", PER_NODE_KERNEL_BLOCK_SIZE);
 
     println("");
     println("Batch sizes:");

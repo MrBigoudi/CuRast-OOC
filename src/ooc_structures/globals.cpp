@@ -725,75 +725,36 @@ std::unordered_set<AABB, AABB::Hash> LRUCache::stored_set = {};
 std::mutex LRUCache::caches_sync_mtx;
 
 std::optional<AABB> LRUCache::add(const AABB& aabb){
-    bool already_in_cache = false;
+    auto it = cache_map.find(aabb);
 
-    // Reset every counters if needed
-    if(counter == UINT64_MAX){
-        println("Cache counter reseting");
-        for(uint32_t cache_id = 0; cache_id < CACHE_SIZE; cache_id++){
-            if(cache[cache_id]){
-                CacheEntry& entry = cache[cache_id].value();
-                entry.first = 0;
-                if(entry.second == aabb){
-                    entry.first = 1;
-                    already_in_cache = true;
-                }
-            }
-        }
-        counter = 0;
-    }
-    counter++;
-    if(already_in_cache){return nullopt;}
-
-    // Check if already in cache
-    uint32_t new_id = 0;
-    uint64_t min_counter = UINT64_MAX;
-    for(uint32_t cache_id = 0; cache_id < CACHE_SIZE; cache_id++){
-        if(cache[cache_id]){
-            CacheEntry& entry = cache[cache_id].value();
-
-            // Check if already in cache
-            if(entry.second == aabb){
-                entry.first = counter;
-                return nullopt;
-            }
-
-            // Check if smallest counter
-            if(entry.first < min_counter){
-                min_counter = entry.first;
-                new_id = cache_id;
-            }
-        } else {
-            // Found empty space
-            cache[cache_id] = {counter, aabb};
-            cache_map[aabb] = cache_id;
-            return nullopt;
-        }
+    // If the AABB was already in cache, remove its old version from the list
+    if(it != cache_map.end()){
+        cache.erase(it->second);
+        cache_map.erase(it);
     }
 
-    // If not in cache, create new entry
-    const AABB old_entry = cache[new_id]->second;
-    cache[new_id] = {counter, aabb};
-    cache_map[aabb] = new_id;
-    cache_map.erase(old_entry);
+    std::optional<AABB> old_aabb = nullopt;
 
-    return std::optional<AABB>(old_entry);
-}
+    // If the cache is full, remove the last node
+    if(cache_map.size() > CACHE_SIZE){
+        old_aabb = cache.back();
+        cache.pop_back();
+        cache_map.erase(old_aabb.value());
+    }
 
-std::optional<uint32_t> LRUCache::getIndex(const AABB& aabb) {
-    return cache_map.contains(aabb) ? std::optional<uint32_t>(cache_map.at(aabb)) : nullopt;
+    // Insert the new node at the front of the list
+    cache.push_front(aabb);
+    cache_map[aabb] = cache.begin();
+
+    return old_aabb;
 }
 
 bool LRUCache::contains(const AABB& aabb ) {
-    return getIndex(aabb).has_value();
+    return cache_map.contains(aabb);
 }
 
 uint32_t LRUCache::getSize() const {
-    uint32_t nb_elements = 0;
-    for(auto& entry : cache){
-        nb_elements += uint32_t(entry.has_value());
-    }
-    return nb_elements;
+    return cache_map.size();
 }
 
 
@@ -802,20 +763,18 @@ void LRUCache::display() {
     println("////////////////////////////////////////////////{}", pad);
 	println("////////////////////// {} //////////////////////", name);
 	println("////////////////////////////////////////////////{}\n", pad);
-	for(const std::optional<CacheEntry>& entry : cache){
-        if(entry.has_value()){
-            std::string output = format("mins = ({}, {}, {}), maxs = ({}, {}, {})",
-                entry->second.mins.x, 
-                entry->second.mins.y, 
-                entry->second.mins.z, 
-                entry->second.maxs.x, 
-                entry->second.maxs.y, 
-                entry->second.maxs.z
-            );
-            println("- [ {} ]: {}", entry->first, output);
-        } else {
-            // println("- [ null ]");
-        }
+    uint32_t index = 0;
+	for(const AABB& aabb : cache){
+        std::string output = format("mins = ({}, {}, {}), maxs = ({}, {}, {})",
+            aabb.mins.x, 
+            aabb.mins.y, 
+            aabb.mins.z, 
+            aabb.maxs.x, 
+            aabb.maxs.y, 
+            aabb.maxs.z
+        );
+        println("- [ {} ]: {}", index, output);
+        index++;
     }
 	println("\n////////////////////////////////////////////////{}", pad);
     println("////////////////////////////////////////////////{}", pad);

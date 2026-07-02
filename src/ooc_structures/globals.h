@@ -324,33 +324,29 @@ void displayBuffers();
 /////////////////////////// LRU CACHING SHENANIGANS ///////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
 
-typedef std::pair<uint64_t, AABB> CacheEntry;
+#include <bits/stdc++.h>
 
 /// The LRU caches for the nodes
+/// https://www.geeksforgeeks.org/dsa/lru-cache-implementation-using-double-linked-lists/
 struct LRUCache {
 	static std::mutex stored_set_mtx;
 	static std::unordered_set<AABB, AABB::Hash> stored_set;
 	static std::mutex caches_sync_mtx;
 
 	const uint32_t CACHE_SIZE;
-	uint64_t counter = 0;
-	std::vector<std::optional<CacheEntry>> cache = {};
-	std::unordered_map<AABB, uint32_t, AABB::Hash> cache_map = {};
+	std::list<AABB> cache = {};
+	std::unordered_map<AABB, std::list<AABB>::iterator, AABB::Hash> cache_map = {};
 	std::string name = "";
 
 	LRUCache(const std::string& name, uint32_t cache_size)
-		: name(name), CACHE_SIZE(cache_size){
-		cache = std::vector<std::optional<CacheEntry>>(cache_size, nullopt);
-	}
+		: name(name), CACHE_SIZE(cache_size){}
 
-	LRUCache(const LRUCache& cpy): LRUCache(cpy.name, cpy.CACHE_SIZE){}
+	// LRUCache(const LRUCache& cpy): LRUCache(cpy.name, cpy.CACHE_SIZE){}
 
 
 	/// Add a node to the cache and return the id of a node if it has been removed from the cache
 	/// The id of a node is it's AABB
 	std::optional<AABB> add(const AABB& aabb);
-	/// Gets the cache index of a node
-	std::optional<uint32_t> getIndex(const AABB& aabb);
 	/// Check if a node is already in cache
 	bool contains(const AABB& aabb);
 	/// Display the LRU cache

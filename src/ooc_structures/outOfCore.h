@@ -4,6 +4,7 @@
 #include "globals.h"
 
 #include <array>
+#include <bits/stdc++.h>
 
 ///////////////////////////////////////////////////////////////////////////////
 //////////////////////////// FORWARD DECLARATION //////////////////////////////
@@ -59,13 +60,13 @@ struct OctreeNodeSerializable {
 
 
 /// The LRU cache for the CPU fallback (before storing on disk)
+/// https://www.geeksforgeeks.org/dsa/lru-cache-implementation-using-double-linked-lists/
 struct CPUFallbackCache {
 	/// A cache entry
 	struct Entry {
         OctreeNodeSerializable serializable_node;
         std::optional<ChunkSerializable> serializable_points = nullopt;
         std::optional<ChunkSerializable> serializable_voxels = nullopt;
-        uint32_t cache_counter = 0;
 
 		/// A constructor from an existing node
 		Entry(const OctreeNode* node);
@@ -79,12 +80,9 @@ struct CPUFallbackCache {
     /// The size of the cache
 	const uint32_t CACHE_SIZE;
 
-    /// The global counter for cache update
-    uint64_t counter = 0;
-
     /// The global cache
-    std::vector<std::shared_ptr<Entry>> cache = {};
-	std::unordered_map<AABB, uint32_t, AABB::Hash> cache_map = {};
+    std::list<std::shared_ptr<Entry>> cache = {};
+	std::unordered_map<AABB, std::list<std::shared_ptr<Entry>>::iterator, AABB::Hash> cache_map = {};
 
     /// Creates a cache given its size
     CPUFallbackCache(uint32_t cache_size);

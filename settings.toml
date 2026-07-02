@@ -17,6 +17,12 @@ NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE = 200
 MEASURE_TIMINGS = true
 # MEASURE_TIMINGS = false
 
+### The number of threads per block
+### Each node will be given an entire block of thread to render all of its points
+# PER_NODE_KERNEL_BLOCK_SIZE = 1
+PER_NODE_KERNEL_BLOCK_SIZE = 256
+# PER_NODE_KERNEL_BLOCK_SIZE = 512
+
 
 #########################################################################
 ############################## BATCH SIZES ##############################
