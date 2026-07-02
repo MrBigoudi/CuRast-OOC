@@ -243,6 +243,52 @@ void updateNodePosition(NodePosition& position){
 }
 
 
+uint32_t OccupancyGrid::getNbFilledEntries() const {
+    uint32_t cpt = 0;
+    for(uint32_t i=0; i<OocSimLodSettings::GRID_SIZE / 32; i++){
+        for(uint32_t j=0; j<32; j++){
+            if(values[i] & (1u << j)){
+                cpt++;
+            }
+        }
+    }
+    return cpt;
+}
+/// Return a pair (word_index, bit_index)
+OccupancyGrid::GridIndex OccupancyGrid::getCellIndices(const AABB& aabb, const Point& point) {
+    vec3 normalized_coordinates = aabb.getPointNormalizedCoordinates(point.position);
+    uint32_t grid_x = clamp(
+        uint32_t(floor(OocSimLodSettings::GRID_SIZE_PER_DIMENSION * normalized_coordinates.x)), 
+        0u, 
+        OocSimLodSettings::GRID_SIZE_PER_DIMENSION - 1u
+    );
+    uint32_t grid_y = clamp(
+        uint32_t(floor(OocSimLodSettings::GRID_SIZE_PER_DIMENSION * normalized_coordinates.y)), 
+        0u, 
+        OocSimLodSettings::GRID_SIZE_PER_DIMENSION - 1u
+    );
+    uint32_t grid_z = clamp(
+        uint32_t(floor(OocSimLodSettings::GRID_SIZE_PER_DIMENSION * normalized_coordinates.z)), 
+        0u, 
+        OocSimLodSettings::GRID_SIZE_PER_DIMENSION - 1u
+    );
+    uint32_t index = grid_x + OocSimLodSettings::GRID_SIZE_PER_DIMENSION * (grid_y + OocSimLodSettings::GRID_SIZE_PER_DIMENSION * grid_z);
+    uint32_t word_index = index >> 5u;
+    uint32_t bit_index = index & 31u;
+    return GridIndex(word_index, bit_index, glm::uvec3(grid_x, grid_y, grid_z));
+}
+bool OccupancyGrid::isCellOcupied(const GridIndex& index) const {
+    return (values[index.word] & (1u << index.bit)) != 0;
+}
+void OccupancyGrid::markCellAsFilled(const GridIndex& index){
+    values[index.word] |= (1u << index.bit);
+}
+vec3 OccupancyGrid::getCellCentroid(const AABB& aabb, const GridIndex& index) {
+    vec3 world_grid_size = aabb.getSize() / float(OocSimLodSettings::GRID_SIZE_PER_DIMENSION);
+	return aabb.mins + world_grid_size * vec3(index.grid.x, index.grid.y, index.grid.z) + 0.5f * world_grid_size;
+}
+
+
 uint32_t OctreeNode::getNbPoints() const {
     uint32_t res = 0;
     Chunk* point_chunk = points;
@@ -280,6 +326,7 @@ uint32_t OctreeNode::getDepth() const {
 
     return rec(this);
 }
+
 
 void OctreeNode::display(uint32_t id, uint32_t level, bool node_only) const {
     println("level: {}, id: {}, counter: {}, "
@@ -613,6 +660,56 @@ std::vector<std::pair<OctreeNode*, uint8_t>> GlobalVariables::getAllPartialLeave
         }
 
         if(!is_complete){
+            res.push_back({cur_node, level});
+        }
+    };
+    
+    recursion(root, initial_level);
+    return res;
+}
+
+std::vector<OctreeNode*> GlobalVariables::getAllPartialNodes(OctreeNode* root){
+    uint32_t guessed_nb_nodes = OocSimLodSettings::LRU_UPDATES_CACHE_SIZE + OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE;
+    std::vector<OctreeNode*> res = {};
+    res.reserve(guessed_nb_nodes);
+
+    std::function<void(OctreeNode*)> recursion = [&](OctreeNode* cur_node){
+        if(!cur_node){return;}
+
+        bool is_not_empty = false;
+        for(uint32_t child = 0; child < 8; child++){
+            if(cur_node->children[child]){
+                is_not_empty = true;
+                recursion(cur_node->children[child]);
+            }
+        }
+
+        if(is_not_empty){
+            res.push_back(cur_node);
+        }
+    };
+    
+    recursion(root);
+    return res;
+}
+
+std::vector<std::pair<OctreeNode*, uint8_t>> GlobalVariables::getAllPartialNodesWithLevels(OctreeNode* root, uint8_t initial_level){
+    uint32_t guessed_nb_nodes = OocSimLodSettings::LRU_UPDATES_CACHE_SIZE + OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE;
+    std::vector<std::pair<OctreeNode*, uint8_t>> res = {};
+    res.reserve(guessed_nb_nodes);
+
+    std::function<void(OctreeNode*, uint8_t)> recursion = [&](OctreeNode* cur_node, uint8_t level){
+        if(!cur_node){return;}
+
+        bool is_not_empty = false;
+        for(uint32_t child = 0; child < 8; child++){
+            if(cur_node->children[child]){
+                is_not_empty = true;
+                recursion(cur_node->children[child], level + 1);
+            }
+        }
+
+        if(is_not_empty){
             res.push_back({cur_node, level});
         }
     };

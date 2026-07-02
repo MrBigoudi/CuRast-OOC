@@ -53,7 +53,8 @@ void simLodUpdate(OctreeNode* main_root, std::shared_ptr<vector<Point>>& points)
 
 
 	timing = Timing::addTiming("simlod voxel sampling", true, 1);
-	simLodVoxelSampling(main_root, points, GlobalVariables::spilledPoints, GlobalVariables::backlogVoxels, GlobalVariables::backlogVoxelsNodes);
+	// simLodVoxelSampling(main_root, points, GlobalVariables::spilledPoints, GlobalVariables::backlogVoxels, GlobalVariables::backlogVoxelsNodes);
+	simLodVoxelSamplingV2(main_root, points, GlobalVariables::spilledPoints, GlobalVariables::backlogVoxels, GlobalVariables::backlogVoxelsNodes);
 	timing->stop_clock();
 
 	// println("//////////////////////////////////////////////////");
@@ -297,33 +298,14 @@ void simLodVoxelSampling(
 			if(!node->children[child_index]){return;}
 
 			// Sample voxel occupancy grid at this location if the node is inner for this point
-			vec3 normalized_coordinates = node->aabb.getPointNormalizedCoordinates(point.position);
-			uint32_t grid_x = clamp(
-				uint32_t(floor(OocSimLodSettings::GRID_SIZE_PER_DIMENSION * normalized_coordinates.x)), 
-				0u, 
-				OocSimLodSettings::GRID_SIZE_PER_DIMENSION - 1u
-			);
-			uint32_t grid_y = clamp(
-				uint32_t(floor(OocSimLodSettings::GRID_SIZE_PER_DIMENSION * normalized_coordinates.y)), 
-				0u, 
-				OocSimLodSettings::GRID_SIZE_PER_DIMENSION - 1u
-			);
-			uint32_t grid_z = clamp(
-				uint32_t(floor(OocSimLodSettings::GRID_SIZE_PER_DIMENSION * normalized_coordinates.z)), 
-				0u, 
-				OocSimLodSettings::GRID_SIZE_PER_DIMENSION - 1u
-			);
-			uint32_t index = grid_x + OocSimLodSettings::GRID_SIZE_PER_DIMENSION * (grid_y + OocSimLodSettings::GRID_SIZE_PER_DIMENSION * grid_z);
-			uint32_t word_index = index >> 5u;
-			uint32_t bit_index = index & 31u;
-			bool is_cell_occupied = (node->occupancy->values[word_index] & (1u << bit_index)) != 0;
+			OccupancyGrid::GridIndex index = OccupancyGrid::getCellIndices(node->aabb, point);
+			bool is_cell_occupied = node->occupancy->isCellOcupied(index);
 
 			if(!is_cell_occupied){
 				// Fill up occupancy grid
-				node->occupancy->values[word_index] |= (1u << bit_index);
+				node->occupancy->markCellAsFilled(index);
 				// Create corresponding voxel using this point
-				vec3 world_grid_size = node->aabb.getSize() / float(OocSimLodSettings::GRID_SIZE_PER_DIMENSION);
-				vec3 voxel_centroid = node->aabb.mins + world_grid_size * vec3(grid_x, grid_y, grid_z) + 0.5f*world_grid_size;
+				vec3 voxel_centroid = OccupancyGrid::getCellCentroid(node->aabb, index);
 				Point new_voxel = {};
 				new_voxel.position = voxel_centroid;
 				new_voxel.color[0] = point.color[0];
@@ -572,12 +554,12 @@ void simLodLoadV2(
 		}
 	};
 
-	if(!OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-		std::for_each(all_nodes.begin(), all_nodes.end(), [&](OctreeNode* node){
+	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+		std::for_each(std::execution::par, all_nodes.begin(), all_nodes.end(), [&](OctreeNode* node){
 			tryInsertPoints(node, points);
 		});
 	} else {
-		std::for_each(std::execution::par, all_nodes.begin(), all_nodes.end(), [&](OctreeNode* node){
+		std::for_each(all_nodes.begin(), all_nodes.end(), [&](OctreeNode* node){
 			tryInsertPoints(node, points);
 		});
 	}
@@ -644,6 +626,93 @@ void simLodCountV2(
 			countPoints(index, spilled_points);
 			if(already_spilled[index]){
 				spilling_nodes->push_back(all_nodes[index].first);
+			}
+		});
+	}
+}
+
+
+void simLodVoxelSamplingV2(
+    OctreeNode* main_root,
+    std::shared_ptr<vector<Point>>& points,
+    std::shared_ptr<vector<Point>>& spilled_points,
+    std::shared_ptr<vector<Point>>& backlog_voxels,
+    std::shared_ptr<vector<OctreeNode*>>& backlog_voxels_nodes
+){
+	std::vector<OctreeNode*> all_nodes = GlobalVariables::getAllNodes(main_root);
+
+	// Creates all the new voxels
+	auto sampleVoxels = [&](OctreeNode* cur_node, std::shared_ptr<vector<Point>>& cur_points) -> std::vector<Point> {
+		// Skip entirely if the node is a full leaf
+		if(!cur_node->occupancy){return {};}
+
+		std::vector<Point> new_voxels = {};
+		new_voxels.reserve(cur_points->size());
+		for(const Point& point : *cur_points){
+			// Skip if the node does not contain this point
+			if(!cur_node->aabb.contains(point.position)){continue;}
+
+			// Skip if the node is a leaf for this point
+			NodePosition child_index = cur_node->aabb.getNextChildIndex(point.position);
+			if(!cur_node->children[child_index]){continue;}
+
+			// Else sample the voxel grid at this location
+			OccupancyGrid::GridIndex index = OccupancyGrid::getCellIndices(cur_node->aabb, point);
+			bool is_cell_occupied = cur_node->occupancy->isCellOcupied(index);
+
+			// Create a new voxel if the grid index was not flagged
+			if(!is_cell_occupied){
+				cur_node->occupancy->markCellAsFilled(index);
+				vec3 voxel_centroid = OccupancyGrid::getCellCentroid(cur_node->aabb, index);
+				Point new_voxel = {};
+				new_voxel.position = voxel_centroid;
+				new_voxel.color[0] = point.color[0];
+				new_voxel.color[1] = point.color[1];
+				new_voxel.color[2] = point.color[2];
+
+				new_voxels.push_back(new_voxel);
+			}
+		}
+		return new_voxels;
+	};
+
+	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+		// Create new voxels in parallel
+		std::unordered_map<OctreeNode*, std::vector<std::vector<Point>>> map = {};
+		std::for_each(std::execution::par, all_nodes.begin(), all_nodes.end(), [&](OctreeNode* node){
+			std::vector<Point> new_voxels = sampleVoxels(node, points);
+			std::vector<Point> new_voxels_spilled = sampleVoxels(node, spilled_points);
+			if(new_voxels.empty() && new_voxels_spilled.empty()){return;}
+			if(new_voxels.empty()){
+				map[node] = {new_voxels_spilled};
+				return;
+			}
+			if(new_voxels_spilled.empty()){
+				map[node] = {new_voxels};
+				return;
+			}
+			map[node] = {new_voxels, new_voxels_spilled};
+		});
+		// Sequentially add all the voxels in the backlog buffer
+		for(auto& [node, lists] : map){
+			for(const std::vector<Point>& new_voxels : lists){
+				for(const Point& voxel : new_voxels){
+					backlog_voxels->push_back(voxel);
+					backlog_voxels_nodes->push_back(node);
+				}
+			}
+		}
+	} else {
+		std::for_each(all_nodes.begin(), all_nodes.end(), [&](OctreeNode* node){
+			std::vector<Point> new_voxels = sampleVoxels(node, points);
+			for(const Point& voxel : new_voxels){
+				backlog_voxels->push_back(voxel);
+				backlog_voxels_nodes->push_back(node);
+			}
+			std::vector<Point> new_voxels_spilled = sampleVoxels(node, spilled_points);
+			for(const Point& voxel : new_voxels_spilled){
+				backlog_voxels->push_back(voxel);
+				backlog_voxels_nodes->push_back(node);
 			}
 		});
 	}

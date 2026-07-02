@@ -99,33 +99,14 @@ OctreeNode* uptadeOctree(OctreeNode* main_root, uint32_t nb_new_levels){
 					const Point& point = child_chunk_list->points[j];
 
 					// Sample voxel occupancy grid at this location
-					vec3 normalized_coordinates = cur_aabb.getPointNormalizedCoordinates(point.position);
-					uint32_t grid_x = clamp(
-						uint32_t(floor(OocSimLodSettings::GRID_SIZE_PER_DIMENSION * normalized_coordinates.x)), 
-						0u, 
-						OocSimLodSettings::GRID_SIZE_PER_DIMENSION - 1u
-					);
-					uint32_t grid_y = clamp(
-						uint32_t(floor(OocSimLodSettings::GRID_SIZE_PER_DIMENSION * normalized_coordinates.y)), 
-						0u, 
-						OocSimLodSettings::GRID_SIZE_PER_DIMENSION - 1u
-					);
-					uint32_t grid_z = clamp(
-						uint32_t(floor(OocSimLodSettings::GRID_SIZE_PER_DIMENSION * normalized_coordinates.z)), 
-						0u, 
-						OocSimLodSettings::GRID_SIZE_PER_DIMENSION - 1u
-					);
-					uint32_t index = grid_x + OocSimLodSettings::GRID_SIZE_PER_DIMENSION * (grid_y + OocSimLodSettings::GRID_SIZE_PER_DIMENSION * grid_z);
-					uint32_t word_index = index >> 5u;
-					uint32_t bit_index = index & 31u;
-					bool is_cell_occupied = (new_parent->occupancy->values[word_index] & (1u << bit_index)) != 0;
+					OccupancyGrid::GridIndex index = OccupancyGrid::getCellIndices(cur_aabb, point);
+					bool is_cell_occupied = new_parent->occupancy->isCellOcupied(index);
 
 					// Fill up occupancy grid
 					if(!is_cell_occupied){
-						new_parent->occupancy->values[word_index] |= (1u << bit_index);
+						new_parent->occupancy->markCellAsFilled(index);
 						// Create corresponding voxel using this point
-						vec3 world_grid_size = cur_aabb.getSize() / float(OocSimLodSettings::GRID_SIZE_PER_DIMENSION);
-						vec3 voxel_centroid = cur_aabb.mins + world_grid_size * vec3(grid_x, grid_y, grid_z) + 0.5f*world_grid_size;
+						vec3 voxel_centroid = OccupancyGrid::getCellCentroid(cur_aabb, index);
 						Point new_voxel = {};
 						new_voxel.position = voxel_centroid;
 						new_voxel.color[0] = point.color[0];

@@ -156,17 +156,19 @@ struct OccupancyGrid {
 		return true;
 	}
 
-	uint32_t getNbFilledEntries() const {
-		uint32_t cpt = 0;
-		for(uint32_t i=0; i<OocSimLodSettings::GRID_SIZE / 32; i++){
-			for(uint32_t j=0; j<32; j++){
-				if(values[i] & (1u << j)){
-					cpt++;
-				}
-			}
-		}
-		return cpt;
-	}
+	uint32_t getNbFilledEntries() const;
+
+	/// Return a pair (word_index, bit_index)
+	struct GridIndex {
+		uint32_t word;
+		uint32_t bit;
+		glm::uvec3 grid;
+		GridIndex(uint32_t word, uint32_t bit, glm::uvec3 grid):word(word), bit(bit), grid(grid){}
+	};
+	static GridIndex getCellIndices(const AABB& aabb, const Point& point);
+	bool isCellOcupied(const GridIndex& index) const;
+	void markCellAsFilled(const GridIndex& index);
+	static vec3 getCellCentroid(const AABB& aabb, const GridIndex& index);
 };
 
 /// A chunk linked list in a node
@@ -507,8 +509,16 @@ struct GlobalVariables {
 	static void init(CuRast* instance, CUcontext* context);
 	static void destroy(CuRast* instance, CUcontext* context);
 
+	/// Get all the nodes in an octree
 	static std::vector<OctreeNode*> getAllNodes(OctreeNode* root);
+	/// Get all the nodes in an octree, and their level
 	static std::vector<std::pair<OctreeNode*, uint8_t>> getAllNodesWithLevel(OctreeNode* root, uint8_t initial_level = 0);
+	/// Get all the nodes in an octree that have one or more child missing
 	static std::vector<OctreeNode*> getAllPartialLeaves(OctreeNode* root);
+	/// Get all the nodes in an octree that have one or more child missing, and their level
 	static std::vector<std::pair<OctreeNode*, uint8_t>> getAllPartialLeavesWithLevels(OctreeNode* root, uint8_t initial_level = 0);
+	/// Get all the nodes in an octree that have at least one child
+	static std::vector<OctreeNode*> getAllPartialNodes(OctreeNode* root);
+	/// Get all the nodes in an octree that have at least one child, and their level
+	static std::vector<std::pair<OctreeNode*, uint8_t>> getAllPartialNodesWithLevels(OctreeNode* root, uint8_t initial_level = 0);
 };
