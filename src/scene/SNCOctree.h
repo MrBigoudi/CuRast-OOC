@@ -13,6 +13,7 @@ using glm::ivec2;
 struct SNCOctree : public SceneNode{
 	vector<CUdeviceptr> cptr_nodes;
 	CUdeviceptr nodes;
+	CUdeviceptr aabbs;
 
 	uint32_t max_lod_level = 0;
 
@@ -68,6 +69,7 @@ struct SNCOctree : public SceneNode{
 		return CFullOctree {
 			.world = transform_global,
         	.nodes = (COctreeNode**)nodes,
+			.aabbs = (CAABB*)aabbs,
         	.num_nodes = nb_nodes,
         	.max_lod_level = max_lod_level
 		};

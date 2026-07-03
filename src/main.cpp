@@ -619,149 +619,31 @@ int main(int argc, char** argv){
 			Runtime::debugValues["stage 2"] = format("{:.3f}", stage2_millies);
 			Runtime::debugValues["stage 3"] = format("{:.3f}", stage3_millies);
 
-			// TODO: to remove
-			{
-				static AABB test_stored_aabb = AABB();
-
-				// Testing stuff
-				if(CuRastSettings::storeOctree){
-					// mainOctree->display();
-					println("Start storing octree");
-					storeOctree(GlobalVariables::mainOctree.get());
-					test_stored_aabb = GlobalVariables::mainOctree->aabb;
-					println("Done storing octree");
-					CuRastSettings::storeOctree = false;
-				}
-				if(CuRastSettings::loadOctree){
-					println("Start loading octree");
-					OctreeNode* octree = loadOctree(test_stored_aabb);
-					println("Done loading octree");
-					CuRastSettings::loadOctree = false;
-					
-					if(*GlobalVariables::mainOctree == *octree){
-						println("loaded == original, serialisation / deserialisation worked");
-					} else {
-						println("ERROR: loaded != original, serialisation / deserialisation failed");
-					}
-
-					GlobalVariables::mainOctree = std::shared_ptr<OctreeNode>(octree);
-
-					cuCtxSetCurrent(context);
-					loadOctreeOnGPU(CuRast::instance, &context, true);
-				}
-			}
-
-			// // TODO: to remove
-			// {
-			// 	static OctreeNode* random_node = nullptr; 
-			// 	static uint32_t random_depth = 0;
-			// 	static std::vector<NodePosition> random_path = {};
-
-			// 	// Testing stuff
-			// 	if(CuRastSettings::storeOctree){
-			// 		println("Start getting random node");
-			// 		random_node = mainOctree.get();
-			// 		random_device rd;
-			// 		mt19937 gen(rd());
-			// 		uniform_int_distribution<> distrib(2, mainOctree->getDepth());
-			// 		random_depth = distrib(gen);
-			// 		random_path = {};
-
-			// 		for(uint32_t i=1; i<random_depth; i++){
-			// 			uniform_int_distribution<> child_distrib(0, 8);
-			// 			uint32_t random_child = child_distrib(gen);
-			// 			bool found = false;
-			// 			for(uint32_t j=0; j<8; j++){
-			// 				uint32_t cur_child = (random_child + j) % 8;
-			// 				if(random_node->children[cur_child]){
-			// 					random_path.push_back((NodePosition)cur_child);
-			// 					random_node = random_node->children[cur_child];
-			// 					found = true;
-			// 					break;
-			// 				}
-			// 			}
-			// 			if(!found){break;}
-			// 		}
-			// 		printf("Random path: ");
-			// 		for(uint32_t i=0; i<random_path.size(); i++){
-			// 			printf("%d, ", random_path[i]);
-			// 		}
-
-			// 		// mainOctree->display();
-			// 		println("Start storing octree");
-			// 		storeOctree(random_node, true);
-			// 		println("Done storing octree");
-			// 		CuRastSettings::storeOctree = false;
-			// 	}
-			// 	if(CuRastSettings::loadOctree && random_node){
-			// 		println("Start loading octree");
-			// 		OctreeNode* octree = loadOctree(*random_node->aabb, true);
-			// 		CuRastSettings::loadOctree = false;
-
-			// 		mainOctree->display();
-
-			// 		println("Loaded single node:");
-			// 		octree->display(random_path.back(), random_path.size(), true);
-
-			// 		random_node = mainOctree.get();
-			// 		for(uint32_t i=0; i<random_path.size()-1; i++){
-			// 			random_node = random_node->children[random_path[i]];
-			// 		}
-			// 		println("Loaded subtree:");
-			// 		for(uint32_t i=0; i<8; i++){
-			// 			// octree->children[i] = random_node->children[random_path.back()]->children[i];
-			// 			if(random_node->children[random_path.back()]->children[i]){
-			// 				const AABB& aabb = *random_node->children[random_path.back()]->children[i]->aabb;
-			// 				if(LRUCache::hasBeenStored(aabb)){
-			// 					octree->children[i] = loadOctree(aabb);
-			// 				} else {
-			// 					octree->children[i] = random_node->children[random_path.back()]->children[i];
-			// 				}
-			// 				octree->children[i]->display(i, random_path.size()+1);
-			// 			}
-			// 		}
-			// 		println("Done loading octree");
-
-			// 		if(*random_node->children[random_path.back()] == *octree){
-			// 			println("loaded == original, serialisation / deserialisation worked");
-			// 		} else {
-			// 			println("ERROR: loaded != original, serialisation / deserialisation failed");
-			// 		}
-			// 		random_node->children[random_path.back()] = octree;
-
-
-			// 		cuCtxSetCurrent(context);
-			// 		loadOctreeOnGPU(CuRast::instance, &context, true);
-			// 	}
-			// }
-
 			if(GlobalVariables::elapsedFrames > OocSimLodSettings::NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE){
 				GlobalVariables::elapsedFrames = 0;
-				updateVisibilityCache(VKRenderer::view.view, VKRenderer::view.proj);
-				loadOctreeOnGPU(CuRast::instance, &context);
+
+				std::shared_ptr<OctreeNode> octree_ref = nullptr;
+				std::shared_ptr<AABBRelationshipMap> relationship_map_ref = nullptr;
+				
+				if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+					std::lock_guard<std::mutex> lock_send(GlobalVariables::isUpdatingMtx);
+					octree_ref = GlobalVariables::mainOctree;
+					relationship_map_ref = GlobalVariables::aabbRelationshipMapCpy;
+				} else {
+					octree_ref = GlobalVariables::mainOctree;
+					relationship_map_ref = GlobalVariables::aabbRelationshipMapCpy;
+				}
+
+				Visibility::updateVisibilityCache(VKRenderer::view.view, VKRenderer::view.proj,
+					octree_ref, relationship_map_ref
+				);
+				loadOctreeOnGPU(CuRast::instance, &context,
+					octree_ref, relationship_map_ref
+				);
 			}
 
 			freeOctreesOnGPU(CuRast::instance);
 			GlobalVariables::elapsedFrames++;
-
-			// { // TODO: remove, just for debugging
-
-			// 	// https://forums.developer.nvidia.com/t/best-way-to-report-memory-consumption-in-cuda/21042
-			// 	static double freeDB = 0.;
-			// 	uint64_t free_byte, total_byte = 0;
-			// 	double free_db, total_db, used_db = 0.;
-
-			// 	CURuntime::assertCudaSuccess(cuMemGetInfo(&free_byte, &total_byte));
-			// 	free_db = (double)free_byte; total_db = (double)total_byte; used_db = total_db - free_db;
-			// 	free_db /= (1024 * 1024); total_db /= (1024 * 1024); used_db /= (1024 * 1024);
-			// 	// Only display if changes bigger than X Mb
-			// 	if(abs(freeDB - floor(free_db)) >= 10){
-			// 		println("GPU usage\n    Total: {:L} Mb\n    InUse: {:L} Mb\n    Available: {:L} Mb",
-			// 			total_db, used_db, free_db
-			// 		);
-			// 		freeDB = floor(free_db);
-			// 	}
-			// }
 		},
 		[&]() {
 			CuRast::instance->render();

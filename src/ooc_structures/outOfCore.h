@@ -34,28 +34,25 @@ struct ChunkSerializable {
 
 /// A serializable node
 struct OctreeNodeSerializable {
-    AABB aabb = {};
 	uint32_t counter = 0;
 	uint8_t children_ids = 0b00000000;
 	std::string points = "";
 	std::string voxels = "";
+    IdAABB aabb_index = {};
 
     friend CPUFallbackCache;
 
     OctreeNodeSerializable(){};
 
     /// Serializes all nodes, points, and voxels
-    static void serialize(const OctreeNode* node, bool node_only);
-
-    static OctreeNode* toOctreeNodes(
-        const AABB& root_aabb, bool node_only
-    );
+    static void serialize(const OctreeNode* node);
+    static OctreeNode* toOctreeNodes(const IdAABB& node_aabb_index);
 
     private:
         // helpers
         void serialize(const std::string& filepath) const;
         static OctreeNodeSerializable deserialize(const std::string& filepath);
-        OctreeNode* toLeafNode(const AABB& node_aabb) const;
+        OctreeNode* toLeafNode(const IdAABB& node_aabb_index) const;
 };
 
 
@@ -71,7 +68,7 @@ struct CPUFallbackCache {
 		/// A constructor from an existing node
 		Entry(const OctreeNode* node);
         /// A constructor which is deserialized from an aabb
-        Entry(const AABB& aabb);
+        Entry(const IdAABB& aabb_index);
 
 		/// Builds an octree node from an entry
 		OctreeNode* toLeafNode() const;
@@ -82,7 +79,7 @@ struct CPUFallbackCache {
 
     /// The global cache
     std::list<std::shared_ptr<Entry>> cache = {};
-	std::unordered_map<AABB, std::list<std::shared_ptr<Entry>>::iterator, AABB::Hash> cache_map = {};
+	std::unordered_map<IdAABB, std::list<std::shared_ptr<Entry>>::iterator> cache_map = {};
 
     /// Creates a cache given its size
     CPUFallbackCache(uint32_t cache_size);
@@ -93,7 +90,7 @@ struct CPUFallbackCache {
     std::shared_ptr<Entry> add(const std::shared_ptr<Entry>& new_entry);
 
     /// Get a node from the cache
-    std::shared_ptr<Entry> get(const AABB& aabb);
+    std::shared_ptr<Entry> get(const IdAABB& aabb_index);
 
 };
 
@@ -122,11 +119,11 @@ std::string getChunkFilePath(const AABB& aabb, bool is_voxel);
 ///////////////////////////////////////////////////////////////////////////////
 
 /// Store an octree node given it's AABB and the main octree
-void storeOctree(const OctreeNode* node, bool node_only = false);
+void storeOctree(const OctreeNode* node);
 
 /// Load an octree from a file
 /// Recursively loads all root node's children
-OctreeNode* loadOctree(const AABB& root_aabb, bool node_only = false);
+OctreeNode* loadOctree(const IdAABB& root_aabb_index);
 
 /// Add nodes to the updates cache after octree update
 void updateUpdatesCache(OctreeNode* root_octree);

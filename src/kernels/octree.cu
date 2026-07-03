@@ -441,6 +441,7 @@ uint32_t getNextChildIndex(const CAABB& aabb, const vec3& position) {
 __device__
 void drawAllVoxels(
     COctreeNode* node,
+    CAABB* aabbs,
 	RenderTarget target,
     mat4 world,
     uint32_t nb_points,
@@ -450,7 +451,7 @@ void drawAllVoxels(
 ){
     auto block = cg::this_thread_block();
     CChunk* cur_voxels = node->voxels;
-    const CAABB& aabb = node->aabb;
+    const CAABB& aabb = aabbs[node->aabb_index];
     vec3 voxel_size = (aabb.maxs - aabb.mins) / float(OocSimLodSettings::GRID_SIZE_PER_DIMENSION);
 
     float color_factor = float(node->level) / float(max(max_lod_level, 1));
@@ -494,7 +495,7 @@ void kernel_drawOctreeAABB(
 	if(index >= octree.num_nodes) return;
 
     COctreeNode* node = octree.nodes[index];
-    const CAABB& aabb = node->aabb;
+    const CAABB& aabb = octree.aabbs[node->aabb_index];
 
     // if(index == 0){
     //     printf("\n\n\n\n//////////////////////////////////////////////////\n");
@@ -537,7 +538,7 @@ void kernel_visibilityPass(
     if(node_index >= octree.num_nodes) return;
     
     COctreeNode* node = octree.nodes[node_index];
-    const CAABB& aabb = node->aabb;
+    const CAABB& aabb = octree.aabbs[node->aabb_index];
 
     // Frustum culling already done on CPU side
     if(!node->is_visible){return;}
@@ -546,7 +547,7 @@ void kernel_visibilityPass(
     uint32_t max_bound = 8;
     uint32_t nb_points = min(max_bound, octree.max_lod_level + 1 - node->level);
     drawAllVoxels(
-        node, target, 
+        node, octree.aabbs, target, 
         octree.world, nb_points,
         octree.max_lod_level, octree.use_voxels_debug_color,
         node->children_visibility ^ 0b11111111
@@ -612,7 +613,7 @@ void kernel_drawOctreeSmall(
     if(octree.debug_lod_to_render != -1){
         if(node->level == octree.debug_lod_to_render){
             drawAllVoxels(
-                node, target, 
+                node, octree.aabbs, target, 
                 octree.world, octree.voxels_nb_points_per_axis,
                 octree.max_lod_level, octree.use_voxels_debug_color,
                 0b11111111
@@ -624,7 +625,7 @@ void kernel_drawOctreeSmall(
         if(node->is_cut || is_minimal_draw){
             drawAllPoints(node, target, octree.world);
             drawAllVoxels(
-                node, target, 
+                node, octree.aabbs, target, 
                 octree.world, octree.voxels_nb_points_per_axis,
                 octree.max_lod_level, octree.use_voxels_debug_color,
                 0b11111111

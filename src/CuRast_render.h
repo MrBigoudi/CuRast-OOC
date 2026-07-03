@@ -127,6 +127,7 @@ void drawOctreeAABB(Scene* scene, View view, RenderTarget& target){
 	scene->forEach<SNCOctree>([&](SNCOctree* octree){
 		// Sanity check
 		if(!octree){return;}
+		if(!octree->isDoneLoadingToGpu()){return;}
 		CFullOctree cfo = octree->toFullOctree();
 		cfo.use_aabb_debug_color = CuRastSettings::showVisibleNodes;
 
@@ -141,6 +142,7 @@ void drawOctree(Scene* scene, View view, RenderTarget& target){
     scene->forEach<SNCOctree>([&](SNCOctree* octree){
 		// Sanity check
 		if(!octree){return;}
+		if(!octree->isDoneLoadingToGpu()){return;}
 		CFullOctree cfo = octree->toFullOctree();
 
 		cfo.debug_lod_to_render = CuRastSettings::debugLodToRender;
@@ -727,14 +729,18 @@ void CuRast::draw(Scene* scene, vector<View> views){
 			auto formatMemSize = [&](uint64_t size_bytes) -> std::string {
 				uint64_t nb_bytes = size_bytes;
 				uint64_t nb_tbs = uint64_t(floor(nb_bytes / 1'024 / 1'024 / 1'024 / 1'024));
+				nb_tbs = clamp(nb_tbs, uint64_t(0), uint64_t(999));
 				nb_bytes -= nb_tbs * 1'024 * 1'024 * 1'024 * 1'024;
 				uint64_t nb_gbs = uint64_t(floor(nb_bytes / 1'024 / 1'024 / 1'024));
+				nb_gbs = clamp(nb_gbs, uint64_t(0), uint64_t(999));
 				nb_bytes -= nb_gbs * 1'024 * 1'024 * 1'024;
 				uint64_t nb_mbs = uint64_t(floor(nb_bytes / 1'024 / 1'024));
+				nb_mbs = clamp(nb_mbs, uint64_t(0), uint64_t(999));
 				nb_bytes -= nb_mbs * 1'024 * 1'024;
 				uint64_t nb_kbs = uint64_t(floor(nb_bytes / 1'024));
+				nb_kbs = clamp(nb_kbs, uint64_t(0), uint64_t(999));
 				nb_bytes -= nb_kbs * 1'024;
-				clamp(nb_bytes, uint64_t(0), uint64_t(999));
+				nb_bytes = clamp(nb_bytes, uint64_t(0), uint64_t(999));
 
 				if(nb_tbs){return format("{:5} {:3L}T {:3L}G {:3L}M {:3L}k {:3L}b", "", nb_tbs, nb_gbs, nb_mbs, nb_kbs, nb_bytes);}
 				if(nb_gbs){return format("{:10} {:3L}G {:3L}M {:3L}k {:3L}b", "", nb_gbs, nb_mbs, nb_kbs, nb_bytes);}

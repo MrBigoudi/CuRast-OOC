@@ -162,9 +162,9 @@ void CuRast::makeToolbar(){
 				// ImGui::SetNextItemWidth(200.0f);
 				// ImGui::SliderInt("Max batch size", &CuRastSettings::maxBatchSize, 10'000, 1'000'000'000);
 
-				ImGui::Checkbox("Store octree on disk", &CuRastSettings::storeOctree);
-				ImGui::SameLine();
-				ImGui::Checkbox("Load octree from disk", &CuRastSettings::loadOctree);
+				// ImGui::Checkbox("Store octree on disk", &CuRastSettings::storeOctree);
+				// ImGui::SameLine();
+				// ImGui::Checkbox("Load octree from disk", &CuRastSettings::loadOctree);
 
 				ImGui::BeginDisabled(!CuRastSettings::showBoundingBoxes);
 					ImGui::Checkbox("Show visible nodes", &CuRastSettings::showVisibleNodes);

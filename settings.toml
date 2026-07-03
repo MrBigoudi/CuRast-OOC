@@ -97,6 +97,7 @@ LRU_CPU_CACHE_SIZE = 16_384 # ~8G (~500M / 1000 nodes)
 
 ### Display the bounding boxes 
 SHOW_BOUNDING_BOXES_AT_STARTUP = false
+# SHOW_BOUNDING_BOXES_AT_STARTUP = true
 ### Send points from batches to the GPU as well and display the complete point cloud
 BRUTE_FORCE_RENDERING_AT_STARTUP = false
 ### The lod to render, -1 for the dynamic selection
@@ -111,3 +112,4 @@ USE_VOXELS_DEBUG_COLOR_AT_STARTUP = false
 USE_AUTO_FREE_OLD_OCTREE_ON_GPU_AT_STARTUP = true
 ### Use a white color for the visible nodes' bounding boxes
 DIFFERENTIATE_VISIBLE_NODES_AABB_AT_STARTUP = false
+# DIFFERENTIATE_VISIBLE_NODES_AABB_AT_STARTUP = true

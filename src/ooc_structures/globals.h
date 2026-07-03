@@ -5,9 +5,7 @@
 #include <semaphore>
 
 #include <unordered_set>
-
-#define GLM_ENABLE_EXPERIMENTAL
-#include "glm/gtx/hash.hpp"
+#include <functional>
 
 #include "settings.h"
 
@@ -53,10 +51,13 @@ struct OccupancyGrid;
 struct CPUFallbackCache;
 
 
-
 ///////////////////////////////////////////////////////////////////////////////
 ////////////////////////////// GLOBAL STRUCTURES //////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
+
+typedef uint32_t IdAABB;
+constexpr IdAABB INVALID_ID = UINT32_MAX;
+
 
 /// An axis-aligned bounding box
 struct AABB {
@@ -89,18 +90,6 @@ struct AABB {
 	AABB(){}
 	AABB(const AABB& cpy) : mins(cpy.mins), maxs(cpy.maxs){}
 	AABB(AABB& cpy) : mins(cpy.mins), maxs(cpy.maxs){}
-
-	struct Hash {
-		std::size_t operator()(const AABB& aabb) const {
-			vec3 tmp = {0,0,0};
-			mat3 matrix = {
-				aabb.mins,
-				aabb.maxs,
-				tmp
-			};
-			return std::hash<mat3>()(matrix);
-		}
-	};
 };
 
 /// A loaded point
@@ -207,7 +196,7 @@ struct OctreeNode {
 	Chunk* points = nullptr;
 	Chunk* voxels = nullptr;
 	OccupancyGrid* occupancy = nullptr;
-	AABB aabb;
+	IdAABB aabb_index = {};
 
 	uint32_t counter = 0;
 	uint8_t children_ids = 0b00000000;
@@ -254,8 +243,9 @@ struct OctreeNode {
 		}
 	}
 
-	OctreeNode(const AABB& aabb):aabb(aabb){}
-	OctreeNode(const OctreeNode& cpy) : aabb(cpy.aabb), counter(cpy.counter), children_ids(cpy.children_ids) 
+	OctreeNode(IdAABB aabb_index) : aabb_index(aabb_index){}
+	OctreeNode(const OctreeNode& cpy) : aabb_index(cpy.aabb_index), counter(cpy.counter),
+		children_ids(cpy.children_ids)
 	{
 		points = cpy.points ? new Chunk(*cpy.points) : nullptr;
 		voxels = cpy.voxels ? new Chunk(*cpy.voxels) : nullptr;
@@ -310,8 +300,8 @@ struct Timing {
 	}
 
 	/// The timings list
-	static vector<std::shared_ptr<Timing>> timingsList;
-	static std::mutex timingsMtx;
+	static inline vector<std::shared_ptr<Timing>> timingsList = {};
+	static inline std::mutex timingsMtx;
 	static std::shared_ptr<Timing> addTiming(string name, bool start_now = true, uint32_t level = 0);
 };
 
@@ -331,45 +321,24 @@ void displayBuffers();
 /// The LRU caches for the nodes
 /// https://www.geeksforgeeks.org/dsa/lru-cache-implementation-using-double-linked-lists/
 struct LRUCache {
-	static std::mutex stored_set_mtx;
-	static std::unordered_set<AABB, AABB::Hash> stored_set;
-	static std::mutex caches_sync_mtx;
+	static inline std::mutex caches_sync_mtx;
 
 	const uint32_t CACHE_SIZE;
-	std::list<AABB> cache = {};
-	std::unordered_map<AABB, std::list<AABB>::iterator, AABB::Hash> cache_map = {};
+	std::list<IdAABB> cache = {};
+	std::unordered_map<IdAABB, std::list<IdAABB>::iterator> cache_map = {};
 	std::string name = "";
 
 	LRUCache(const std::string& name, uint32_t cache_size)
 		: name(name), CACHE_SIZE(cache_size){}
 
-	// LRUCache(const LRUCache& cpy): LRUCache(cpy.name, cpy.CACHE_SIZE){}
-
-
 	/// Add a node to the cache and return the id of a node if it has been removed from the cache
-	/// The id of a node is it's AABB
-	std::optional<AABB> add(const AABB& aabb);
+	std::optional<IdAABB> add(const IdAABB& aabb_index);
 	/// Check if a node is already in cache
-	bool contains(const AABB& aabb);
+	bool contains(const IdAABB& aabb_index);
 	/// Display the LRU cache
 	void display();
 	/// Returns the number of occupied cell in the cache
 	uint32_t getSize() const;
-	bool sanityCheck(const OctreeNode* root_node);
-
-	/// Check if a node has been stored
-	static bool hasBeenStored(const AABB& aabb);
-	/// Mark a node as stored
-	static void mark(const AABB& aabb);
-	/// Unmark a node as stored
-	static void unmark(const AABB& aabb);
-	/// Check if a node is in one of the global caches
-	static bool isInACache(const AABB& aabb);
-	/// Check if a node is in all of the global caches
-	static bool isInAllCaches(const AABB& aabb);
-	/// Display all stored nodes
-	static void displayStored();
-	static bool sanityCheckStored(const OctreeNode* root_node);
 };
 
 
@@ -411,7 +380,6 @@ struct BatchedMemory {
 
 	// GPU side
 	CUdeviceptr gpu_allocated_memory = 0;
-	CUmemGenericAllocationHandle gpu_allocation_handle = 0;
 
     void init(CuRast* instance, CUcontext* context);
 	void reset();
@@ -455,7 +423,24 @@ struct BatchedMemory {
 ////////////////////////// GLOBAL EXTERNAL VARIABLES //////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
 
+typedef std::unordered_map<IdAABB, std::array<IdAABB, 8>> AABBRelationshipMap;
+
 struct GlobalVariables {
+	/// Used to store all the AABBs created during runtime
+	static inline std::vector<AABB> allAABBs = {};
+	/// Used to store all the parent / child relationships
+	static inline std::shared_ptr<AABBRelationshipMap> aabbRelationshipMap = nullptr;
+	static inline std::shared_ptr<AABBRelationshipMap> aabbRelationshipMapCpy = nullptr;
+	
+
+	/// Used to synchronise read / write to same files
+	static IdAABB createNewAABB(const AABB& aabb);
+	static const AABB& getAABB(const IdAABB& id);
+	// This must be correctly synchronised
+	static void swapAABBsMaps();
+
+
+
 	/// The queue of batches
 	static inline std::deque<std::shared_ptr<PointBatch>> batchesQueue = {};
 	static inline std::deque<std::mutex> batchesQueueMutexes = {};
@@ -495,12 +480,6 @@ struct GlobalVariables {
 	static inline std::shared_ptr<LRUCache> updatesCache = nullptr;
 	static inline std::shared_ptr<LRUCache> visibilityCache = nullptr;
 	static inline std::shared_ptr<CPUFallbackCache> cpuCache = nullptr;
-
-
-	static inline std::unordered_map<AABB, std::array<std::optional<AABB>, 8>, AABB::Hash> aabbRelationshipMap = {};
-	static inline std::mutex aabbRelationshipMapMtx;
-	static inline std::unordered_map<AABB, AABB, AABB::Hash> aabbParentMap = {};
-	static inline std::unordered_map<AABB, std::mutex, AABB::Hash> aabbMutexMap = {};
 
 	/// The global allocated memory (for batches)
 	static inline BatchedMemory batchedMemory = {};

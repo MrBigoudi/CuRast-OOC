@@ -329,12 +329,12 @@ uint32_t OctreeNode::getDepth() const {
 
 
 void OctreeNode::display(uint32_t id, uint32_t level, bool node_only) const {
-    println("level: {}, id: {}, counter: {}, "
+    println("level: {}, id: {}, aabb_index: {}, counter: {}, "
         "updated: {}, nbPoints: {}, nbVoxels: {}, "
         "visibility: {}, children visibility: 0b{}{}{}{}{}{}{}{}, "
         "points location: 0b{}{}{}{}{}{}{}{}, children: 0b{}{}{}{}{}{}{}{}",
 
-        level, id, counter, updated, getNbPoints(), getNbVoxels(), is_visible,
+        level, id, aabb_index, counter, updated, getNbPoints(), getNbVoxels(), is_visible,
         uint8_t(bool(children_visibility & 0x01 << 0)),
         uint8_t(bool(children_visibility & 0x01 << 1)),
         uint8_t(bool(children_visibility & 0x01 << 2)),
@@ -360,6 +360,7 @@ void OctreeNode::display(uint32_t id, uint32_t level, bool node_only) const {
         uint8_t(children[6] != nullptr), 
         uint8_t(children[7] != nullptr)
     );
+    const AABB& aabb = GlobalVariables::getAABB(aabb_index);
     println("    aabb: mins = ({}, {}, {}), maxs = ({}, {}, {})",
         aabb.mins.x, aabb.mins.y, aabb.mins.z,
         aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
@@ -387,7 +388,7 @@ bool OctreeNode::operator==(const OctreeNode& rhs) const {
             return false;
         }
 
-       if(cur_lhs->aabb != cur_rhs->aabb){
+       if(cur_lhs->aabb_index != cur_rhs->aabb_index){
             println("OctreeNode::operator==: Wrong aabbs");
             return false;
         }
@@ -496,6 +497,7 @@ void OctreeNode::rebuildOccupancy() {
                 const Point& point = cur_chunk->points[point_id];
 
                 // Sample voxel occupancy grid at this location
+                const AABB& aabb = GlobalVariables::getAABB(aabb_index);
                 vec3 normalized_coordinates = aabb.getPointNormalizedCoordinates(point.position);
                 uint32_t grid_x = clamp(
                     uint32_t(floor(OocSimLodSettings::GRID_SIZE_PER_DIMENSION * normalized_coordinates.x)), 
@@ -579,6 +581,33 @@ void GlobalVariables::destroy(CuRast* instance, CUcontext* context){
 		delete(mainOctreeCpy);
 		mainOctreeCpy = nullptr;
 	}
+}
+
+IdAABB GlobalVariables::createNewAABB(const AABB& aabb){
+    IdAABB id = IdAABB(allAABBs.size());
+    if(id == INVALID_ID){
+        println("ERROR: reached the maximum number of nodes that can be created");
+        exit(EXIT_FAILURE);
+    }
+    allAABBs.push_back(aabb);
+    aabbRelationshipMap->insert({id, {
+        INVALID_ID, INVALID_ID, INVALID_ID, INVALID_ID,
+        INVALID_ID, INVALID_ID, INVALID_ID, INVALID_ID
+    }});
+    return id;
+}
+const AABB& GlobalVariables::getAABB(const IdAABB& id){
+    return allAABBs[id];
+}
+
+// This must be correctly synchronised
+void GlobalVariables::swapAABBsMaps() {
+    // We copy in a new pointer to synchronise with the main thread
+    // In the main thread, we are using getting an access to the previous shared pointer which is automatically
+    // destroyed on need
+    aabbRelationshipMapCpy = std::make_shared<AABBRelationshipMap>(
+        AABBRelationshipMap(*aabbRelationshipMap)
+    );
 }
 
 
@@ -721,8 +750,8 @@ std::vector<std::pair<OctreeNode*, uint8_t>> GlobalVariables::getAllPartialNodes
 
 
 
-vector<std::shared_ptr<Timing>> Timing::timingsList = {};
-std::mutex Timing::timingsMtx;
+
+
 
 std::shared_ptr<Timing> Timing::addTiming(string name, bool start_now, uint32_t level){
     if(!OocSimLodSettings::MEASURE_TIMINGS){
@@ -816,13 +845,8 @@ void displayBuffers(){
 ///////////////////////////////////////////////////////////////////////////////
 
 
-
-std::mutex LRUCache::stored_set_mtx;
-std::unordered_set<AABB, AABB::Hash> LRUCache::stored_set = {};
-std::mutex LRUCache::caches_sync_mtx;
-
-std::optional<AABB> LRUCache::add(const AABB& aabb){
-    auto it = cache_map.find(aabb);
+std::optional<IdAABB> LRUCache::add(const IdAABB& aabb_index){
+    auto it = cache_map.find(aabb_index);
 
     // If the AABB was already in cache, remove its old version from the list
     if(it != cache_map.end()){
@@ -830,24 +854,24 @@ std::optional<AABB> LRUCache::add(const AABB& aabb){
         cache_map.erase(it);
     }
 
-    std::optional<AABB> old_aabb = nullopt;
+    std::optional<IdAABB> old_aabb = nullopt;
 
     // If the cache is full, remove the last node
-    if(cache_map.size() > CACHE_SIZE){
+    if(cache_map.size() >= CACHE_SIZE){
         old_aabb = cache.back();
         cache.pop_back();
         cache_map.erase(old_aabb.value());
     }
 
     // Insert the new node at the front of the list
-    cache.push_front(aabb);
-    cache_map[aabb] = cache.begin();
+    cache.push_front(aabb_index);
+    cache_map[aabb_index] = cache.begin();
 
     return old_aabb;
 }
 
-bool LRUCache::contains(const AABB& aabb ) {
-    return cache_map.contains(aabb);
+bool LRUCache::contains(const IdAABB& aabb_index) {
+    return cache_map.contains(aabb_index);
 }
 
 uint32_t LRUCache::getSize() const {
@@ -861,7 +885,8 @@ void LRUCache::display() {
 	println("////////////////////// {} //////////////////////", name);
 	println("////////////////////////////////////////////////{}\n", pad);
     uint32_t index = 0;
-	for(const AABB& aabb : cache){
+	for(const IdAABB& aabb_index : cache){
+        const AABB& aabb = GlobalVariables::getAABB(aabb_index);
         std::string output = format("mins = ({}, {}, {}), maxs = ({}, {}, {})",
             aabb.mins.x, 
             aabb.mins.y, 
@@ -876,227 +901,6 @@ void LRUCache::display() {
 	println("\n////////////////////////////////////////////////{}", pad);
     println("////////////////////////////////////////////////{}", pad);
 	println("////////////////////////////////////////////////{}\n", pad);
-}
-
-void LRUCache::displayStored(){
-    std::lock_guard<std::mutex> lock(stored_set_mtx);
-
-    println("//////////////////////////////////////////////////////////");
-	println("////////////////////// Stored Nodes //////////////////////");
-	println("//////////////////////////////////////////////////////////\n");
-	for(const AABB& aabb : stored_set){
-        std::string output = format("mins = ({}, {}, {}), maxs = ({}, {}, {})",
-            aabb.mins.x, 
-            aabb.mins.y, 
-            aabb.mins.z, 
-            aabb.maxs.x, 
-            aabb.maxs.y, 
-            aabb.maxs.z
-        );
-        println("- {}", output);
-    }
-	println("\n//////////////////////////////////////////////////////////");
-	println("//////////////////////////////////////////////////////////");
-	println("//////////////////////////////////////////////////////////\n");
-}
-
-
-bool LRUCache::hasBeenStored(const AABB& aabb){
-    std::lock_guard<std::mutex> lock(stored_set_mtx);
-    return stored_set.contains(aabb);
-}
-
-void LRUCache::mark(const AABB& aabb){
-    std::lock_guard<std::mutex> lock(stored_set_mtx);
-
-    // // TODO: to remove
-    // {
-    //     std::string output = format("mins = ({}, {}, {}), maxs = ({}, {}, {})",
-    //         aabb.mins.x, 
-    //         aabb.mins.y, 
-    //         aabb.mins.z, 
-    //         aabb.maxs.x, 
-    //         aabb.maxs.y, 
-    //         aabb.maxs.z
-    //     );
-    //     if(stored_set.contains(aabb)){
-    //         println("AABB: {} was already stored", output);
-    //     } else {
-    //         println("AABB: {} has been stored", output);
-    //     }
-    // }
-
-    stored_set.insert(aabb);
-}
-
-void LRUCache::unmark(const AABB& aabb){
-    std::lock_guard<std::mutex> lock(stored_set_mtx);
-
-    // // TODO: to remove
-    // {
-    //     static std::unordered_set<AABB, AABB::Hash> tmp_loaded = {};
-    //     std::string output = format("mins = ({}, {}, {}), maxs = ({}, {}, {})",
-    //         aabb.mins.x, 
-    //         aabb.mins.y, 
-    //         aabb.mins.z, 
-    //         aabb.maxs.x, 
-    //         aabb.maxs.y, 
-    //         aabb.maxs.z
-    //     );
-    //     if(tmp_loaded.contains(aabb)){
-    //         println("AABB: {} was already loaded", output);
-    //     } else {
-    //         println("AABB: {} has been loaded", output);
-    //     }
-    //     tmp_loaded.insert(aabb);
-    // }
-
-    stored_set.erase(aabb);
-}
-
-bool LRUCache::isInACache(const AABB& aabb){
-    return GlobalVariables::updatesCache->contains(aabb) 
-        || GlobalVariables::visibilityCache->contains(aabb)
-        // TODO: add other caches if necessary
-    ;
-}
-bool LRUCache::isInAllCaches(const AABB& aabb){
-    return GlobalVariables::updatesCache->contains(aabb) 
-        && GlobalVariables::visibilityCache->contains(aabb)
-        // TODO: add other caches if necessary
-    ;
-}
-
-
-bool LRUCache::sanityCheck(const OctreeNode* root_node) {
-    std::lock_guard<std::mutex> lock(caches_sync_mtx);
-    if(!contains(root_node->aabb)){
-        println("ERROR: cache should always contain the root node");
-        return false;
-    }
-
-    std::unordered_set<AABB, AABB::Hash> correct = {};
-    std::function<void(const AABB&)> recursion = [&](const AABB& cur_aabb){
-        if(contains(cur_aabb)){
-            correct.insert(cur_aabb);
-            for(uint32_t child_id = 0; child_id < 8; child_id++){
-                // TODO: temporary code
-                if(GlobalVariables::aabbRelationshipMap[cur_aabb][child_id].has_value()){
-                    recursion(GlobalVariables::aabbRelationshipMap[cur_aabb][child_id].value());
-                }
-            }
-        }
-    };
-    recursion(root_node->aabb);
-
-    uint32_t expected = getSize();
-    uint32_t found = correct.size();
-    if(found != expected){
-        println("ERROR: invalid elements in cache, expected {} elements from the octree, found {}",
-            expected, found
-        );
-        std::unordered_set<AABB, AABB::Hash> incorrect = {};
-        for(auto& [aabb, id] : cache_map){
-            if(!correct.contains(aabb)){
-                incorrect.insert(aabb);
-            }
-        }
-        assert(incorrect.size() + found == expected);
-        println("Correct elements in cache:");
-        for(const AABB& aabb : correct){
-            println("    mins = ({}, {}, {}), maxs = ({}, {}, {})",
-                aabb.mins.x, aabb.mins.y, aabb.mins.z,
-                aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
-            );
-        }
-        println("");
-        println("Incorrect elements in cache:");
-        for(const AABB& aabb : incorrect){
-            println("    mins = ({}, {}, {}), maxs = ({}, {}, {})",
-                aabb.mins.x, aabb.mins.y, aabb.mins.z,
-                aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
-            );
-        }
-        return false;
-    };
-
-    return true;
-}
-
-bool LRUCache::sanityCheckStored(const OctreeNode* root_node) {
-    std::lock_guard<std::mutex> lock(stored_set_mtx);
-
-    std::unordered_set<AABB, AABB::Hash> roots = {};
-    std::function<void(const AABB&)> roots_recursion = [&](const AABB& cur_aabb){
-        if(!stored_set.contains(cur_aabb)){
-            for(uint32_t child_id = 0; child_id < 8; child_id++){
-                // TODO: temporary code
-                if(GlobalVariables::aabbRelationshipMap[cur_aabb][child_id].has_value()){
-                    roots_recursion(GlobalVariables::aabbRelationshipMap[cur_aabb][child_id].value());
-                }
-            }
-        } else {
-            roots.insert(cur_aabb);
-        }
-    };
-    roots_recursion(root_node->aabb);
-
-    std::unordered_set<AABB, AABB::Hash> correct = {};
-    std::function<void(const AABB&)> recursion = [&](const AABB& cur_aabb){
-        if(stored_set.contains(cur_aabb)){
-            correct.insert(cur_aabb);
-            for(uint32_t child_id = 0; child_id < 8; child_id++){
-                AABB child_aabb = AABB(cur_aabb);
-                child_aabb.shrink((NodePosition)child_id);
-                recursion(child_aabb);
-            }
-        }
-    };
-    for(const AABB& root : roots){
-        recursion(root);
-    }
-
-    uint32_t expected = stored_set.size();
-    uint32_t found = correct.size();
-    if(found != expected){
-        println("ERROR: invalid elements in stored cache, expected {} elements from the octree, found {} correct elements",
-            expected, found
-        );
-
-        println("Roots found:");
-        for(const AABB& aabb : roots){
-            println("    mins = ({}, {}, {}), maxs = ({}, {}, {})",
-                aabb.mins.x, aabb.mins.y, aabb.mins.z,
-                aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
-            );
-        }
-
-        std::unordered_set<AABB, AABB::Hash> incorrect = {};
-        for(const AABB& aabb : stored_set){
-            if(!correct.contains(aabb)){
-                incorrect.insert(aabb);
-            }
-        }
-        assert(incorrect.size() + found == expected);
-        println("Correct elements in stored cache:");
-        for(const AABB& aabb : correct){
-            println("    mins = ({}, {}, {}), maxs = ({}, {}, {})",
-                aabb.mins.x, aabb.mins.y, aabb.mins.z,
-                aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
-            );
-        }
-        println("");
-        println("Incorrect elements in stored cache:");
-        for(const AABB& aabb : incorrect){
-            println("    mins = ({}, {}, {}), maxs = ({}, {}, {})",
-                aabb.mins.x, aabb.mins.y, aabb.mins.z,
-                aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
-            );
-        }
-        return false;
-    };
-
-    return true;
 }
 
 

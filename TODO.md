@@ -5,11 +5,11 @@
 - Measure timings and memory usage more precisely 
 - Clean the code + improve comments
 - Allocate memory once on CPU side to avoid new/delete and reuse it on demand
+- Only send new AABBs to the GPU
 
 
 ## Coding part
 
-- Rework the maps aabbRelationshipMap and aabbParentMap
 - Automatically fetch CPU / GPU capacities to set the constants
 - Replace exit(EXIT_FAILURE) with exception raise to catch it in the main and clear the temporary folder
 - Fix Vulkan segfault on quit

@@ -350,7 +350,7 @@ struct COctreeNode {
 	CChunk* points = nullptr;
 	CChunk* voxels = nullptr;
 	COccupancyGrid* occupancy = nullptr;
-	CAABB aabb = CAABB();
+	uint32_t aabb_index = UINT32_MAX;
 
 	uint32_t counter = 0;
 	uint8_t children_ids = 0b00000000;
@@ -366,6 +366,7 @@ struct COctreeNode {
 struct CFullOctree {
 	mat4 world;
 	COctreeNode** nodes;
+	CAABB* aabbs;
 	uint32_t num_nodes;
 	uint32_t max_lod_level;
 

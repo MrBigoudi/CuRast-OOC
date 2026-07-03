@@ -4,8 +4,7 @@
 #include "globals.h"
 
 /// Init the main octree
-void initOctree(
-    OctreeNode* root_node, 
+std::shared_ptr<OctreeNode> initOctree(
     std::shared_ptr<vector<Point>>& points
 );
 
@@ -27,13 +26,16 @@ OctreeNode* uptadeOctree(
 /// TODO: temporary function
 /// Load an octree to gpu memory
 void loadOctreeOnGPU(CuRast* editor, CUcontext* context, 
-    bool bypass_semaphore = false
+    std::shared_ptr<OctreeNode>& octree_ref,
+    std::shared_ptr<AABBRelationshipMap> relationship_map_ref
 );
 void createCudaMemory(CuRast* editor, CUcontext* context, 
-    std::shared_ptr<OctreeNode>& input_octree
+    std::shared_ptr<OctreeNode>& input_octree,
+    std::shared_ptr<AABBRelationshipMap> relationship_map_ref
 );
 std::optional<CUdeviceptr> allocateChunks(
-    std::shared_ptr<SNCOctree>& octree, const Chunk* root, bool is_voxel_chunk = false
+    std::shared_ptr<SNCOctree>& octree, 
+    const Chunk* root, bool is_voxel_chunk = false
 );
 
 /// TODO: temporary function

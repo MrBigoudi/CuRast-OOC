@@ -4,65 +4,67 @@
 #include "outOfCore.h"
 
 
-void initOctree(OctreeNode* root_node, std::shared_ptr<vector<Point>>& points){
+std::shared_ptr<OctreeNode> initOctree(std::shared_ptr<vector<Point>>& points){
+	// Initialise the AABB
+	AABB root_aabb = {};
+
 	for(const Point& point : *points){
-		root_node->aabb.maxs.x = std::max(root_node->aabb.maxs.x, point.position.x);
-		root_node->aabb.maxs.y = std::max(root_node->aabb.maxs.y, point.position.y);
-		root_node->aabb.maxs.z = std::max(root_node->aabb.maxs.z, point.position.z);
-		root_node->aabb.mins.x = std::min(root_node->aabb.mins.x, point.position.x);
-		root_node->aabb.mins.y = std::min(root_node->aabb.mins.y, point.position.y);
-		root_node->aabb.mins.z = std::min(root_node->aabb.mins.z, point.position.z);
+		root_aabb.maxs.x = std::max(root_aabb.maxs.x, point.position.x);
+		root_aabb.maxs.y = std::max(root_aabb.maxs.y, point.position.y);
+		root_aabb.maxs.z = std::max(root_aabb.maxs.z, point.position.z);
+		root_aabb.mins.x = std::min(root_aabb.mins.x, point.position.x);
+		root_aabb.mins.y = std::min(root_aabb.mins.y, point.position.y);
+		root_aabb.mins.z = std::min(root_aabb.mins.z, point.position.z);
 	}
 
 	// Adding small 2x delta to avoid floating point issues
 	float epsilon = 0.5f;
-	root_node->aabb.mins -= epsilon * root_node->aabb.mins;
-	root_node->aabb.maxs += epsilon * root_node->aabb.maxs;
+	root_aabb.mins -= epsilon * root_aabb.mins;
+	root_aabb.maxs += epsilon * root_aabb.maxs;
 
 	// Make it cubic
-	vec3 size = root_node->aabb.getSize();
+	vec3 size = root_aabb.getSize();
 	vec3 half_sizes_x = 0.5f * (vec3(size.x) - size);
 	vec3 half_sizes_y = 0.5f * (vec3(size.y) - size);
 	vec3 half_sizes_z = 0.5f * (vec3(size.z) - size);
 	if(size.x > size.y){
 		if(size.x > size.z){
-			root_node->aabb.mins.y -= half_sizes_x.y;
-			root_node->aabb.maxs.y += half_sizes_x.y;
-			root_node->aabb.mins.z -= half_sizes_x.z;
-			root_node->aabb.maxs.z += half_sizes_x.z;
+			root_aabb.mins.y -= half_sizes_x.y;
+			root_aabb.maxs.y += half_sizes_x.y;
+			root_aabb.mins.z -= half_sizes_x.z;
+			root_aabb.maxs.z += half_sizes_x.z;
 		} else {
-			root_node->aabb.mins.y -= half_sizes_z.y;
-			root_node->aabb.maxs.y += half_sizes_z.y;
-			root_node->aabb.mins.x -= half_sizes_z.x;
-			root_node->aabb.maxs.x += half_sizes_z.x;
+			root_aabb.mins.y -= half_sizes_z.y;
+			root_aabb.maxs.y += half_sizes_z.y;
+			root_aabb.mins.x -= half_sizes_z.x;
+			root_aabb.maxs.x += half_sizes_z.x;
 		}
 	} else {
 		if(size.y > size.z){
-			root_node->aabb.mins.x -= half_sizes_y.x;
-			root_node->aabb.maxs.x += half_sizes_y.x;
-			root_node->aabb.mins.z -= half_sizes_y.z;
-			root_node->aabb.maxs.z += half_sizes_y.z;
+			root_aabb.mins.x -= half_sizes_y.x;
+			root_aabb.maxs.x += half_sizes_y.x;
+			root_aabb.mins.z -= half_sizes_y.z;
+			root_aabb.maxs.z += half_sizes_y.z;
 		} else {
-			root_node->aabb.mins.y -= half_sizes_z.y;
-			root_node->aabb.maxs.y += half_sizes_z.y;
-			root_node->aabb.mins.x -= half_sizes_z.x;
-			root_node->aabb.maxs.x += half_sizes_z.x;
+			root_aabb.mins.y -= half_sizes_z.y;
+			root_aabb.maxs.y += half_sizes_z.y;
+			root_aabb.mins.x -= half_sizes_z.x;
+			root_aabb.maxs.x += half_sizes_z.x;
 		}
 	}
 
-	// TODO: temporary code
-	{
-		std::lock_guard<std::mutex> lock(GlobalVariables::aabbRelationshipMapMtx);
-		GlobalVariables::aabbRelationshipMap[root_node->aabb] = {nullopt};
-	}
+	// Initialise the main octree
+	IdAABB root_aabb_index = GlobalVariables::createNewAABB(root_aabb);
+	return std::make_shared<OctreeNode>(root_aabb_index);
 }
 
 
 
 uint32_t growOctree(OctreeNode* root_node, const std::shared_ptr<vector<Point>>& points){
 	uint32_t nb_new_levels = 0;
-	AABB new_aabb = AABB(root_node->aabb);
+	AABB new_aabb = GlobalVariables::getAABB(root_node->aabb_index);
 	NodePosition node_position = FrontTopLeft;
+
 	// For each point in a batch check if fits in current AABB
 	for(const Point& point : *points){
 		while(!new_aabb.contains(point.position)){
@@ -81,32 +83,33 @@ OctreeNode* uptadeOctree(OctreeNode* main_root, uint32_t nb_new_levels){
 	OctreeNode* cur_child = main_root;
 	NodePosition node_position = FrontTopLeft;
 	for(uint32_t i=0; i<nb_new_levels; i++){
-		// Create new parent
-		OctreeNode* new_parent = new OctreeNode(cur_child->aabb);
-		new_parent->aabb.extend(node_position);
-		new_parent->occupancy = new OccupancyGrid();
+		// Create the new AABB
+		AABB parent_aabb = GlobalVariables::getAABB(cur_child->aabb_index);
+		parent_aabb.extend(node_position);
 
+		// Create the new parent node
+		IdAABB parent_aabb_index = GlobalVariables::createNewAABB(parent_aabb);
+		OctreeNode* new_parent = new OctreeNode(parent_aabb_index);
+		new_parent->occupancy = new OccupancyGrid();
 		new_parent->updated = true;
 		cur_child->updated = true;
-
 		// Create the correct child
 		new_parent->children[node_position] = cur_child;
-		// new_parent->children_ids |= 0x01 << node_position;
 
-		auto fillOccupancyGrid = [&](AABB& cur_aabb, const Chunk* child_chunk_list){
+		auto fillOccupancyGrid = [&](const Chunk* child_chunk_list){
 			while(child_chunk_list){
 				for(uint32_t j=0; j<child_chunk_list->size; j++){
 					const Point& point = child_chunk_list->points[j];
 
 					// Sample voxel occupancy grid at this location
-					OccupancyGrid::GridIndex index = OccupancyGrid::getCellIndices(cur_aabb, point);
+					OccupancyGrid::GridIndex index = OccupancyGrid::getCellIndices(parent_aabb, point);
 					bool is_cell_occupied = new_parent->occupancy->isCellOcupied(index);
 
 					// Fill up occupancy grid
 					if(!is_cell_occupied){
 						new_parent->occupancy->markCellAsFilled(index);
 						// Create corresponding voxel using this point
-						vec3 voxel_centroid = OccupancyGrid::getCellCentroid(cur_aabb, index);
+						vec3 voxel_centroid = OccupancyGrid::getCellCentroid(parent_aabb, index);
 						Point new_voxel = {};
 						new_voxel.position = voxel_centroid;
 						new_voxel.color[0] = point.color[0];
@@ -130,16 +133,11 @@ OctreeNode* uptadeOctree(OctreeNode* main_root, uint32_t nb_new_levels){
 		};
 
 		// Sample voxels to fill new occupancy grid
-		fillOccupancyGrid(new_parent->aabb, cur_child->points);
-		fillOccupancyGrid(new_parent->aabb, cur_child->voxels);
+		fillOccupancyGrid(cur_child->points);
+		fillOccupancyGrid(cur_child->voxels);
 
-		// TODO: temporary code
-		{
-			std::lock_guard<std::mutex> lock(GlobalVariables::aabbRelationshipMapMtx);
-			GlobalVariables::aabbRelationshipMap[new_parent->aabb] = {nullopt};
-			GlobalVariables::aabbRelationshipMap[new_parent->aabb][node_position] = cur_child->aabb;
-			GlobalVariables::aabbParentMap[cur_child->aabb] = new_parent->aabb;
-		}
+		// Update the AABB maps
+		(*GlobalVariables::aabbRelationshipMap)[parent_aabb_index][node_position] = cur_child->aabb_index;
 
 		cur_child = new_parent;
 		updateNodePosition(node_position);
@@ -185,7 +183,10 @@ void freePreviousOctreeOnGPU(CuRast* editor, std::shared_ptr<SNCOctree> caller){
 }
 
 
-std::optional<CUdeviceptr> allocateChunks(std::shared_ptr<SNCOctree>& octree, const Chunk* root, bool is_voxel_chunk){
+std::optional<CUdeviceptr> allocateChunks(
+	std::shared_ptr<SNCOctree>& octree, 
+    const Chunk* root, bool is_voxel_chunk
+){
 	// Create CChunks
 	const Chunk* cur_chunk = root;
 	CChunk* prev = nullptr;
@@ -228,7 +229,10 @@ std::optional<CUdeviceptr> allocateChunks(std::shared_ptr<SNCOctree>& octree, co
 };
 
 
-void createCudaMemory(CuRast* editor, CUcontext* context, std::shared_ptr<OctreeNode>& input_octree){
+void createCudaMemory(CuRast* editor, CUcontext* context, 
+    std::shared_ptr<OctreeNode>& input_octree,
+    std::shared_ptr<AABBRelationshipMap> relationship_map_ref
+){
 	GlobalVariables::batchedMemory.reset();
 
 	// Create cuda memory pointers
@@ -276,7 +280,7 @@ void createCudaMemory(CuRast* editor, CUcontext* context, std::shared_ptr<Octree
 		new_node->points = (CChunk*)allocateChunks(octree, cur_node->points).value_or(0);
 		new_node->voxels = (CChunk*)allocateChunks(octree, cur_node->voxels, true).value_or(0);
 		new_node->occupancy = nullptr;
-		new_node->aabb = {cur_node->aabb.mins, cur_node->aabb.maxs};
+		new_node->aabb_index = cur_node->aabb_index;
 
 		new_node->counter = cur_node->counter;
 		new_node->children_ids = cur_node->children_ids;
@@ -307,11 +311,21 @@ void createCudaMemory(CuRast* editor, CUcontext* context, std::shared_ptr<Octree
 
 	octree->max_lod_level = max_lod_level;
 
+	uint32_t current_nb_aabb = relationship_map_ref->size();
+
 	// Copy arrays of pointers to GPU
 	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+		// Allocate the space for the AABBs
+		cuda_status = cuMemAllocAsync(&octree->aabbs, current_nb_aabb * sizeof(AABB), octree->stream);
+		cuda_status = cuMemcpyHtoDAsync(octree->aabbs, GlobalVariables::allAABBs.data(), current_nb_aabb * sizeof(AABB), octree->stream);
+		// Allocate the space for the nodes pointers
 		cuda_status = cuMemAllocAsync(&octree->nodes, octree->cptr_nodes.size() * sizeof(CUdeviceptr), octree->stream);
 		cuda_status = cuMemcpyHtoDAsync(octree->nodes, octree->cptr_nodes.data(), octree->cptr_nodes.size() * sizeof(CUdeviceptr), octree->stream);
 	} else {
+		// Allocate the space for the AABBs
+		cuda_status = cuMemAlloc(&octree->aabbs, current_nb_aabb * sizeof(AABB));
+		cuda_status = cuMemcpyHtoD(octree->aabbs, GlobalVariables::allAABBs.data(), current_nb_aabb * sizeof(AABB));
+		// Allocate the space for the nodes pointers
 		cuda_status = cuMemAlloc(&octree->nodes, octree->cptr_nodes.size() * sizeof(CUdeviceptr));
 		cuda_status = cuMemcpyHtoD(octree->nodes, octree->cptr_nodes.data(), octree->cptr_nodes.size() * sizeof(CUdeviceptr));
 	}
@@ -330,19 +344,12 @@ void createCudaMemory(CuRast* editor, CUcontext* context, std::shared_ptr<Octree
 
 
 void loadOctreeOnGPU(CuRast* editor, CUcontext* context, 
-    bool bypass_semaphore
-){	
-	std::shared_ptr<OctreeNode> octree_ref = nullptr;
-	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL && !bypass_semaphore){
-		std::lock_guard<std::mutex> lock_send(GlobalVariables::isUpdatingMtx);
-		octree_ref = GlobalVariables::mainOctree;
-	} else {
-		octree_ref = GlobalVariables::mainOctree;
-	}
+    std::shared_ptr<OctreeNode>& octree_ref,
+    std::shared_ptr<AABBRelationshipMap> relationship_map_ref
+){
 	if(!octree_ref){return;}
-
 	std::shared_ptr<Timing> timing = Timing::addTiming("send octree to GPU ", true);
-	createCudaMemory(editor, context, octree_ref);
+	createCudaMemory(editor, context, octree_ref, relationship_map_ref);
 	timing->stop_clock();
 }
 
@@ -374,12 +381,14 @@ void addPointBatches(){
 	auto last = first + last_index;
 
 	if(!GlobalVariables::mainOctree){
+		GlobalVariables::aabbRelationshipMap = std::make_shared<AABBRelationshipMap>();
+
 		std::shared_ptr<Timing> timing = Timing::addTiming("init octree", true);
 		std::lock_guard<std::mutex> lock_send(GlobalVariables::isUpdatingMtx);
-		GlobalVariables::mainOctree = std::make_shared<OctreeNode>(AABB());
+		// Use the first batch to generate the intial bounding box
 		uint32_t batch_index = batches_indices[0];
 		std::lock_guard<std::mutex> lock(GlobalVariables::batchesQueueMutexes[batch_index]);
-		initOctree(GlobalVariables::mainOctree.get(), GlobalVariables::batchesQueue[batch_index]->points);
+		GlobalVariables::mainOctree = initOctree(GlobalVariables::batchesQueue[batch_index]->points);
 		timing->stop_clock();
 
 		// Copy octree once at the beginning
@@ -449,7 +458,7 @@ void addPointBatches(){
 		std::for_each(first, last, [&](uint32_t index){
 			std::lock_guard<std::mutex> lock(GlobalVariables::batchesQueueMutexes[index]);
 			std::shared_ptr<PointBatch> batch = GlobalVariables::batchesQueue[index];
-			simLodUpdate(GlobalVariables::mainOctreeCpy, batch->points);
+			SimLod::update(GlobalVariables::mainOctreeCpy, batch->points, GlobalVariables::aabbRelationshipMap);
 		});
 	}
 	timing->stop_clock();
@@ -470,8 +479,10 @@ void addPointBatches(){
 
 	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 		std::lock_guard<std::mutex> lock_send(GlobalVariables::isUpdatingMtx);
+		GlobalVariables::swapAABBsMaps();
 		GlobalVariables::mainOctree = std::make_shared<OctreeNode>(*GlobalVariables::mainOctreeCpy);
 	} else {
+		GlobalVariables::swapAABBsMaps();
 		GlobalVariables::mainOctree = std::make_shared<OctreeNode>(*GlobalVariables::mainOctreeCpy);
 	}
 

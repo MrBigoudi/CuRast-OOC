@@ -67,25 +67,29 @@ void Frustum::display() const {
 
 
 /// Get a list of all visible nodes that are either loaded or in cache
-std::unordered_set<AABB, AABB::Hash> getVisibleNodes(const Frustum& frustum){
-    std::unordered_set<AABB, AABB::Hash> res = {};
+std::unordered_set<IdAABB> Visibility::getVisibleNodes(
+    const Frustum& frustum,
+    std::shared_ptr<AABBRelationshipMap> relationship_map_ref
+){
+    std::unordered_set<IdAABB> res = {};
+    res.reserve(relationship_map_ref->size());
 
-    {
-        for(const auto& [aabb, _id] : GlobalVariables::GlobalVariables::updatesCache->cache_map){
-            if(frustum.doesIntersect(aabb)){
-                res.insert(aabb);
-            }
+    // println("before get nodes: vis cache size = {}, updates cache size = {}, total nodes = {}, nb_nodes = {}", 
+    //     GlobalVariables::visibilityCache->getSize(), GlobalVariables::updatesCache->getSize(), 
+    //     relationship_map_ref->size(), res.size()
+    // );
+
+    for(const auto& [aabb_index, children] : *relationship_map_ref){
+        const AABB& aabb = GlobalVariables::getAABB(aabb_index);
+        if(frustum.doesIntersect(aabb)){
+            res.insert(aabb_index);
         }
     }
 
-    {
-        std::lock_guard<std::mutex> lock_cache(LRUCache::stored_set_mtx);
-        for(const AABB& aabb : LRUCache::stored_set){
-            if(frustum.doesIntersect(aabb)){
-                res.insert(aabb);
-            }
-        }
-    }
+    // println("after get nodes: vis cache size = {}, updates cache size = {}, total nodes = {}, nb_nodes = {}\n", 
+    //     GlobalVariables::visibilityCache->getSize(), GlobalVariables::updatesCache->getSize(), 
+    //     relationship_map_ref->size(), res.size()
+    // );
 
     return res;
 }
@@ -95,10 +99,11 @@ std::unordered_set<AABB, AABB::Hash> getVisibleNodes(const Frustum& frustum){
 /// All nodes in the list must appear only once
 /// All nodes in the list must have their parent in the list
 /// All nodes in the list must have their parent marked as closest
-std::vector<AABB> orderNodes(
-    const AABB& root_node,
-    const std::unordered_set<AABB, AABB::Hash>& visible_nodes,
-    const vec3& camera_pos
+std::vector<IdAABB> Visibility::orderNodes(
+    const IdAABB& root_node,
+    const std::unordered_set<IdAABB>& visible_nodes,
+    const vec3& camera_pos,
+    std::shared_ptr<AABBRelationshipMap> relationship_map_ref
 ){
     uint32_t size = visible_nodes.size();
 
@@ -108,72 +113,67 @@ std::vector<AABB> orderNodes(
         exit(EXIT_FAILURE);
     }
 
-    // println("before ordering: vis cache size = {}, updates cache size = {}, stored nodes = {}, nb_nodes = {}", 
-    //     visibilityCache->getSize(), updatesCache->getSize(), LRUCache::stored_set.size(), size
-    // );
-
-    // // TODO: can we do better than O(n2) ?
-    // std::vector<AABB> sorted = std::vector<AABB>(visible_nodes.begin(), visible_nodes.end());
-    // // Sort the visible nodes by furthest to camera position
-    // auto comparison_dist = [&](const AABB& a, const AABB& b) -> bool {
-    //     float dist_a = glm::length(a.getCentroid() - camera_pos);
-    //     float dist_b = glm::length(b.getCentroid() - camera_pos);
-    //     return dist_a > dist_b;
-    // };
-    // std::sort(sorted.begin(), sorted.end(), comparison_dist);
-    // std::vector<AABB> res = sorted;
-    // for(uint32_t i=0; i<size; i++){
-    //     uint32_t last_child_index = 0;
-
-    //     do {
-    //         last_child_index = i;
-    //         AABB current_node = res[i];
-
-    //         // Try to find a child marked as closer
-    //         for(uint32_t j=i+1; j<size; j++){
-    //             // If is a child of current node
-    //             if(current_node.isParentOf(res[j])){
-    //                 last_child_index = j;
-    //             }
-    //         }
-
-    //         // Update the array by swapping elements up to the child found
-    //         for(uint32_t j=i; j<last_child_index; j++){
-    //             res[j] = res[j+1];
-    //         }
-    //         res[last_child_index] = current_node;
-    //     } while(last_child_index != i);
-    // }
-
-
     // TODO: better than O(n2) but less accurate
     // Build a temporary octree
     struct Node {
-        const AABB aabb;
+        const IdAABB aabb_index;
         float dist = INFINITY;
         std::vector<std::shared_ptr<Node>> children = {};
 
-        Node(const AABB& aabb, float dist): aabb(aabb), dist(dist) {
+        Node(const IdAABB& aabb_index, float dist): aabb_index(aabb_index), dist(dist) {
             children.reserve(8);
         }
     };
-    std::vector<AABB> res = {};
+    std::vector<IdAABB> res = {};
     res.reserve(size);
-    std::function<void(std::shared_ptr<Node>)> recursion = [&](std::shared_ptr<Node> cur_node){
-        for(uint32_t child_id = 0; child_id < 8; child_id++){
-            // TODO: temporary code
-            AABB child_aabb = {};
-            {
-                std::lock_guard<std::mutex> lock(GlobalVariables::aabbRelationshipMapMtx);
-                if(!GlobalVariables::aabbRelationshipMap[cur_node->aabb][child_id].has_value()){
-                    continue;
-                }
-                child_aabb = GlobalVariables::aabbRelationshipMap[cur_node->aabb][child_id].value();
-            }
 
-            if(visible_nodes.contains(child_aabb)){
-                float dist = glm::length(child_aabb.getCentroid() - camera_pos);
-                cur_node->children.push_back(std::make_shared<Node>(child_aabb, dist));
+    // println("before ordering: vis cache size = {}, updates cache size = {}, total nodes = {}, nb_nodes = {}", 
+    //     GlobalVariables::visibilityCache->getSize(), GlobalVariables::updatesCache->getSize(), 
+    //     relationship_map_ref->size(), res.size()
+    // );
+
+    std::function<void(std::shared_ptr<Node>)> recursion = [&](std::shared_ptr<Node> cur_node){
+        if(!relationship_map_ref->contains(cur_node->aabb_index)){
+            println("WTFF");
+
+            println("Relationship map: ");
+            for(const auto& [id, children] : *relationship_map_ref){
+                println("    - [{}]: children: [{}, {}, {}, {}, {}, {}, {}, {}]",
+                    id,
+                    children[0] == INVALID_ID ? -1 : int32_t(children[0]),
+                    children[1] == INVALID_ID ? -1 : int32_t(children[1]),
+                    children[2] == INVALID_ID ? -1 : int32_t(children[2]),
+                    children[3] == INVALID_ID ? -1 : int32_t(children[3]),
+                    children[4] == INVALID_ID ? -1 : int32_t(children[4]),
+                    children[5] == INVALID_ID ? -1 : int32_t(children[5]),
+                    children[6] == INVALID_ID ? -1 : int32_t(children[6]),
+                    children[7] == INVALID_ID ? -1 : int32_t(children[7])
+                );
+            }
+            println("\n\n\n");
+
+            println("All AABBs");
+            for(uint32_t i=0; i<GlobalVariables::allAABBs.size(); i++){
+                AABB& aabb = GlobalVariables::allAABBs[i];
+                println("    - [{}]: .mins = ({}, {}, {}), .maxs = ({}, {}, {})", i,
+                    aabb.mins.x, aabb.mins.y, aabb.mins.z,
+                    aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
+                );
+            }
+            println("\n\n\n");
+            
+            exit(EXIT_FAILURE);
+        }
+
+
+        for(uint32_t child_id = 0; child_id < 8; child_id++){
+            IdAABB child_aabb_index = (*relationship_map_ref)[cur_node->aabb_index][child_id];
+            if(child_aabb_index == INVALID_ID){continue;}
+
+            if(visible_nodes.contains(child_aabb_index)){
+                const AABB& aabb = GlobalVariables::getAABB(child_aabb_index);
+                float dist = glm::length(aabb.getCentroid() - camera_pos);
+                cur_node->children.push_back(std::make_shared<Node>(child_aabb_index, dist));
             }
         }
 
@@ -186,14 +186,17 @@ std::vector<AABB> orderNodes(
             recursion(child);
         }
 
-        res.push_back(cur_node->aabb);
+        res.push_back(cur_node->aabb_index);
     };
-    float root_dist = glm::length(root_node.getCentroid() - camera_pos);
+
+    const AABB& root_aabb = GlobalVariables::getAABB(root_node);
+    float root_dist = glm::length(root_aabb.getCentroid() - camera_pos);
     std::shared_ptr<Node> root = std::make_shared<Node>(root_node, root_dist);
     recursion(root);
 
-    // println("after ordering: vis cache size = {}, updates cache size = {}, stored nodes = {}, nb_nodes = {}", 
-    //     visibilityCache->getSize(), updatesCache->getSize(), LRUCache::stored_set.size(), res.size()
+    // println("after ordering: vis cache size = {}, updates cache size = {}, total nodes = {}, nb_nodes = {}\n", 
+    //     GlobalVariables::visibilityCache->getSize(), GlobalVariables::updatesCache->getSize(), 
+    //     relationship_map_ref->size(), res.size()
     // );
 
     return res;
@@ -202,7 +205,18 @@ std::vector<AABB> orderNodes(
 
 
 /// Fill the visibility cache with the ordered nodes
-void fillVisibilityCache(const std::vector<AABB>& nodes, OctreeNode* root_octree){
+void Visibility::fillVisibilityCache(
+    const std::vector<IdAABB>& nodes, 
+    OctreeNode* root_octree,
+    std::shared_ptr<AABBRelationshipMap> relationship_map_ref
+){
+    std::lock_guard<std::mutex> lock(LRUCache::caches_sync_mtx);
+
+    // println("before filling cache: vis cache size = {}, updates cache size = {}, total nodes = {}, nb_nodes = {}", 
+    //     GlobalVariables::visibilityCache->getSize(), GlobalVariables::updatesCache->getSize(), 
+    //     relationship_map_ref->size(), nodes.size()
+    // );
+
     uint32_t first_index = uint32_t(max(int32_t(nodes.size()) - int32_t(GlobalVariables::visibilityCache->CACHE_SIZE), 0));
     uint32_t last_index = min(first_index + GlobalVariables::visibilityCache->CACHE_SIZE, uint32_t(nodes.size()));
 
@@ -214,8 +228,8 @@ void fillVisibilityCache(const std::vector<AABB>& nodes, OctreeNode* root_octree
     // No need to store them as if they were not in the updates cache they were not updated since last load
     // Also load all the nodes that need to be loaded
     std::function<bool(OctreeNode*, uint32_t, uint32_t, bool*)> recursion = [&](OctreeNode* cur_node, uint32_t id, uint32_t level, bool* is_visible) -> bool {
-        const AABB& aabb = cur_node->aabb;
-        bool in_vis_cache = GlobalVariables::visibilityCache->contains(aabb);
+        const IdAABB& aabb_index = cur_node->aabb_index;
+        bool in_vis_cache = GlobalVariables::visibilityCache->contains(aabb_index);
         
         if(!CuRastSettings::freezeVisibleNodes){
             *is_visible = in_vis_cache;
@@ -223,27 +237,62 @@ void fillVisibilityCache(const std::vector<AABB>& nodes, OctreeNode* root_octree
             cur_node->children_visibility = 0b00000000;
         }
 
+        if(!relationship_map_ref->contains(cur_node->aabb_index)){
+            println("This should not happen, at this stage all nodes in the octree must be in the relationship_map");
+
+            println("Cur node:");
+            cur_node->display(id, level, true);
+
+            println("Relationship map: ");
+            for(const auto& [id, children] : *relationship_map_ref){
+                println("    - [{}]: children: [{}, {}, {}, {}, {}, {}, {}, {}]",
+                    id,
+                    children[0] == INVALID_ID ? -1 : int32_t(children[0]),
+                    children[1] == INVALID_ID ? -1 : int32_t(children[1]),
+                    children[2] == INVALID_ID ? -1 : int32_t(children[2]),
+                    children[3] == INVALID_ID ? -1 : int32_t(children[3]),
+                    children[4] == INVALID_ID ? -1 : int32_t(children[4]),
+                    children[5] == INVALID_ID ? -1 : int32_t(children[5]),
+                    children[6] == INVALID_ID ? -1 : int32_t(children[6]),
+                    children[7] == INVALID_ID ? -1 : int32_t(children[7])
+                );
+            }
+            println("\n\n\n");
+
+            println("All AABBs");
+            for(uint32_t i=0; i<GlobalVariables::allAABBs.size(); i++){
+                AABB& aabb = GlobalVariables::allAABBs[i];
+                println("    - [{}]: .mins = ({}, {}, {}), .maxs = ({}, {}, {})", i,
+                    aabb.mins.x, aabb.mins.y, aabb.mins.z,
+                    aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
+                );
+            }
+            println("\n\n\n");
+
+            println("Current octree:");
+            root_octree->display();
+            
+            exit(EXIT_FAILURE);
+        }
+
+
         for(uint32_t child_id = 0; child_id < 8; child_id++){
             bool child_is_visible = false;
 
+            // Check if the node was already in memory
             if(cur_node->children[child_id]){
                 if(recursion(cur_node->children[child_id], child_id, level+1, &child_is_visible)){
+                    // Remove the node if it is not on any of the caches
                     delete(cur_node->children[child_id]);
                     cur_node->children[child_id] = nullptr;
                 }
             } else {
-                // TODO: temporary code
-                AABB child_aabb = {};
-                {
-                    std::lock_guard<std::mutex> lock(GlobalVariables::aabbRelationshipMapMtx);
-                    if(!GlobalVariables::aabbRelationshipMap[cur_node->aabb][child_id].has_value()){
-                        continue;
-                    }
-                    child_aabb = GlobalVariables::aabbRelationshipMap[cur_node->aabb][child_id].value();
-                }
+                // If the node is not in memory, load it
+                IdAABB child_aabb_index = (*relationship_map_ref)[cur_node->aabb_index][child_id];
+                if(child_aabb_index == INVALID_ID){continue;}
 
-                if(GlobalVariables::visibilityCache->contains(child_aabb) && LRUCache::hasBeenStored(child_aabb)){
-                    cur_node->children[child_id] = loadOctree(child_aabb, true);
+                if(GlobalVariables::visibilityCache->contains(child_aabb_index)){
+                    cur_node->children[child_id] = loadOctree(child_aabb_index);
                     recursion(cur_node->children[child_id], child_id, level+1, &child_is_visible);
                 }
             }
@@ -252,19 +301,29 @@ void fillVisibilityCache(const std::vector<AABB>& nodes, OctreeNode* root_octree
 
         }
 
-        return !in_vis_cache && !GlobalVariables::updatesCache->contains(aabb) ;
+        return !in_vis_cache && !GlobalVariables::updatesCache->contains(aabb_index);
     };
 
     bool root_visible = false;
     recursion(root_octree, 0, 0, &root_visible);
     if(!root_visible){
-        println("Root should always be visible");
+        println("Root should always be visible: ie, should always be in the cache");
         exit(EXIT_FAILURE);
     }
+
+    // println("after filling cache: vis cache size = {}, updates cache size = {}, total nodes = {}, nb_nodes = {}\n\n", 
+    //     GlobalVariables::visibilityCache->getSize(), GlobalVariables::updatesCache->getSize(), 
+    //     relationship_map_ref->size(), nodes.size()
+    // );
 }
 
 
-void updateVisibilityCache(const mat4& view, const mat4& proj){
+void Visibility::updateVisibilityCache(
+    const mat4& view, const mat4& proj, 
+    std::shared_ptr<OctreeNode>& octree_ref,
+    std::shared_ptr<AABBRelationshipMap> relationship_map_ref
+){
+    if(!octree_ref){return;}
     std::shared_ptr<Timing> timing_visibility = Timing::addTiming("update visibility", true);
     
     // TODO: just for debugging
@@ -280,31 +339,48 @@ void updateVisibilityCache(const mat4& view, const mat4& proj){
         }
     }
 
-    std::lock_guard<std::mutex> lock(LRUCache::caches_sync_mtx);
-
-    std::shared_ptr<OctreeNode> octree_ref = nullptr;
-	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-		std::lock_guard<std::mutex> lock_send(GlobalVariables::isUpdatingMtx);
-		octree_ref = GlobalVariables::mainOctree;
-	} else {
-		octree_ref = GlobalVariables::mainOctree;
-	}
-	if(!octree_ref){return;}
     Frustum frustum = Frustum(proj * view);
 
     std::shared_ptr<Timing> timing = Timing::addTiming("get visible nodes", true, 1);
-    std::unordered_set<AABB, AABB::Hash> visible_nodes = getVisibleNodes(frustum);
+    std::unordered_set<IdAABB> visible_nodes = getVisibleNodes(frustum, relationship_map_ref);
     timing->stop_clock();
 
     timing = Timing::addTiming("order visible nodes", true, 1);
     vec3 cameraPos = vec3(glm::inverse(view) * vec4(0.0f, 0.0f, 0.0f, 1.0f));
-    std::vector<AABB> ordered_nodes = orderNodes(octree_ref->aabb, visible_nodes, cameraPos);
+    std::vector<IdAABB> ordered_nodes = orderNodes(octree_ref->aabb_index, visible_nodes, cameraPos, relationship_map_ref);
     timing->stop_clock();
 
     timing = Timing::addTiming("update visibility cache", true, 1);
-    std::lock_guard<std::mutex> lock_send(GlobalVariables::isUpdatingMtx);
-    fillVisibilityCache(ordered_nodes, octree_ref.get());
+    fillVisibilityCache(ordered_nodes, octree_ref.get(), relationship_map_ref);
     timing->stop_clock();
 
     timing_visibility->stop_clock();
+
+
+
+    // println("Relationship map: ");
+    // for(const auto& [id, children] : *relationship_map_ref){
+    //     println("    - [{}]: children: [{}, {}, {}, {}, {}, {}, {}, {}]",
+    //         id,
+    //         children[0] == INVALID_ID ? -1 : int32_t(children[0]),
+    //         children[1] == INVALID_ID ? -1 : int32_t(children[1]),
+    //         children[2] == INVALID_ID ? -1 : int32_t(children[2]),
+    //         children[3] == INVALID_ID ? -1 : int32_t(children[3]),
+    //         children[4] == INVALID_ID ? -1 : int32_t(children[4]),
+    //         children[5] == INVALID_ID ? -1 : int32_t(children[5]),
+    //         children[6] == INVALID_ID ? -1 : int32_t(children[6]),
+    //         children[7] == INVALID_ID ? -1 : int32_t(children[7])
+    //     );
+    // }
+    // println("\n\n\n");
+
+    // println("All AABBs");
+    // for(uint32_t i=0; i<GlobalVariables::allAABBs.size(); i++){
+    //     AABB& aabb = GlobalVariables::allAABBs[i];
+    //     println("    - [{}]: .mins = ({}, {}, {}), .maxs = ({}, {}, {})", i,
+    //         aabb.mins.x, aabb.mins.y, aabb.mins.z,
+    //         aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
+    //     );
+    // }
+    // println("\n\n\n");
 }

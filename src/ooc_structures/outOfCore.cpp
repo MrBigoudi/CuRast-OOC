@@ -58,20 +58,22 @@ CPUFallbackCache::Entry::Entry(const OctreeNode* node){
     serializable_node = {};
     serializable_node.counter = node->counter;
     serializable_node.children_ids = node->children_ids;
-    serializable_node.aabb = node->aabb;
+    serializable_node.aabb_index = node->aabb_index;
 
+    const AABB& aabb = GlobalVariables::getAABB(node->aabb_index);
     if(node->points){
-        serializable_node.points = getChunkFilePath(node->aabb, false);
+        serializable_node.points = getChunkFilePath(aabb, false);
         serializable_points = ChunkSerializable(node->points);
     }
     if(node->voxels){
-        serializable_node.voxels = getChunkFilePath(node->aabb, true);
+        serializable_node.voxels = getChunkFilePath(aabb, true);
         serializable_voxels = ChunkSerializable(node->voxels);
     }
 }
 
 /// A constructor which is deserialized from an aabb
-CPUFallbackCache::Entry::Entry(const AABB& aabb){
+CPUFallbackCache::Entry::Entry(const IdAABB& aabb_index){
+    const AABB& aabb = GlobalVariables::getAABB(aabb_index);
 
     serializable_node = OctreeNodeSerializable::deserialize(getNodeFilePath(aabb));
     if(serializable_node.points != ""){
@@ -91,11 +93,9 @@ CPUFallbackCache::Entry::Entry(const AABB& aabb){
 
 /// Builds an octree node from an entry
 OctreeNode* CPUFallbackCache::Entry::toLeafNode() const {
-    const AABB& aabb = serializable_node.aabb;
-    OctreeNode* new_node = new OctreeNode(aabb);
+    OctreeNode* new_node = new OctreeNode(serializable_node.aabb_index);
     new_node->counter = serializable_node.counter;
     new_node->children_ids = serializable_node.children_ids;
-    new_node->aabb = aabb;
 
     if(serializable_points.has_value()){
         new_node->points = serializable_points->toChunk();
@@ -109,11 +109,10 @@ OctreeNode* CPUFallbackCache::Entry::toLeafNode() const {
     return new_node;
 }
 
-CPUFallbackCache::CPUFallbackCache(uint32_t cache_size): CACHE_SIZE(cache_size){
-}
+CPUFallbackCache::CPUFallbackCache(uint32_t cache_size): CACHE_SIZE(cache_size){}
 
 std::shared_ptr<CPUFallbackCache::Entry> CPUFallbackCache::add(const std::shared_ptr<Entry>& new_entry){
-    auto it = cache_map.find(new_entry->serializable_node.aabb);
+    auto it = cache_map.find(new_entry->serializable_node.aabb_index);
 
     // If the AABB was already in cache, remove its old version from the list
     if(it != cache_map.end()){
@@ -124,21 +123,21 @@ std::shared_ptr<CPUFallbackCache::Entry> CPUFallbackCache::add(const std::shared
     std::shared_ptr<Entry> old_entry = nullptr;
 
     // If the cache is full, remove the last node
-    if(cache_map.size() > CACHE_SIZE){
+    if(cache_map.size() >= CACHE_SIZE){
         old_entry = cache.back();
         cache.pop_back();
-        cache_map.erase(old_entry->serializable_node.aabb);
+        cache_map.erase(old_entry->serializable_node.aabb_index);
     }
 
     // Insert the new node at the front of the list
     cache.push_front(new_entry);
-    cache_map[new_entry->serializable_node.aabb] = cache.begin();
+    cache_map[new_entry->serializable_node.aabb_index] = cache.begin();
 
     return old_entry;
 }
 
-std::shared_ptr<CPUFallbackCache::Entry> CPUFallbackCache::get(const AABB& aabb) {
-    auto it = cache_map.find(aabb);
+std::shared_ptr<CPUFallbackCache::Entry> CPUFallbackCache::get(const IdAABB& aabb_index) {
+    auto it = cache_map.find(aabb_index);
 
     if(it != cache_map.end()){
         std::shared_ptr<CPUFallbackCache::Entry> output = *it->second;
@@ -256,35 +255,22 @@ Chunk* ChunkSerializable::toChunk() const{
 //////////////////////////// OCTREE SERIALIZATION /////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
 
-void OctreeNodeSerializable::serialize(const OctreeNode* node, bool node_only){
+void OctreeNodeSerializable::serialize(const OctreeNode* node){
     // Add the nodes to the CPU cache
-    std::unordered_map<AABB, std::shared_ptr<CPUFallbackCache::Entry>, AABB::Hash> to_store = {};
-    std::function<void (const OctreeNode*)> recursion = [&](const OctreeNode* cur_node){        
-        if(!node_only){
-            for(uint32_t child_id = 0; child_id < 8; child_id++){
-                if(cur_node->children[child_id]){
-                    std::string new_filepath = getNodeFilePath(cur_node->children[child_id]->aabb);
-                    recursion(cur_node->children[child_id]);
-                }
-            }
-        }
-
-        to_store.erase(cur_node->aabb);
+    std::unordered_map<IdAABB, std::shared_ptr<CPUFallbackCache::Entry>> to_store = {};
+    std::function<void (const OctreeNode*)> recursion = [&](const OctreeNode* cur_node){
+        to_store.erase(cur_node->aabb_index);
         std::shared_ptr<CPUFallbackCache::Entry> new_entry = std::make_shared<CPUFallbackCache::Entry>(cur_node);
         std::shared_ptr<CPUFallbackCache::Entry> entry = GlobalVariables::cpuCache->add(new_entry);
         if(entry){
-            to_store[entry->serializable_node.aabb] = entry;
+            to_store[entry->serializable_node.aabb_index] = entry;
         }
-        LRUCache::mark(cur_node->aabb);
     };
     recursion(node);
 
     // Store the nodes that need to be on disk
     std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
-    for(auto [aabb, entry] : to_store){
-
-        // Block on storing to disk
-        std::lock_guard<std::mutex> lock(GlobalVariables::aabbMutexMap[aabb]);
+    for(auto [aabb_index, entry] : to_store){
 
         OctreeNodeSerializable& new_node = entry->serializable_node;
         if(entry->serializable_points.has_value()){
@@ -296,7 +282,8 @@ void OctreeNodeSerializable::serialize(const OctreeNode* node, bool node_only){
             serializable.serialize(new_node.voxels);
         }
 
-        new_node.serialize(getNodeFilePath(new_node.aabb));
+        const AABB& aabb = GlobalVariables::getAABB(aabb_index);
+        new_node.serialize(getNodeFilePath(aabb));
     };
 }
 
@@ -325,12 +312,7 @@ void OctreeNodeSerializable::serialize(const std::string& filepath) const {
     file.write(voxels.data(), voxels_size);
 
     // Write aabb
-    file.write(reinterpret_cast<const char*>(&aabb.mins.x), sizeof(float));
-    file.write(reinterpret_cast<const char*>(&aabb.mins.y), sizeof(float));
-    file.write(reinterpret_cast<const char*>(&aabb.mins.z), sizeof(float));
-    file.write(reinterpret_cast<const char*>(&aabb.maxs.x), sizeof(float));
-    file.write(reinterpret_cast<const char*>(&aabb.maxs.y), sizeof(float));
-    file.write(reinterpret_cast<const char*>(&aabb.maxs.z), sizeof(float));
+    file.write(reinterpret_cast<const char*>(&aabb_index), sizeof(aabb_index));
 
     file.close();
 }
@@ -365,22 +347,17 @@ OctreeNodeSerializable OctreeNodeSerializable::deserialize(const std::string& fi
     file.read(new_node.voxels.data(), voxels_size);
 
     // Read aabb
-    file.read(reinterpret_cast<char*>(&new_node.aabb.mins.x), sizeof(float));
-    file.read(reinterpret_cast<char*>(&new_node.aabb.mins.y), sizeof(float));
-    file.read(reinterpret_cast<char*>(&new_node.aabb.mins.z), sizeof(float));
-    file.read(reinterpret_cast<char*>(&new_node.aabb.maxs.x), sizeof(float));
-    file.read(reinterpret_cast<char*>(&new_node.aabb.maxs.y), sizeof(float));
-    file.read(reinterpret_cast<char*>(&new_node.aabb.maxs.z), sizeof(float));
+    file.read(reinterpret_cast<char*>(&new_node.aabb_index), sizeof(aabb_index));
 
     return new_node;
 }
 
-OctreeNode* OctreeNodeSerializable::toLeafNode(const AABB& node_aabb) const{
-    OctreeNode* new_node = new OctreeNode(node_aabb);
+OctreeNode* OctreeNodeSerializable::toLeafNode(const IdAABB& node_aabb_index) const {
+    OctreeNode* new_node = new OctreeNode(node_aabb_index);
     new_node->counter = counter;
     new_node->children_ids = children_ids;
-    new_node->aabb = node_aabb;
 
+    const AABB& node_aabb = GlobalVariables::getAABB(node_aabb_index);
     if(points != ""){
         ChunkSerializable points_deserialized = ChunkSerializable::deserialize(
             getChunkFilePath(node_aabb, false)
@@ -399,61 +376,36 @@ OctreeNode* OctreeNodeSerializable::toLeafNode(const AABB& node_aabb) const{
     return new_node;
 }
 
-OctreeNode* OctreeNodeSerializable::toOctreeNodes(
-    const AABB& root_aabb, bool node_only
-){
-    std::unordered_map<AABB, std::shared_ptr<CPUFallbackCache::Entry>, AABB::Hash> to_store = {};
+OctreeNode* OctreeNodeSerializable::toOctreeNodes(const IdAABB& root_aabb_index){
+    std::unordered_map<IdAABB, std::shared_ptr<CPUFallbackCache::Entry>> to_store = {};
     
     // Load all nodes indepentenly
-    std::function<OctreeNode*(const AABB, uint32_t, uint32_t)> recursion = 
-        [&](AABB cur_aabb, uint32_t id, uint32_t level) {
+    std::function<OctreeNode*(const IdAABB&, uint32_t, uint32_t)> recursion = 
+        [&](const IdAABB& cur_aabb_index, uint32_t id, uint32_t level) {
 
         // Check if the node is in CPU cache
-        to_store.erase(cur_aabb);
-        std::shared_ptr<CPUFallbackCache::Entry> entry = GlobalVariables::cpuCache->get(cur_aabb);
+        to_store.erase(cur_aabb_index);
+        std::shared_ptr<CPUFallbackCache::Entry> entry = GlobalVariables::cpuCache->get(cur_aabb_index);
         if(!entry){
             // If the node is not in CPU cache, load it from disk
-            std::shared_ptr<CPUFallbackCache::Entry> new_entry = nullptr;
-            {
-                // Block on loading from disk
-                std::lock_guard<std::mutex> lock(GlobalVariables::aabbMutexMap[cur_aabb]);
-                new_entry = std::make_shared<CPUFallbackCache::Entry>(cur_aabb);
-            }
+            std::shared_ptr<CPUFallbackCache::Entry> new_entry = std::make_shared<CPUFallbackCache::Entry>(cur_aabb_index);
             std::shared_ptr<CPUFallbackCache::Entry> old_entry = GlobalVariables::cpuCache->add(new_entry);
             if(old_entry){
-                to_store[old_entry->serializable_node.aabb] = old_entry;
+                to_store[old_entry->serializable_node.aabb_index] = old_entry;
             }
             entry = new_entry;
         }
         OctreeNode* new_node = entry->toLeafNode();
 
-        if(!node_only){
-            // new_node->display(id, level, true);
-            for(uint32_t child_id = 0; child_id < 8; child_id++){                    
-                // TODO: temporary code
-                std::optional<AABB> child_aabb = nullopt;
-                {
-                    std::lock_guard<std::mutex> lock(GlobalVariables::aabbRelationshipMapMtx);
-                    child_aabb = GlobalVariables::aabbRelationshipMap[cur_aabb][child_id];
-                }
-                if(child_aabb.has_value()){
-                    new_node->children[child_id] = recursion(child_aabb.value(), child_id, level+1);
-                }
-            }
-        }
-
         return new_node;
     };
 
-    OctreeNode* root = recursion(root_aabb, 0, 0);
+    OctreeNode* root = recursion(root_aabb_index, 0, 0);
 
     // Store the nodes that need to be on disk
     std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
-    for(auto [aabb, entry] : to_store){
+    for(auto [aabb_index, entry] : to_store){
 
-        // Block on storing to disk
-        std::lock_guard<std::mutex> lock(GlobalVariables::aabbMutexMap[aabb]);
-        
         OctreeNodeSerializable& new_node = entry->serializable_node;
         if(entry->serializable_points.has_value()){
             ChunkSerializable& serializable = entry->serializable_points.value();
@@ -464,7 +416,8 @@ OctreeNode* OctreeNodeSerializable::toOctreeNodes(
             serializable.serialize(new_node.voxels);
         }
 
-        new_node.serialize(getNodeFilePath(new_node.aabb));
+        const AABB& aabb = GlobalVariables::getAABB(aabb_index);
+        new_node.serialize(getNodeFilePath(aabb));
     };
 
     return root;
@@ -473,15 +426,14 @@ OctreeNode* OctreeNodeSerializable::toOctreeNodes(
 
 
 
-void storeOctree(const OctreeNode* node, bool node_only
-){
-    OctreeNodeSerializable::serialize(node, node_only);
+void storeOctree(const OctreeNode* node){
+    OctreeNodeSerializable::serialize(node);
     // println("Done storing octree");
 }
 
-OctreeNode* loadOctree(const AABB& root_aabb, bool node_only){
+OctreeNode* loadOctree(const IdAABB& root_aabb_index){
     // println("Start loading octree");
-    OctreeNode* res = OctreeNodeSerializable::toOctreeNodes(root_aabb, node_only);
+    OctreeNode* res = OctreeNodeSerializable::toOctreeNodes(root_aabb_index);
     // println("Done loading octree");
     return res;
 }
@@ -500,14 +452,12 @@ void updateUpdatesCache(OctreeNode* root_octree){
         }
 
         if(cur_node->updated){
-            GlobalVariables::updatesCache->add(cur_node->aabb);
+            GlobalVariables::updatesCache->add(cur_node->aabb_index);
         }
 
     };
 
     recursionAddToCache(root_octree);
-
-    uint32_t cpt_stored = 0;
 
     // Traverse octree and remove nodes that were just serialized
     std::function<bool(OctreeNode*, uint32_t, uint32_t)> 
@@ -523,12 +473,11 @@ void updateUpdatesCache(OctreeNode* root_octree){
             }
         }
 
-        bool is_in_cache = GlobalVariables::updatesCache->contains(cur_node->aabb);
+        bool is_in_cache = GlobalVariables::updatesCache->contains(cur_node->aabb_index);
         bool to_remove = false;
         if(!is_in_cache){
-            storeOctree(cur_node, true);
-            cpt_stored++;
-            to_remove = !GlobalVariables::visibilityCache->contains(cur_node->aabb);
+            storeOctree(cur_node);
+            to_remove = !GlobalVariables::visibilityCache->contains(cur_node->aabb_index);
         }
 
         cur_node->updated = false;

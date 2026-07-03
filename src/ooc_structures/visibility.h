@@ -23,23 +23,37 @@ struct Frustum {
     void display() const;
 };
 
-/// Get a list of all visible nodes that are either loaded or in cache
-std::unordered_set<AABB, AABB::Hash> getVisibleNodes(const Frustum& frustum);
+struct Visibility {
+    /// Get a list of all visible nodes that are either loaded or in cache
+    static std::unordered_set<IdAABB> getVisibleNodes(
+        const Frustum& frustum,
+        std::shared_ptr<AABBRelationshipMap> relationship_map_ref
+    );
 
-/// Order the visible nodes from furthest to closest
-/// All nodes in the list must appear only once
-/// All nodes in the list must have their parent in the list
-/// All nodes in the list must have their parent marked as closest
-std::vector<AABB> orderNodes(
-    const AABB& root_node,
-    const std::unordered_set<AABB, AABB::Hash>& visible_nodes,
-    const vec3& camera_pos
-);
+    /// Order the visible nodes from furthest to closest
+    /// All nodes in the list must appear only once
+    /// All nodes in the list must have their parent in the list
+    /// All nodes in the list must have their parent marked as closest
+    static std::vector<IdAABB> orderNodes(
+        const IdAABB& root_node,
+        const std::unordered_set<IdAABB>& visible_nodes,
+        const vec3& camera_pos,
+        std::shared_ptr<AABBRelationshipMap> relationship_map_ref
+    );
 
-/// Fill the visibility cache with the ordered nodes
-/// Also load and store the nodes according to the cache
-void fillVisibilityCache(const std::vector<AABB>& nodes, OctreeNode* root_octree);
+    /// Fill the visibility cache with the ordered nodes
+    /// Also load and store the nodes according to the cache
+    static void fillVisibilityCache(
+        const std::vector<IdAABB>& nodes, 
+        OctreeNode* root_octree,
+        std::shared_ptr<AABBRelationshipMap> relationship_map_ref
+    );
 
 
-/// Update visibility cache and the current octree by taking into account the visibility of each nodes
-void updateVisibilityCache(const mat4& view, const mat4& proj);
+    /// Update visibility cache and the current octree by taking into account the visibility of each nodes
+    static void updateVisibilityCache(
+        const mat4& view, const mat4& proj, 
+        std::shared_ptr<OctreeNode>& octree_ref,
+        std::shared_ptr<AABBRelationshipMap> relationship_map_ref
+    );
+};
