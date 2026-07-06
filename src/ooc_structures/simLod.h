@@ -2,48 +2,51 @@
 
 #include "globals.h"
 
-/// SimLOD octree update
-void simLodUpdate(
-    OctreeNode* main_root, 
-    std::shared_ptr<vector<Point>>& points
-);
+struct SimLod {
+    /// SimLOD octree update
+    static void update(
+        OctreeNode* main_root, 
+        std::shared_ptr<vector<Point>>& points,
+        std::shared_ptr<AABBRelationshipMap> relationship_map_ref
+    );
 
-/// SimLOD counting pass
-void simLodCount(
-    OctreeNode* main_root, 
-    std::shared_ptr<vector<Point>>& points,
-    std::shared_ptr<vector<Point>>& spilled_points,
-    std::shared_ptr<vector<OctreeNode*>>& spilling_nodes
-);
+    /// SimLOD loading pass
+    static void load(
+        OctreeNode* main_root, 
+        std::shared_ptr<vector<Point>>& points,
+        std::shared_ptr<AABBRelationshipMap> relationship_map_ref
+    );
 
-/// SimLOD splitting pass
-void simLodSplit(
-    std::shared_ptr<vector<Point>>& spilled_points,
-    std::shared_ptr<vector<OctreeNode*>>& spilling_nodes
-);
+    /// SimLOD counting pass
+    static void count(
+        OctreeNode* main_root, 
+        std::shared_ptr<vector<Point>>& points,
+        std::shared_ptr<vector<Point>>& spilled_points,
+        std::shared_ptr<vector<OctreeNode*>>& spilling_nodes
+    );
 
-/// SimLOD voxel sampling pass
-void simLodVoxelSampling(
-    OctreeNode* main_root, 
-    std::shared_ptr<vector<Point>>& points,
-    std::shared_ptr<vector<Point>>& spilled_points,
-    std::shared_ptr<vector<Point>>& backlog_voxels,
-    std::shared_ptr<vector<OctreeNode*>>& backlog_voxels_nodes
-);
+    /// SimLOD splitting pass
+    static void split(
+        std::shared_ptr<vector<Point>>& spilled_points,
+        std::shared_ptr<vector<OctreeNode*>>& spilling_nodes,
+        std::shared_ptr<AABBRelationshipMap> relationship_map_ref
+    );
 
-/// SimLOD point insertion pass
-void simLodInsertion(
-    OctreeNode* main_root, 
-    std::shared_ptr<vector<Point>>& points,
-    std::shared_ptr<vector<Point>>& spilled_points,
-    std::shared_ptr<vector<Point>>& backlog_voxels,
-    std::shared_ptr<vector<OctreeNode*>>& backlog_voxels_nodes
-);
+    /// SimLOD voxel sampling pass
+    static void voxelSampling(
+        OctreeNode* main_root, 
+        std::shared_ptr<vector<Point>>& points,
+        std::shared_ptr<vector<Point>>& spilled_points,
+        std::shared_ptr<vector<Point>>& backlog_voxels,
+        std::shared_ptr<vector<OctreeNode*>>& backlog_voxels_nodes
+    );
 
-
-
-/// SimLOD loading pass
-void simLodLoad(
-    OctreeNode* main_root, 
-    std::shared_ptr<vector<Point>>& points
-);
+    /// SimLOD point insertion pass
+    static void insertion(
+        OctreeNode* main_root, 
+        std::shared_ptr<vector<Point>>& points,
+        std::shared_ptr<vector<Point>>& spilled_points,
+        std::shared_ptr<vector<Point>>& backlog_voxels,
+        std::shared_ptr<vector<OctreeNode*>>& backlog_voxels_nodes
+    );
+};

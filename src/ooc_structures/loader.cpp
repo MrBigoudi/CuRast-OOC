@@ -5,7 +5,7 @@
 
 
 void initLoadPointBatches(string file){
-    std::shared_ptr<Timing> timing = addTiming(format("init load file: {}", file), true);
+    std::shared_ptr<Timing> timing = Timing::addTiming(format("init load file: {}", file), true);
 
 	// Basic checks
 	if(!fs::exists(file)){
@@ -42,27 +42,27 @@ void initLoadPointBatches(string file){
 	// Create batches
 	uint64_t num_points = header->number_of_point_records ? header->number_of_point_records : header->extended_number_of_point_records;
 
-	for(uint64_t first_point = 0; first_point < num_points; first_point += CuRastSettings::maxBatchSize){
+	for(uint64_t first_point = 0; first_point < num_points; first_point += OocSimLodSettings::MAX_POINTS_PER_BATCHES){
 
 		uint32_t free_index = 0;
 		// Find the index where to put the new batch
 		// If no space is free on the queue, wait until space is found
 		while(true){
 			bool found = false;
-			for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
-				std::lock_guard<std::mutex> lock(batchesQueueMutexes[i]);
-				if(batchesQueue[i]){continue;}
+			for(uint32_t i=0; i<OocSimLodSettings::BATCHES_LIST_SIZE; i++){
+				std::lock_guard<std::mutex> lock(GlobalVariables::batchesQueueMutexes[i]);
+				if(GlobalVariables::batchesQueue[i]){continue;}
 				free_index = i;
 				found = true;
 				break;
 			}
 			if(found){break;}
 
-			if(!CPU_PARALLELISED){
-				uint32_t old_queue_size = BATCHES_QUEUE_SIZE;
-				BATCHES_QUEUE_SIZE *= 2;
-				batchesQueue.resize(BATCHES_QUEUE_SIZE);
-				batchesQueueMutexes.resize(BATCHES_QUEUE_SIZE);
+			if(!OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+				uint32_t old_queue_size = OocSimLodSettings::BATCHES_LIST_SIZE;
+				OocSimLodSettings::BATCHES_LIST_SIZE *= 2;
+				GlobalVariables::batchesQueue.resize(OocSimLodSettings::BATCHES_LIST_SIZE);
+				GlobalVariables::batchesQueueMutexes.resize(OocSimLodSettings::BATCHES_LIST_SIZE);
 			} else {
 				// Wait a bit to give time for the queue to be emptied
 				std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -73,11 +73,11 @@ void initLoadPointBatches(string file){
 		new_batch->file = shared_file;
 		new_batch->header = shared_header;
 		new_batch->first = first_point;
-		new_batch->count = std::min(num_points - first_point, uint64_t(CuRastSettings::maxBatchSize));
+		new_batch->count = std::min(num_points - first_point, uint64_t(OocSimLodSettings::MAX_POINTS_PER_BATCHES));
 		new_batch->state = BatchState::ToLoad;
 	
-		std::lock_guard<std::mutex> lock(batchesQueueMutexes[free_index]);
-		batchesQueue[free_index] = new_batch;
+		std::lock_guard<std::mutex> lock(GlobalVariables::batchesQueueMutexes[free_index]);
+		GlobalVariables::batchesQueue[free_index] = new_batch;
 	}
 
     timing->stop_clock();
@@ -87,25 +87,33 @@ void initLoadPointBatches(string file){
 
 
 void loadPointsInBatches(){
-	std::vector<uint32_t> batches_indices(MAX_BATCHES_PER_LOAD, 0);
+	std::vector<uint32_t> batches_indices(OocSimLodSettings::MAX_BATCHES_PER_LOAD, 0);
 	uint32_t last_index = 0;
 
 	
-	for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
-		std::lock_guard<std::mutex> lock(batchesQueueMutexes[i]);
-		if(batchesQueue[i] && batchesQueue[i]->state == BatchState::ToLoad){
+	for(uint32_t i=0; i<OocSimLodSettings::BATCHES_LIST_SIZE; i++){
+		std::lock_guard<std::mutex> lock(GlobalVariables::batchesQueueMutexes[i]);
+		if(GlobalVariables::batchesQueue[i] && GlobalVariables::batchesQueue[i]->state == BatchState::ToLoad){
 			batches_indices[last_index] = i;
 			last_index++;
-			if(last_index >= MAX_BATCHES_PER_LOAD){break;}
+			if(last_index >= OocSimLodSettings::MAX_BATCHES_PER_LOAD){break;}
 		}
 	}
 	if(last_index == 0){return;}
+	static uint32_t lastLoadAttempt = 0;
+	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL && batches_indices.size() < OocSimLodSettings::MIN_BATCHES_PER_LOAD){
+		if(lastLoadAttempt < OocSimLodSettings::MAX_ATTEMPTS_BEFORE_IGNORING_MIN_VARIABLES){
+			lastLoadAttempt++;
+			return;
+		} 
+	}
+	lastLoadAttempt = 0;
 
-    std::shared_ptr<Timing> timing = addTiming("load points in batches", true);
+    std::shared_ptr<Timing> timing = Timing::addTiming("load points in batches", true);
 
 	auto lambda = [&](uint32_t index){
-		std::lock_guard<std::mutex> lock(batchesQueueMutexes[index]);
-		std::shared_ptr<PointBatch> batch = batchesQueue[index];
+		std::lock_guard<std::mutex> lock(GlobalVariables::batchesQueueMutexes[index]);
+		std::shared_ptr<PointBatch> batch = GlobalVariables::batchesQueue[index];
 
 		laszip_POINTER laszip_reader;
 		if(laszip_create(&laszip_reader)){
@@ -173,7 +181,7 @@ void loadPointsInBatches(){
 
 	auto first = batches_indices.begin();
 	auto last = first + last_index;
-	if(CPU_PARALLELISED){
+	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 		std::for_each(std::execution::par, first, last, lambda);
 	} else {
 		std::for_each(first, last, lambda);
@@ -184,31 +192,39 @@ void loadPointsInBatches(){
 
 
 void loadBatchesOnGPU(CuRast* editor, CUcontext* ctx){
-	std::vector<uint32_t> batches_indices(MAX_BATCHES_PER_GPU_LOAD, 0);
+	std::vector<uint32_t> batches_indices(OocSimLodSettings::MAX_BATCHES_PER_GPU_LOAD, 0);
 	uint32_t last_index = 0;
 
-	for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
-		std::lock_guard<std::mutex> lock(batchesQueueMutexes[i]);
-		if(batchesQueue[i] && batchesQueue[i]->state == BatchState::Inserted){
+	for(uint32_t i=0; i<OocSimLodSettings::BATCHES_LIST_SIZE; i++){
+		std::lock_guard<std::mutex> lock(GlobalVariables::batchesQueueMutexes[i]);
+		if(GlobalVariables::batchesQueue[i] && GlobalVariables::batchesQueue[i]->state == BatchState::Inserted){
 			batches_indices[last_index] = i;
 			last_index++;
-			if(last_index >= MAX_BATCHES_PER_GPU_LOAD){break;}
+			if(last_index >= OocSimLodSettings::MAX_BATCHES_PER_GPU_LOAD){break;}
 		}
 	}
 	if(last_index == 0){return;}
+	static uint32_t lastGPULoadAttempt = 0;
+	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL && batches_indices.size() < OocSimLodSettings::MIN_BATCHES_PER_GPU_LOAD){
+		if(lastGPULoadAttempt < OocSimLodSettings::MAX_ATTEMPTS_BEFORE_IGNORING_MIN_VARIABLES){
+			lastGPULoadAttempt++;
+			return;
+		} 
+	}
+	lastGPULoadAttempt = 0;
 
-    std::shared_ptr<Timing> timing = addTiming("send points to GPU memory", true);
+    std::shared_ptr<Timing> timing = Timing::addTiming("send points to GPU memory", true);
 
 	std::mutex mtx_counter;
 
 	auto lambda = [&](uint32_t index){
-		std::lock_guard<std::mutex> lock(batchesQueueMutexes[index]);
-		std::shared_ptr<PointBatch> batch = batchesQueue[index];
+		std::lock_guard<std::mutex> lock(GlobalVariables::batchesQueueMutexes[index]);
+		std::shared_ptr<PointBatch> batch = GlobalVariables::batchesQueue[index];
 
         // Upload positions and colors to GPU
         CUdeviceptr cptr_positions, cptr_colors;
 
-		if(CPU_PARALLELISED){
+		if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 			cuCtxSetCurrent(*ctx);
 		}
 
@@ -275,7 +291,7 @@ void loadBatchesOnGPU(CuRast* editor, CUcontext* ctx){
 
 		{
 			std::lock_guard<std::mutex> lock_counter(mtx_counter);
-			NB_POINTS += batch->count;
+			GlobalVariables::nbPoints += batch->count;
 		}
 
 		// std::lock_guard<std::mutex> lock_scene(updateSceneMutex);
@@ -284,7 +300,7 @@ void loadBatchesOnGPU(CuRast* editor, CUcontext* ctx){
 
 	auto first = batches_indices.begin();
 	auto last = first + last_index;
-	if(CPU_PARALLELISED){
+	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 		std::for_each(std::execution::par, first, last, lambda);
 	} else {
 		std::for_each(first, last, lambda);
@@ -301,10 +317,10 @@ void loadPointcloudRoutine(){
 };
 
 void clearUnusedBatches(){
-	for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
-		std::lock_guard<std::mutex> lock(batchesQueueMutexes[i]);
-		if(batchesQueue[i] && batchesQueue[i]->state == BatchState::ToRemove){
-			batchesQueue[i] = nullptr;
+	for(uint32_t i=0; i<OocSimLodSettings::BATCHES_LIST_SIZE; i++){
+		std::lock_guard<std::mutex> lock(GlobalVariables::batchesQueueMutexes[i]);
+		if(GlobalVariables::batchesQueue[i] && GlobalVariables::batchesQueue[i]->state == BatchState::ToRemove){
+			GlobalVariables::batchesQueue[i] = nullptr;
 		}
 	}
 }

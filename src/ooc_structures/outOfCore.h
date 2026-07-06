@@ -4,6 +4,7 @@
 #include "globals.h"
 
 #include <array>
+#include <bits/stdc++.h>
 
 ///////////////////////////////////////////////////////////////////////////////
 //////////////////////////// FORWARD DECLARATION //////////////////////////////
@@ -21,7 +22,7 @@ struct OctreeNodeSerializable;
 /// A serializable chunk
 struct ChunkSerializable {
 	/// All chunk have the same physical size even if empty
-	std::vector<std::array<Point, POINTS_PER_CHUNK>> points = {};
+	std::vector<std::array<Point, OocSimLodSettings::NB_POINTS_PER_CHUNK>> points = {};
 	std::vector<uint32_t> sizes = {};
 
     ChunkSerializable(){};
@@ -34,26 +35,63 @@ struct ChunkSerializable {
 /// A serializable node
 struct OctreeNodeSerializable {
 	uint32_t counter = 0;
-	uint8_t children = 0b00000000;
 	uint8_t children_ids = 0b00000000;
 	std::string points = "";
 	std::string voxels = "";
-    AABB aabb = {};
+    IdAABB aabb_index = {};
+
+    friend CPUFallbackCache;
 
     OctreeNodeSerializable(){};
 
-    /// Serializes all points, voxels and grids
-    static void init(const OctreeNode* node, bool node_only);
-
-    static OctreeNode* toOctreeNodes(
-        const AABB& root_aabb, bool node_only
-    );
+    /// Serializes all nodes, points, and voxels
+    static void serialize(const OctreeNode* node);
+    static OctreeNode* toOctreeNodes(const IdAABB& node_aabb_index);
 
     private:
         // helpers
         void serialize(const std::string& filepath) const;
         static OctreeNodeSerializable deserialize(const std::string& filepath);
-        OctreeNode* toLeafNode(const AABB& node_aabb) const;
+        OctreeNode* toLeafNode(const IdAABB& node_aabb_index) const;
+};
+
+
+/// The LRU cache for the CPU fallback (before storing on disk)
+/// https://www.geeksforgeeks.org/dsa/lru-cache-implementation-using-double-linked-lists/
+struct CPUFallbackCache {
+	/// A cache entry
+	struct Entry {
+        OctreeNodeSerializable serializable_node;
+        std::optional<ChunkSerializable> serializable_points = nullopt;
+        std::optional<ChunkSerializable> serializable_voxels = nullopt;
+
+		/// A constructor from an existing node
+		Entry(const OctreeNode* node);
+        /// A constructor which is deserialized from an aabb
+        Entry(const IdAABB& aabb_index);
+
+		/// Builds an octree node from an entry
+		OctreeNode* toLeafNode() const;
+	};
+
+    /// The size of the cache
+	const uint32_t CACHE_SIZE;
+
+    /// The global cache
+    std::list<std::shared_ptr<Entry>> cache = {};
+	std::unordered_map<IdAABB, std::list<std::shared_ptr<Entry>>::iterator> cache_map = {};
+
+    /// Creates a cache given its size
+    CPUFallbackCache(uint32_t cache_size);
+
+    /// Add a node to the cache
+    /// Optionally return the node that was removed from the cache after the insertion
+    /// Note that new entries should overwrite its previous version if the node was already in cache
+    std::shared_ptr<Entry> add(const std::shared_ptr<Entry>& new_entry);
+
+    /// Get a node from the cache
+    std::shared_ptr<Entry> get(const IdAABB& aabb_index);
+
 };
 
 
@@ -81,11 +119,11 @@ std::string getChunkFilePath(const AABB& aabb, bool is_voxel);
 ///////////////////////////////////////////////////////////////////////////////
 
 /// Store an octree node given it's AABB and the main octree
-void storeOctree(const OctreeNode* node, bool node_only = false);
+void storeOctree(const OctreeNode* node);
 
 /// Load an octree from a file
 /// Recursively loads all root node's children
-OctreeNode* loadOctree(const AABB& root_aabb, bool node_only = false);
+OctreeNode* loadOctree(const IdAABB& root_aabb_index);
 
 /// Add nodes to the updates cache after octree update
 void updateUpdatesCache(OctreeNode* root_octree);

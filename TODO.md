@@ -2,21 +2,20 @@
 
 ## Next steps (in priority order)
 
-- Implement frustum culling on GPU side (or just disable non-visible nodes)
-- Add a settings file to avoid recompiling everytime
-- Clean the code + improve comments
-- Create uniform structure for better structuring in cuda code / gui
 - Measure timings and memory usage more precisely 
-- Batch the memcpy on loadingtogpu (ie separate memalloc from memcpy)
+- Clean the code + improve comments
+- Allocate memory once on CPU side to avoid new/delete and reuse it on demand
+- Only send new AABBs to the GPU
+
 
 ## Coding part
 
-- Add parameters to the UI (max nb batches, points per batches, etc...)
 - Automatically fetch CPU / GPU capacities to set the constants
-- Add a way to (manually ?) select the node to store / load
+- Replace exit(EXIT_FAILURE) with exception raise to catch it in the main and clear the temporary folder
 - Fix Vulkan segfault on quit
 - supress warnings
 - Replace list with fixed size array to prepare for GPU side
+
 
 ## Research part
 
@@ -26,6 +25,7 @@
 - Improve Color-filtering
 - Find a way to load closest batches first
 - Improve on linked-list approach ?
+
 
 ## Report part
 

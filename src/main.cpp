@@ -37,6 +37,7 @@
 #include "ooc_structures/loader.h"
 #include "ooc_structures/outOfCore.h"
 #include "ooc_structures/visibility.h"
+#include "ooc_structures/settings.h"
 
 
 using namespace std; // YOLO
@@ -302,13 +303,13 @@ void initScene() {
 		Runtime::controls->radius = 5.584;
 		Runtime::controls->target = { 0.679, -0.714, 5.163};
 
-		if(!CPU_PARALLELISED){
+		if(!OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 			initLoadPointBatches(file);
 			while(true){
 				loadPointsInBatches();
 				bool done = true;
-				for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
-					if(batchesQueue[i] && batchesQueue[i]->state != BatchState::Loaded){
+				for(uint32_t i=0; i<OocSimLodSettings::BATCHES_LIST_SIZE; i++){
+					if(GlobalVariables::batchesQueue[i] && GlobalVariables::batchesQueue[i]->state != BatchState::Loaded){
 						done = false;
 					}
 				}
@@ -317,8 +318,8 @@ void initScene() {
 			while(true){
 				addPointBatches();
 				bool done = true;
-				for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
-					if(batchesQueue[i] && batchesQueue[i]->state != BatchState::Inserted){
+				for(uint32_t i=0; i<OocSimLodSettings::BATCHES_LIST_SIZE; i++){
+					if(GlobalVariables::batchesQueue[i] && GlobalVariables::batchesQueue[i]->state != BatchState::Inserted){
 						done = false;
 					}
 				}
@@ -327,15 +328,14 @@ void initScene() {
 			while(true){
 				loadBatchesOnGPU(CuRast::instance);
 				bool done = true;
-				for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
-					if(batchesQueue[i] && batchesQueue[i]->state != BatchState::ToRemove){
+				for(uint32_t i=0; i<OocSimLodSettings::BATCHES_LIST_SIZE; i++){
+					if(GlobalVariables::batchesQueue[i] && GlobalVariables::batchesQueue[i]->state != BatchState::ToRemove){
 						done = false;
 					}
 				}
 				if(done){break;}
 			}
 			clearUnusedBatches();
-			loadOctreeOnGPU(CuRast::instance, &context);
 		} else {
 			std::thread thread_loadLion([&](std::string file){
 				initLoadPointBatches(file);
@@ -385,9 +385,9 @@ void initScene() {
 	// 	updatesCache = std::make_shared<LRUCache>("updates cache", correct_size);
 	// 	visibilityCache = std::make_shared<LRUCache>("visibility cache", LRU_VISIBILITY_CACHE_SIZE);
 	// 	LRUCache::stored_set = {};
-	// 	aabb_relationship_map.clear();
-	// 	aabb_mutex_map.clear();
-	// 	aabb_parent_map.clear();
+	// 	aabbRelationshipMap.clear();
+	// 	aabbMutexMap.clear();
+	// 	aabbParentMap.clear();
 
 	// 	loadLion();
 	// 	updateVisibilityCache(view, proj);
@@ -402,7 +402,7 @@ void initScene() {
 	// 		mainOctree->display();
 	// 		{
 	// 			std::lock_guard<std::mutex> lock(mainLoopIsTerminatingMtx);
-	// 			MAIN_LOOP_IS_TERMINATING = true;
+	// 			mainLoopIsTerminating = true;
 	// 			// Destroy temporary folder
 	// 			std::filesystem::remove_all(TEMPORARY_DIRECTORY);
 	// 		}
@@ -517,8 +517,8 @@ int main(int argc, char** argv){
 				while(true){
 					loadPointsInBatches();
 					bool done = true;
-					for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
-						if(batchesQueue[i] && batchesQueue[i]->state != BatchState::Loaded){
+					for(uint32_t i=0; i<OocSimLodSettings::BATCHES_LIST_SIZE; i++){
+						if(GlobalVariables::batchesQueue[i] && GlobalVariables::batchesQueue[i]->state != BatchState::Loaded){
 							done = false;
 						}
 					}
@@ -527,8 +527,8 @@ int main(int argc, char** argv){
 				while(true){
 					addPointBatches();
 					bool done = true;
-					for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
-						if(batchesQueue[i] && batchesQueue[i]->state != BatchState::Inserted){
+					for(uint32_t i=0; i<OocSimLodSettings::BATCHES_LIST_SIZE; i++){
+						if(GlobalVariables::batchesQueue[i] && GlobalVariables::batchesQueue[i]->state != BatchState::Inserted){
 							done = false;
 						}
 					}
@@ -537,21 +537,20 @@ int main(int argc, char** argv){
 				while(true){
 					loadBatchesOnGPU(CuRast::instance);
 					bool done = true;
-					for(uint32_t i=0; i<BATCHES_QUEUE_SIZE; i++){
-						if(batchesQueue[i] && batchesQueue[i]->state != BatchState::ToRemove){
+					for(uint32_t i=0; i<OocSimLodSettings::BATCHES_LIST_SIZE; i++){
+						if(GlobalVariables::batchesQueue[i] && GlobalVariables::batchesQueue[i]->state != BatchState::ToRemove){
 							done = false;
 						}
 					}
 					if(done){break;}
 				}
 				clearUnusedBatches();
-				loadOctreeOnGPU(CuRast::instance, &context);
 			}
 		});
 	};
 
 	VKRenderer::onFileDrop([&](vector<string> files){
-		if(CPU_PARALLELISED){
+		if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 			std::for_each(std::execution::par, files.begin(), files.end(), 
 				[&](string& file){
 					if(iEndsWith(file, ".las") || iEndsWith(file, ".laz")){
@@ -567,12 +566,14 @@ int main(int argc, char** argv){
 		}
 	});
 
-	// Create temporary folder
-	std::filesystem::create_directories(TEMPORARY_DIRECTORY);
 
+	// Create Global things
+	OocSimLodSettings::init();
+	GlobalVariables::init(CuRast::instance, &context);
+	std::filesystem::create_directories(OocSimLodSettings::TEMPORARY_NODE_STORAGE_DIRECTORY);
 	initScene();
 
-	if(CPU_PARALLELISED){
+	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 		// Loading points routine
 		std::thread thread_loading_points(loadPointcloudRoutine);
 		thread_loading_points.detach();
@@ -618,151 +619,31 @@ int main(int argc, char** argv){
 			Runtime::debugValues["stage 2"] = format("{:.3f}", stage2_millies);
 			Runtime::debugValues["stage 3"] = format("{:.3f}", stage3_millies);
 
-			// TODO: to remove
-			{
-				static AABB* test_stored_aabb = nullptr;
+			if(GlobalVariables::elapsedFrames > OocSimLodSettings::NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE){
+				GlobalVariables::elapsedFrames = 0;
 
-				// Testing stuff
-				if(CuRastSettings::storeOctree){
-					// mainOctree->display();
-					println("Start storing octree");
-					storeOctree(mainOctree.get());
-					test_stored_aabb = mainOctree->aabb;
-					println("Done storing octree");
-					CuRastSettings::storeOctree = false;
+				std::shared_ptr<OctreeNode> octree_ref = nullptr;
+				std::shared_ptr<AABBRelationshipMap> relationship_map_ref = nullptr;
+				
+				if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+					std::lock_guard<std::mutex> lock_send(GlobalVariables::isUpdatingMtx);
+					octree_ref = GlobalVariables::mainOctree;
+					relationship_map_ref = GlobalVariables::aabbRelationshipMapCpy;
+				} else {
+					octree_ref = GlobalVariables::mainOctree;
+					relationship_map_ref = GlobalVariables::aabbRelationshipMapCpy;
 				}
-				if(CuRastSettings::loadOctree){
-					println("Start loading octree");
-					OctreeNode* octree = loadOctree(*test_stored_aabb);
-					println("Done loading octree");
-					CuRastSettings::loadOctree = false;
-					
-					if(*mainOctree == *octree){
-						println("loaded == original, serialisation / deserialisation worked");
-					} else {
-						println("ERROR: loaded != original, serialisation / deserialisation failed");
-					}
 
-					mainOctree = std::shared_ptr<OctreeNode>(octree);
-
-					cuCtxSetCurrent(context);
-					loadOctreeOnGPU(CuRast::instance, &context, true);
-				}
-			}
-
-			// // TODO: to remove
-			// {
-			// 	static OctreeNode* random_node = nullptr; 
-			// 	static uint32_t random_depth = 0;
-			// 	static std::vector<NodePosition> random_path = {};
-
-			// 	// Testing stuff
-			// 	if(CuRastSettings::storeOctree){
-			// 		println("Start getting random node");
-			// 		random_node = mainOctree.get();
-			// 		random_device rd;
-			// 		mt19937 gen(rd());
-			// 		uniform_int_distribution<> distrib(2, mainOctree->getDepth());
-			// 		random_depth = distrib(gen);
-			// 		random_path = {};
-
-			// 		for(uint32_t i=1; i<random_depth; i++){
-			// 			uniform_int_distribution<> child_distrib(0, 8);
-			// 			uint32_t random_child = child_distrib(gen);
-			// 			bool found = false;
-			// 			for(uint32_t j=0; j<8; j++){
-			// 				uint32_t cur_child = (random_child + j) % 8;
-			// 				if(random_node->children[cur_child]){
-			// 					random_path.push_back((NodePosition)cur_child);
-			// 					random_node = random_node->children[cur_child];
-			// 					found = true;
-			// 					break;
-			// 				}
-			// 			}
-			// 			if(!found){break;}
-			// 		}
-			// 		printf("Random path: ");
-			// 		for(uint32_t i=0; i<random_path.size(); i++){
-			// 			printf("%d, ", random_path[i]);
-			// 		}
-			// 		println();
-
-			// 		// mainOctree->display();
-			// 		println("Start storing octree");
-			// 		storeOctree(random_node, true);
-			// 		println("Done storing octree");
-			// 		CuRastSettings::storeOctree = false;
-			// 	}
-			// 	if(CuRastSettings::loadOctree && random_node){
-			// 		println("Start loading octree");
-			// 		OctreeNode* octree = loadOctree(*random_node->aabb, true);
-			// 		CuRastSettings::loadOctree = false;
-
-			// 		mainOctree->display();
-
-			// 		println("Loaded single node:");
-			// 		octree->display(random_path.back(), random_path.size(), true);
-			// 		println();
-
-			// 		random_node = mainOctree.get();
-			// 		for(uint32_t i=0; i<random_path.size()-1; i++){
-			// 			random_node = random_node->children[random_path[i]];
-			// 		}
-			// 		println("Loaded subtree:");
-			// 		for(uint32_t i=0; i<8; i++){
-			// 			// octree->children[i] = random_node->children[random_path.back()]->children[i];
-			// 			if(random_node->children[random_path.back()]->children[i]){
-			// 				const AABB& aabb = *random_node->children[random_path.back()]->children[i]->aabb;
-			// 				if(LRUCache::hasBeenStored(aabb)){
-			// 					octree->children[i] = loadOctree(aabb);
-			// 				} else {
-			// 					octree->children[i] = random_node->children[random_path.back()]->children[i];
-			// 				}
-			// 				octree->children[i]->display(i, random_path.size()+1);
-			// 			}
-			// 		}
-			// 		println("Done loading octree");
-
-			// 		if(*random_node->children[random_path.back()] == *octree){
-			// 			println("loaded == original, serialisation / deserialisation worked");
-			// 		} else {
-			// 			println("ERROR: loaded != original, serialisation / deserialisation failed");
-			// 		}
-			// 		random_node->children[random_path.back()] = octree;
-
-
-			// 		cuCtxSetCurrent(context);
-			// 		loadOctreeOnGPU(CuRast::instance, &context, true);
-			// 	}
-			// }
-
-			if(elapsedFrames >= SEND_DATA_EVERY_X_FRAMES){
-				elapsedFrames = 0;
-				updateVisibilityCache(VKRenderer::view.view, VKRenderer::view.proj);
-				loadOctreeOnGPU(CuRast::instance, &context);
+				Visibility::updateVisibilityCache(VKRenderer::view.view, VKRenderer::view.proj,
+					octree_ref, relationship_map_ref
+				);
+				loadOctreeOnGPU(CuRast::instance, &context,
+					octree_ref, relationship_map_ref
+				);
 			}
 
 			freeOctreesOnGPU(CuRast::instance);
-			elapsedFrames++;
-
-			// { // TODO: remove, just for debugging
-
-			// 	// https://forums.developer.nvidia.com/t/best-way-to-report-memory-consumption-in-cuda/21042
-			// 	static double freeDB = 0.;
-			// 	uint64_t free_byte, total_byte = 0;
-			// 	double free_db, total_db, used_db = 0.;
-
-			// 	CURuntime::assertCudaSuccess(cuMemGetInfo(&free_byte, &total_byte));
-			// 	free_db = (double)free_byte; total_db = (double)total_byte; used_db = total_db - free_db;
-			// 	free_db /= (1024 * 1024); total_db /= (1024 * 1024); used_db /= (1024 * 1024);
-			// 	// Only display if changes bigger than X Mb
-			// 	if(abs(freeDB - floor(free_db)) >= 10){
-			// 		println("GPU usage\n    Total: {:L} Mb\n    InUse: {:L} Mb\n    Available: {:L} Mb",
-			// 			total_db, used_db, free_db
-			// 		);
-			// 		freeDB = floor(free_db);
-			// 	}
-			// }
+			GlobalVariables::elapsedFrames++;
 		},
 		[&]() {
 			CuRast::instance->render();
@@ -770,20 +651,10 @@ int main(int argc, char** argv){
 		[&]() {CuRast::instance->postFrame();}
 	);
 
-	{
-		std::lock_guard<std::mutex> lock(mainLoopIsTerminatingMtx);
-		MAIN_LOOP_IS_TERMINATING = true;
-		// Destroy temporary folder
-		std::filesystem::remove_all(TEMPORARY_DIRECTORY);
-	}
-
 	displayTimings();
 	displayBuffers();
+	OocSimLodSettings::display();
 
-	if(mainOctreeCpy){
-		delete(mainOctreeCpy);
-		mainOctreeCpy = nullptr;
-	}
-
+	GlobalVariables::destroy(CuRast::instance, &context);
 	VKRenderer::destroy();
 }
