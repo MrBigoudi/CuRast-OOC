@@ -550,12 +550,9 @@ void SimLod::countWithAtomic(
     std::shared_ptr<vector<OctreeNode*>>& spilling_nodes
 ){
 
-	std::mutex mtx_spilling_nodes;
-
-	auto countPoint = [&](Point& point, std::mutex& mtx_spilling_nodes){
+	auto countPoint = [&](Point& point) -> OctreeNode* {
 		// Reach corresponding leaf
 		OctreeNode* leaf = main_root;
-
 		uint8_t level = 1;
 
 		while(true){
@@ -576,50 +573,51 @@ void SimLod::countWithAtomic(
 				leaf->children_ids |= 0x01 << child_index;
 
 				// Skip if the point was already accepted at this level
-				if(point.color[3] == level){return;}
+				if(point.color[3] == level){return nullptr;}
 
 				// Flag point as accepted at this level
 				point.color[3] = level;
 
-				{
-					// Sync read / write to counter
-					uint32_t old_counter = leaf->counter.fetch_add(1u);
+				uint32_t old_counter = leaf->counter.fetch_add(1u);
 
-					if(old_counter == OocSimLodSettings::MAX_POINTS_PER_LEAF){
-						std::lock_guard<std::mutex> lock_spilling(mtx_spilling_nodes);
-						spilling_nodes->push_back(leaf);
-					}
+				if(old_counter == OocSimLodSettings::MAX_POINTS_PER_LEAF){
+					return leaf;
 				}
 
-				return;
+				return nullptr;
 			}
 		}
 	};
 
-	if(!OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-		for(Point& point : *points){
-			countPoint(point, mtx_spilling_nodes);
-		}
-		for(Point& point : *spilled_points){
-			countPoint(point, mtx_spilling_nodes);		
-		}
-	} else {
-		vector<uint32_t> first_indices = {};
-		uint32_t step_size = 100'000u;
+	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 		uint32_t nb_points = points->size();
 		uint32_t nb_spilled_points = spilled_points->size();
-		uint32_t max_nb_points = max(nb_points, nb_spilled_points);
-		for(uint32_t i=0; i<max_nb_points; i+=step_size){first_indices.push_back(i);}
+		std::vector<uint32_t> indices(nb_points + nb_spilled_points);
+		std::iota(indices.begin(), indices.end(), 0);
+		std::vector<OctreeNode*> tmp_spilled = std::vector<OctreeNode*>(nb_points + nb_spilled_points, nullptr);
 
-		std::for_each(std::execution::par, first_indices.begin(), first_indices.end(), [&](uint32_t index){
-			for(uint32_t i=0; i<step_size; i++){
-				if((index + i) >= nb_points){break;}
-				countPoint((*points)[index + i], mtx_spilling_nodes);
+		// Count points in parallel
+		std::for_each(std::execution::par, indices.begin(), indices.end(), [&](uint32_t index){
+			Point* point = nullptr;
+			if(index >= nb_points){
+				point = &(*spilled_points)[index - nb_points];
+			} else {
+				point = &(*points)[index];
 			}
-			for(uint32_t i=0; i<step_size; i++){
-				if((index + i) >= nb_spilled_points){break;}
-				countPoint((*spilled_points)[index + i], mtx_spilling_nodes);
-			}
+			tmp_spilled[index] = countPoint(*point);
+		});
+		// Add spilling nodes sequentially
+		for(OctreeNode* node : tmp_spilled){
+			if(node){spilling_nodes->push_back(node);}
+		}
+	} else {
+		std::for_each(points->begin(), points->end(), [&](Point& point){
+			std::optional<OctreeNode*> spilled = countPoint(point);
+			if(spilled.has_value()){spilling_nodes->push_back(spilled.value());}
+		});
+		std::for_each(spilled_points->begin(), spilled_points->end(), [&](Point& point){
+			std::optional<OctreeNode*> spilled = countPoint(point);		
+			if(spilled.has_value()){spilling_nodes->push_back(spilled.value());}
 		});
 	}
 }
