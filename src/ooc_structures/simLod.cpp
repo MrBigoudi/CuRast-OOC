@@ -722,6 +722,16 @@ void SimLod::insertionWithAtomic(
     std::shared_ptr<vector<OctreeNode*>>& backlog_voxels_nodes
 ){
 
+	std::unordered_map<OctreeNode*, std::mutex> points_mtx_map = {};
+	std::function<void(OctreeNode*)> mapFill = [&](OctreeNode* root){
+		if(!root){return;}
+		points_mtx_map[root];
+		for(uint32_t i=0; i< 8; i++){
+			mapFill(root->children[i]);
+		}
+	};
+	mapFill(main_root);
+
 	auto insertPoint = [&](Point& point, OctreeNode* main_node){
 		OctreeNode* cur_node = main_node;
 		// Reach all corresponding leaves
@@ -734,6 +744,7 @@ void SimLod::insertionWithAtomic(
 			if(cur_node->children[child_index]){
 				cur_node = cur_node->children[child_index];
 			} else {
+				std::lock_guard<std::mutex>lock(points_mtx_map[cur_node]);
 				if(!cur_node->points){cur_node->points = new Chunk();}
 				Chunk* chunk_list = cur_node->points;
 				while(chunk_list->next){chunk_list = chunk_list->next;}
@@ -762,18 +773,7 @@ void SimLod::insertionWithAtomic(
 		return;
 	};
 
-	if(!OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-		for(Point& point : *points){
-			insertPoint(point, main_root);
-		}
-		for(Point& point : *spilled_points){
-			insertPoint(point, main_root);		
-		}
-		uint32_t nb_new_voxels = backlog_voxels->size();
-		for(uint32_t i=0; i<nb_new_voxels; i++){
-			insertVoxel((*backlog_voxels)[i], (*backlog_voxels_nodes)[i]);
-		}
-	} else {
+	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 		std::thread parallel_thread([&](){
 			uint32_t nb_new_voxels = backlog_voxels->size();
 			for(uint32_t i=0; i<nb_new_voxels; i++){
@@ -781,14 +781,25 @@ void SimLod::insertionWithAtomic(
 			}
 		});
 
-		for(Point& point : *points){
+		std::for_each(std::execution::par, points->begin(), points->end(), [&](Point& point){
 			insertPoint(point, main_root);
-		}
-		for(Point& point : *spilled_points){
-			insertPoint(point, main_root);		
-		}
+		});
+		std::for_each(std::execution::par, spilled_points->begin(), spilled_points->end(), [&](Point& point){
+			insertPoint(point, main_root);
+		});
 
 		parallel_thread.join();
+	} else {
+		std::for_each(points->begin(), points->end(), [&](Point& point){
+			insertPoint(point, main_root);
+		});
+		std::for_each(spilled_points->begin(), spilled_points->end(), [&](Point& point){
+			insertPoint(point, main_root);
+		});
+		uint32_t nb_new_voxels = backlog_voxels->size();
+		for(uint32_t i=0; i<nb_new_voxels; i++){
+			insertVoxel((*backlog_voxels)[i], (*backlog_voxels_nodes)[i]);
+		}
 	}
 
 }
