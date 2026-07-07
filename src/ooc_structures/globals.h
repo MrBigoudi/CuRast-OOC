@@ -124,12 +124,12 @@ struct PointBatch {
 
 struct OccupancyGrid {
 	// gridsize^3 occupancy grid; 1 bit per voxel
-	uint32_t values[OocSimLodSettings::GRID_SIZE / 32] = {0};
+	std::atomic<uint32_t> values[OocSimLodSettings::GRID_SIZE / 32] = {0};
 
 	OccupancyGrid(){}
 	OccupancyGrid(const OccupancyGrid& cpy){
 		for(uint32_t i=0; i<OocSimLodSettings::GRID_SIZE / 32; i++){
-			values[i] = cpy.values[i];
+			values[i] = cpy.values[i].load();
 		}
 		assert(cpy == *this);
 	}
@@ -198,7 +198,7 @@ struct OctreeNode {
 	OccupancyGrid* occupancy = nullptr;
 	IdAABB aabb_index = {};
 
-	uint32_t counter = 0;
+	std::atomic<uint32_t> counter = 0;
 	uint8_t children_ids = 0b00000000;
 	uint8_t children_visibility = 0b00000000;
 	uint8_t level = 0;
@@ -244,9 +244,10 @@ struct OctreeNode {
 	}
 
 	OctreeNode(IdAABB aabb_index) : aabb_index(aabb_index){}
-	OctreeNode(const OctreeNode& cpy) : aabb_index(cpy.aabb_index), counter(cpy.counter),
+	OctreeNode(const OctreeNode& cpy) : aabb_index(cpy.aabb_index),
 		children_ids(cpy.children_ids)
 	{
+		counter.store(cpy.counter.load());
 		points = cpy.points ? new Chunk(*cpy.points) : nullptr;
 		voxels = cpy.voxels ? new Chunk(*cpy.voxels) : nullptr;
 		occupancy = cpy.occupancy ? new OccupancyGrid(*cpy.occupancy) : nullptr;

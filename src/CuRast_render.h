@@ -764,6 +764,7 @@ void CuRast::draw(Scene* scene, vector<View> views){
 			// Batches info
 			dvlist.push_back({"\n# total batches          ", format("{:30L}", nb_batches)});
 			dvlist.push_back({"# total points           ", format("{:30L}", GlobalVariables::nbPoints)});
+			dvlist.push_back({"# total nodes           ", format("{:30L}", GlobalVariables::allAABBs.size())});
 			dvlist.push_back({"batches GPU memory usage ", formatMemSize(points_gpu_memory)});
 			
 		}

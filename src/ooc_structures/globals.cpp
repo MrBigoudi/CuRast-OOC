@@ -278,10 +278,12 @@ OccupancyGrid::GridIndex OccupancyGrid::getCellIndices(const AABB& aabb, const P
     return GridIndex(word_index, bit_index, glm::uvec3(grid_x, grid_y, grid_z));
 }
 bool OccupancyGrid::isCellOcupied(const GridIndex& index) const {
-    return (values[index.word] & (1u << index.bit)) != 0;
+    return (values[index.word].load() & (1u << index.bit)) != 0;
 }
 void OccupancyGrid::markCellAsFilled(const GridIndex& index){
-    values[index.word] |= (1u << index.bit);
+    uint32_t old_value = values[index.word].load();
+    uint32_t new_value = old_value |= (1u << index.bit);
+    values[index.word].store(new_value);
 }
 vec3 OccupancyGrid::getCellCentroid(const AABB& aabb, const GridIndex& index) {
     vec3 world_grid_size = aabb.getSize() / float(OocSimLodSettings::GRID_SIZE_PER_DIMENSION);
@@ -334,7 +336,7 @@ void OctreeNode::display(uint32_t id, uint32_t level, bool node_only) const {
         "visibility: {}, children visibility: 0b{}{}{}{}{}{}{}{}, "
         "points location: 0b{}{}{}{}{}{}{}{}, children: 0b{}{}{}{}{}{}{}{}",
 
-        level, id, aabb_index, counter, updated, getNbPoints(), getNbVoxels(), is_visible,
+        level, id, aabb_index, counter.load(), updated, getNbPoints(), getNbVoxels(), is_visible,
         uint8_t(bool(children_visibility & 0x01 << 0)),
         uint8_t(bool(children_visibility & 0x01 << 1)),
         uint8_t(bool(children_visibility & 0x01 << 2)),

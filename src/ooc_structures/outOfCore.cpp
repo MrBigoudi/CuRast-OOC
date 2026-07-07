@@ -56,7 +56,7 @@ std::string getChunkFilePath(const AABB& aabb, bool is_voxel){
 /// A constructor from an existing node
 CPUFallbackCache::Entry::Entry(const OctreeNode* node){
     serializable_node = {};
-    serializable_node.counter = node->counter;
+    serializable_node.counter = node->counter.load();
     serializable_node.children_ids = node->children_ids;
     serializable_node.aabb_index = node->aabb_index;
 
@@ -94,7 +94,7 @@ CPUFallbackCache::Entry::Entry(const IdAABB& aabb_index){
 /// Builds an octree node from an entry
 OctreeNode* CPUFallbackCache::Entry::toLeafNode() const {
     OctreeNode* new_node = new OctreeNode(serializable_node.aabb_index);
-    new_node->counter = serializable_node.counter;
+    new_node->counter.store(serializable_node.counter);
     new_node->children_ids = serializable_node.children_ids;
 
     if(serializable_points.has_value()){
@@ -354,7 +354,7 @@ OctreeNodeSerializable OctreeNodeSerializable::deserialize(const std::string& fi
 
 OctreeNode* OctreeNodeSerializable::toLeafNode(const IdAABB& node_aabb_index) const {
     OctreeNode* new_node = new OctreeNode(node_aabb_index);
-    new_node->counter = counter;
+    new_node->counter.store(counter);
     new_node->children_ids = children_ids;
 
     const AABB& node_aabb = GlobalVariables::getAABB(node_aabb_index);

@@ -12,7 +12,8 @@ void SimLod::update(
 	// main_root->display();
 
 	std::shared_ptr<Timing> timing = Timing::addTiming("simlod load", true, 1);
-	load(main_root, points, relationship_map_ref);
+	// load(main_root, points, relationship_map_ref);
+	loadWithAtomic(main_root, points, relationship_map_ref);
 	timing->stop_clock();
 
 	// println("//////////////////////////////////////////////////");
@@ -23,7 +24,8 @@ void SimLod::update(
 	std::shared_ptr<Timing> count_split_timing = Timing::addTiming("simlod count/split loop", true, 1);
 	while(true){
 		std::shared_ptr<Timing> timing = Timing::addTiming("simlod count", true, 2);
-		count(main_root, points, GlobalVariables::spilledPoints, GlobalVariables::spillingNodes);
+		// count(main_root, points, GlobalVariables::spilledPoints, GlobalVariables::spillingNodes);
+		countWithAtomic(main_root, points, GlobalVariables::spilledPoints, GlobalVariables::spillingNodes);
 		timing->stop_clock();
 
 		if(GlobalVariables::spillingNodes->size() == 0){
@@ -53,7 +55,8 @@ void SimLod::update(
 
 
 	timing = Timing::addTiming("simlod voxel sampling", true, 1);
-	voxelSampling(main_root, points, GlobalVariables::spilledPoints, GlobalVariables::backlogVoxels, GlobalVariables::backlogVoxelsNodes);
+	// voxelSampling(main_root, points, GlobalVariables::spilledPoints, GlobalVariables::backlogVoxels, GlobalVariables::backlogVoxelsNodes);
+	voxelSamplingWithAtomic(main_root, points, GlobalVariables::spilledPoints, GlobalVariables::backlogVoxels, GlobalVariables::backlogVoxelsNodes);
 	timing->stop_clock();
 
 	// println("//////////////////////////////////////////////////");
@@ -63,7 +66,8 @@ void SimLod::update(
 	
 
 	timing = Timing::addTiming("simlod insertion", true, 1);
-	insertion(main_root, points, GlobalVariables::spilledPoints, GlobalVariables::backlogVoxels, GlobalVariables::backlogVoxelsNodes);
+	// insertion(main_root, points, GlobalVariables::spilledPoints, GlobalVariables::backlogVoxels, GlobalVariables::backlogVoxelsNodes);
+	insertionWithAtomic(main_root, points, GlobalVariables::spilledPoints, GlobalVariables::backlogVoxels, GlobalVariables::backlogVoxelsNodes);
 	timing->stop_clock();
 
 	// println("//////////////////////////////////////////////////");
@@ -104,7 +108,7 @@ void SimLod::split(
 
 		uint8_t spilling_node_children = spilling_node->children_ids;
 
-		spilling_node->counter = 0;
+		spilling_node->counter.store(0);
 		spilling_node->children_ids = 0;
 		if(!spilling_node->occupancy){
 			spilling_node->occupancy = new OccupancyGrid();
@@ -461,4 +465,422 @@ void SimLod::insertion(
 			insertVoxels(node);
 		});
 	}
+}
+
+
+
+std::unordered_map<OctreeNode*, std::vector<uint32_t>> SimLod::fillPoints(
+	OctreeNode* main_root, 
+	std::shared_ptr<vector<Point>>& points,
+	uint32_t first_index
+){
+	std::unordered_map<OctreeNode*, std::vector<uint32_t>> res = {};
+
+	for(uint32_t i=first_index; i<points->size(); i++){
+		const Point& point = (*points)[i];
+		OctreeNode* leaf = main_root;
+
+		while(true){
+			const AABB& aabb = GlobalVariables::getAABB(leaf->aabb_index);
+			if(!aabb.contains(point.position)){
+				break;
+			}
+			if(!res.contains(leaf)){res[leaf] = {};}
+			res[leaf].push_back(i);
+
+			NodePosition child_index = aabb.getNextChildIndex(point.position);
+			// If not leaf continue
+			if(leaf->children[child_index]){
+				leaf = leaf->children[child_index];
+			}
+		}
+	}
+
+	return res;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+void SimLod::countWithAtomic(
+    OctreeNode* main_root,
+    std::shared_ptr<vector<Point>>& points,
+    std::shared_ptr<vector<Point>>& spilled_points,
+    std::shared_ptr<vector<OctreeNode*>>& spilling_nodes
+){
+
+	std::mutex mtx_spilling_nodes;
+
+	auto countPoint = [&](Point& point, std::mutex& mtx_spilling_nodes){
+		// Reach corresponding leaf
+		OctreeNode* leaf = main_root;
+
+		uint8_t level = 1;
+
+		while(true){
+			// Find next child
+			const AABB& aabb = GlobalVariables::getAABB(leaf->aabb_index);
+			NodePosition child_index = aabb.getNextChildIndex(point.position);
+
+			// If not leaf continue
+			if(leaf->children[child_index]){
+				leaf = leaf->children[child_index];
+				// Get node level
+				if(level == UINT8_MAX){
+					println("The octree has reached it's maximum depth size...");
+					exit(EXIT_FAILURE);
+				}
+				level++;
+			} else {
+				leaf->children_ids |= 0x01 << child_index;
+
+				// Skip if the point was already accepted at this level
+				if(point.color[3] == level){return;}
+
+				// Flag point as accepted at this level
+				point.color[3] = level;
+
+				{
+					// Sync read / write to counter
+					uint32_t old_counter = leaf->counter.fetch_add(1u);
+
+					if(old_counter == OocSimLodSettings::MAX_POINTS_PER_LEAF){
+						std::lock_guard<std::mutex> lock_spilling(mtx_spilling_nodes);
+						spilling_nodes->push_back(leaf);
+					}
+				}
+
+				return;
+			}
+		}
+	};
+
+	if(!OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+		for(Point& point : *points){
+			countPoint(point, mtx_spilling_nodes);
+		}
+		for(Point& point : *spilled_points){
+			countPoint(point, mtx_spilling_nodes);		
+		}
+	} else {
+		vector<uint32_t> first_indices = {};
+		uint32_t step_size = 100'000u;
+		uint32_t nb_points = points->size();
+		uint32_t nb_spilled_points = spilled_points->size();
+		uint32_t max_nb_points = max(nb_points, nb_spilled_points);
+		for(uint32_t i=0; i<max_nb_points; i+=step_size){first_indices.push_back(i);}
+
+		std::for_each(std::execution::par, first_indices.begin(), first_indices.end(), [&](uint32_t index){
+			for(uint32_t i=0; i<step_size; i++){
+				if((index + i) >= nb_points){break;}
+				countPoint((*points)[index + i], mtx_spilling_nodes);
+			}
+			for(uint32_t i=0; i<step_size; i++){
+				if((index + i) >= nb_spilled_points){break;}
+				countPoint((*spilled_points)[index + i], mtx_spilling_nodes);
+			}
+		});
+	}
+}
+
+
+
+void SimLod::voxelSamplingWithAtomic(
+    OctreeNode* main_root,
+    std::shared_ptr<vector<Point>>& points,
+    std::shared_ptr<vector<Point>>& spilled_points,
+    std::shared_ptr<vector<Point>>& backlog_voxels,
+    std::shared_ptr<vector<OctreeNode*>>& backlog_voxels_nodes
+){
+
+	typedef std::vector<std::pair<Point, OctreeNode*>> BackLog;
+
+	auto sampleVoxel = [&](Point& point) -> BackLog {
+		// Reach all corresponding inner nodes
+		OctreeNode* node = main_root;
+
+		BackLog backlog = {};
+
+		while(true){
+			if(!node->occupancy){return backlog;}
+
+			// Find next child
+			const AABB& aabb = GlobalVariables::getAABB(node->aabb_index);
+			NodePosition child_index = aabb.getNextChildIndex(point.position);
+			if(!node->children[child_index]){return backlog;}
+
+			// Sample voxel occupancy grid at this location if the node is inner for this point
+			OccupancyGrid::GridIndex index = OccupancyGrid::getCellIndices(aabb, point);
+			bool is_cell_occupied = node->occupancy->isCellOcupied(index);
+
+			if(!is_cell_occupied){
+				// Fill up occupancy grid
+				node->occupancy->markCellAsFilled(index);
+				// Create corresponding voxel using this point
+				vec3 voxel_centroid = OccupancyGrid::getCellCentroid(aabb, index);
+				Point new_voxel = {};
+				new_voxel.position = voxel_centroid;
+				new_voxel.color[0] = point.color[0];
+				new_voxel.color[1] = point.color[1];
+				new_voxel.color[2] = point.color[2];
+
+				// Add voxel to backlog buffers
+				backlog.push_back({new_voxel, node});
+			}
+
+			node = node->children[child_index];
+		}
+	};
+
+
+	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+		uint32_t nb_points = points->size();
+		uint32_t nb_spilled_points = spilled_points->size();
+		std::vector<uint32_t> indices(nb_points + nb_spilled_points);
+		std::iota(indices.begin(), indices.end(), 0);
+		std::vector<BackLog> tmp_backlog = std::vector<BackLog>(nb_points + nb_spilled_points);
+
+		// Create new voxels in parallel
+		std::for_each(std::execution::par, indices.begin(), indices.end(), [&](uint32_t index){
+			Point* point = nullptr;
+			if(index >= nb_points){
+				point = &(*spilled_points)[index - nb_points];
+			} else {
+				point = &(*points)[index];
+			}
+			tmp_backlog[index] = sampleVoxel(*point);
+		});
+		// Sequentially add all the voxels in the backlog buffer
+		for(auto& backlog : tmp_backlog){
+			for(auto& [voxel, node] : backlog){
+				backlog_voxels->push_back(voxel);
+				backlog_voxels_nodes->push_back(node);
+			}
+		}
+	} else {
+		std::for_each(points->begin(), points->end(), [&](Point& point){
+			BackLog backlog = sampleVoxel(point);
+			for(auto& [voxel, node] : backlog){
+				backlog_voxels->push_back(voxel);
+				backlog_voxels_nodes->push_back(node);
+			}
+		});
+		std::for_each(spilled_points->begin(), spilled_points->end(), [&](Point& point){
+			BackLog backlog = sampleVoxel(point);
+			for(auto& [voxel, node] : backlog){
+				backlog_voxels->push_back(voxel);
+				backlog_voxels_nodes->push_back(node);
+			}
+		});
+	}
+}
+
+void SimLod::insertionWithAtomic(
+    OctreeNode* main_root,
+    std::shared_ptr<vector<Point>>& points,
+    std::shared_ptr<vector<Point>>& spilled_points,
+    std::shared_ptr<vector<Point>>& backlog_voxels,
+    std::shared_ptr<vector<OctreeNode*>>& backlog_voxels_nodes
+){
+
+	auto insertPoint = [&](Point& point, OctreeNode* main_node){
+		OctreeNode* cur_node = main_node;
+		// Reach all corresponding leaves
+		while(true){
+			cur_node->updated = true;
+			// Find next child
+			const AABB& aabb = GlobalVariables::getAABB(cur_node->aabb_index);
+			NodePosition child_index = aabb.getNextChildIndex(point.position);
+			// If leaf insert point in chunks
+			if(cur_node->children[child_index]){
+				cur_node = cur_node->children[child_index];
+			} else {
+				if(!cur_node->points){cur_node->points = new Chunk();}
+				Chunk* chunk_list = cur_node->points;
+				while(chunk_list->next){chunk_list = chunk_list->next;}
+				if(chunk_list->size == OocSimLodSettings::NB_POINTS_PER_CHUNK){
+					chunk_list->next = new Chunk();
+					chunk_list = chunk_list->next;
+				}
+				chunk_list->points[chunk_list->size] = point;
+				chunk_list->size++;
+				return;
+			}
+		}
+	};
+
+	auto insertVoxel = [&](Point& voxel, OctreeNode* node){
+		node->updated = true;
+		if(!node->voxels){node->voxels = new Chunk();}
+		Chunk* chunk_list = node->voxels;
+		while(chunk_list->next){chunk_list = chunk_list->next;}
+		if(chunk_list->size == OocSimLodSettings::NB_POINTS_PER_CHUNK){
+			chunk_list->next = new Chunk();
+			chunk_list = chunk_list->next;
+		}
+		chunk_list->points[chunk_list->size] = voxel;
+		chunk_list->size++;
+		return;
+	};
+
+	if(!OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+		for(Point& point : *points){
+			insertPoint(point, main_root);
+		}
+		for(Point& point : *spilled_points){
+			insertPoint(point, main_root);		
+		}
+		uint32_t nb_new_voxels = backlog_voxels->size();
+		for(uint32_t i=0; i<nb_new_voxels; i++){
+			insertVoxel((*backlog_voxels)[i], (*backlog_voxels_nodes)[i]);
+		}
+	} else {
+		std::thread parallel_thread([&](){
+			uint32_t nb_new_voxels = backlog_voxels->size();
+			for(uint32_t i=0; i<nb_new_voxels; i++){
+				insertVoxel((*backlog_voxels)[i], (*backlog_voxels_nodes)[i]);
+			}
+		});
+
+		for(Point& point : *points){
+			insertPoint(point, main_root);
+		}
+		for(Point& point : *spilled_points){
+			insertPoint(point, main_root);		
+		}
+
+		parallel_thread.join();
+	}
+
+}
+
+
+
+void SimLod::loadWithAtomic(
+    OctreeNode* main_root,
+    std::shared_ptr<vector<Point>>& points,
+	std::shared_ptr<AABBRelationshipMap> relationship_map_ref
+){
+
+	// tmp_ser is here to avoid loading a node multiple time in the parallel context
+	mutex mtx_set;
+	std::unordered_set<IdAABB> tmp_set = {};
+
+
+	// Try to insert all points
+	auto tryInsertPoint = [&](Point& point, OctreeNode* main_root){
+		// Reach corresponding leaf
+		OctreeNode* leaf = main_root;
+
+		uint8_t level = 0;
+
+		while(true){
+			// Find next child
+			const AABB& aabb = GlobalVariables::getAABB(leaf->aabb_index);
+			NodePosition child_index = aabb.getNextChildIndex(point.position);
+
+			// If current node is not a leaf continue, else current node becomes child
+			OctreeNode* child = leaf->children[child_index];
+
+			if(child){
+				leaf = child;
+				// Get node level
+				if(level == UINT8_MAX){
+					println("The octree has reached it's maximum depth size...");
+					exit(EXIT_FAILURE);
+				}
+				level++;
+			} else {
+				// Check if the child has been stored
+				if((*relationship_map_ref)[leaf->aabb_index][child_index] == INVALID_ID){return;}
+				IdAABB child_aabb_index = (*relationship_map_ref)[leaf->aabb_index][child_index];
+				
+				{
+					std::lock_guard<std::mutex> lock(mtx_set);
+					if(!tmp_set.contains(child_aabb_index)){
+						// Load the child and make it the current node
+						tmp_set.insert(child_aabb_index);
+						leaf->children[child_index] = loadOctree(child_aabb_index);
+					}
+				}
+
+				leaf = leaf->children[child_index];
+
+				if(!leaf){
+					println("At this point in the SimLodLoad, the leaf should never be null");
+					exit(EXIT_FAILURE);
+				}
+
+				// Get node level
+				if(level == UINT8_MAX){
+					println("The octree has reached it's maximum depth size...");
+					exit(EXIT_FAILURE);
+				}
+				level++;
+			}
+		}
+	};
+
+	if(!OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+		for(Point& point : *points){
+			tryInsertPoint(point, main_root);
+		}
+	} else {
+		vector<uint32_t> first_indices = {};
+		uint32_t step_size = 100'000u;
+		uint32_t nb_points = points->size();
+		for(uint32_t i=0; i<nb_points; i+=step_size){first_indices.push_back(i);}
+
+		std::for_each(std::execution::par, first_indices.begin(), first_indices.end(), [&](uint32_t index){
+			for(uint32_t i=0; i<step_size; i++){
+				if((index + i) >= nb_points){break;}
+				tryInsertPoint((*points)[index + i], main_root);
+			}
+		});
+	}
+
+	// if(!tmp_set.empty()){
+	// 	println("nb loaded nodes = {}", tmp_set.size());
+	// }
 }
