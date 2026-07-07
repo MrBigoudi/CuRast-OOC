@@ -188,16 +188,28 @@ std::optional<CUdeviceptr> allocateChunks(
     const Chunk* root, bool is_voxel_chunk
 ){
 	// Create CChunks
+	std::vector<const Chunk*> all_chunks = {};
+	std::vector<std::pair<CChunk*, CUdeviceptr>> allocated_chunks = {};
 	const Chunk* cur_chunk = root;
-	CChunk* prev = nullptr;
-	std::optional<CUdeviceptr> first = nullopt;
 	while(cur_chunk){
+		all_chunks.push_back(cur_chunk);
 		std::pair<CChunk*, CUdeviceptr> allocated = GlobalVariables::batchedMemory.allocate<CChunk>();
-		CUdeviceptr tmp_gpu = allocated.second;
+		GlobalVariables::batchedMemory.addFutureCopy<CChunk>(allocated.first, allocated.second);
+		allocated_chunks.push_back(allocated);
+		cur_chunk = cur_chunk->next;
+	}
 
+	auto fillChunk = [&](uint32_t index){
+		std::pair<CChunk*, CUdeviceptr>& allocated = allocated_chunks[index];
+		const Chunk* cur_chunk = all_chunks[index];
+
+		CUdeviceptr tmp_gpu = allocated.second;
 		CChunk* tmp = allocated.first;
 		tmp->size = cur_chunk->size;
 		tmp->next = nullptr;
+		if(index < (all_chunks.size() - 1)){
+			tmp->next = (CChunk*)allocated_chunks[index+1].second;
+		}
 
 		if(is_voxel_chunk){octree->nb_voxels += tmp->size;} 
 		else{octree->nb_points += tmp->size;} 
@@ -213,19 +225,22 @@ std::optional<CUdeviceptr> allocateChunks(
 			};
 			tmp->points[j] = tmp_point;
 		}
+	};
 
-		if(prev){
-			prev->next = (CChunk*)tmp_gpu;
-		}
+	std::vector<uint32_t> indices(all_chunks.size()); 
+	std::iota(indices.begin(), indices.end(), 0);
 
-		GlobalVariables::batchedMemory.addFutureCopy<CChunk>(tmp, tmp_gpu);
-
-		cur_chunk = cur_chunk->next;
-		prev = tmp;
-		if(!first){first = tmp_gpu;}
+	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+		std::for_each(std::execution::par, indices.begin(), indices.end(), [&](uint32_t index){
+			fillChunk(index);
+		});
+	} else {
+		std::for_each(indices.begin(), indices.end(), [&](uint32_t index){
+			fillChunk(index);
+		});
 	}
 
-	return first;
+	return all_chunks.empty() ? nullopt : std::optional<CUdeviceptr>(allocated_chunks[0].second);
 };
 
 
