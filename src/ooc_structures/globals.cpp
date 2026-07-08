@@ -561,7 +561,11 @@ void GlobalVariables::init(CuRast* instance, CUcontext* context){
     visibilityCache = std::make_shared<LRUCache>("visibility cache", OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE);
     cpuCache = std::make_shared<CPUFallbackCache>(OocSimLodSettings::LRU_CPU_CACHE_SIZE);
 
-    batchedMemory.init(instance, context);
+    for(auto& memory : batchedMemories){
+        memory.init(instance, context);
+    }
+    
+    cudaDeviceSynchronize();
 }
 
 
@@ -576,7 +580,9 @@ void GlobalVariables::destroy(CuRast* instance, CUcontext* context){
 	}
 
     cudaDeviceSynchronize();
-    batchedMemory.destroy();
+    for(auto& memory : batchedMemories){
+        memory.destroy();
+    }
 
     cudaDeviceSynchronize();
     if(mainOctreeCpy){
@@ -609,6 +615,21 @@ void GlobalVariables::swapAABBsMaps() {
     // destroyed on need
     aabbRelationshipMapCpy = std::make_shared<AABBRelationshipMap>(
         AABBRelationshipMap(*aabbRelationshipMap)
+    );
+}
+
+std::string GlobalVariables::getGpuMemoryUsage() {
+    cudaDeviceSynchronize();
+
+    // https://forums.developer.nvidia.com/t/best-way-to-report-memory-consumption-in-cuda/21042
+    uint64_t free_byte, total_byte = 0;
+    double free_db, total_db, used_db = 0.;
+
+    CURuntime::assertCudaSuccess(cuMemGetInfo(&free_byte, &total_byte));
+    free_db = (double)free_byte; total_db = (double)total_byte; used_db = total_db - free_db;
+    free_db /= (1024 * 1024); total_db /= (1024 * 1024); used_db /= (1024 * 1024);
+    return format("    Total: {:L} Mb\n    InUse: {:L} Mb\n    Available: {:L} Mb",
+        total_db, used_db, free_db
     );
 }
 
@@ -1078,4 +1099,36 @@ CFullOctreeUnified CFullOctreeUnifiedBuilder::build() {
     res.max_lod_level = max_lod_level;
     res.world = mat4(1.f);
     return res;
+}
+
+
+
+#include "structureUpdate.h"
+#include "visibility.h"
+
+void GlobalVariables::updateGPU(CuRast* instance, CUcontext* context, View* view,
+    std::shared_ptr<OctreeNode> octree_ref,
+    std::shared_ptr<AABBRelationshipMap> relationship_map_ref)
+{
+    if(elapsedFrames > OocSimLodSettings::NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE){
+        elapsedFrames = 0;
+        
+        if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+            std::lock_guard<std::mutex> lock_send(isUpdatingMtx);
+            octree_ref = mainOctree;
+            relationship_map_ref = aabbRelationshipMapCpy;
+        } else {
+            octree_ref = mainOctree;
+            relationship_map_ref = aabbRelationshipMapCpy;
+        }
+
+        Visibility::updateVisibilityCache(VKRenderer::view.view, VKRenderer::view.proj,
+            octree_ref, relationship_map_ref
+        );
+        loadOctreeOnGPU(instance, context,
+            octree_ref, relationship_map_ref
+        );
+    } else if(octree_ref){
+        // TODO: send (1 / OocSimLodSettings::NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE)th of the data
+    }
 }

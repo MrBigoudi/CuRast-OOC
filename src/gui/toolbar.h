@@ -155,6 +155,8 @@ void CuRast::makeToolbar(){
 				ImGui::BeginDisabled(CuRastSettings::autoFreeOldOctreeMemoryOnGPU);
 					ImGui::Checkbox("Manual-free GPU memory", &CuRastSettings::freeOldOctreeMemoryOnGPU);
 				ImGui::EndDisabled();
+				ImGui::SameLine();
+				ImGui::Checkbox("Get real GPU memory usage", &CuRastSettings::getGpuMemoryUsage);
 
 				// ImGui::SetNextItemWidth(200.0f);
 				// ImGui::SliderInt("Max batches per update", &CuRastSettings::maxBatchesPerUpdate, 1, 64);

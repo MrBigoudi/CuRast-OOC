@@ -378,7 +378,6 @@ struct BatchedMemory {
     char* allocated_memory = nullptr;
     uint64_t next_space_pointer = 0;
 	uint64_t memory_size = 0;
-
 	// GPU side
 	CUdeviceptr gpu_allocated_memory = 0;
 
@@ -441,6 +440,7 @@ struct GlobalVariables {
 	static void swapAABBsMaps();
 
 
+	static inline uint32_t nbOctreesInScene = 0;
 
 	/// The queue of batches
 	static inline std::deque<std::shared_ptr<PointBatch>> batchesQueue = {};
@@ -483,11 +483,18 @@ struct GlobalVariables {
 	static inline std::shared_ptr<CPUFallbackCache> cpuCache = nullptr;
 
 	/// The global allocated memory (for batches)
-	static inline BatchedMemory batchedMemory = {};
+	static inline uint32_t currentBatchedMemoriesIndex = 0;
+	static inline std::array<BatchedMemory, 2> batchedMemories = {};
 
 	static std::string getSimLodOctreeName(bool generate_new_name = false);
 	static void init(CuRast* instance, CUcontext* context);
 	static void destroy(CuRast* instance, CUcontext* context);
+	static std::string getGpuMemoryUsage();
+
+	static void updateGPU(CuRast* instance, CUcontext* context, View* view,
+		std::shared_ptr<OctreeNode> octree_ref,
+		std::shared_ptr<AABBRelationshipMap> relationship_map_ref
+	);
 
 	/// Get all the nodes in an octree
 	static std::vector<OctreeNode*> getAllNodes(OctreeNode* root);

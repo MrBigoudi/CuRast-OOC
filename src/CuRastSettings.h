@@ -14,6 +14,7 @@ struct CuRastSettings{
 	static inline bool storeOctree = false;
 	static inline bool loadOctree = false;
 	static inline bool useUnifiedMemory = false;
+	static inline bool getGpuMemoryUsage = false;
 
 	static inline bool showVisibleNodes = false;
 	static inline bool freezeVisibleNodes = false;

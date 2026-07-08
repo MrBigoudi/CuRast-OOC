@@ -167,6 +167,7 @@ void freeOctreesOnGPU(CuRast* editor){
 	for(SNCOctree* octree : octrees){
 		std::lock_guard<std::mutex> lock_scene(GlobalVariables::updateSceneMutex);
 		editor->scene.world->remove(octree);
+		GlobalVariables::nbOctreesInScene--;
 	}
 }
 
@@ -193,27 +194,29 @@ std::optional<CUdeviceptr> allocateChunks(
 	const Chunk* cur_chunk = root;
 	while(cur_chunk){
 		all_chunks.push_back(cur_chunk);
-		std::pair<CChunk*, CUdeviceptr> allocated = GlobalVariables::batchedMemory.allocate<CChunk>();
-		GlobalVariables::batchedMemory.addFutureCopy<CChunk>(allocated.first, allocated.second);
+		BatchedMemory& memory = GlobalVariables::batchedMemories[GlobalVariables::currentBatchedMemoriesIndex];
+		std::pair<CChunk*, CUdeviceptr> allocated = memory.allocate<CChunk>();
+		memory.addFutureCopy<CChunk>(allocated.first, allocated.second);
 		allocated_chunks.push_back(allocated);
 		cur_chunk = cur_chunk->next;
 	}
 
+	uint32_t nb_chunks = all_chunks.size();
+	octree->nb_chunks += nb_chunks;
 	auto fillChunk = [&](uint32_t index){
-		std::pair<CChunk*, CUdeviceptr>& allocated = allocated_chunks[index];
 		const Chunk* cur_chunk = all_chunks[index];
 
-		CUdeviceptr tmp_gpu = allocated.second;
-		CChunk* tmp = allocated.first;
+		CChunk* tmp = allocated_chunks[index].first;
+
 		tmp->size = cur_chunk->size;
 		tmp->next = nullptr;
-		if(index < (all_chunks.size() - 1)){
-			tmp->next = (CChunk*)allocated_chunks[index+1].second;
+		if(index != nb_chunks-1){
+			tmp->next = (CChunk*)(allocated_chunks[index+1].second);
+		} else {
+			uint32_t nb_points = tmp->size + (nb_chunks - 1) * OocSimLodSettings::NB_POINTS_PER_CHUNK;
+			if(is_voxel_chunk){octree->nb_voxels += nb_points;}
+			else {octree->nb_points += nb_points;}
 		}
-
-		if(is_voxel_chunk){octree->nb_voxels += tmp->size;} 
-		else{octree->nb_points += tmp->size;} 
-		octree->nb_chunks++;
 
 		for(uint32_t j=0; j<tmp->size; j++){
 			CPoint tmp_point = {
@@ -248,14 +251,15 @@ void createCudaMemory(CuRast* editor, CUcontext* context,
     std::shared_ptr<OctreeNode>& input_octree,
     std::shared_ptr<AABBRelationshipMap> relationship_map_ref
 ){
-	GlobalVariables::batchedMemory.reset();
+	BatchedMemory& memory = GlobalVariables::batchedMemories[GlobalVariables::currentBatchedMemoriesIndex];
+	memory.reset();
 
 	// Create cuda memory pointers
 	std::shared_ptr<SNCOctree> octree = make_shared<SNCOctree>(
 		GlobalVariables::getSimLodOctreeName(true), 
 		GlobalVariables::simLodOctreeCounter
 	);
-	octree->cptr_nodes = {};
+	std::vector<CUdeviceptr> cptr_nodes = {};
 
 	cuCtxSetCurrent(*context);
 	CUresult cuda_status = cuStreamCreate(&octree->stream, CU_STREAM_NON_BLOCKING);
@@ -283,7 +287,7 @@ void createCudaMemory(CuRast* editor, CUcontext* context,
 		}	
 
 		// Create COctreeNode
-		std::pair<COctreeNode*, CUdeviceptr> allocated = GlobalVariables::batchedMemory.allocate<COctreeNode>();
+		std::pair<COctreeNode*, CUdeviceptr> allocated = memory.allocate<COctreeNode>();
 		COctreeNode* new_node = allocated.first;
 
 		for(uint32_t child = 0; child < 8; child++){
@@ -314,8 +318,8 @@ void createCudaMemory(CuRast* editor, CUcontext* context,
 		// Create cuda pointers
 		CUdeviceptr cptr_node = allocated.second;
 
-		GlobalVariables::batchedMemory.addFutureCopy<COctreeNode>(new_node, cptr_node);
-		octree->cptr_nodes.push_back(cptr_node);
+		memory.addFutureCopy<COctreeNode>(new_node, cptr_node);
+		cptr_nodes.push_back(cptr_node);
 		octree->nb_nodes++;
 
 		return cptr_node;
@@ -326,35 +330,43 @@ void createCudaMemory(CuRast* editor, CUcontext* context,
 
 	octree->max_lod_level = max_lod_level;
 
-	uint32_t current_nb_aabb = relationship_map_ref->size();
+	octree->nb_aabbs = relationship_map_ref->size();
 
 	// Copy arrays of pointers to GPU
 	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 		// Allocate the space for the AABBs
-		cuda_status = cuMemAllocAsync(&octree->aabbs, current_nb_aabb * sizeof(AABB), octree->stream);
-		cuda_status = cuMemcpyHtoDAsync(octree->aabbs, GlobalVariables::allAABBs.data(), current_nb_aabb * sizeof(AABB), octree->stream);
+		cuda_status = cuMemAllocAsync(&octree->aabbs, octree->nb_aabbs * sizeof(AABB), octree->stream);
+		cuda_status = cuMemcpyHtoDAsync(octree->aabbs, GlobalVariables::allAABBs.data(), octree->nb_aabbs * sizeof(AABB), octree->stream);
 		// Allocate the space for the nodes pointers
-		cuda_status = cuMemAllocAsync(&octree->nodes, octree->cptr_nodes.size() * sizeof(CUdeviceptr), octree->stream);
-		cuda_status = cuMemcpyHtoDAsync(octree->nodes, octree->cptr_nodes.data(), octree->cptr_nodes.size() * sizeof(CUdeviceptr), octree->stream);
+		cuda_status = cuMemAllocAsync(&octree->nodes, cptr_nodes.size() * sizeof(CUdeviceptr), octree->stream);
+		cuda_status = cuMemcpyHtoDAsync(octree->nodes, cptr_nodes.data(), cptr_nodes.size() * sizeof(CUdeviceptr), octree->stream);
 	} else {
 		// Allocate the space for the AABBs
-		cuda_status = cuMemAlloc(&octree->aabbs, current_nb_aabb * sizeof(AABB));
-		cuda_status = cuMemcpyHtoD(octree->aabbs, GlobalVariables::allAABBs.data(), current_nb_aabb * sizeof(AABB));
+		cuda_status = cuMemAlloc(&octree->aabbs, octree->nb_aabbs * sizeof(AABB));
+		cuda_status = cuMemcpyHtoD(octree->aabbs, GlobalVariables::allAABBs.data(), octree->nb_aabbs * sizeof(AABB));
 		// Allocate the space for the nodes pointers
-		cuda_status = cuMemAlloc(&octree->nodes, octree->cptr_nodes.size() * sizeof(CUdeviceptr));
-		cuda_status = cuMemcpyHtoD(octree->nodes, octree->cptr_nodes.data(), octree->cptr_nodes.size() * sizeof(CUdeviceptr));
+		cuda_status = cuMemAlloc(&octree->nodes, cptr_nodes.size() * sizeof(CUdeviceptr));
+		cuda_status = cuMemcpyHtoD(octree->nodes, cptr_nodes.data(), cptr_nodes.size() * sizeof(CUdeviceptr));
 	}
 	CURuntime::assertCudaSuccess(cuda_status);
-	GlobalVariables::batchedMemory.copyMemory(context, &octree->stream);
+	memory.copyMemory(context, &octree->stream);
 
 	{
 		std::lock_guard<std::mutex> lock_scene(GlobalVariables::updateSceneMutex);
 		editor->scene.world->children.push_back(octree);
+		GlobalVariables::nbOctreesInScene++;
 	}
 	// Free previous octrees
 	if(CuRastSettings::autoFreeOldOctreeMemoryOnGPU){
-		freePreviousOctreeOnGPU(editor, octree);
+		std::thread thread([&](CuRast* editor, std::shared_ptr<SNCOctree> octree){
+			freePreviousOctreeOnGPU(editor, octree);
+		}, editor, octree);
+		thread.detach();
+		// freePreviousOctreeOnGPU(editor, octree);
 	}
+	// Swap allocated memories
+	GlobalVariables::currentBatchedMemoriesIndex++;
+	GlobalVariables::currentBatchedMemoriesIndex = GlobalVariables::currentBatchedMemoriesIndex % GlobalVariables::batchedMemories.size();
 };
 
 
@@ -363,6 +375,12 @@ void loadOctreeOnGPU(CuRast* editor, CUcontext* context,
     std::shared_ptr<AABBRelationshipMap> relationship_map_ref
 ){
 	if(!octree_ref){return;}
+
+	// Skip the update if too many octrees are in the scene
+	if(GlobalVariables::nbOctreesInScene >= GlobalVariables::batchedMemories.size()){
+		return;
+	}
+
 	std::shared_ptr<Timing> timing = Timing::addTiming("send octree to GPU ", true);
 	createCudaMemory(editor, context, octree_ref, relationship_map_ref);
 	timing->stop_clock();

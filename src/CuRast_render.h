@@ -127,6 +127,7 @@ void drawOctreeAABB(Scene* scene, View view, RenderTarget& target){
 	scene->forEach<SNCOctree>([&](SNCOctree* octree){
 		// Sanity check
 		if(!octree){return;}
+		if(octree->need_to_be_executed){return;}
 		if(!octree->isDoneLoadingToGpu()){return;}
 		CFullOctree cfo = octree->toFullOctree();
 		cfo.use_aabb_debug_color = CuRastSettings::showVisibleNodes;
@@ -142,6 +143,7 @@ void drawOctree(Scene* scene, View view, RenderTarget& target){
     scene->forEach<SNCOctree>([&](SNCOctree* octree){
 		// Sanity check
 		if(!octree){return;}
+		if(octree->need_to_be_executed){return;}
 		if(!octree->isDoneLoadingToGpu()){return;}
 		CFullOctree cfo = octree->toFullOctree();
 
@@ -705,12 +707,24 @@ void CuRast::draw(Scene* scene, vector<View> views){
 			uint64_t nb_batches  = 0;
 			uint64_t nb_points  = 0;
 			uint64_t nb_points_octree = 0;
-			uint64_t points_gpu_memory  = 0;
+			uint64_t points_gpu_memory = 0;
+			uint64_t total_gpu_memory = 0;
+
+			for(const BatchedMemory& memory : GlobalVariables::batchedMemories){
+				total_gpu_memory += memory.memory_size;
+			}
 
 			{
+				uint32_t max_id = 0;
 				std::lock_guard<std::mutex> lock(GlobalVariables::updateSceneMutex);
 				scene->forEach<SNCOctree>([&](SNCOctree* node){
-					if(node->name != GlobalVariables::getSimLodOctreeName()){return;}
+					if(!node){return;}
+					total_gpu_memory += node->getOverheadGPUMemoryUsage();
+					if(node->octree_id < max_id){return;}
+					if(node->need_to_be_executed){return;}
+					if(!node->isDoneLoadingToGpu()){return;}
+
+					max_id = node->octree_id;
 					octrees.push_back(node);
 					nb_octrees++;
 					nb_points_octree = node->nb_points;
@@ -720,6 +734,7 @@ void CuRast::draw(Scene* scene, vector<View> views){
 					nb_batches++;
 					nb_points += node->numPoints;
 					points_gpu_memory += node->getGpuMemoryUsage();
+					total_gpu_memory += node->getGpuMemoryUsage();
 				});
 				if(nb_points == 0){
 					nb_points = nb_points_octree;
@@ -764,8 +779,9 @@ void CuRast::draw(Scene* scene, vector<View> views){
 			// Batches info
 			dvlist.push_back({"\n# total batches          ", format("{:30L}", nb_batches)});
 			dvlist.push_back({"# total points           ", format("{:30L}", GlobalVariables::nbPoints)});
-			dvlist.push_back({"# total nodes           ", format("{:30L}", GlobalVariables::allAABBs.size())});
+			dvlist.push_back({"# total nodes            ", format("{:30L}", GlobalVariables::allAABBs.size())});
 			dvlist.push_back({"batches GPU memory usage ", formatMemSize(points_gpu_memory)});
+			dvlist.push_back({"total GPU memory usage   ", formatMemSize(total_gpu_memory)});
 			
 		}
 

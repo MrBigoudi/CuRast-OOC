@@ -11,16 +11,16 @@ using std::vector;
 using glm::ivec2;
 
 struct SNCOctree : public SceneNode{
-	vector<CUdeviceptr> cptr_nodes;
 	CUdeviceptr nodes;
 	CUdeviceptr aabbs;
 
 	uint32_t max_lod_level = 0;
 
-	uint32_t nb_nodes = 0;
+	uint32_t nb_nodes  = 0;
 	uint64_t nb_chunks = 0;
 	uint64_t nb_points = 0;
 	uint64_t nb_voxels = 0;
+	uint64_t nb_aabbs  = 0;
 
 	uint64_t octree_id = 0;
 	bool need_to_be_executed = false;
@@ -29,11 +29,47 @@ struct SNCOctree : public SceneNode{
 
 	SNCOctree(string name, uint64_t octree_id) : SceneNode(name), octree_id(octree_id){}
 
-	uint64_t getGpuMemoryUsage() override {
+	~SNCOctree() {
+		CUresult cuda_status = CUDA_SUCCESS;
+		auto cudaCheck = [](CUresult result, string struct_name){
+			const char* name = nullptr;
+			const char* desc = nullptr;
+			if(result != CUDA_SUCCESS){
+				cuGetErrorName(result, &name);
+				cuGetErrorString(result, &desc);
+				println(stderr, "Error: cuMemFree failed for {}, {} ({}): {}\n ",
+					struct_name,
+					int(result),
+					name ? name : "unknown",
+					desc ? desc : "unknown"
+				);
+			}
+		};
+		cuda_status = cuMemFreeAsync(nodes, stream);
+		cudaCheck(cuda_status, "nodes");
+		cuda_status = cuMemFreeAsync(aabbs, stream);
+		cudaCheck(cuda_status, "aabbs");
+
+		cuStreamDestroy(stream);
+	}
+
+	uint64_t getOverheadGPUMemoryUsage() {
 		uint64_t total = 0;
-		total += nb_nodes * sizeof(COctreeNode);
-		total += sizeof(nodes);
+		// List of nodes pointers
+		total += nb_nodes * sizeof(CUdeviceptr);
+		// List of AABBs pointers
+		total += nb_aabbs * sizeof(CUdeviceptr);
+		// Pointers to the structures + debug values
+		total += sizeof(CFullOctree);
+		return total;
+	}
+
+	uint64_t getGpuMemoryUsage() override {
+		uint64_t total = getOverheadGPUMemoryUsage();
+		// Actual chunks
 		total += nb_chunks * sizeof(CChunk);
+		// Actual nodes
+		total += nb_nodes * sizeof(COctreeNode);
 		return total;
 	}
 

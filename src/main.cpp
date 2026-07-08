@@ -588,15 +588,33 @@ int main(int argc, char** argv){
 		std::thread thread_clear_batches(clearUnusedBatchesRoutine);
 		thread_clear_batches.detach();
 
+		// Load point clouds on GPU
 		std::thread thread_load_points_on_gpu([&](CuRast* editor){
 			while(true){
 				loadBatchesOnGPU(editor, &context);
 			}
 		}, CuRast::instance);
 		thread_load_points_on_gpu.detach();
+
+		// Update the visibility and load Octree on GPU
+		std::thread thread_gpu_update([&](CuRast* editor, CUcontext* context, View* view){
+			std::shared_ptr<OctreeNode> octree_ref = nullptr;
+			std::shared_ptr<AABBRelationshipMap> relationship_map_ref = nullptr;
+
+			while(true){
+				GlobalVariables::updateGPU(
+					CuRast::instance, context, &VKRenderer::view, 
+					octree_ref, relationship_map_ref
+				);
+			}
+			
+		}, CuRast::instance, &context, &VKRenderer::view);
+		thread_gpu_update.detach();
 	}
 
 	bool was_unified_set = CuRastSettings::useUnifiedMemory;
+	std::shared_ptr<OctreeNode> octree_ref = nullptr;
+	std::shared_ptr<AABBRelationshipMap> relationship_map_ref = nullptr;
 
 	VKRenderer::loop(
 		[&]() {
@@ -619,31 +637,21 @@ int main(int argc, char** argv){
 			Runtime::debugValues["stage 2"] = format("{:.3f}", stage2_millies);
 			Runtime::debugValues["stage 3"] = format("{:.3f}", stage3_millies);
 
-			if(GlobalVariables::elapsedFrames > OocSimLodSettings::NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE){
-				GlobalVariables::elapsedFrames = 0;
-
-				std::shared_ptr<OctreeNode> octree_ref = nullptr;
-				std::shared_ptr<AABBRelationshipMap> relationship_map_ref = nullptr;
-				
-				if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-					std::lock_guard<std::mutex> lock_send(GlobalVariables::isUpdatingMtx);
-					octree_ref = GlobalVariables::mainOctree;
-					relationship_map_ref = GlobalVariables::aabbRelationshipMapCpy;
-				} else {
-					octree_ref = GlobalVariables::mainOctree;
-					relationship_map_ref = GlobalVariables::aabbRelationshipMapCpy;
-				}
-
-				Visibility::updateVisibilityCache(VKRenderer::view.view, VKRenderer::view.proj,
-					octree_ref, relationship_map_ref
-				);
-				loadOctreeOnGPU(CuRast::instance, &context,
+			// Update visible nodes
+			if(!OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+				GlobalVariables::updateGPU(
+					CuRast::instance, &context, &VKRenderer::view, 
 					octree_ref, relationship_map_ref
 				);
 			}
 
 			freeOctreesOnGPU(CuRast::instance);
 			GlobalVariables::elapsedFrames++;
+
+			if(CuRastSettings::getGpuMemoryUsage){
+				println("GPU Memory Usage:\n{}", GlobalVariables::getGpuMemoryUsage());
+				CuRastSettings::getGpuMemoryUsage = false;
+			}
 		},
 		[&]() {
 			CuRast::instance->render();
