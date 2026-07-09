@@ -324,7 +324,6 @@ void Visibility::updateVisibilityCache(
     std::shared_ptr<AABBRelationshipMap> relationship_map_ref
 ){
     if(!octree_ref){return;}
-    std::shared_ptr<Timing> timing_visibility = Timing::addTiming("update visibility", true);
     
     // TODO: just for debugging
     {
@@ -341,46 +340,10 @@ void Visibility::updateVisibilityCache(
 
     Frustum frustum = Frustum(proj * view);
 
-    std::shared_ptr<Timing> timing = Timing::addTiming("get visible nodes", true, 1);
     std::unordered_set<IdAABB> visible_nodes = getVisibleNodes(frustum, relationship_map_ref);
-    timing->stop_clock();
 
-    timing = Timing::addTiming("order visible nodes", true, 1);
     vec3 cameraPos = vec3(glm::inverse(view) * vec4(0.0f, 0.0f, 0.0f, 1.0f));
     std::vector<IdAABB> ordered_nodes = orderNodes(octree_ref->aabb_index, visible_nodes, cameraPos, relationship_map_ref);
-    timing->stop_clock();
 
-    timing = Timing::addTiming("update visibility cache", true, 1);
     fillVisibilityCache(ordered_nodes, octree_ref.get(), relationship_map_ref);
-    timing->stop_clock();
-
-    timing_visibility->stop_clock();
-
-
-
-    // println("Relationship map: ");
-    // for(const auto& [id, children] : *relationship_map_ref){
-    //     println("    - [{}]: children: [{}, {}, {}, {}, {}, {}, {}, {}]",
-    //         id,
-    //         children[0] == INVALID_ID ? -1 : int32_t(children[0]),
-    //         children[1] == INVALID_ID ? -1 : int32_t(children[1]),
-    //         children[2] == INVALID_ID ? -1 : int32_t(children[2]),
-    //         children[3] == INVALID_ID ? -1 : int32_t(children[3]),
-    //         children[4] == INVALID_ID ? -1 : int32_t(children[4]),
-    //         children[5] == INVALID_ID ? -1 : int32_t(children[5]),
-    //         children[6] == INVALID_ID ? -1 : int32_t(children[6]),
-    //         children[7] == INVALID_ID ? -1 : int32_t(children[7])
-    //     );
-    // }
-    // println("\n\n\n");
-
-    // println("All AABBs");
-    // for(uint32_t i=0; i<GlobalVariables::allAABBs.size(); i++){
-    //     AABB& aabb = GlobalVariables::allAABBs[i];
-    //     println("    - [{}]: .mins = ({}, {}, {}), .maxs = ({}, {}, {})", i,
-    //         aabb.mins.x, aabb.mins.y, aabb.mins.z,
-    //         aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
-    //     );
-    // }
-    // println("\n\n\n");
 }

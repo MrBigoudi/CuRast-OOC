@@ -700,10 +700,9 @@ void CuRast::draw(Scene* scene, vector<View> views){
 
 		{
 			// DEBUG
-			std::vector<SNCOctree*> octrees = {};
 			std::vector<SNCPoints*> batches = {};
+			SNCOctree* octree = nullptr;
 
-			uint64_t nb_octrees = 0;
 			uint64_t nb_batches  = 0;
 			uint64_t nb_points  = 0;
 			uint64_t nb_points_octree = 0;
@@ -725,8 +724,7 @@ void CuRast::draw(Scene* scene, vector<View> views){
 					if(!node->isDoneLoadingToGpu()){return;}
 
 					max_id = node->octree_id;
-					octrees.push_back(node);
-					nb_octrees++;
+					octree = node;
 					nb_points_octree = node->nb_points;
 				});
 				scene->forEach<SNCPoints>([&](SNCPoints* node){
@@ -765,15 +763,13 @@ void CuRast::draw(Scene* scene, vector<View> views){
 			};
 
 			// Octree info
-			dvlist.push_back({"# total octrees          ", format("{:30L}", nb_octrees)});
-			for(uint32_t i=0; i<nb_octrees; i++){
-				SNCOctree* node = octrees[i];
-				dvlist.push_back({format("    octree '{}'", node->name), ""});
-				dvlist.push_back({"     - # nodes           ", format("{:30L}", node->nb_nodes)});
-				dvlist.push_back({"     - # chunks          ", format("{:30L}", node->nb_chunks)});
-				dvlist.push_back({"     - # voxels          ", format("{:30L}", node->nb_voxels)});
-				dvlist.push_back({"     - # points          ", format("{:30L}", node->nb_points)});
-				dvlist.push_back({"     - GPU memory usage  ", formatMemSize(node->getGpuMemoryUsage())});
+			if(octree){
+				dvlist.push_back({format("octree '{}': ", octree->name), ""});
+				dvlist.push_back({"     - # nodes           ", format("{:30L}", octree->nb_nodes)});
+				dvlist.push_back({"     - # chunks          ", format("{:30L}", octree->nb_chunks)});
+				dvlist.push_back({"     - # voxels          ", format("{:30L}", octree->nb_voxels)});
+				dvlist.push_back({"     - # points          ", format("{:30L}", octree->nb_points)});
+				dvlist.push_back({"     - GPU memory usage  ", formatMemSize(octree->getGpuMemoryUsage())});
 			}
 
 			// Batches info

@@ -6,6 +6,9 @@ void SimLod::update(
 	std::shared_ptr<vector<Point>>& points,
 	std::shared_ptr<AABBRelationshipMap> relationship_map_ref
 ){
+
+	if(!main_root){return;}
+
 	// println("//////////////////////////////////////////////////");
 	// println("////////// Octree before simlod update ///////////");
 	// println("//////////////////////////////////////////////////");
@@ -102,7 +105,7 @@ void SimLod::split(
 	typedef std::vector<Point> SpilledPoints;
 	typedef std::vector<std::pair<NodePosition, AABB>> NewNodes;
 
-	auto lambda = [&](OctreeNode*& spilling_node) -> std::pair<SpilledPoints, NewNodes> {
+	auto lambda = [&](OctreeNode* spilling_node) -> std::pair<SpilledPoints, NewNodes> {
 		NewNodes new_nodes = {};
 		SpilledPoints new_spilled_points = {};
 
@@ -149,11 +152,11 @@ void SimLod::split(
 
 	std::unordered_map<OctreeNode*, std::pair<SpilledPoints, NewNodes>> tmp_map = {};
 	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-		std::for_each(std::execution::par, spilling_nodes->begin(), spilling_nodes->end(), [&](OctreeNode*& spilling_node){
+		std::for_each(std::execution::par, spilling_nodes->begin(), spilling_nodes->end(), [&](OctreeNode* spilling_node){
 			tmp_map[spilling_node] = lambda(spilling_node);
 		});
 	} else {
-		std::for_each(spilling_nodes->begin(), spilling_nodes->end(), [&](OctreeNode*& spilling_node){
+		std::for_each(spilling_nodes->begin(), spilling_nodes->end(), [&](OctreeNode* spilling_node){
 			tmp_map[spilling_node] = lambda(spilling_node);
 		});
 	}
@@ -213,6 +216,9 @@ void SimLod::load(
 			}
 		}
 	};
+
+	// // To sync loads / stores to CPU cache
+    // std::lock_guard<std::mutex> lock(LRUCache::caches_sync_mtx);
 
 	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 		std::for_each(std::execution::par, all_nodes.begin(), all_nodes.end(), [&](OctreeNode* node){
@@ -821,6 +827,7 @@ void SimLod::loadWithAtomic(
 	auto tryInsertPoint = [&](Point& point, OctreeNode* main_root){
 		// Reach corresponding leaf
 		OctreeNode* leaf = main_root;
+		if(!leaf){return;}
 
 		uint8_t level = 0;
 
@@ -870,6 +877,9 @@ void SimLod::loadWithAtomic(
 			}
 		}
 	};
+
+	// // To sync loads / stores to CPU cache
+    // std::lock_guard<std::mutex> lock(LRUCache::caches_sync_mtx);
 
 	if(!OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 		for(Point& point : *points){

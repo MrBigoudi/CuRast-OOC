@@ -559,7 +559,7 @@ void GlobalVariables::init(CuRast* instance, CUcontext* context){
 
     updatesCache = std::make_shared<LRUCache>("updates cache", OocSimLodSettings::LRU_UPDATES_CACHE_SIZE);
     visibilityCache = std::make_shared<LRUCache>("visibility cache", OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE);
-    cpuCache = std::make_shared<CPUFallbackCache>(OocSimLodSettings::LRU_CPU_CACHE_SIZE);
+    // cpuCache = std::make_shared<CPUFallbackCache>(OocSimLodSettings::LRU_CPU_CACHE_SIZE);
 
     for(auto& memory : batchedMemories){
         memory.init(instance, context);
@@ -586,6 +586,8 @@ void GlobalVariables::destroy(CuRast* instance, CUcontext* context){
 
     cudaDeviceSynchronize();
     if(mainOctreeCpy){
+		std::lock_guard<std::mutex> lock_send(GlobalVariables::isUpdatingMtx);
+        std::lock_guard<std::mutex> lock(LRUCache::caches_sync_mtx);
 		delete(mainOctreeCpy);
 		mainOctreeCpy = nullptr;
 	}
@@ -1110,8 +1112,13 @@ void GlobalVariables::updateGPU(CuRast* instance, CUcontext* context, View* view
     std::shared_ptr<OctreeNode> octree_ref,
     std::shared_ptr<AABBRelationshipMap> relationship_map_ref)
 {
-    if(elapsedFrames > OocSimLodSettings::NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE){
+    if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL || elapsedFrames > OocSimLodSettings::NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE){
         elapsedFrames = 0;
+
+        // Skip the update if too many octrees are in the scene
+        if(GlobalVariables::nbOctreesInScene >= GlobalVariables::batchedMemories.size()){
+            return;
+        }
         
         if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
             std::lock_guard<std::mutex> lock_send(isUpdatingMtx);
@@ -1128,7 +1135,5 @@ void GlobalVariables::updateGPU(CuRast* instance, CUcontext* context, View* view
         loadOctreeOnGPU(instance, context,
             octree_ref, relationship_map_ref
         );
-    } else if(octree_ref){
-        // TODO: send (1 / OocSimLodSettings::NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE)th of the data
     }
 }

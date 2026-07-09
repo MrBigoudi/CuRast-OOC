@@ -431,6 +431,7 @@ struct GlobalVariables {
 	/// Used to store all the parent / child relationships
 	static inline std::shared_ptr<AABBRelationshipMap> aabbRelationshipMap = nullptr;
 	static inline std::shared_ptr<AABBRelationshipMap> aabbRelationshipMapCpy = nullptr;
+	static inline std::unordered_map<IdAABB, std::mutex> aabbMutexMap = {};
 	
 
 	/// Used to synchronise read / write to same files
@@ -480,7 +481,8 @@ struct GlobalVariables {
 	/// The LRU caches
 	static inline std::shared_ptr<LRUCache> updatesCache = nullptr;
 	static inline std::shared_ptr<LRUCache> visibilityCache = nullptr;
-	static inline std::shared_ptr<CPUFallbackCache> cpuCache = nullptr;
+	// TODO: rework cache version
+	// static inline std::shared_ptr<CPUFallbackCache> cpuCache = nullptr;
 
 	/// The global allocated memory (for batches)
 	static inline uint32_t currentBatchedMemoriesIndex = 0;

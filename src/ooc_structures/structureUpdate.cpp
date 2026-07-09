@@ -61,6 +61,7 @@ std::shared_ptr<OctreeNode> initOctree(std::shared_ptr<vector<Point>>& points){
 
 
 uint32_t growOctree(OctreeNode* root_node, const std::shared_ptr<vector<Point>>& points){
+	if(!root_node){return 0;}
 	uint32_t nb_new_levels = 0;
 	AABB new_aabb = GlobalVariables::getAABB(root_node->aabb_index);
 	NodePosition node_position = FrontTopLeft;
@@ -80,6 +81,8 @@ uint32_t growOctree(OctreeNode* root_node, const std::shared_ptr<vector<Point>>&
 
 
 OctreeNode* uptadeOctree(OctreeNode* main_root, uint32_t nb_new_levels){
+	if(!main_root){return 0;}
+	
 	OctreeNode* cur_child = main_root;
 	NodePosition node_position = FrontTopLeft;
 	for(uint32_t i=0; i<nb_new_levels; i++){
@@ -376,11 +379,6 @@ void loadOctreeOnGPU(CuRast* editor, CUcontext* context,
 ){
 	if(!octree_ref){return;}
 
-	// Skip the update if too many octrees are in the scene
-	if(GlobalVariables::nbOctreesInScene >= GlobalVariables::batchedMemories.size()){
-		return;
-	}
-
 	std::shared_ptr<Timing> timing = Timing::addTiming("send octree to GPU ", true);
 	createCudaMemory(editor, context, octree_ref, relationship_map_ref);
 	timing->stop_clock();
@@ -423,6 +421,7 @@ void addPointBatches(){
 		std::lock_guard<std::mutex> lock(GlobalVariables::batchesQueueMutexes[batch_index]);
 		GlobalVariables::mainOctree = initOctree(GlobalVariables::batchesQueue[batch_index]->points);
 		timing->stop_clock();
+		GlobalVariables::swapAABBsMaps();
 
 		// Copy octree once at the beginning
 		timing = Timing::addTiming("copy initial octree", true);
@@ -513,10 +512,14 @@ void addPointBatches(){
 	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 		std::lock_guard<std::mutex> lock_send(GlobalVariables::isUpdatingMtx);
 		GlobalVariables::swapAABBsMaps();
-		GlobalVariables::mainOctree = std::make_shared<OctreeNode>(*GlobalVariables::mainOctreeCpy);
+		if(GlobalVariables::mainOctreeCpy){
+			GlobalVariables::mainOctree = std::make_shared<OctreeNode>(*GlobalVariables::mainOctreeCpy);
+		}
 	} else {
 		GlobalVariables::swapAABBsMaps();
-		GlobalVariables::mainOctree = std::make_shared<OctreeNode>(*GlobalVariables::mainOctreeCpy);
+		if(GlobalVariables::mainOctreeCpy){
+			GlobalVariables::mainOctree = std::make_shared<OctreeNode>(*GlobalVariables::mainOctreeCpy);
+		}
 	}
 
 	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
