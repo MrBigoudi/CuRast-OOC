@@ -49,4 +49,12 @@ struct SimLod {
         std::shared_ptr<vector<Point>>& backlog_voxels,
         std::shared_ptr<vector<OctreeNode*>>& backlog_voxels_nodes
     );
+
+
+    /// Create buckets of points for each nodes
+    static std::unordered_map<OctreeNode*, std::vector<uint32_t>> fillPoints(
+        OctreeNode* main_root, 
+        std::shared_ptr<vector<Point>>& points,
+        uint32_t first_index = 0
+    );
 };

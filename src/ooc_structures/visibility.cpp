@@ -1,6 +1,7 @@
 #include "visibility.h"
 
 #include "outOfCore.h"
+#include "allocator.h"
 
 
 Plane::Plane(float x, float y, float z, float w){
@@ -11,8 +12,6 @@ Plane::Plane(float x, float y, float z, float w){
 
 
 Frustum::Frustum(const mat4& view_proj){
-
-    // const mat4 transpose = glm::transpose(view_proj);
     const mat4& transpose = view_proj;
 
     float m_00 = transpose[0][0];
@@ -110,7 +109,7 @@ std::vector<IdAABB> Visibility::orderNodes(
     // Get root node
     if(!visible_nodes.empty() && !visible_nodes.contains(root_node)){
         println("ERROR: the root node should always be marked as visible");
-        exit(EXIT_FAILURE);
+        throw(EXIT_FAILURE);
     }
 
     // TODO: better than O(n2) but less accurate
@@ -162,7 +161,7 @@ std::vector<IdAABB> Visibility::orderNodes(
             }
             println("\n\n\n");
             
-            exit(EXIT_FAILURE);
+            throw(EXIT_FAILURE);
         }
 
 
@@ -272,7 +271,7 @@ void Visibility::fillVisibilityCache(
             println("Current octree:");
             root_octree->display();
             
-            exit(EXIT_FAILURE);
+            throw(EXIT_FAILURE);
         }
 
 
@@ -283,7 +282,8 @@ void Visibility::fillVisibilityCache(
             if(cur_node->children[child_id]){
                 if(recursion(cur_node->children[child_id], child_id, level+1, &child_is_visible)){
                     // Remove the node if it is not on any of the caches
-                    delete(cur_node->children[child_id]);
+                    // delete(cur_node->children[child_id]);
+                    MemoryAllocator::delOctreeNode(cur_node->children[child_id]);
                     cur_node->children[child_id] = nullptr;
                 }
             } else {
@@ -308,7 +308,7 @@ void Visibility::fillVisibilityCache(
     recursion(root_octree, 0, 0, &root_visible);
     if(!root_visible){
         println("Root should always be visible: ie, should always be in the cache");
-        exit(EXIT_FAILURE);
+        throw(EXIT_FAILURE);
     }
 
     // println("after filling cache: vis cache size = {}, updates cache size = {}, total nodes = {}, nb_nodes = {}\n\n", 
@@ -320,11 +320,10 @@ void Visibility::fillVisibilityCache(
 
 void Visibility::updateVisibilityCache(
     const mat4& view, const mat4& proj, 
-    std::shared_ptr<OctreeNode>& octree_ref,
+    OctreeNode* octree_ref,
     std::shared_ptr<AABBRelationshipMap> relationship_map_ref
 ){
     if(!octree_ref){return;}
-    std::shared_ptr<Timing> timing_visibility = Timing::addTiming("update visibility", true);
     
     // TODO: just for debugging
     {
@@ -341,46 +340,10 @@ void Visibility::updateVisibilityCache(
 
     Frustum frustum = Frustum(proj * view);
 
-    std::shared_ptr<Timing> timing = Timing::addTiming("get visible nodes", true, 1);
     std::unordered_set<IdAABB> visible_nodes = getVisibleNodes(frustum, relationship_map_ref);
-    timing->stop_clock();
 
-    timing = Timing::addTiming("order visible nodes", true, 1);
     vec3 cameraPos = vec3(glm::inverse(view) * vec4(0.0f, 0.0f, 0.0f, 1.0f));
     std::vector<IdAABB> ordered_nodes = orderNodes(octree_ref->aabb_index, visible_nodes, cameraPos, relationship_map_ref);
-    timing->stop_clock();
 
-    timing = Timing::addTiming("update visibility cache", true, 1);
-    fillVisibilityCache(ordered_nodes, octree_ref.get(), relationship_map_ref);
-    timing->stop_clock();
-
-    timing_visibility->stop_clock();
-
-
-
-    // println("Relationship map: ");
-    // for(const auto& [id, children] : *relationship_map_ref){
-    //     println("    - [{}]: children: [{}, {}, {}, {}, {}, {}, {}, {}]",
-    //         id,
-    //         children[0] == INVALID_ID ? -1 : int32_t(children[0]),
-    //         children[1] == INVALID_ID ? -1 : int32_t(children[1]),
-    //         children[2] == INVALID_ID ? -1 : int32_t(children[2]),
-    //         children[3] == INVALID_ID ? -1 : int32_t(children[3]),
-    //         children[4] == INVALID_ID ? -1 : int32_t(children[4]),
-    //         children[5] == INVALID_ID ? -1 : int32_t(children[5]),
-    //         children[6] == INVALID_ID ? -1 : int32_t(children[6]),
-    //         children[7] == INVALID_ID ? -1 : int32_t(children[7])
-    //     );
-    // }
-    // println("\n\n\n");
-
-    // println("All AABBs");
-    // for(uint32_t i=0; i<GlobalVariables::allAABBs.size(); i++){
-    //     AABB& aabb = GlobalVariables::allAABBs[i];
-    //     println("    - [{}]: .mins = ({}, {}, {}), .maxs = ({}, {}, {})", i,
-    //         aabb.mins.x, aabb.mins.y, aabb.mins.z,
-    //         aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
-    //     );
-    // }
-    // println("\n\n\n");
+    fillVisibilityCache(ordered_nodes, octree_ref, relationship_map_ref);
 }

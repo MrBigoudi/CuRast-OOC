@@ -53,7 +53,7 @@ struct Visibility {
     /// Update visibility cache and the current octree by taking into account the visibility of each nodes
     static void updateVisibilityCache(
         const mat4& view, const mat4& proj, 
-        std::shared_ptr<OctreeNode>& octree_ref,
+        OctreeNode* octree_ref,
         std::shared_ptr<AABBRelationshipMap> relationship_map_ref
     );
 };

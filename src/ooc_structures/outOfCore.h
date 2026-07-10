@@ -4,7 +4,6 @@
 #include "globals.h"
 
 #include <array>
-#include <bits/stdc++.h>
 
 ///////////////////////////////////////////////////////////////////////////////
 //////////////////////////// FORWARD DECLARATION //////////////////////////////
@@ -46,13 +45,12 @@ struct OctreeNodeSerializable {
 
     /// Serializes all nodes, points, and voxels
     static void serialize(const OctreeNode* node);
-    static OctreeNode* toOctreeNodes(const IdAABB& node_aabb_index);
+    static OctreeNode* toOctreeNode(const IdAABB& node_aabb_index);
 
     private:
         // helpers
         void serialize(const std::string& filepath) const;
         static OctreeNodeSerializable deserialize(const std::string& filepath);
-        OctreeNode* toLeafNode(const IdAABB& node_aabb_index) const;
 };
 
 
@@ -65,10 +63,11 @@ struct CPUFallbackCache {
         std::optional<ChunkSerializable> serializable_points = nullopt;
         std::optional<ChunkSerializable> serializable_voxels = nullopt;
 
+        Entry(){}
 		/// A constructor from an existing node
 		Entry(const OctreeNode* node);
         /// A constructor which is deserialized from an aabb
-        Entry(const IdAABB& aabb_index);
+        static Entry deserialize(const IdAABB& aabb_index);
 
 		/// Builds an octree node from an entry
 		OctreeNode* toLeafNode() const;
@@ -78,19 +77,23 @@ struct CPUFallbackCache {
 	const uint32_t CACHE_SIZE;
 
     /// The global cache
-    std::list<std::shared_ptr<Entry>> cache = {};
-	std::unordered_map<IdAABB, std::list<std::shared_ptr<Entry>>::iterator> cache_map = {};
+    std::list<const Entry*> cache = {};
+	std::unordered_map<IdAABB, std::list<const Entry*>::iterator> cache_map = {};
 
     /// Creates a cache given its size
     CPUFallbackCache(uint32_t cache_size);
+    ~CPUFallbackCache(){
+        cache = {};
+        cache_map = {};
+    }
 
     /// Add a node to the cache
     /// Optionally return the node that was removed from the cache after the insertion
     /// Note that new entries should overwrite its previous version if the node was already in cache
-    std::shared_ptr<Entry> add(const std::shared_ptr<Entry>& new_entry);
+    const Entry* add(const Entry* new_entry);
 
     /// Get a node from the cache
-    std::shared_ptr<Entry> get(const IdAABB& aabb_index);
+    const Entry* get(const IdAABB& aabb_index);
 
 };
 

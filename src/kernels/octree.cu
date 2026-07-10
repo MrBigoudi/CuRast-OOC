@@ -375,10 +375,29 @@ void drawVoxel(
     }
 
     float step = 1. / float(nb_points);
-    for(float cx = -0.5; cx <= 0.5; cx+=step)
+
+    // Left-Right
     for(float cy = -0.5; cy <= 0.5; cy+=step)
     for(float cz = -0.5; cz <= 0.5; cz+=step){
-        vec3 position = voxel_position + vec3(cx, cy, cz)*voxel_size;
+        vec3 position = voxel_position + vec3(-0.5, cy, cz)*voxel_size;
+        drawPoint(position, voxel_color, target, world);
+        position = voxel_position + vec3(0.5, cy, cz)*voxel_size;
+        drawPoint(position, voxel_color, target, world);
+    }
+    // Top-Down
+    for(float cx = -0.5+step; cx <= 0.5-step; cx+=step)
+    for(float cz = -0.5; cz <= 0.5; cz+=step){
+        vec3 position = voxel_position + vec3(cx, -0.5, cz)*voxel_size;
+        drawPoint(position, voxel_color, target, world);
+        position = voxel_position + vec3(cx, 0.5, cz)*voxel_size;
+        drawPoint(position, voxel_color, target, world);
+    }
+    // Front-Back
+    for(float cx = -0.5+step; cx <= 0.5-step; cx+=step)
+    for(float cy = -0.5+step; cy <= 0.5-step; cy+=step){
+        vec3 position = voxel_position + vec3(cx, cy, -0.5)*voxel_size;
+        drawPoint(position, voxel_color, target, world);
+        position = voxel_position + vec3(cx, cy, 0.5)*voxel_size;
         drawPoint(position, voxel_color, target, world);
     }
 }
@@ -544,7 +563,7 @@ void kernel_visibilityPass(
     if(!node->is_visible){return;}
 
     // Draw voxels of not visible children
-    uint32_t max_bound = 8;
+    uint32_t max_bound = 16;
     uint32_t nb_points = min(max_bound, octree.max_lod_level + 1 - node->level);
     drawAllVoxels(
         node, octree.aabbs, target, 

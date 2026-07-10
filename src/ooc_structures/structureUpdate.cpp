@@ -2,9 +2,10 @@
 
 #include "simLod.h"
 #include "outOfCore.h"
+#include "allocator.h"
 
 
-std::shared_ptr<OctreeNode> initOctree(std::shared_ptr<vector<Point>>& points){
+OctreeNode* initOctree(std::shared_ptr<vector<Point>>& points){
 	// Initialise the AABB
 	AABB root_aabb = {};
 
@@ -55,12 +56,14 @@ std::shared_ptr<OctreeNode> initOctree(std::shared_ptr<vector<Point>>& points){
 
 	// Initialise the main octree
 	IdAABB root_aabb_index = GlobalVariables::createNewAABB(root_aabb);
-	return std::make_shared<OctreeNode>(root_aabb_index);
+	// return std::make_shared<OctreeNode>(root_aabb_index);
+	return MemoryAllocator::newOctreeNode(root_aabb_index);
 }
 
 
 
 uint32_t growOctree(OctreeNode* root_node, const std::shared_ptr<vector<Point>>& points){
+	if(!root_node){return 0;}
 	uint32_t nb_new_levels = 0;
 	AABB new_aabb = GlobalVariables::getAABB(root_node->aabb_index);
 	NodePosition node_position = FrontTopLeft;
@@ -80,6 +83,8 @@ uint32_t growOctree(OctreeNode* root_node, const std::shared_ptr<vector<Point>>&
 
 
 OctreeNode* uptadeOctree(OctreeNode* main_root, uint32_t nb_new_levels){
+	if(!main_root){return 0;}
+	
 	OctreeNode* cur_child = main_root;
 	NodePosition node_position = FrontTopLeft;
 	for(uint32_t i=0; i<nb_new_levels; i++){
@@ -89,8 +94,12 @@ OctreeNode* uptadeOctree(OctreeNode* main_root, uint32_t nb_new_levels){
 
 		// Create the new parent node
 		IdAABB parent_aabb_index = GlobalVariables::createNewAABB(parent_aabb);
-		OctreeNode* new_parent = new OctreeNode(parent_aabb_index);
-		new_parent->occupancy = new OccupancyGrid();
+		// OctreeNode* new_parent = new OctreeNode(parent_aabb_index);
+		OctreeNode* new_parent = MemoryAllocator::newOctreeNode(parent_aabb_index);
+
+		// new_parent->occupancy = new OccupancyGrid();
+		new_parent->occupancy = MemoryAllocator::newOccupancyGrid();
+
 		new_parent->updated = true;
 		cur_child->updated = true;
 		// Create the correct child
@@ -117,11 +126,15 @@ OctreeNode* uptadeOctree(OctreeNode* main_root, uint32_t nb_new_levels){
 						new_voxel.color[2] = point.color[2];
 
 						// Add voxel to voxels chunk list
-						if(!new_parent->voxels){new_parent->voxels =  new Chunk();}
+						if(!new_parent->voxels){
+							// new_parent->voxels =  new Chunk();
+							new_parent->voxels =  MemoryAllocator::newChunk();
+						}
 						Chunk* parent_chunk_list = new_parent->voxels;
 						while(parent_chunk_list->next){parent_chunk_list = parent_chunk_list->next;}
 						if(parent_chunk_list->size == OocSimLodSettings::NB_POINTS_PER_CHUNK){
-							parent_chunk_list->next =  new Chunk();
+							// parent_chunk_list->next =  new Chunk();
+							parent_chunk_list->next =  MemoryAllocator::newChunk();
 							parent_chunk_list = parent_chunk_list->next;
 						}
 						parent_chunk_list->points[parent_chunk_list->size] = new_voxel;
@@ -162,11 +175,11 @@ void freeOctreesOnGPU(CuRast* editor){
 	if(delete_all){
 		CuRastSettings::freeOldOctreeMemoryOnGPU = false;
 	}
-
 	
 	for(SNCOctree* octree : octrees){
 		std::lock_guard<std::mutex> lock_scene(GlobalVariables::updateSceneMutex);
 		editor->scene.world->remove(octree);
+		GlobalVariables::nbOctreesInScene--;
 	}
 }
 
@@ -188,20 +201,34 @@ std::optional<CUdeviceptr> allocateChunks(
     const Chunk* root, bool is_voxel_chunk
 ){
 	// Create CChunks
+	std::vector<const Chunk*> all_chunks = {};
+	std::vector<std::pair<CChunk*, CUdeviceptr>> allocated_chunks = {};
 	const Chunk* cur_chunk = root;
-	CChunk* prev = nullptr;
-	std::optional<CUdeviceptr> first = nullopt;
 	while(cur_chunk){
-		std::pair<CChunk*, CUdeviceptr> allocated = GlobalVariables::batchedMemory.allocate<CChunk>();
-		CUdeviceptr tmp_gpu = allocated.second;
+		all_chunks.push_back(cur_chunk);
+		BatchedMemory& memory = GlobalVariables::batchedMemories[GlobalVariables::currentBatchedMemoriesIndex];
+		std::pair<CChunk*, CUdeviceptr> allocated = memory.allocate<CChunk>();
+		memory.addFutureCopy<CChunk>(allocated.first, allocated.second);
+		allocated_chunks.push_back(allocated);
+		cur_chunk = cur_chunk->next;
+	}
 
-		CChunk* tmp = allocated.first;
+	uint32_t nb_chunks = all_chunks.size();
+	octree->nb_chunks += nb_chunks;
+	auto fillChunk = [&](uint32_t index){
+		const Chunk* cur_chunk = all_chunks[index];
+
+		CChunk* tmp = allocated_chunks[index].first;
+
 		tmp->size = cur_chunk->size;
 		tmp->next = nullptr;
-
-		if(is_voxel_chunk){octree->nb_voxels += tmp->size;} 
-		else{octree->nb_points += tmp->size;} 
-		octree->nb_chunks++;
+		if(index != nb_chunks-1){
+			tmp->next = (CChunk*)(allocated_chunks[index+1].second);
+		} else {
+			uint32_t nb_points = tmp->size + (nb_chunks - 1) * OocSimLodSettings::NB_POINTS_PER_CHUNK;
+			if(is_voxel_chunk){octree->nb_voxels += nb_points;}
+			else {octree->nb_points += nb_points;}
+		}
 
 		for(uint32_t j=0; j<tmp->size; j++){
 			CPoint tmp_point = {
@@ -213,34 +240,38 @@ std::optional<CUdeviceptr> allocateChunks(
 			};
 			tmp->points[j] = tmp_point;
 		}
+	};
 
-		if(prev){
-			prev->next = (CChunk*)tmp_gpu;
-		}
+	std::vector<uint32_t> indices(all_chunks.size()); 
+	std::iota(indices.begin(), indices.end(), 0);
 
-		GlobalVariables::batchedMemory.addFutureCopy<CChunk>(tmp, tmp_gpu);
-
-		cur_chunk = cur_chunk->next;
-		prev = tmp;
-		if(!first){first = tmp_gpu;}
+	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+		std::for_each(std::execution::par, indices.begin(), indices.end(), [&](uint32_t index){
+			fillChunk(index);
+		});
+	} else {
+		std::for_each(indices.begin(), indices.end(), [&](uint32_t index){
+			fillChunk(index);
+		});
 	}
 
-	return first;
+	return all_chunks.empty() ? nullopt : std::optional<CUdeviceptr>(allocated_chunks[0].second);
 };
 
 
 void createCudaMemory(CuRast* editor, CUcontext* context, 
-    std::shared_ptr<OctreeNode>& input_octree,
+    OctreeNode* input_octree,
     std::shared_ptr<AABBRelationshipMap> relationship_map_ref
 ){
-	GlobalVariables::batchedMemory.reset();
+	BatchedMemory& memory = GlobalVariables::batchedMemories[GlobalVariables::currentBatchedMemoriesIndex];
+	memory.reset();
 
 	// Create cuda memory pointers
 	std::shared_ptr<SNCOctree> octree = make_shared<SNCOctree>(
 		GlobalVariables::getSimLodOctreeName(true), 
 		GlobalVariables::simLodOctreeCounter
 	);
-	octree->cptr_nodes = {};
+	std::vector<CUdeviceptr> cptr_nodes = {};
 
 	cuCtxSetCurrent(*context);
 	CUresult cuda_status = cuStreamCreate(&octree->stream, CU_STREAM_NON_BLOCKING);
@@ -260,7 +291,7 @@ void createCudaMemory(CuRast* editor, CUcontext* context,
 			if(cur_node->children[child]){
 				if(level == UINT8_MAX){
 					println("Can't have a level greater than {}", UINT8_MAX);
-					exit(EXIT_FAILURE);
+					throw(EXIT_FAILURE);
 				}
 				const OctreeNode* next_node = cur_node->children[child];
 				child_indices[child] = recursive(next_node, level+1);
@@ -268,7 +299,7 @@ void createCudaMemory(CuRast* editor, CUcontext* context,
 		}	
 
 		// Create COctreeNode
-		std::pair<COctreeNode*, CUdeviceptr> allocated = GlobalVariables::batchedMemory.allocate<COctreeNode>();
+		std::pair<COctreeNode*, CUdeviceptr> allocated = memory.allocate<COctreeNode>();
 		COctreeNode* new_node = allocated.first;
 
 		for(uint32_t child = 0; child < 8; child++){
@@ -282,7 +313,7 @@ void createCudaMemory(CuRast* editor, CUcontext* context,
 		new_node->occupancy = nullptr;
 		new_node->aabb_index = cur_node->aabb_index;
 
-		new_node->counter = cur_node->counter;
+		new_node->counter = cur_node->counter.load();
 		new_node->children_ids = cur_node->children_ids;
 		new_node->children_visibility = cur_node->children_visibility;
 		new_node->level = level;
@@ -299,58 +330,67 @@ void createCudaMemory(CuRast* editor, CUcontext* context,
 		// Create cuda pointers
 		CUdeviceptr cptr_node = allocated.second;
 
-		GlobalVariables::batchedMemory.addFutureCopy<COctreeNode>(new_node, cptr_node);
-		octree->cptr_nodes.push_back(cptr_node);
+		memory.addFutureCopy<COctreeNode>(new_node, cptr_node);
+		cptr_nodes.push_back(cptr_node);
 		octree->nb_nodes++;
 
 		return cptr_node;
 	};
 
-	const OctreeNode* next_octree = input_octree.get();
+	const OctreeNode* next_octree = input_octree;
 	recursive(next_octree, 0);
 
 	octree->max_lod_level = max_lod_level;
 
-	uint32_t current_nb_aabb = relationship_map_ref->size();
+	octree->nb_aabbs = relationship_map_ref->size();
 
 	// Copy arrays of pointers to GPU
 	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 		// Allocate the space for the AABBs
-		cuda_status = cuMemAllocAsync(&octree->aabbs, current_nb_aabb * sizeof(AABB), octree->stream);
-		cuda_status = cuMemcpyHtoDAsync(octree->aabbs, GlobalVariables::allAABBs.data(), current_nb_aabb * sizeof(AABB), octree->stream);
+		cuda_status = cuMemAllocAsync(&octree->aabbs, octree->nb_aabbs * sizeof(AABB), octree->stream);
+		cuda_status = cuMemcpyHtoDAsync(octree->aabbs, GlobalVariables::allAABBs.data(), octree->nb_aabbs * sizeof(AABB), octree->stream);
 		// Allocate the space for the nodes pointers
-		cuda_status = cuMemAllocAsync(&octree->nodes, octree->cptr_nodes.size() * sizeof(CUdeviceptr), octree->stream);
-		cuda_status = cuMemcpyHtoDAsync(octree->nodes, octree->cptr_nodes.data(), octree->cptr_nodes.size() * sizeof(CUdeviceptr), octree->stream);
+		cuda_status = cuMemAllocAsync(&octree->nodes, cptr_nodes.size() * sizeof(CUdeviceptr), octree->stream);
+		cuda_status = cuMemcpyHtoDAsync(octree->nodes, cptr_nodes.data(), cptr_nodes.size() * sizeof(CUdeviceptr), octree->stream);
 	} else {
 		// Allocate the space for the AABBs
-		cuda_status = cuMemAlloc(&octree->aabbs, current_nb_aabb * sizeof(AABB));
-		cuda_status = cuMemcpyHtoD(octree->aabbs, GlobalVariables::allAABBs.data(), current_nb_aabb * sizeof(AABB));
+		cuda_status = cuMemAlloc(&octree->aabbs, octree->nb_aabbs * sizeof(AABB));
+		cuda_status = cuMemcpyHtoD(octree->aabbs, GlobalVariables::allAABBs.data(), octree->nb_aabbs * sizeof(AABB));
 		// Allocate the space for the nodes pointers
-		cuda_status = cuMemAlloc(&octree->nodes, octree->cptr_nodes.size() * sizeof(CUdeviceptr));
-		cuda_status = cuMemcpyHtoD(octree->nodes, octree->cptr_nodes.data(), octree->cptr_nodes.size() * sizeof(CUdeviceptr));
+		cuda_status = cuMemAlloc(&octree->nodes, cptr_nodes.size() * sizeof(CUdeviceptr));
+		cuda_status = cuMemcpyHtoD(octree->nodes, cptr_nodes.data(), cptr_nodes.size() * sizeof(CUdeviceptr));
 	}
 	CURuntime::assertCudaSuccess(cuda_status);
-	GlobalVariables::batchedMemory.copyMemory(context, &octree->stream);
+	memory.copyMemory(context, &octree->stream);
 
 	{
 		std::lock_guard<std::mutex> lock_scene(GlobalVariables::updateSceneMutex);
 		editor->scene.world->children.push_back(octree);
+		GlobalVariables::nbOctreesInScene++;
 	}
 	// Free previous octrees
 	if(CuRastSettings::autoFreeOldOctreeMemoryOnGPU){
-		freePreviousOctreeOnGPU(editor, octree);
+		std::thread thread([&](CuRast* editor, std::shared_ptr<SNCOctree> octree){
+			freePreviousOctreeOnGPU(editor, octree);
+		}, editor, octree);
+		thread.detach();
+		// freePreviousOctreeOnGPU(editor, octree);
 	}
+	// Swap allocated memories
+	GlobalVariables::currentBatchedMemoriesIndex++;
+	GlobalVariables::currentBatchedMemoriesIndex = GlobalVariables::currentBatchedMemoriesIndex % GlobalVariables::batchedMemories.size();
 };
 
 
 void loadOctreeOnGPU(CuRast* editor, CUcontext* context, 
-    std::shared_ptr<OctreeNode>& octree_ref,
+    OctreeNode* octree_ref,
     std::shared_ptr<AABBRelationshipMap> relationship_map_ref
 ){
 	if(!octree_ref){return;}
-	std::shared_ptr<Timing> timing = Timing::addTiming("send octree to GPU ", true);
+
+	// std::shared_ptr<Timing> timing = Timing::addTiming("send octree to GPU ", true);
 	createCudaMemory(editor, context, octree_ref, relationship_map_ref);
-	timing->stop_clock();
+	// timing->stop_clock();
 }
 
 
@@ -389,18 +429,22 @@ void addPointBatches(){
 		uint32_t batch_index = batches_indices[0];
 		std::lock_guard<std::mutex> lock(GlobalVariables::batchesQueueMutexes[batch_index]);
 		GlobalVariables::mainOctree = initOctree(GlobalVariables::batchesQueue[batch_index]->points);
+		GlobalVariables::allOctreesRefCounter[GlobalVariables::mainOctree] = 1;
 		timing->stop_clock();
+		GlobalVariables::swapAABBsMaps();
 
 		// Copy octree once at the beginning
 		timing = Timing::addTiming("copy initial octree", true);
-		GlobalVariables::mainOctreeCpy = new OctreeNode(*GlobalVariables::mainOctree);
+		// GlobalVariables::mainOctreeCpy = new OctreeNode(*GlobalVariables::mainOctree);
+		GlobalVariables::mainOctreeCpy = MemoryAllocator::newOctreeNodeCpy(*GlobalVariables::mainOctree);
 		timing->stop_clock();
 	}
 
 	// println("//////////////////////////////////////////////////");
-	// println("///////////// OctreeCpy before update ////////////");
+	// println("////////////// Octree before update //////////////");
 	// println("//////////////////////////////////////////////////");
-	// mainOctreeCpy->display();
+	// GlobalVariables::mainOctreeCpy->display();
+	// GlobalVariables::displayCpuMemoryUsage();
 
 	// Update the temporary octree
 	std::shared_ptr<Timing> timing = Timing::addTiming("compute max new level", true);
@@ -432,7 +476,9 @@ void addPointBatches(){
 	// println("//////////////////////////////////////////////////");
 	// println("//////////// Octree after grow octree ////////////");
 	// println("//////////////////////////////////////////////////");
-	// mainOctreeCpy->display();
+	// GlobalVariables::mainOctreeCpy->display();
+	// GlobalVariables::displayCpuMemoryUsage();
+
 
 	timing = Timing::addTiming("update octree bottom up", true);
 	// In single thread
@@ -449,7 +495,9 @@ void addPointBatches(){
 	// println("//////////////////////////////////////////////////");
 	// println("/////////// Octree after update octree ///////////");
 	// println("//////////////////////////////////////////////////");
-	// mainOctreeCpy->display();
+	// GlobalVariables::mainOctreeCpy->display();
+	// GlobalVariables::displayCpuMemoryUsage();
+
 
 
 	timing = Timing::addTiming("simlod update", true);
@@ -466,25 +514,39 @@ void addPointBatches(){
 	// println("//////////////////////////////////////////////////");
 	// println("/////////// Octree after simLOD update ///////////");
 	// println("//////////////////////////////////////////////////");
-	// mainOctreeCpy->display();
+	// GlobalVariables::mainOctreeCpy->display();
+	// GlobalVariables::displayCpuMemoryUsage();
+
 
 	timing = Timing::addTiming("update cache", true);
 	updateUpdatesCache(GlobalVariables::mainOctreeCpy);
 	timing->stop_clock();
 
 	// println("//////////////////////////////////////////////////");
-	// println("/////////// Octree after cache update ///////////");
+	// println("/////////// Octree after cache update ////////////");
 	// println("//////////////////////////////////////////////////");
-	// mainOctreeCpy->display();
+	// GlobalVariables::mainOctreeCpy->display();
+	// GlobalVariables::displayCpuMemoryUsage();
+
 
 	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 		std::lock_guard<std::mutex> lock_send(GlobalVariables::isUpdatingMtx);
 		GlobalVariables::swapAABBsMaps();
-		GlobalVariables::mainOctree = std::make_shared<OctreeNode>(*GlobalVariables::mainOctreeCpy);
+		GlobalVariables::swapOctrees();
+		// Free the memory here to avoid having too many octrees stacking
+		GlobalVariables::freeOctreesOnCPU();
 	} else {
 		GlobalVariables::swapAABBsMaps();
-		GlobalVariables::mainOctree = std::make_shared<OctreeNode>(*GlobalVariables::mainOctreeCpy);
+		GlobalVariables::swapOctrees();
+		// Free the memory here to avoid having too many octrees stacking
+		GlobalVariables::freeOctreesOnCPU();
 	}
+
+	// println("//////////////////////////////////////////////////");
+	// println("/////////////// Octree after swap ////////////////");
+	// println("//////////////////////////////////////////////////");
+	// GlobalVariables::mainOctreeCpy->display();
+	// GlobalVariables::displayCpuMemoryUsage();
 
 	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 		std::for_each(std::execution::par, first, last, [&](uint32_t index){
@@ -497,11 +559,13 @@ void addPointBatches(){
 			GlobalVariables::batchesQueue[index]->state = BatchState::Inserted;
 		});
 	}
+
 };
 
 
 void updateOctreeRoutine(){
 	while(true){
 		addPointBatches();
+		if(GlobalVariables::mainLoopIsTerminating){return;}
 	}
 }

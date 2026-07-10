@@ -246,7 +246,7 @@ void loadBatchesOnGPU(CuRast* editor, CUcontext* ctx){
 		// 			name ? name : "unknown",
 		// 			desc ? desc : "unknown"
 		// 		);
-		// 		exit(EXIT_FAILURE);
+		// 		throw(EXIT_FAILURE);
 		// 	}
 		// 	free_db = (double)free_byte;
 		// 	total_db = (double)total_byte;
@@ -313,6 +313,7 @@ void loadBatchesOnGPU(CuRast* editor, CUcontext* ctx){
 void loadPointcloudRoutine(){
     while(true){
         loadPointsInBatches();
+		if(GlobalVariables::mainLoopIsTerminating){return;}
     }
 };
 
@@ -328,5 +329,6 @@ void clearUnusedBatches(){
 void clearUnusedBatchesRoutine(){
 	while(true){
 		clearUnusedBatches();
+		if(GlobalVariables::mainLoopIsTerminating){return;}
 	}
 }
