@@ -99,8 +99,6 @@ OctreeNode* CPUFallbackCache::Entry::toLeafNode() const {
     // OctreeNode* new_node = new OctreeNode(serializable_node.aabb_index);
     OctreeNode* new_node = MemoryAllocator::newOctreeNode(serializable_node.aabb_index);
     
-    NEW_COUNTER++;
-
     new_node->counter.store(serializable_node.counter);
     new_node->children_ids = serializable_node.children_ids;
 
@@ -126,8 +124,6 @@ const CPUFallbackCache::Entry* CPUFallbackCache::add(const Entry* new_entry){
         cache.erase(it->second);
         cache_map.erase(it);
         delete(*it->second);
-
-        DELETE_COUNTER++;
     }
 
     const Entry* old_entry = nullptr;
@@ -252,8 +248,6 @@ Chunk* ChunkSerializable::toChunk() const{
 
         // Chunk* new_chunk = new Chunk();
         Chunk* new_chunk = MemoryAllocator::newChunk();
-
-        NEW_COUNTER++;
         
         new_chunk->size = cur_size;
         for(uint32_t point_id = 0; point_id < cur_size; point_id++){
@@ -474,8 +468,6 @@ void updateUpdatesCache(OctreeNode* root_octree){
                     // delete(cur_node->children[child_id]);
                     MemoryAllocator::delOctreeNode(cur_node->children[child_id]);
                     cur_node->children[child_id] = nullptr;
-
-                    DELETE_COUNTER++;
                 }
             }
         }

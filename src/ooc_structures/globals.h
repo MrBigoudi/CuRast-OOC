@@ -13,9 +13,6 @@
 /////////////////////////// GLOBAL ENUM DECLARATION ///////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
 
-extern std::atomic<uint64_t> NEW_COUNTER;
-extern std::atomic<uint64_t> DELETE_COUNTER;
-
 /// The position of a child node
 enum NodePosition {
 	FrontTopLeft,
@@ -130,18 +127,10 @@ struct OccupancyGrid {
 	std::atomic<uint32_t> values[OocSimLodSettings::GRID_SIZE / 32] = {0};
 
 	OccupancyGrid(){}
-	// OccupancyGrid(const OccupancyGrid& cpy){
-	// 	for(uint32_t i=0; i<OocSimLodSettings::GRID_SIZE / 32; i++){
-	// 		values[i] = cpy.values[i].load();
-	// 	}
-	// 	assert(cpy == *this);
-	// }
+	
 	bool operator==(const OccupancyGrid& rhs) const {
 		for(uint32_t i=0; i<OocSimLodSettings::GRID_SIZE / 32; i++){
 			if(values[i] != rhs.values[i]){
-				// println("OccupancyGrid::operator==: at i=={}: {} != {}", 
-				// 	i, values[i], rhs.values[i]
-				// );
 				return false;
 			}
 		}
@@ -174,27 +163,6 @@ struct Chunk {
 	bool operator==(const Chunk& rhs) const;
 
 	Chunk(){}
-	// Chunk(const Chunk& cpy): size(cpy.size) {
-	// 	for(uint32_t i=0; i<OocSimLodSettings::NB_POINTS_PER_CHUNK; i++){
-	// 		points[i] = cpy.points[i];
-	// 	}
-
-	// 	if(cpy.next){
-	// 		next = new Chunk(*cpy.next);
-
-	// 		NEW_COUNTER++;
-	// 	}
-	// 	assert(cpy == *this);
-	// }
-
-	// ~Chunk() {
-	// 	Chunk* tmp = next;
-	// 	next = nullptr;
-	// 	delete(tmp);
-
-	// 	DELETE_COUNTER++;
-	// }
-
 };
 
 /// A node in an octree
@@ -215,7 +183,6 @@ struct OctreeNode {
 	bool is_visible = false;
 	bool is_cut = false;
 
-	
 
 	static uint32_t getNbNodes(OctreeNode* root);
 	static uint32_t getNbGrids(OctreeNode* root);
@@ -230,64 +197,7 @@ struct OctreeNode {
 
 	bool operator==(const OctreeNode& rhs) const;
 
-	// ~OctreeNode(){
-	// 	if(points){
-	// 		Chunk* tmp = points;
-	// 		points = nullptr;
-	// 		delete(tmp);
-
-	// 		DELETE_COUNTER++;
-	// 	}
-	// 	if(voxels){
-	// 		Chunk* tmp = voxels;
-	// 		voxels = nullptr;
-	// 		delete(tmp);
-
-	// 		DELETE_COUNTER++;
-	// 	}
-	// 	if(occupancy){
-	// 		OccupancyGrid* tmp = occupancy;
-	// 		occupancy = nullptr;
-	// 		delete(tmp);
-
-	// 		DELETE_COUNTER++;
-	// 	}
-	// 	for(uint32_t i=0; i<8; i++){
-	// 		if(children[i]){
-	// 			OctreeNode* tmp = children[i];
-	// 			children[i] = nullptr;
-	// 			delete(tmp);
-
-	// 			DELETE_COUNTER++;
-	// 		}
-	// 	}
-	// }
-
 	OctreeNode(){}
-	// OctreeNode(IdAABB aabb_index) : aabb_index(aabb_index){}
-	// OctreeNode(const OctreeNode& cpy, bool node_only = false) : aabb_index(cpy.aabb_index),
-	// 	children_ids(cpy.children_ids)
-	// {
-	// 	counter.store(cpy.counter.load());
-	// 	points = cpy.points ? new Chunk(*cpy.points) : nullptr;
-	// 	voxels = cpy.voxels ? new Chunk(*cpy.voxels) : nullptr;
-	// 	occupancy = cpy.occupancy ? new OccupancyGrid(*cpy.occupancy) : nullptr;
-
-	// 	if(points){NEW_COUNTER++;}
-	// 	if(voxels){NEW_COUNTER++;}
-	// 	if(occupancy){NEW_COUNTER++;}
-
-	// 	if(!node_only){
-	// 		for(uint32_t child = 0; child < 8; child++){
-	// 			if(cpy.children[child]){
-	// 				children[child] = new OctreeNode(*cpy.children[child]);
-				
-	// 				NEW_COUNTER++;
-	// 			}
-	// 		}
-	// 		assert(cpy == *this);
-	// 	}
-	// }
 
 	void rebuildOccupancy();
 };

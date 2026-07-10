@@ -12,8 +12,6 @@ Plane::Plane(float x, float y, float z, float w){
 
 
 Frustum::Frustum(const mat4& view_proj){
-
-    // const mat4 transpose = glm::transpose(view_proj);
     const mat4& transpose = view_proj;
 
     float m_00 = transpose[0][0];
@@ -287,8 +285,6 @@ void Visibility::fillVisibilityCache(
                     // delete(cur_node->children[child_id]);
                     MemoryAllocator::delOctreeNode(cur_node->children[child_id]);
                     cur_node->children[child_id] = nullptr;
-
-                    DELETE_COUNTER++;
                 }
             } else {
                 // If the node is not in memory, load it

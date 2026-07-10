@@ -4,8 +4,6 @@
 #include "structureUpdate.h"
 #include "visibility.h"
 
-std::atomic<uint64_t> NEW_COUNTER = 0;
-std::atomic<uint64_t> DELETE_COUNTER = 0;
 
 bool Point::operator==(const Point& rhs) const {
     if(position != rhs.position){return false;}
@@ -578,7 +576,6 @@ void OctreeNode::rebuildOccupancy() {
     if(voxels){
         // occupancy = new OccupancyGrid();
         occupancy = MemoryAllocator::newOccupancyGrid();
-        NEW_COUNTER++;
 
         const Chunk* cur_chunk = voxels;
         while(cur_chunk){
@@ -648,18 +645,12 @@ void GlobalVariables::init(CuRast* instance, CUcontext* context){
     visibilityCache = std::make_shared<LRUCache>("visibility cache", OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE);
     // cpuCache = std::make_shared<CPUFallbackCache>(OocSimLodSettings::LRU_CPU_CACHE_SIZE);
 
-    // To render on first loop
-    elapsedFrames = OocSimLodSettings::NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE + 1;
-
     for(auto& memory : batchedMemories){
         memory.init(instance, context);
     }
     
     // Initialise the allocator
     MemoryAllocator::init();
-    uint64_t total_preallocated_size = MemoryAllocator::getSize();
-    println("Total preallocated size: {}", formatMemSize(total_preallocated_size));
-    // throw(EXIT_FAILURE);
 
     cudaDeviceSynchronize();
 }
@@ -755,13 +746,24 @@ void GlobalVariables::swapAABBsMaps() {
 }
 
 void GlobalVariables::displayCpuMemoryUsage(){
-    println("Nb new: {}, Nb delete = {}", NEW_COUNTER.load(), DELETE_COUNTER.load());
     MemoryAllocator::displayInfo();
 
-    println("MainOctree info:");
-    if(mainOctree){mainOctree->displayMemInfo();}
-    println("MainOctreeCpy info:");
-    if(mainOctreeCpy){mainOctreeCpy->displayMemInfo();}
+    println("Memory pre-allocated for CPU-GPU transfers:");
+    uint64_t total_size = 0;
+    for(auto& batch : batchedMemories){
+        total_size += batch.memory_size;
+    }
+    println("    - CPU side: {}", formatMemSize(total_size));
+    println("    - GPU side: {}", formatMemSize(total_size));
+
+    if(mainOctree){
+        println("MainOctree info:");
+        printf("    - "); mainOctree->displayMemInfo();
+    }
+    if(mainOctreeCpy){
+        println("MainOctreeCpy info:");
+        printf("    - "); mainOctreeCpy->displayMemInfo();
+    }
 
     println("\nUpdates cache info:");
     println("    - capacity: {}, size: {}", 
@@ -785,12 +787,6 @@ void GlobalVariables::displayCpuMemoryUsage(){
         + OctreeNode::getNbChunks(mainOctreeCpy)
     ;
     uint32_t real_nb_octrees = allOctreesRefCounter.size();
-    std::string counters = "[";
-    for(auto& [node, counter] : allOctreesRefCounter){
-        counters += std::format("{}, ", counter);
-        printf("counter[%p] = %u\n", node, counter);
-    }
-    counters += "]";
 
     println("    - nb nodes = {}, lost nodes = {}", real_nb_nodes,
         MemoryAllocator::nodesAllocator->nb_allocated_elements.load() - real_nb_nodes
@@ -801,9 +797,12 @@ void GlobalVariables::displayCpuMemoryUsage(){
     println("    - nb chunks = {}, lost chunks = {}", real_nb_chunks,
         MemoryAllocator::chunksAllocator->nb_allocated_elements.load() - real_nb_chunks
     );
-    println("    - nb octrees = {}, lost octrees = {}, counters = {}", 
-        real_nb_octrees, real_nb_octrees - 1, counters
+    println("    - nb octrees = {}, lost octrees = {}", 
+        real_nb_octrees, real_nb_octrees - 1
     );
+    for(auto& [node, counter] : allOctreesRefCounter){
+        printf("    - counter[%p] = %u\n", node, counter);
+    }
     println("\n");
 }
 
@@ -1352,44 +1351,19 @@ void GlobalVariables::swapOctrees(){
     // Also, the one after updates update never loads the node in the visibility update tree
     mainOctree = MemoryAllocator::newOctreeNodeCpy(*mainOctreeCpy);
     allOctreesRefCounter[mainOctree] = 1;
-    // allOctreesRefCounter[mainOctree].store(1);
 }
 
 
 void GlobalVariables::freeOctreesOnCPU(){
-    std::lock_guard<std::mutex> lock(isUpdatingMtx);
-    if(allOctreesRefCounter.empty() || mainLoopIsTerminating){return;}
-
-    // // Sanity check
-    // println("Init sanity check");
-    // for(auto& [node, counter] : allOctreesRefCounter){
-    //     // Check if a child of the node is also in the map ?
-    //     std::function<void(OctreeNode*, uint32_t)> recursion = [&](OctreeNode* cur_node, uint32_t level){
-    //         for(uint32_t i = 0; i < 8; i++){
-    //             OctreeNode* child = cur_node->children[i];
-    //             if(child){
-    //                 if(allOctreesRefCounter.contains(child)){
-    //                     println("ERROR: A child and its parent are both marked as complete tree, this should not happen!!");
-    //                     println("Parent:"); 
-    //                     node->display(0, 0, true);
-    //                     println("Child:"); 
-    //                     child->display(i, level+1, true);
-    //                     throw(EXIT_FAILURE);
-    //                 }
-    //                 recursion(child, level+1);
-    //             }
-    //         }
-    //     };
-    //     recursion(node, 0);
-    // }
-    // println("Sanity check passed");
+    if(allOctreesRefCounter.size() <= 1){
+        return;
+    }
 
     // https://stackoverflow.com/questions/15662412/how-to-remove-multiple-items-from-unordered-map-while-iterating-over-it
     for (auto it = allOctreesRefCounter.begin(); it != allOctreesRefCounter.end();) {
         OctreeNode* node = it->first;
         uint32_t counter = it->second;
         if(counter == 0) {
-            // delete(node);
             MemoryAllocator::delOctreeNode(node);
             it = allOctreesRefCounter.erase(it);
         } else {

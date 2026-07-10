@@ -337,7 +337,6 @@ void initScene() {
 				if(done){break;}
 			}
 			clearUnusedBatches();
-			GlobalVariables::freeOctreesOnCPU();
 		} else {
 			std::thread thread_loadLion([&](std::string file){
 				initLoadPointBatches(file);
@@ -547,7 +546,6 @@ int main(int argc, char** argv){
 						if(done){break;}
 					}
 					clearUnusedBatches();
-					GlobalVariables::freeOctreesOnCPU();
 				}
 			});
 		};
@@ -651,9 +649,6 @@ int main(int argc, char** argv){
 
 				// Free unused memory
 				freeOctreesOnGPU(CuRast::instance);
-				if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-					GlobalVariables::freeOctreesOnCPU();
-				}
 
 				// Display some information bout memory usage
 				if(CuRastSettings::getGpuMemoryUsage){

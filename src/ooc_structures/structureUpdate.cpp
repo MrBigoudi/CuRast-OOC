@@ -97,12 +97,8 @@ OctreeNode* uptadeOctree(OctreeNode* main_root, uint32_t nb_new_levels){
 		// OctreeNode* new_parent = new OctreeNode(parent_aabb_index);
 		OctreeNode* new_parent = MemoryAllocator::newOctreeNode(parent_aabb_index);
 
-		NEW_COUNTER++;
-
 		// new_parent->occupancy = new OccupancyGrid();
 		new_parent->occupancy = MemoryAllocator::newOccupancyGrid();
-
-		NEW_COUNTER++;
 
 		new_parent->updated = true;
 		cur_child->updated = true;
@@ -133,8 +129,6 @@ OctreeNode* uptadeOctree(OctreeNode* main_root, uint32_t nb_new_levels){
 						if(!new_parent->voxels){
 							// new_parent->voxels =  new Chunk();
 							new_parent->voxels =  MemoryAllocator::newChunk();
-
-							NEW_COUNTER++;
 						}
 						Chunk* parent_chunk_list = new_parent->voxels;
 						while(parent_chunk_list->next){parent_chunk_list = parent_chunk_list->next;}
@@ -142,8 +136,6 @@ OctreeNode* uptadeOctree(OctreeNode* main_root, uint32_t nb_new_levels){
 							// parent_chunk_list->next =  new Chunk();
 							parent_chunk_list->next =  MemoryAllocator::newChunk();
 							parent_chunk_list = parent_chunk_list->next;
-
-							NEW_COUNTER++;
 						}
 						parent_chunk_list->points[parent_chunk_list->size] = new_voxel;
 						parent_chunk_list->size++;
@@ -183,7 +175,6 @@ void freeOctreesOnGPU(CuRast* editor){
 	if(delete_all){
 		CuRastSettings::freeOldOctreeMemoryOnGPU = false;
 	}
-
 	
 	for(SNCOctree* octree : octrees){
 		std::lock_guard<std::mutex> lock_scene(GlobalVariables::updateSceneMutex);
@@ -447,8 +438,6 @@ void addPointBatches(){
 		// GlobalVariables::mainOctreeCpy = new OctreeNode(*GlobalVariables::mainOctree);
 		GlobalVariables::mainOctreeCpy = MemoryAllocator::newOctreeNodeCpy(*GlobalVariables::mainOctree);
 		timing->stop_clock();
-
-		NEW_COUNTER++;
 	}
 
 	// println("//////////////////////////////////////////////////");
@@ -544,9 +533,13 @@ void addPointBatches(){
 		std::lock_guard<std::mutex> lock_send(GlobalVariables::isUpdatingMtx);
 		GlobalVariables::swapAABBsMaps();
 		GlobalVariables::swapOctrees();
+		// Free the memory here to avoid having too many octrees stacking
+		GlobalVariables::freeOctreesOnCPU();
 	} else {
 		GlobalVariables::swapAABBsMaps();
 		GlobalVariables::swapOctrees();
+		// Free the memory here to avoid having too many octrees stacking
+		GlobalVariables::freeOctreesOnCPU();
 	}
 
 	// println("//////////////////////////////////////////////////");
