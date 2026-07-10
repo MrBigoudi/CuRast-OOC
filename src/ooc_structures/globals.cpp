@@ -1,6 +1,11 @@
 #include "globals.h"
 
-#include "outOfCore.h"
+#include "allocator.h"
+#include "structureUpdate.h"
+#include "visibility.h"
+
+std::atomic<uint64_t> NEW_COUNTER = 0;
+std::atomic<uint64_t> DELETE_COUNTER = 0;
 
 bool Point::operator==(const Point& rhs) const {
     if(position != rhs.position){return false;}
@@ -301,6 +306,21 @@ uint32_t OctreeNode::getNbPoints() const {
     return res;
 }
 
+uint32_t OctreeNode::getNbChunks() const {
+    uint32_t res = 0;
+    Chunk* point_chunk = points;
+    while(point_chunk){
+        res++;
+        point_chunk = point_chunk->next;
+    }
+    Chunk* voxel_chunk = voxels;
+    while(voxel_chunk){
+        res++;
+        voxel_chunk = voxel_chunk->next;
+    }
+    return res;
+}
+
 uint32_t OctreeNode::getNbVoxels() const {
     uint32_t res = 0;
     Chunk* voxel_chunk = voxels;
@@ -329,6 +349,70 @@ uint32_t OctreeNode::getDepth() const {
     return rec(this);
 }
 
+uint32_t OctreeNode::getNbNodes(OctreeNode* root){
+    uint32_t nb_nodes = 0;
+    std::function<void(const OctreeNode*)> recursion = [&](const OctreeNode* cur_node){
+        if(!cur_node){return;}
+        nb_nodes++;
+        for(uint32_t child = 0; child < 8; child++){
+            recursion(cur_node->children[child]);
+        }
+    };
+    recursion(root);
+    return nb_nodes;
+}
+
+uint32_t OctreeNode::getNbGrids(OctreeNode* root){
+    uint32_t nb_occupancy_grids = 0;
+    std::function<void(const OctreeNode*)> recursion = [&](const OctreeNode* cur_node){
+        if(!cur_node){return;}
+        if(cur_node->occupancy){nb_occupancy_grids++;}
+        for(uint32_t child = 0; child < 8; child++){
+            recursion(cur_node->children[child]);
+        }
+    };
+    recursion(root);
+    return nb_occupancy_grids;
+}
+
+uint32_t OctreeNode::getNbChunks(OctreeNode* root){
+    uint32_t nb_chunks = 0;
+    std::function<void(const OctreeNode*)> recursion = [&](const OctreeNode* cur_node){
+        if(!cur_node){return;}
+        nb_chunks += cur_node->getNbChunks();
+        for(uint32_t child = 0; child < 8; child++){
+            recursion(cur_node->children[child]);
+        }
+    };
+    recursion(root);
+    return nb_chunks;
+}
+
+void OctreeNode::displayMemInfo() const {
+    uint32_t nb_nodes = 0;
+    uint32_t nb_chunks = 0;
+    uint32_t nb_points = 0;
+    uint32_t nb_voxels = 0;
+    uint32_t nb_occupancy_grids = 0;
+
+    std::function<void(const OctreeNode*)> recursion = [&](const OctreeNode* cur_node){
+        if(!cur_node){return;}
+        nb_nodes++;
+        nb_chunks += cur_node->getNbChunks();
+        nb_points += cur_node->getNbPoints();
+        nb_voxels += cur_node->getNbVoxels();
+        if(cur_node->occupancy){nb_occupancy_grids++;}
+
+        for(uint32_t child = 0; child < 8; child++){
+            recursion(cur_node->children[child]);
+        }
+    };
+
+    recursion(this);
+    println("nb nodes: {}, nb chunks: {}, nb points: {}, nb voxels: {}, nb grids: {}",
+        nb_nodes, nb_chunks, nb_points, nb_voxels, nb_occupancy_grids
+    );
+}
 
 void OctreeNode::display(uint32_t id, uint32_t level, bool node_only) const {
     println("level: {}, id: {}, aabb_index: {}, counter: {}, "
@@ -492,7 +576,10 @@ bool Chunk::operator==(const Chunk& rhs) const{
 void OctreeNode::rebuildOccupancy() {
     // Rebuild occupancy
     if(voxels){
-        occupancy = new OccupancyGrid();
+        // occupancy = new OccupancyGrid();
+        occupancy = MemoryAllocator::newOccupancyGrid();
+        NEW_COUNTER++;
+
         const Chunk* cur_chunk = voxels;
         while(cur_chunk){
             for(std::uint32_t point_id=0; point_id<cur_chunk->size; point_id++){
@@ -561,23 +648,66 @@ void GlobalVariables::init(CuRast* instance, CUcontext* context){
     visibilityCache = std::make_shared<LRUCache>("visibility cache", OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE);
     // cpuCache = std::make_shared<CPUFallbackCache>(OocSimLodSettings::LRU_CPU_CACHE_SIZE);
 
+    // To render on first loop
+    elapsedFrames = OocSimLodSettings::NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE + 1;
+
     for(auto& memory : batchedMemories){
         memory.init(instance, context);
     }
     
+    // Initialise the allocator
+    MemoryAllocator::init();
+    uint64_t total_preallocated_size = MemoryAllocator::getSize();
+    println("Total preallocated size: {}", formatMemSize(total_preallocated_size));
+    // throw(EXIT_FAILURE);
+
     cudaDeviceSynchronize();
+}
+
+std::string GlobalVariables::formatMemSize(uint64_t size_bytes, uint32_t pad){
+    uint64_t nb_bytes = size_bytes;
+    uint64_t nb_tbs = uint64_t(floor(nb_bytes / 1'024 / 1'024 / 1'024 / 1'024));
+    nb_tbs = clamp(nb_tbs, uint64_t(0), uint64_t(999));
+    nb_bytes -= nb_tbs * 1'024 * 1'024 * 1'024 * 1'024;
+    uint64_t nb_gbs = uint64_t(floor(nb_bytes / 1'024 / 1'024 / 1'024));
+    nb_gbs = clamp(nb_gbs, uint64_t(0), uint64_t(999));
+    nb_bytes -= nb_gbs * 1'024 * 1'024 * 1'024;
+    uint64_t nb_mbs = uint64_t(floor(nb_bytes / 1'024 / 1'024));
+    nb_mbs = clamp(nb_mbs, uint64_t(0), uint64_t(999));
+    nb_bytes -= nb_mbs * 1'024 * 1'024;
+    uint64_t nb_kbs = uint64_t(floor(nb_bytes / 1'024));
+    nb_kbs = clamp(nb_kbs, uint64_t(0), uint64_t(999));
+    nb_bytes -= nb_kbs * 1'024;
+    nb_bytes = clamp(nb_bytes, uint64_t(0), uint64_t(999));
+
+    std::string pad_tbs = std::string(max(int32_t(pad - 20), 0), ' ');
+    std::string pad_gbs = std::string(max(int32_t(pad - 15), 0), ' ');
+    std::string pad_mbs = std::string(max(int32_t(pad - 10), 0), ' ');
+    std::string pad_kbs = std::string(max(int32_t(pad - 5), 0), ' ');
+    std::string pad_bs  = std::string(max(int32_t(pad), 0), ' ');
+    if(nb_tbs){return format("{}{:3L}T {:3L}G {:3L}M {:3L}k {:3L}b", pad_tbs, nb_tbs, nb_gbs, nb_mbs, nb_kbs, nb_bytes);}
+    if(nb_gbs){return format("{}{:3L}G {:3L}M {:3L}k {:3L}b", pad_gbs, nb_gbs, nb_mbs, nb_kbs, nb_bytes);}
+    if(nb_mbs){return format("{}{:3L}M {:3L}k {:3L}b", pad_mbs, nb_mbs, nb_kbs, nb_bytes);}
+    if(nb_kbs){return format("{}{:3L}k {:3L}b", pad_kbs, nb_kbs, nb_bytes);}
+    return format("{}{:3L}b", pad_bs, nb_bytes);
 }
 
 
 void GlobalVariables::destroy(CuRast* instance, CUcontext* context){
+    {
+        std::lock_guard<std::mutex> lock4(mainLoopIsTerminatingMtx);
+        mainLoopIsTerminating = true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+
+    displayTimings();
+    displayBuffers();
+    OocSimLodSettings::display();
+
     cudaDeviceSynchronize();
 
-    {
-		std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
-		GlobalVariables::mainLoopIsTerminating = true;
-		// Destroy temporary folder
-		std::filesystem::remove_all(OocSimLodSettings::TEMPORARY_NODE_STORAGE_DIRECTORY);
-	}
+    // Destroy temporary folder
+    std::filesystem::remove_all(OocSimLodSettings::TEMPORARY_NODE_STORAGE_DIRECTORY);
 
     cudaDeviceSynchronize();
     for(auto& memory : batchedMemories){
@@ -585,19 +715,23 @@ void GlobalVariables::destroy(CuRast* instance, CUcontext* context){
     }
 
     cudaDeviceSynchronize();
-    if(mainOctreeCpy){
-		std::lock_guard<std::mutex> lock_send(GlobalVariables::isUpdatingMtx);
-        std::lock_guard<std::mutex> lock(LRUCache::caches_sync_mtx);
-		delete(mainOctreeCpy);
-		mainOctreeCpy = nullptr;
-	}
+    freeOctreesOnGPU(CuRast::instance);
+
+    
+    cudaDeviceSynchronize();
+    freeOctreesOnCPU();
+    
+    std::lock_guard<std::mutex> lock1(isUpdatingMtx);
+    std::lock_guard<std::mutex> lock2(LRUCache::caches_sync_mtx);
+    displayCpuMemoryUsage();
+    println("GPU Memory Usage:\n{}", getGpuMemoryUsage());
 }
 
 IdAABB GlobalVariables::createNewAABB(const AABB& aabb){
     IdAABB id = IdAABB(allAABBs.size());
     if(id == INVALID_ID){
         println("ERROR: reached the maximum number of nodes that can be created");
-        exit(EXIT_FAILURE);
+        throw(EXIT_FAILURE);
     }
     allAABBs.push_back(aabb);
     aabbRelationshipMap->insert({id, {
@@ -618,6 +752,59 @@ void GlobalVariables::swapAABBsMaps() {
     aabbRelationshipMapCpy = std::make_shared<AABBRelationshipMap>(
         AABBRelationshipMap(*aabbRelationshipMap)
     );
+}
+
+void GlobalVariables::displayCpuMemoryUsage(){
+    println("Nb new: {}, Nb delete = {}", NEW_COUNTER.load(), DELETE_COUNTER.load());
+    MemoryAllocator::displayInfo();
+
+    println("MainOctree info:");
+    if(mainOctree){mainOctree->displayMemInfo();}
+    println("MainOctreeCpy info:");
+    if(mainOctreeCpy){mainOctreeCpy->displayMemInfo();}
+
+    println("\nUpdates cache info:");
+    println("    - capacity: {}, size: {}", 
+        updatesCache->CACHE_SIZE, 
+        updatesCache->getSize()
+    );
+    println("Visibility cache info:");
+    println("    - capacity: {}, size: {}", 
+        visibilityCache->CACHE_SIZE, 
+        visibilityCache->getSize()
+    );
+
+    println("\nTotal real usage: ");
+    uint32_t real_nb_nodes = OctreeNode::getNbNodes(mainOctree) 
+        + OctreeNode::getNbNodes(mainOctreeCpy)
+    ;
+    uint32_t real_nb_grids = OctreeNode::getNbGrids(mainOctree) 
+        + OctreeNode::getNbGrids(mainOctreeCpy)
+    ;
+    uint32_t real_nb_chunks = OctreeNode::getNbChunks(mainOctree) 
+        + OctreeNode::getNbChunks(mainOctreeCpy)
+    ;
+    uint32_t real_nb_octrees = allOctreesRefCounter.size();
+    std::string counters = "[";
+    for(auto& [node, counter] : allOctreesRefCounter){
+        counters += std::format("{}, ", counter);
+        printf("counter[%p] = %u\n", node, counter);
+    }
+    counters += "]";
+
+    println("    - nb nodes = {}, lost nodes = {}", real_nb_nodes,
+        MemoryAllocator::nodesAllocator->nb_allocated_elements.load() - real_nb_nodes
+    );
+    println("    - nb grids = {}, lost grids = {}", real_nb_grids,
+        MemoryAllocator::gridsAllocator->nb_allocated_elements.load() - real_nb_grids
+    );
+    println("    - nb chunks = {}, lost chunks = {}", real_nb_chunks,
+        MemoryAllocator::chunksAllocator->nb_allocated_elements.load() - real_nb_chunks
+    );
+    println("    - nb octrees = {}, lost octrees = {}, counters = {}", 
+        real_nb_octrees, real_nb_octrees - 1, counters
+    );
+    println("\n");
 }
 
 std::string GlobalVariables::getGpuMemoryUsage() {
@@ -788,7 +975,7 @@ std::shared_ptr<Timing> Timing::addTiming(string name, bool start_now, uint32_t 
     return timingsList.back();
 }
 
-void displayTimings(){
+void GlobalVariables::displayTimings(){
     if(!OocSimLodSettings::MEASURE_TIMINGS){return;}
 	println("///////////////////////////////////////////////////");
 	println("///////////////////// Timings /////////////////////");
@@ -810,7 +997,7 @@ void displayTimings(){
 	println("///////////////////////////////////////////////////\n");
 }
 
-void displayBuffers(){
+void GlobalVariables::displayBuffers(){
 	println("///////////////////////////////////////////////////");
 	println("///////////////////// Buffers /////////////////////");
 	println("///////////////////////////////////////////////////\n");
@@ -821,11 +1008,11 @@ void displayBuffers(){
     uint32_t nb_inserted = 0;
     uint32_t nb_to_remove = 0;
     for(uint32_t i=0; i<OocSimLodSettings::BATCHES_LIST_SIZE; i++){
-        if(!GlobalVariables::batchesQueue[i]){
+        if(!batchesQueue[i]){
             nb_empty++;
             continue;
         }
-        switch(GlobalVariables::batchesQueue[i]->state){
+        switch(batchesQueue[i]->state){
             case Empty:
                 println("Error: there should not be a batch with an Empty state...");
                 break;
@@ -845,10 +1032,10 @@ void displayBuffers(){
         }
     }
     println("- batches: {} empty, {} to load, {} loaded, {} inserted, {} to remove", nb_empty, nb_to_load, nb_loaded, nb_inserted, nb_to_remove);
-    println("- spilledPoints: {} elements", (*GlobalVariables::spilledPoints).size());
-    println("- spillingNodes: {} elements", (*GlobalVariables::spillingNodes).size());
-    println("- backlogVoxels: {} elements", (*GlobalVariables::backlogVoxels).size());
-    println("- backlogVoxelsNodes: {} elements", (*GlobalVariables::backlogVoxelsNodes).size());
+    println("- spilledPoints: {} elements", spilledPoints->size());
+    println("- spillingNodes: {} elements", spillingNodes->size());
+    println("- backlogVoxels: {} elements", backlogVoxels->size());
+    println("- backlogVoxelsNodes: {} elements", backlogVoxelsNodes->size());
 
     println("\n///////////////////////////////////////////////////");
 	println("///////////////////////////////////////////////////");
@@ -948,7 +1135,7 @@ void BatchedMemory::init(CuRast* instance, CUcontext* context){
         || sizeof(COctreeNode*) != sizeof(OctreeNode*)
     ){
         println("Sizes don't match");
-        exit(EXIT_FAILURE);
+        throw(EXIT_FAILURE);
     }
 
     uint64_t max_nb_nodes = OocSimLodSettings::LRU_UPDATES_CACHE_SIZE
@@ -1090,7 +1277,7 @@ void CFullOctreeUnifiedBuilder::update() {
         }
     };
 
-    recursion(GlobalVariables::mainOctree.get(), 0);
+    recursion(GlobalVariables::mainOctree, 0);
 }
 
 
@@ -1105,13 +1292,11 @@ CFullOctreeUnified CFullOctreeUnifiedBuilder::build() {
 
 
 
-#include "structureUpdate.h"
-#include "visibility.h"
-
 void GlobalVariables::updateGPU(CuRast* instance, CUcontext* context, View* view,
-    std::shared_ptr<OctreeNode> octree_ref,
+    std::optional<OctreeNode*>& octree_ref,
     std::shared_ptr<AABBRelationshipMap> relationship_map_ref)
 {
+    if(mainLoopIsTerminating){return;}
     if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL || elapsedFrames > OocSimLodSettings::NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE){
         elapsedFrames = 0;
 
@@ -1122,18 +1307,93 @@ void GlobalVariables::updateGPU(CuRast* instance, CUcontext* context, View* view
         
         if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
             std::lock_guard<std::mutex> lock_send(isUpdatingMtx);
-            octree_ref = mainOctree;
+            if(octree_ref.has_value() && octree_ref.value()){
+                allOctreesRefCounter[octree_ref.value()]--;
+            }
+
+            octree_ref = std::optional<OctreeNode*>(mainOctree);
+
+            if(octree_ref.has_value() && octree_ref.value()){
+                allOctreesRefCounter[octree_ref.value()]++;
+            }
             relationship_map_ref = aabbRelationshipMapCpy;
         } else {
-            octree_ref = mainOctree;
+            if(octree_ref.has_value() && octree_ref.value()){
+                allOctreesRefCounter[octree_ref.value()]--;
+            }
+
+            octree_ref = std::optional<OctreeNode*>(mainOctree);
+
+            if(octree_ref.has_value() && octree_ref.value()){
+                allOctreesRefCounter[octree_ref.value()]++;
+            }
             relationship_map_ref = aabbRelationshipMapCpy;
         }
 
+
         Visibility::updateVisibilityCache(VKRenderer::view.view, VKRenderer::view.proj,
-            octree_ref, relationship_map_ref
+            *octree_ref, relationship_map_ref
         );
         loadOctreeOnGPU(instance, context,
-            octree_ref, relationship_map_ref
+            *octree_ref, relationship_map_ref
         );
+
+    }
+}
+
+
+void GlobalVariables::swapOctrees(){
+    if(!mainOctree || !mainOctreeCpy){return;}
+
+    allOctreesRefCounter[mainOctree]--;
+
+    // TODO: better copy strategy
+    // For now, the mainOctree after visibility updates is way bigger than the one after updates update
+    // Also, the one after updates update never loads the node in the visibility update tree
+    mainOctree = MemoryAllocator::newOctreeNodeCpy(*mainOctreeCpy);
+    allOctreesRefCounter[mainOctree] = 1;
+    // allOctreesRefCounter[mainOctree].store(1);
+}
+
+
+void GlobalVariables::freeOctreesOnCPU(){
+    std::lock_guard<std::mutex> lock(isUpdatingMtx);
+    if(allOctreesRefCounter.empty() || mainLoopIsTerminating){return;}
+
+    // // Sanity check
+    // println("Init sanity check");
+    // for(auto& [node, counter] : allOctreesRefCounter){
+    //     // Check if a child of the node is also in the map ?
+    //     std::function<void(OctreeNode*, uint32_t)> recursion = [&](OctreeNode* cur_node, uint32_t level){
+    //         for(uint32_t i = 0; i < 8; i++){
+    //             OctreeNode* child = cur_node->children[i];
+    //             if(child){
+    //                 if(allOctreesRefCounter.contains(child)){
+    //                     println("ERROR: A child and its parent are both marked as complete tree, this should not happen!!");
+    //                     println("Parent:"); 
+    //                     node->display(0, 0, true);
+    //                     println("Child:"); 
+    //                     child->display(i, level+1, true);
+    //                     throw(EXIT_FAILURE);
+    //                 }
+    //                 recursion(child, level+1);
+    //             }
+    //         }
+    //     };
+    //     recursion(node, 0);
+    // }
+    // println("Sanity check passed");
+
+    // https://stackoverflow.com/questions/15662412/how-to-remove-multiple-items-from-unordered-map-while-iterating-over-it
+    for (auto it = allOctreesRefCounter.begin(); it != allOctreesRefCounter.end();) {
+        OctreeNode* node = it->first;
+        uint32_t counter = it->second;
+        if(counter == 0) {
+            // delete(node);
+            MemoryAllocator::delOctreeNode(node);
+            it = allOctreesRefCounter.erase(it);
+        } else {
+            it++;
+        }
     }
 }

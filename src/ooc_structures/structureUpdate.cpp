@@ -2,9 +2,10 @@
 
 #include "simLod.h"
 #include "outOfCore.h"
+#include "allocator.h"
 
 
-std::shared_ptr<OctreeNode> initOctree(std::shared_ptr<vector<Point>>& points){
+OctreeNode* initOctree(std::shared_ptr<vector<Point>>& points){
 	// Initialise the AABB
 	AABB root_aabb = {};
 
@@ -55,7 +56,8 @@ std::shared_ptr<OctreeNode> initOctree(std::shared_ptr<vector<Point>>& points){
 
 	// Initialise the main octree
 	IdAABB root_aabb_index = GlobalVariables::createNewAABB(root_aabb);
-	return std::make_shared<OctreeNode>(root_aabb_index);
+	// return std::make_shared<OctreeNode>(root_aabb_index);
+	return MemoryAllocator::newOctreeNode(root_aabb_index);
 }
 
 
@@ -92,8 +94,16 @@ OctreeNode* uptadeOctree(OctreeNode* main_root, uint32_t nb_new_levels){
 
 		// Create the new parent node
 		IdAABB parent_aabb_index = GlobalVariables::createNewAABB(parent_aabb);
-		OctreeNode* new_parent = new OctreeNode(parent_aabb_index);
-		new_parent->occupancy = new OccupancyGrid();
+		// OctreeNode* new_parent = new OctreeNode(parent_aabb_index);
+		OctreeNode* new_parent = MemoryAllocator::newOctreeNode(parent_aabb_index);
+
+		NEW_COUNTER++;
+
+		// new_parent->occupancy = new OccupancyGrid();
+		new_parent->occupancy = MemoryAllocator::newOccupancyGrid();
+
+		NEW_COUNTER++;
+
 		new_parent->updated = true;
 		cur_child->updated = true;
 		// Create the correct child
@@ -120,12 +130,20 @@ OctreeNode* uptadeOctree(OctreeNode* main_root, uint32_t nb_new_levels){
 						new_voxel.color[2] = point.color[2];
 
 						// Add voxel to voxels chunk list
-						if(!new_parent->voxels){new_parent->voxels =  new Chunk();}
+						if(!new_parent->voxels){
+							// new_parent->voxels =  new Chunk();
+							new_parent->voxels =  MemoryAllocator::newChunk();
+
+							NEW_COUNTER++;
+						}
 						Chunk* parent_chunk_list = new_parent->voxels;
 						while(parent_chunk_list->next){parent_chunk_list = parent_chunk_list->next;}
 						if(parent_chunk_list->size == OocSimLodSettings::NB_POINTS_PER_CHUNK){
-							parent_chunk_list->next =  new Chunk();
+							// parent_chunk_list->next =  new Chunk();
+							parent_chunk_list->next =  MemoryAllocator::newChunk();
 							parent_chunk_list = parent_chunk_list->next;
+
+							NEW_COUNTER++;
 						}
 						parent_chunk_list->points[parent_chunk_list->size] = new_voxel;
 						parent_chunk_list->size++;
@@ -251,7 +269,7 @@ std::optional<CUdeviceptr> allocateChunks(
 
 
 void createCudaMemory(CuRast* editor, CUcontext* context, 
-    std::shared_ptr<OctreeNode>& input_octree,
+    OctreeNode* input_octree,
     std::shared_ptr<AABBRelationshipMap> relationship_map_ref
 ){
 	BatchedMemory& memory = GlobalVariables::batchedMemories[GlobalVariables::currentBatchedMemoriesIndex];
@@ -282,7 +300,7 @@ void createCudaMemory(CuRast* editor, CUcontext* context,
 			if(cur_node->children[child]){
 				if(level == UINT8_MAX){
 					println("Can't have a level greater than {}", UINT8_MAX);
-					exit(EXIT_FAILURE);
+					throw(EXIT_FAILURE);
 				}
 				const OctreeNode* next_node = cur_node->children[child];
 				child_indices[child] = recursive(next_node, level+1);
@@ -328,7 +346,7 @@ void createCudaMemory(CuRast* editor, CUcontext* context,
 		return cptr_node;
 	};
 
-	const OctreeNode* next_octree = input_octree.get();
+	const OctreeNode* next_octree = input_octree;
 	recursive(next_octree, 0);
 
 	octree->max_lod_level = max_lod_level;
@@ -374,14 +392,14 @@ void createCudaMemory(CuRast* editor, CUcontext* context,
 
 
 void loadOctreeOnGPU(CuRast* editor, CUcontext* context, 
-    std::shared_ptr<OctreeNode>& octree_ref,
+    OctreeNode* octree_ref,
     std::shared_ptr<AABBRelationshipMap> relationship_map_ref
 ){
 	if(!octree_ref){return;}
 
-	std::shared_ptr<Timing> timing = Timing::addTiming("send octree to GPU ", true);
+	// std::shared_ptr<Timing> timing = Timing::addTiming("send octree to GPU ", true);
 	createCudaMemory(editor, context, octree_ref, relationship_map_ref);
-	timing->stop_clock();
+	// timing->stop_clock();
 }
 
 
@@ -420,19 +438,24 @@ void addPointBatches(){
 		uint32_t batch_index = batches_indices[0];
 		std::lock_guard<std::mutex> lock(GlobalVariables::batchesQueueMutexes[batch_index]);
 		GlobalVariables::mainOctree = initOctree(GlobalVariables::batchesQueue[batch_index]->points);
+		GlobalVariables::allOctreesRefCounter[GlobalVariables::mainOctree] = 1;
 		timing->stop_clock();
 		GlobalVariables::swapAABBsMaps();
 
 		// Copy octree once at the beginning
 		timing = Timing::addTiming("copy initial octree", true);
-		GlobalVariables::mainOctreeCpy = new OctreeNode(*GlobalVariables::mainOctree);
+		// GlobalVariables::mainOctreeCpy = new OctreeNode(*GlobalVariables::mainOctree);
+		GlobalVariables::mainOctreeCpy = MemoryAllocator::newOctreeNodeCpy(*GlobalVariables::mainOctree);
 		timing->stop_clock();
+
+		NEW_COUNTER++;
 	}
 
 	// println("//////////////////////////////////////////////////");
-	// println("///////////// OctreeCpy before update ////////////");
+	// println("////////////// Octree before update //////////////");
 	// println("//////////////////////////////////////////////////");
-	// mainOctreeCpy->display();
+	// GlobalVariables::mainOctreeCpy->display();
+	// GlobalVariables::displayCpuMemoryUsage();
 
 	// Update the temporary octree
 	std::shared_ptr<Timing> timing = Timing::addTiming("compute max new level", true);
@@ -464,7 +487,9 @@ void addPointBatches(){
 	// println("//////////////////////////////////////////////////");
 	// println("//////////// Octree after grow octree ////////////");
 	// println("//////////////////////////////////////////////////");
-	// mainOctreeCpy->display();
+	// GlobalVariables::mainOctreeCpy->display();
+	// GlobalVariables::displayCpuMemoryUsage();
+
 
 	timing = Timing::addTiming("update octree bottom up", true);
 	// In single thread
@@ -481,7 +506,9 @@ void addPointBatches(){
 	// println("//////////////////////////////////////////////////");
 	// println("/////////// Octree after update octree ///////////");
 	// println("//////////////////////////////////////////////////");
-	// mainOctreeCpy->display();
+	// GlobalVariables::mainOctreeCpy->display();
+	// GlobalVariables::displayCpuMemoryUsage();
+
 
 
 	timing = Timing::addTiming("simlod update", true);
@@ -498,29 +525,35 @@ void addPointBatches(){
 	// println("//////////////////////////////////////////////////");
 	// println("/////////// Octree after simLOD update ///////////");
 	// println("//////////////////////////////////////////////////");
-	// mainOctreeCpy->display();
+	// GlobalVariables::mainOctreeCpy->display();
+	// GlobalVariables::displayCpuMemoryUsage();
+
 
 	timing = Timing::addTiming("update cache", true);
 	updateUpdatesCache(GlobalVariables::mainOctreeCpy);
 	timing->stop_clock();
 
 	// println("//////////////////////////////////////////////////");
-	// println("/////////// Octree after cache update ///////////");
+	// println("/////////// Octree after cache update ////////////");
 	// println("//////////////////////////////////////////////////");
-	// mainOctreeCpy->display();
+	// GlobalVariables::mainOctreeCpy->display();
+	// GlobalVariables::displayCpuMemoryUsage();
+
 
 	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 		std::lock_guard<std::mutex> lock_send(GlobalVariables::isUpdatingMtx);
 		GlobalVariables::swapAABBsMaps();
-		if(GlobalVariables::mainOctreeCpy){
-			GlobalVariables::mainOctree = std::make_shared<OctreeNode>(*GlobalVariables::mainOctreeCpy);
-		}
+		GlobalVariables::swapOctrees();
 	} else {
 		GlobalVariables::swapAABBsMaps();
-		if(GlobalVariables::mainOctreeCpy){
-			GlobalVariables::mainOctree = std::make_shared<OctreeNode>(*GlobalVariables::mainOctreeCpy);
-		}
+		GlobalVariables::swapOctrees();
 	}
+
+	// println("//////////////////////////////////////////////////");
+	// println("/////////////// Octree after swap ////////////////");
+	// println("//////////////////////////////////////////////////");
+	// GlobalVariables::mainOctreeCpy->display();
+	// GlobalVariables::displayCpuMemoryUsage();
 
 	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 		std::for_each(std::execution::par, first, last, [&](uint32_t index){
@@ -533,11 +566,13 @@ void addPointBatches(){
 			GlobalVariables::batchesQueue[index]->state = BatchState::Inserted;
 		});
 	}
+
 };
 
 
 void updateOctreeRoutine(){
 	while(true){
 		addPointBatches();
+		if(GlobalVariables::mainLoopIsTerminating){return;}
 	}
 }

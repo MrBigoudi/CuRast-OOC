@@ -1,6 +1,8 @@
 #include "simLod.h"
 #include "outOfCore.h"
 
+#include "allocator.h"
+
 void SimLod::update(
 	OctreeNode* main_root, 
 	std::shared_ptr<vector<Point>>& points,
@@ -13,6 +15,7 @@ void SimLod::update(
 	// println("////////// Octree before simlod update ///////////");
 	// println("//////////////////////////////////////////////////");
 	// main_root->display();
+	// GlobalVariables::displayCpuMemoryUsage();
 
 	std::shared_ptr<Timing> timing = Timing::addTiming("simlod load", true, 1);
 	// load(main_root, points, relationship_map_ref);
@@ -23,6 +26,7 @@ void SimLod::update(
 	// println("////////// Octree after simlod load //////////");
 	// println("//////////////////////////////////////////////////");
 	// main_root->display();
+	// GlobalVariables::displayCpuMemoryUsage();
 
 	std::shared_ptr<Timing> count_split_timing = Timing::addTiming("simlod count/split loop", true, 1);
 	while(true){
@@ -39,6 +43,7 @@ void SimLod::update(
 		// println("////////// Octree after simlod counting //////////");
 		// println("//////////////////////////////////////////////////");
 		// main_root->display();
+		// println("after count: {} spilled nodes, {} spilled points", GlobalVariables::spillingNodes->size(), GlobalVariables::spilledPoints->size());
 
 		timing = Timing::addTiming("simlod split", true, 2);
 		split(GlobalVariables::spilledPoints, GlobalVariables::spillingNodes, relationship_map_ref);
@@ -48,6 +53,7 @@ void SimLod::update(
 		// println("////////// Octree after simlod splitting /////////");
 		// println("//////////////////////////////////////////////////");
 		// main_root->display();
+		// println("after split: {} spilled nodes, {} spilled points", GlobalVariables::spillingNodes->size(), GlobalVariables::spilledPoints->size());
 	}
 	count_split_timing->stop_clock();
 
@@ -55,6 +61,8 @@ void SimLod::update(
 	// println("//////// Octree after simlod count/splits ////////");
 	// println("//////////////////////////////////////////////////");
 	// main_root->display();
+	// GlobalVariables::displayCpuMemoryUsage();
+
 
 
 	timing = Timing::addTiming("simlod voxel sampling", true, 1);
@@ -66,6 +74,7 @@ void SimLod::update(
 	// println("//////// Octree after simlod voxel sample ////////");
 	// println("//////////////////////////////////////////////////");
 	// main_root->display();
+	// GlobalVariables::displayCpuMemoryUsage();
 	
 
 	timing = Timing::addTiming("simlod insertion", true, 1);
@@ -77,6 +86,7 @@ void SimLod::update(
 	// println("///////// Octree after simlod insertions /////////");
 	// println("//////////////////////////////////////////////////");
 	// main_root->display();
+	// GlobalVariables::displayCpuMemoryUsage();
 
 
 	// Clean buffers
@@ -114,7 +124,10 @@ void SimLod::split(
 		spilling_node->counter.store(0);
 		spilling_node->children_ids = 0;
 		if(!spilling_node->occupancy){
-			spilling_node->occupancy = new OccupancyGrid();
+			// spilling_node->occupancy = new OccupancyGrid();
+			spilling_node->occupancy = MemoryAllocator::newOccupancyGrid();
+
+			NEW_COUNTER++;
 		}
 
 		for(uint32_t j=0; j<8; j++){
@@ -144,8 +157,11 @@ void SimLod::split(
 			current_chunk = current_chunk->next;
 		}
 
-		delete(spilling_node->points);
+		// delete(spilling_node->points);
+		MemoryAllocator::delChunk(spilling_node->points);
 		spilling_node->points = nullptr;
+
+		DELETE_COUNTER++;
 
 		return {new_spilled_points, new_nodes};
 	};
@@ -169,8 +185,11 @@ void SimLod::split(
 		// Sequentially create the new nodes
 		for(const auto& [child, aabb] : value.second){
 			IdAABB child_aabb_index = GlobalVariables::createNewAABB(aabb);
-			spilling_node->children[child] = new OctreeNode(child_aabb_index);
+			// spilling_node->children[child] = new OctreeNode(child_aabb_index);
+			spilling_node->children[child] = MemoryAllocator::newOctreeNode(child_aabb_index);
 			(*relationship_map_ref)[spilling_node->aabb_index][child] = child_aabb_index;
+
+			NEW_COUNTER++;
 		}
 	}
 
@@ -264,7 +283,7 @@ void SimLod::count(
 			uint8_t level = all_nodes[index].second;
 			if(level == UINT8_MAX){
 				println("The octree has reached it's maximum depth size...");
-				exit(EXIT_FAILURE);
+				throw(EXIT_FAILURE);
 			}
 
 			// Only one of the node should be able to write on the point as it only arrives to one leaf
@@ -419,12 +438,18 @@ void SimLod::insertion(
 
 			// Insert the point to the chunk list
 			if(!chunk_list){
-				cur_node->points = new Chunk();
+				// cur_node->points = new Chunk();
+				cur_node->points = MemoryAllocator::newChunk();
 				chunk_list = cur_node->points;
+
+				NEW_COUNTER++;
 			}
 			if(chunk_list->size == OocSimLodSettings::NB_POINTS_PER_CHUNK){
-				chunk_list->next = new Chunk();
+				// chunk_list->next = new Chunk();
+				chunk_list->next = MemoryAllocator::newChunk();
 				chunk_list = chunk_list->next;
+
+				NEW_COUNTER++;
 			}
 			chunk_list->points[chunk_list->size] = point;
 			chunk_list->size++;
@@ -446,12 +471,18 @@ void SimLod::insertion(
 
 			// Insert the voxel to the chunk list
 			if(!chunk_list){
-				cur_node->voxels = new Chunk();
+				// cur_node->voxels = new Chunk();
+				cur_node->voxels = MemoryAllocator::newChunk();
 				chunk_list = cur_node->voxels;
+
+				NEW_COUNTER++;
 			}
 			if(chunk_list->size == OocSimLodSettings::NB_POINTS_PER_CHUNK){
-				chunk_list->next = new Chunk();
+				// chunk_list->next = new Chunk();
+				chunk_list->next = MemoryAllocator::newChunk();
 				chunk_list = chunk_list->next;
+
+				NEW_COUNTER++;
 			}
 			chunk_list->points[chunk_list->size] = voxel;
 			chunk_list->size++;
@@ -572,7 +603,7 @@ void SimLod::countWithAtomic(
 				// Get node level
 				if(level == UINT8_MAX){
 					println("The octree has reached it's maximum depth size...");
-					exit(EXIT_FAILURE);
+					throw(EXIT_FAILURE);
 				}
 				level++;
 			} else {
@@ -595,13 +626,13 @@ void SimLod::countWithAtomic(
 		}
 	};
 
-	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-		uint32_t nb_points = points->size();
-		uint32_t nb_spilled_points = spilled_points->size();
-		std::vector<uint32_t> indices(nb_points + nb_spilled_points);
-		std::iota(indices.begin(), indices.end(), 0);
-		std::vector<OctreeNode*> tmp_spilled = std::vector<OctreeNode*>(nb_points + nb_spilled_points, nullptr);
+	uint32_t nb_points = points->size();
+	uint32_t nb_spilled_points = spilled_points->size();
+	std::vector<uint32_t> indices(nb_points + nb_spilled_points);
+	std::iota(indices.begin(), indices.end(), 0);
+	std::vector<OctreeNode*> tmp_spilled = std::vector<OctreeNode*>(nb_points + nb_spilled_points, nullptr);
 
+	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 		// Count points in parallel
 		std::for_each(std::execution::par, indices.begin(), indices.end(), [&](uint32_t index){
 			Point* point = nullptr;
@@ -612,19 +643,23 @@ void SimLod::countWithAtomic(
 			}
 			tmp_spilled[index] = countPoint(*point);
 		});
-		// Add spilling nodes sequentially
-		for(OctreeNode* node : tmp_spilled){
-			if(node){spilling_nodes->push_back(node);}
-		}
+		
 	} else {
-		std::for_each(points->begin(), points->end(), [&](Point& point){
-			std::optional<OctreeNode*> spilled = countPoint(point);
-			if(spilled.has_value()){spilling_nodes->push_back(spilled.value());}
+		// Count points sequentially
+		std::for_each(indices.begin(), indices.end(), [&](uint32_t index){
+			Point* point = nullptr;
+			if(index >= nb_points){
+				point = &(*spilled_points)[index - nb_points];
+			} else {
+				point = &(*points)[index];
+			}
+			tmp_spilled[index] = countPoint(*point);
 		});
-		std::for_each(spilled_points->begin(), spilled_points->end(), [&](Point& point){
-			std::optional<OctreeNode*> spilled = countPoint(point);		
-			if(spilled.has_value()){spilling_nodes->push_back(spilled.value());}
-		});
+	}
+
+	// Add spilling nodes sequentially
+	for(OctreeNode* node : tmp_spilled){
+		if(node){spilling_nodes->push_back(node);}
 	}
 }
 
@@ -751,12 +786,20 @@ void SimLod::insertionWithAtomic(
 				cur_node = cur_node->children[child_index];
 			} else {
 				std::lock_guard<std::mutex>lock(points_mtx_map[cur_node]);
-				if(!cur_node->points){cur_node->points = new Chunk();}
+				if(!cur_node->points){
+					// cur_node->points = new Chunk();
+					cur_node->points = MemoryAllocator::newChunk();
+
+					NEW_COUNTER++;
+				}
 				Chunk* chunk_list = cur_node->points;
 				while(chunk_list->next){chunk_list = chunk_list->next;}
 				if(chunk_list->size == OocSimLodSettings::NB_POINTS_PER_CHUNK){
-					chunk_list->next = new Chunk();
+					// chunk_list->next = new Chunk();
+					chunk_list->next = MemoryAllocator::newChunk();
 					chunk_list = chunk_list->next;
+
+					NEW_COUNTER++;
 				}
 				chunk_list->points[chunk_list->size] = point;
 				chunk_list->size++;
@@ -767,12 +810,20 @@ void SimLod::insertionWithAtomic(
 
 	auto insertVoxel = [&](Point& voxel, OctreeNode* node){
 		node->updated = true;
-		if(!node->voxels){node->voxels = new Chunk();}
+		if(!node->voxels){
+			// node->voxels = new Chunk();
+			node->voxels = MemoryAllocator::newChunk();
+
+			NEW_COUNTER++;
+		}
 		Chunk* chunk_list = node->voxels;
 		while(chunk_list->next){chunk_list = chunk_list->next;}
 		if(chunk_list->size == OocSimLodSettings::NB_POINTS_PER_CHUNK){
-			chunk_list->next = new Chunk();
+			// chunk_list->next = new Chunk();
+			chunk_list->next = MemoryAllocator::newChunk();
 			chunk_list = chunk_list->next;
+
+			NEW_COUNTER++;
 		}
 		chunk_list->points[chunk_list->size] = voxel;
 		chunk_list->size++;
@@ -844,7 +895,7 @@ void SimLod::loadWithAtomic(
 				// Get node level
 				if(level == UINT8_MAX){
 					println("The octree has reached it's maximum depth size...");
-					exit(EXIT_FAILURE);
+					throw(EXIT_FAILURE);
 				}
 				level++;
 			} else {
@@ -865,13 +916,13 @@ void SimLod::loadWithAtomic(
 
 				if(!leaf){
 					println("At this point in the SimLodLoad, the leaf should never be null");
-					exit(EXIT_FAILURE);
+					throw(EXIT_FAILURE);
 				}
 
 				// Get node level
 				if(level == UINT8_MAX){
 					println("The octree has reached it's maximum depth size...");
-					exit(EXIT_FAILURE);
+					throw(EXIT_FAILURE);
 				}
 				level++;
 			}

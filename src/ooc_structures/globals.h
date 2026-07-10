@@ -13,6 +13,9 @@
 /////////////////////////// GLOBAL ENUM DECLARATION ///////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
 
+extern std::atomic<uint64_t> NEW_COUNTER;
+extern std::atomic<uint64_t> DELETE_COUNTER;
+
 /// The position of a child node
 enum NodePosition {
 	FrontTopLeft,
@@ -127,12 +130,12 @@ struct OccupancyGrid {
 	std::atomic<uint32_t> values[OocSimLodSettings::GRID_SIZE / 32] = {0};
 
 	OccupancyGrid(){}
-	OccupancyGrid(const OccupancyGrid& cpy){
-		for(uint32_t i=0; i<OocSimLodSettings::GRID_SIZE / 32; i++){
-			values[i] = cpy.values[i].load();
-		}
-		assert(cpy == *this);
-	}
+	// OccupancyGrid(const OccupancyGrid& cpy){
+	// 	for(uint32_t i=0; i<OocSimLodSettings::GRID_SIZE / 32; i++){
+	// 		values[i] = cpy.values[i].load();
+	// 	}
+	// 	assert(cpy == *this);
+	// }
 	bool operator==(const OccupancyGrid& rhs) const {
 		for(uint32_t i=0; i<OocSimLodSettings::GRID_SIZE / 32; i++){
 			if(values[i] != rhs.values[i]){
@@ -171,22 +174,26 @@ struct Chunk {
 	bool operator==(const Chunk& rhs) const;
 
 	Chunk(){}
-	Chunk(const Chunk& cpy): size(cpy.size) {
-		for(uint32_t i=0; i<OocSimLodSettings::NB_POINTS_PER_CHUNK; i++){
-			points[i] = cpy.points[i];
-		}
+	// Chunk(const Chunk& cpy): size(cpy.size) {
+	// 	for(uint32_t i=0; i<OocSimLodSettings::NB_POINTS_PER_CHUNK; i++){
+	// 		points[i] = cpy.points[i];
+	// 	}
 
-		if(cpy.next){
-			next = new Chunk(*cpy.next);
-		}
-		assert(cpy == *this);
-	}
+	// 	if(cpy.next){
+	// 		next = new Chunk(*cpy.next);
 
-	~Chunk() {
-		Chunk* tmp = next;
-		next = nullptr;
-		delete(tmp);
-	}
+	// 		NEW_COUNTER++;
+	// 	}
+	// 	assert(cpy == *this);
+	// }
+
+	// ~Chunk() {
+	// 	Chunk* tmp = next;
+	// 	next = nullptr;
+	// 	delete(tmp);
+
+	// 	DELETE_COUNTER++;
+	// }
 
 };
 
@@ -196,7 +203,7 @@ struct OctreeNode {
 	Chunk* points = nullptr;
 	Chunk* voxels = nullptr;
 	OccupancyGrid* occupancy = nullptr;
-	IdAABB aabb_index = {};
+	IdAABB aabb_index = INVALID_ID;
 
 	std::atomic<uint32_t> counter = 0;
 	uint8_t children_ids = 0b00000000;
@@ -210,56 +217,77 @@ struct OctreeNode {
 
 	
 
+	static uint32_t getNbNodes(OctreeNode* root);
+	static uint32_t getNbGrids(OctreeNode* root);
+	static uint32_t getNbChunks(OctreeNode* root);
+	uint32_t getNbChunks() const;
 	uint32_t getNbPoints() const;
 	uint32_t getNbVoxels() const;
 	uint32_t getDepth() const;
 
 	void display(uint32_t id = 0, uint32_t level = 0, bool node_only = false) const;
+	void displayMemInfo() const;
 
 	bool operator==(const OctreeNode& rhs) const;
 
-	~OctreeNode(){
-		if(points){
-			Chunk* tmp = points;
-			points = nullptr;
-			delete(tmp);
-		}
-		if(voxels){
-			Chunk* tmp = voxels;
-			voxels = nullptr;
-			delete(tmp);
-		}
-		if(occupancy){
-			OccupancyGrid* tmp = occupancy;
-			occupancy = nullptr;
-			delete(tmp);
-		}
-		for(uint32_t i=0; i<8; i++){
-			if(children[i]){
-				OctreeNode* tmp = children[i];
-				children[i] = nullptr;
-				delete(tmp);
-			}
-		}
-	}
+	// ~OctreeNode(){
+	// 	if(points){
+	// 		Chunk* tmp = points;
+	// 		points = nullptr;
+	// 		delete(tmp);
 
-	OctreeNode(IdAABB aabb_index) : aabb_index(aabb_index){}
-	OctreeNode(const OctreeNode& cpy) : aabb_index(cpy.aabb_index),
-		children_ids(cpy.children_ids)
-	{
-		counter.store(cpy.counter.load());
-		points = cpy.points ? new Chunk(*cpy.points) : nullptr;
-		voxels = cpy.voxels ? new Chunk(*cpy.voxels) : nullptr;
-		occupancy = cpy.occupancy ? new OccupancyGrid(*cpy.occupancy) : nullptr;
+	// 		DELETE_COUNTER++;
+	// 	}
+	// 	if(voxels){
+	// 		Chunk* tmp = voxels;
+	// 		voxels = nullptr;
+	// 		delete(tmp);
 
-		for(uint32_t child = 0; child < 8; child++){
-			if(cpy.children[child]){
-				children[child] = new OctreeNode(*cpy.children[child]);
-			}
-		}
+	// 		DELETE_COUNTER++;
+	// 	}
+	// 	if(occupancy){
+	// 		OccupancyGrid* tmp = occupancy;
+	// 		occupancy = nullptr;
+	// 		delete(tmp);
 
-		assert(cpy == *this);
-	}
+	// 		DELETE_COUNTER++;
+	// 	}
+	// 	for(uint32_t i=0; i<8; i++){
+	// 		if(children[i]){
+	// 			OctreeNode* tmp = children[i];
+	// 			children[i] = nullptr;
+	// 			delete(tmp);
+
+	// 			DELETE_COUNTER++;
+	// 		}
+	// 	}
+	// }
+
+	OctreeNode(){}
+	// OctreeNode(IdAABB aabb_index) : aabb_index(aabb_index){}
+	// OctreeNode(const OctreeNode& cpy, bool node_only = false) : aabb_index(cpy.aabb_index),
+	// 	children_ids(cpy.children_ids)
+	// {
+	// 	counter.store(cpy.counter.load());
+	// 	points = cpy.points ? new Chunk(*cpy.points) : nullptr;
+	// 	voxels = cpy.voxels ? new Chunk(*cpy.voxels) : nullptr;
+	// 	occupancy = cpy.occupancy ? new OccupancyGrid(*cpy.occupancy) : nullptr;
+
+	// 	if(points){NEW_COUNTER++;}
+	// 	if(voxels){NEW_COUNTER++;}
+	// 	if(occupancy){NEW_COUNTER++;}
+
+	// 	if(!node_only){
+	// 		for(uint32_t child = 0; child < 8; child++){
+	// 			if(cpy.children[child]){
+	// 				children[child] = new OctreeNode(*cpy.children[child]);
+				
+	// 				NEW_COUNTER++;
+	// 			}
+	// 		}
+	// 		assert(cpy == *this);
+	// 	}
+	// }
 
 	void rebuildOccupancy();
 };
@@ -305,10 +333,6 @@ struct Timing {
 	static inline std::mutex timingsMtx;
 	static std::shared_ptr<Timing> addTiming(string name, bool start_now = true, uint32_t level = 0);
 };
-
-
-void displayTimings();
-void displayBuffers();
 
 
 
@@ -394,7 +418,7 @@ struct BatchedMemory {
 		aligned_pointer += (alignment - (aligned_pointer % alignment)) % alignment;
 		if(aligned_pointer + size > memory_size){
 			println("Can't allocate more memory...");
-			exit(EXIT_FAILURE);
+			throw(EXIT_FAILURE);
 		}
 		next_space_pointer = aligned_pointer + size;
 
@@ -439,6 +463,10 @@ struct GlobalVariables {
 	static const AABB& getAABB(const IdAABB& id);
 	// This must be correctly synchronised
 	static void swapAABBsMaps();
+	static void swapOctrees();
+
+	static inline std::unordered_map<OctreeNode*, uint32_t> allOctreesRefCounter = {};
+	static void freeOctreesOnCPU();
 
 
 	static inline uint32_t nbOctreesInScene = 0;
@@ -475,7 +503,7 @@ struct GlobalVariables {
 	static inline std::mutex updateSceneMutex;
 
 	/// The main octree
-	static inline std::shared_ptr<OctreeNode> mainOctree = nullptr;
+	static inline OctreeNode* mainOctree = nullptr;
 	static inline OctreeNode* mainOctreeCpy = nullptr;
 
 	/// The LRU caches
@@ -491,12 +519,18 @@ struct GlobalVariables {
 	static std::string getSimLodOctreeName(bool generate_new_name = false);
 	static void init(CuRast* instance, CUcontext* context);
 	static void destroy(CuRast* instance, CUcontext* context);
+
 	static std::string getGpuMemoryUsage();
+	static void displayCpuMemoryUsage();
+	static void displayTimings();
+	static void displayBuffers();
 
 	static void updateGPU(CuRast* instance, CUcontext* context, View* view,
-		std::shared_ptr<OctreeNode> octree_ref,
+		std::optional<OctreeNode*>& octree_ref,
 		std::shared_ptr<AABBRelationshipMap> relationship_map_ref
 	);
+
+	static std::string formatMemSize(uint64_t size_bytes, uint32_t pad = 0);
 
 	/// Get all the nodes in an octree
 	static std::vector<OctreeNode*> getAllNodes(OctreeNode* root);

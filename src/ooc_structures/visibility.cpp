@@ -1,6 +1,7 @@
 #include "visibility.h"
 
 #include "outOfCore.h"
+#include "allocator.h"
 
 
 Plane::Plane(float x, float y, float z, float w){
@@ -110,7 +111,7 @@ std::vector<IdAABB> Visibility::orderNodes(
     // Get root node
     if(!visible_nodes.empty() && !visible_nodes.contains(root_node)){
         println("ERROR: the root node should always be marked as visible");
-        exit(EXIT_FAILURE);
+        throw(EXIT_FAILURE);
     }
 
     // TODO: better than O(n2) but less accurate
@@ -162,7 +163,7 @@ std::vector<IdAABB> Visibility::orderNodes(
             }
             println("\n\n\n");
             
-            exit(EXIT_FAILURE);
+            throw(EXIT_FAILURE);
         }
 
 
@@ -272,7 +273,7 @@ void Visibility::fillVisibilityCache(
             println("Current octree:");
             root_octree->display();
             
-            exit(EXIT_FAILURE);
+            throw(EXIT_FAILURE);
         }
 
 
@@ -283,8 +284,11 @@ void Visibility::fillVisibilityCache(
             if(cur_node->children[child_id]){
                 if(recursion(cur_node->children[child_id], child_id, level+1, &child_is_visible)){
                     // Remove the node if it is not on any of the caches
-                    delete(cur_node->children[child_id]);
+                    // delete(cur_node->children[child_id]);
+                    MemoryAllocator::delOctreeNode(cur_node->children[child_id]);
                     cur_node->children[child_id] = nullptr;
+
+                    DELETE_COUNTER++;
                 }
             } else {
                 // If the node is not in memory, load it
@@ -308,7 +312,7 @@ void Visibility::fillVisibilityCache(
     recursion(root_octree, 0, 0, &root_visible);
     if(!root_visible){
         println("Root should always be visible: ie, should always be in the cache");
-        exit(EXIT_FAILURE);
+        throw(EXIT_FAILURE);
     }
 
     // println("after filling cache: vis cache size = {}, updates cache size = {}, total nodes = {}, nb_nodes = {}\n\n", 
@@ -320,7 +324,7 @@ void Visibility::fillVisibilityCache(
 
 void Visibility::updateVisibilityCache(
     const mat4& view, const mat4& proj, 
-    std::shared_ptr<OctreeNode>& octree_ref,
+    OctreeNode* octree_ref,
     std::shared_ptr<AABBRelationshipMap> relationship_map_ref
 ){
     if(!octree_ref){return;}
@@ -345,5 +349,5 @@ void Visibility::updateVisibilityCache(
     vec3 cameraPos = vec3(glm::inverse(view) * vec4(0.0f, 0.0f, 0.0f, 1.0f));
     std::vector<IdAABB> ordered_nodes = orderNodes(octree_ref->aabb_index, visible_nodes, cameraPos, relationship_map_ref);
 
-    fillVisibilityCache(ordered_nodes, octree_ref.get(), relationship_map_ref);
+    fillVisibilityCache(ordered_nodes, octree_ref, relationship_map_ref);
 }

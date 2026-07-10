@@ -38,6 +38,7 @@
 #include "ooc_structures/outOfCore.h"
 #include "ooc_structures/visibility.h"
 #include "ooc_structures/settings.h"
+#include "ooc_structures/allocator.h"
 
 
 using namespace std; // YOLO
@@ -336,6 +337,7 @@ void initScene() {
 				if(done){break;}
 			}
 			clearUnusedBatches();
+			GlobalVariables::freeOctreesOnCPU();
 		} else {
 			std::thread thread_loadLion([&](std::string file){
 				initLoadPointBatches(file);
@@ -494,175 +496,191 @@ void update(){
 }
 
 int main(int argc, char** argv){
+	try {
+		Benchmarking::datasetPath = "./";
 
-	Benchmarking::datasetPath = "./";
-
-	for(int i = 1; i < argc - 1; i++){
-		if(string(argv[i]) == "-b"){
-			Benchmarking::datasetPath = argv[i + 1];
+		for(int i = 1; i < argc - 1; i++){
+			if(string(argv[i]) == "-b"){
+				Benchmarking::datasetPath = argv[i + 1];
+			}
 		}
-	}
 
-	std::locale::global(getSaneLocale());
+		std::locale::global(getSaneLocale());
 
-	initCuda();
-	VKRenderer::init();
-	CuRast::setup();
+		initCuda();
+		VKRenderer::init();
+		CuRast::setup();
 
-	// temporary function
-	auto sequential = [&](vector<string> files){
-		std::for_each(files.begin(), files.end(), [&](string& file){
-			if(iEndsWith(file, ".las") || iEndsWith(file, ".laz")){
-				initLoadPointBatches(file);
-				while(true){
-					loadPointsInBatches();
-					bool done = true;
-					for(uint32_t i=0; i<OocSimLodSettings::BATCHES_LIST_SIZE; i++){
-						if(GlobalVariables::batchesQueue[i] && GlobalVariables::batchesQueue[i]->state != BatchState::Loaded){
-							done = false;
+		// temporary function
+		auto sequential = [&](vector<string> files){
+			std::for_each(files.begin(), files.end(), [&](string& file){
+				if(iEndsWith(file, ".las") || iEndsWith(file, ".laz")){
+					initLoadPointBatches(file);
+					while(true){
+						loadPointsInBatches();
+						bool done = true;
+						for(uint32_t i=0; i<OocSimLodSettings::BATCHES_LIST_SIZE; i++){
+							if(GlobalVariables::batchesQueue[i] && GlobalVariables::batchesQueue[i]->state != BatchState::Loaded){
+								done = false;
+							}
+						}
+						if(done){break;}
+					}
+					while(true){
+						addPointBatches();
+						bool done = true;
+						for(uint32_t i=0; i<OocSimLodSettings::BATCHES_LIST_SIZE; i++){
+							if(GlobalVariables::batchesQueue[i] && GlobalVariables::batchesQueue[i]->state != BatchState::Inserted){
+								done = false;
+							}
+						}
+						if(done){break;}
+					}
+					while(true){
+						loadBatchesOnGPU(CuRast::instance);
+						bool done = true;
+						for(uint32_t i=0; i<OocSimLodSettings::BATCHES_LIST_SIZE; i++){
+							if(GlobalVariables::batchesQueue[i] && GlobalVariables::batchesQueue[i]->state != BatchState::ToRemove){
+								done = false;
+							}
+						}
+						if(done){break;}
+					}
+					clearUnusedBatches();
+					GlobalVariables::freeOctreesOnCPU();
+				}
+			});
+		};
+
+		VKRenderer::onFileDrop([&](vector<string> files){
+			if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+				std::for_each(std::execution::par, files.begin(), files.end(), 
+					[&](string& file){
+						if(iEndsWith(file, ".las") || iEndsWith(file, ".laz")){
+							std::thread thread_init_batch([&](std::string file){
+								initLoadPointBatches(file);
+							}, file);
+							thread_init_batch.detach();
 						}
 					}
-					if(done){break;}
-				}
-				while(true){
-					addPointBatches();
-					bool done = true;
-					for(uint32_t i=0; i<OocSimLodSettings::BATCHES_LIST_SIZE; i++){
-						if(GlobalVariables::batchesQueue[i] && GlobalVariables::batchesQueue[i]->state != BatchState::Inserted){
-							done = false;
-						}
-					}
-					if(done){break;}
-				}
-				while(true){
-					loadBatchesOnGPU(CuRast::instance);
-					bool done = true;
-					for(uint32_t i=0; i<OocSimLodSettings::BATCHES_LIST_SIZE; i++){
-						if(GlobalVariables::batchesQueue[i] && GlobalVariables::batchesQueue[i]->state != BatchState::ToRemove){
-							done = false;
-						}
-					}
-					if(done){break;}
-				}
-				clearUnusedBatches();
+				);
+			} else {
+				sequential(files);
 			}
 		});
-	};
 
-	VKRenderer::onFileDrop([&](vector<string> files){
+
+		// Create Global things
+		OocSimLodSettings::init();
+		GlobalVariables::init(CuRast::instance, &context);
+		std::filesystem::create_directories(OocSimLodSettings::TEMPORARY_NODE_STORAGE_DIRECTORY);
+		initScene();
+
 		if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-			std::for_each(std::execution::par, files.begin(), files.end(), 
-				[&](string& file){
-					if(iEndsWith(file, ".las") || iEndsWith(file, ".laz")){
-						std::thread thread_init_batch([&](std::string file){
-							initLoadPointBatches(file);
-						}, file);
-						thread_init_batch.detach();
-					}
+			// Loading points routine
+			std::thread thread_loading_points(loadPointcloudRoutine);
+			thread_loading_points.detach();
+
+			// Octree update routine
+			std::thread thread_octree_update(updateOctreeRoutine);
+			thread_octree_update.detach();
+
+			// Clear unused batches routine
+			std::thread thread_clear_batches(clearUnusedBatchesRoutine);
+			thread_clear_batches.detach();
+
+			// Load point clouds on GPU
+			std::thread thread_load_points_on_gpu([&](CuRast* editor){
+				while(true){
+					loadBatchesOnGPU(editor, &context);
+					if(GlobalVariables::mainLoopIsTerminating){return;}
 				}
-			);
-		} else {
-			sequential(files);
+			}, CuRast::instance);
+			thread_load_points_on_gpu.detach();
+
+			// Update the visibility and load Octree on GPU
+			std::thread thread_gpu_update([&](CuRast* editor, CUcontext* context, View* view){
+				std::optional<OctreeNode*> octree_ref = nullopt;
+				std::shared_ptr<AABBRelationshipMap> relationship_map_ref = nullptr;
+
+				while(true){
+					GlobalVariables::updateGPU(
+						CuRast::instance, context, &VKRenderer::view, 
+						octree_ref, relationship_map_ref
+					);
+					if(GlobalVariables::mainLoopIsTerminating){return;}
+				}
+				
+			}, CuRast::instance, &context, &VKRenderer::view);
+			thread_gpu_update.detach();
 		}
-	});
+
+		bool was_unified_set = CuRastSettings::useUnifiedMemory;
+		std::optional<OctreeNode*> octree_ref = nullopt;
+		std::shared_ptr<AABBRelationshipMap> relationship_map_ref = nullptr;
 
 
-	// Create Global things
-	OocSimLodSettings::init();
-	GlobalVariables::init(CuRast::instance, &context);
-	std::filesystem::create_directories(OocSimLodSettings::TEMPORARY_NODE_STORAGE_DIRECTORY);
-	initScene();
-
-	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-		// Loading points routine
-		std::thread thread_loading_points(loadPointcloudRoutine);
-		thread_loading_points.detach();
-
-		// Octree update routine
-		std::thread thread_octree_update([&](){
-			updateOctreeRoutine();
-		});
-		thread_octree_update.detach();
-
-		// Clear unused batches routine
-		std::thread thread_clear_batches(clearUnusedBatchesRoutine);
-		thread_clear_batches.detach();
-
-		// Load point clouds on GPU
-		std::thread thread_load_points_on_gpu([&](CuRast* editor){
-			while(true){
-				loadBatchesOnGPU(editor, &context);
-			}
-		}, CuRast::instance);
-		thread_load_points_on_gpu.detach();
-
-		// Update the visibility and load Octree on GPU
-		std::thread thread_gpu_update([&](CuRast* editor, CUcontext* context, View* view){
-			std::shared_ptr<OctreeNode> octree_ref = nullptr;
-			std::shared_ptr<AABBRelationshipMap> relationship_map_ref = nullptr;
-
-			while(true){
-				GlobalVariables::updateGPU(
-					CuRast::instance, context, &VKRenderer::view, 
-					octree_ref, relationship_map_ref
-				);
-			}
-			
-		}, CuRast::instance, &context, &VKRenderer::view);
-		thread_gpu_update.detach();
-	}
-
-	bool was_unified_set = CuRastSettings::useUnifiedMemory;
-	std::shared_ptr<OctreeNode> octree_ref = nullptr;
-	std::shared_ptr<AABBRelationshipMap> relationship_map_ref = nullptr;
-
-	VKRenderer::loop(
-		[&]() {
-			update();
-			CuRast::instance->update();
-			
-			{
-				if(!was_unified_set && CuRastSettings::useUnifiedMemory){
-					println("Using unified memory...");
-					cudaDeviceSynchronize();
+		VKRenderer::loop(
+			[&]() {
+				update();
+				CuRast::instance->update();
+				
+				{
+					if(!was_unified_set && CuRastSettings::useUnifiedMemory){
+						println("Using unified memory...");
+						cudaDeviceSynchronize();
+					}
+					was_unified_set = CuRastSettings::useUnifiedMemory;
 				}
-				was_unified_set = CuRastSettings::useUnifiedMemory;
-			}
 
-			DeviceState* state = CuRast::instance->deviceState;
-			double stage1_millies = double(state->nanotime_stage_1 - state->nanotime_start) / 1'000'000.0;
-			double stage2_millies = double(state->nanotime_stage_2 - state->nanotime_stage_1) / 1'000'000.0;
-			double stage3_millies = double(state->nanotime_stage_3 - state->nanotime_stage_2) / 1'000'000.0;
-			Runtime::debugValues["stage 1"] = format("{:.3f}", stage1_millies);
-			Runtime::debugValues["stage 2"] = format("{:.3f}", stage2_millies);
-			Runtime::debugValues["stage 3"] = format("{:.3f}", stage3_millies);
+				DeviceState* state = CuRast::instance->deviceState;
+				double stage1_millies = double(state->nanotime_stage_1 - state->nanotime_start) / 1'000'000.0;
+				double stage2_millies = double(state->nanotime_stage_2 - state->nanotime_stage_1) / 1'000'000.0;
+				double stage3_millies = double(state->nanotime_stage_3 - state->nanotime_stage_2) / 1'000'000.0;
+				Runtime::debugValues["stage 1"] = format("{:.3f}", stage1_millies);
+				Runtime::debugValues["stage 2"] = format("{:.3f}", stage2_millies);
+				Runtime::debugValues["stage 3"] = format("{:.3f}", stage3_millies);
 
-			// Update visible nodes
-			if(!OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-				GlobalVariables::updateGPU(
-					CuRast::instance, &context, &VKRenderer::view, 
-					octree_ref, relationship_map_ref
-				);
-			}
+				// Update visible nodes
+				if(!OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+					GlobalVariables::updateGPU(
+						CuRast::instance, &context, &VKRenderer::view, 
+						octree_ref, relationship_map_ref
+					);
+				}
 
-			freeOctreesOnGPU(CuRast::instance);
-			GlobalVariables::elapsedFrames++;
+				// Free unused memory
+				freeOctreesOnGPU(CuRast::instance);
+				if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+					GlobalVariables::freeOctreesOnCPU();
+				}
 
-			if(CuRastSettings::getGpuMemoryUsage){
-				println("GPU Memory Usage:\n{}", GlobalVariables::getGpuMemoryUsage());
-				CuRastSettings::getGpuMemoryUsage = false;
-			}
-		},
-		[&]() {
-			CuRast::instance->render();
-		},
-		[&]() {CuRast::instance->postFrame();}
-	);
+				// Display some information bout memory usage
+				if(CuRastSettings::getGpuMemoryUsage){
+					std::lock_guard<std::mutex> lock(GlobalVariables::isUpdatingMtx);
+					println("GPU Memory Usage:\n{}", GlobalVariables::getGpuMemoryUsage());
+					CuRastSettings::getGpuMemoryUsage = false;
+					// TODO: to remove, just for debug
+					GlobalVariables::displayCpuMemoryUsage();
+				}
 
-	displayTimings();
-	displayBuffers();
-	OocSimLodSettings::display();
+				GlobalVariables::elapsedFrames++;
+			},
+			[&]() {
+				CuRast::instance->render();
+			},
+			[&]() {CuRast::instance->postFrame();}
+		);
 
-	GlobalVariables::destroy(CuRast::instance, &context);
-	VKRenderer::destroy();
+		// Destruction procedure
+		GlobalVariables::destroy(CuRast::instance, &context);
+		VKRenderer::destroy();
+
+	} catch(int) {
+
+		// Destruction procedure
+		GlobalVariables::destroy(CuRast::instance, &context);
+		VKRenderer::destroy();
+
+	}
 }

@@ -1,4 +1,5 @@
 #include "outOfCore.h"
+#include "allocator.h"
 
 #include <string>
 #include <sstream>
@@ -80,14 +81,14 @@ CPUFallbackCache::Entry CPUFallbackCache::Entry::deserialize(const IdAABB& aabb_
         ChunkSerializable points_deserialized = ChunkSerializable::deserialize(
             getChunkFilePath(aabb, false)
         );
-        new_entry.serializable_points = points_deserialized.toChunk();
+        new_entry.serializable_points = std::optional<ChunkSerializable>(points_deserialized);
     }
 
     if(new_entry.serializable_node.voxels != ""){
         ChunkSerializable voxels_deserialized = ChunkSerializable::deserialize(
             getChunkFilePath(aabb, true)
         );
-        new_entry.serializable_voxels = voxels_deserialized.toChunk();
+        new_entry.serializable_voxels = std::optional<ChunkSerializable>(voxels_deserialized);
     }
 
     return new_entry;
@@ -95,7 +96,11 @@ CPUFallbackCache::Entry CPUFallbackCache::Entry::deserialize(const IdAABB& aabb_
 
 /// Builds an octree node from an entry
 OctreeNode* CPUFallbackCache::Entry::toLeafNode() const {
-    OctreeNode* new_node = new OctreeNode(serializable_node.aabb_index);
+    // OctreeNode* new_node = new OctreeNode(serializable_node.aabb_index);
+    OctreeNode* new_node = MemoryAllocator::newOctreeNode(serializable_node.aabb_index);
+    
+    NEW_COUNTER++;
+
     new_node->counter.store(serializable_node.counter);
     new_node->children_ids = serializable_node.children_ids;
 
@@ -121,6 +126,8 @@ const CPUFallbackCache::Entry* CPUFallbackCache::add(const Entry* new_entry){
         cache.erase(it->second);
         cache_map.erase(it);
         delete(*it->second);
+
+        DELETE_COUNTER++;
     }
 
     const Entry* old_entry = nullptr;
@@ -175,12 +182,14 @@ ChunkSerializable::ChunkSerializable(const Chunk* root_chunk){
 }
 
 void ChunkSerializable::serialize(const std::string& filepath) const {
+    std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
+
     // https://www.geeksforgeeks.org/cpp/serialize-and-deserialize-an-object-in-cpp/
     ofstream file(filepath, ios::binary | std::ios::trunc);
     if(!file.is_open()){
         println("Failed to open the file {} to serialize a chunk", filepath);
         if(!GlobalVariables::mainLoopIsTerminating){
-            exit(EXIT_FAILURE);
+            throw(EXIT_FAILURE);
         }
     }
     size_t nb_chunks = points.size();
@@ -201,12 +210,14 @@ void ChunkSerializable::serialize(const std::string& filepath) const {
 ChunkSerializable ChunkSerializable::deserialize(const std::string& filepath){
     ChunkSerializable new_chunk = {};
 
+    std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
+
     // https://www.geeksforgeeks.org/cpp/serialize-and-deserialize-an-object-in-cpp/
     ifstream file(filepath, ios::binary);
     if(!file.is_open()){
         println("Failed to open the file {} to deserialize a chunk", filepath);
         if(!GlobalVariables::mainLoopIsTerminating){
-            exit(EXIT_FAILURE);
+            throw(EXIT_FAILURE);
         }
     }
 
@@ -239,7 +250,11 @@ Chunk* ChunkSerializable::toChunk() const{
         uint32_t cur_size = sizes[chunk_id];
         const std::array<Point, OocSimLodSettings::NB_POINTS_PER_CHUNK>& cur_points = points[chunk_id];
 
-        Chunk* new_chunk = new Chunk();
+        // Chunk* new_chunk = new Chunk();
+        Chunk* new_chunk = MemoryAllocator::newChunk();
+
+        NEW_COUNTER++;
+        
         new_chunk->size = cur_size;
         for(uint32_t point_id = 0; point_id < cur_size; point_id++){
             new_chunk->points[point_id] = cur_points[point_id];
@@ -302,12 +317,14 @@ void OctreeNodeSerializable::serialize(const OctreeNode* node){
 }
 
 void OctreeNodeSerializable::serialize(const std::string& filepath) const {
+    std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
+
     std::ofstream file(filepath, std::ios::binary | std::ios::trunc);
 
     if (!file.is_open()) {
         println("Failed to open the file {} to serialize an octree node", filepath);
         if(!GlobalVariables::mainLoopIsTerminating){
-            exit(EXIT_FAILURE);
+            throw(EXIT_FAILURE);
         }
     }
 
@@ -332,15 +349,16 @@ void OctreeNodeSerializable::serialize(const std::string& filepath) const {
 }
 
 OctreeNodeSerializable OctreeNodeSerializable::deserialize(const std::string& filepath) {
-    std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
     OctreeNodeSerializable new_node = {};
 
+    std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
+    
     std::ifstream file(filepath, std::ios::binary);
 
     if (!file.is_open()) {
         println("Failed to open the file {} to deserialize an octree node", filepath);
         if(!GlobalVariables::mainLoopIsTerminating){
-            exit(EXIT_FAILURE);
+            throw(EXIT_FAILURE);
         }
     }
 
@@ -453,8 +471,11 @@ void updateUpdatesCache(OctreeNode* root_octree){
         for(uint32_t child_id = 0; child_id < 8; child_id++){
             if(cur_node->children[child_id]){
                 if(recursionRemoveNodes(cur_node->children[child_id], child_id, level+1)){
-                    delete(cur_node->children[child_id]);
+                    // delete(cur_node->children[child_id]);
+                    MemoryAllocator::delOctreeNode(cur_node->children[child_id]);
                     cur_node->children[child_id] = nullptr;
+
+                    DELETE_COUNTER++;
                 }
             }
         }

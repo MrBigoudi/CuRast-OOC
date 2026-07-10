@@ -739,45 +739,22 @@ void CuRast::draw(Scene* scene, vector<View> views){
 				}
 			}
 
-			auto formatMemSize = [&](uint64_t size_bytes) -> std::string {
-				uint64_t nb_bytes = size_bytes;
-				uint64_t nb_tbs = uint64_t(floor(nb_bytes / 1'024 / 1'024 / 1'024 / 1'024));
-				nb_tbs = clamp(nb_tbs, uint64_t(0), uint64_t(999));
-				nb_bytes -= nb_tbs * 1'024 * 1'024 * 1'024 * 1'024;
-				uint64_t nb_gbs = uint64_t(floor(nb_bytes / 1'024 / 1'024 / 1'024));
-				nb_gbs = clamp(nb_gbs, uint64_t(0), uint64_t(999));
-				nb_bytes -= nb_gbs * 1'024 * 1'024 * 1'024;
-				uint64_t nb_mbs = uint64_t(floor(nb_bytes / 1'024 / 1'024));
-				nb_mbs = clamp(nb_mbs, uint64_t(0), uint64_t(999));
-				nb_bytes -= nb_mbs * 1'024 * 1'024;
-				uint64_t nb_kbs = uint64_t(floor(nb_bytes / 1'024));
-				nb_kbs = clamp(nb_kbs, uint64_t(0), uint64_t(999));
-				nb_bytes -= nb_kbs * 1'024;
-				nb_bytes = clamp(nb_bytes, uint64_t(0), uint64_t(999));
-
-				if(nb_tbs){return format("{:5} {:3L}T {:3L}G {:3L}M {:3L}k {:3L}b", "", nb_tbs, nb_gbs, nb_mbs, nb_kbs, nb_bytes);}
-				if(nb_gbs){return format("{:10} {:3L}G {:3L}M {:3L}k {:3L}b", "", nb_gbs, nb_mbs, nb_kbs, nb_bytes);}
-				if(nb_mbs){return format("{:15} {:3L}M {:3L}k {:3L}b", "", nb_mbs, nb_kbs, nb_bytes);}
-				if(nb_kbs){return format("{:20} {:3L}k {:3L}b", "", nb_kbs, nb_bytes);}
-				return format("{:25} {:3L}b", "", nb_bytes);
-			};
-
 			// Octree info
 			if(octree){
-				dvlist.push_back({format("octree '{}': ", octree->name), ""});
+				dvlist.push_back({format("octree '{}' ", octree->name), ""});
 				dvlist.push_back({"     - # nodes           ", format("{:30L}", octree->nb_nodes)});
 				dvlist.push_back({"     - # chunks          ", format("{:30L}", octree->nb_chunks)});
 				dvlist.push_back({"     - # voxels          ", format("{:30L}", octree->nb_voxels)});
 				dvlist.push_back({"     - # points          ", format("{:30L}", octree->nb_points)});
-				dvlist.push_back({"     - GPU memory usage  ", formatMemSize(octree->getGpuMemoryUsage())});
+				dvlist.push_back({"     - GPU memory usage  ", GlobalVariables::formatMemSize(octree->getGpuMemoryUsage(), 25)});
 			}
 
 			// Batches info
 			dvlist.push_back({"\n# total batches          ", format("{:30L}", nb_batches)});
 			dvlist.push_back({"# total points           ", format("{:30L}", GlobalVariables::nbPoints)});
 			dvlist.push_back({"# total nodes            ", format("{:30L}", GlobalVariables::allAABBs.size())});
-			dvlist.push_back({"batches GPU memory usage ", formatMemSize(points_gpu_memory)});
-			dvlist.push_back({"total GPU memory usage   ", formatMemSize(total_gpu_memory)});
+			dvlist.push_back({"batches GPU memory usage ", GlobalVariables::formatMemSize(points_gpu_memory, 25)});
+			dvlist.push_back({"total GPU memory usage   ", GlobalVariables::formatMemSize(total_gpu_memory, 25)});
 			
 		}
 
