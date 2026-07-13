@@ -19,9 +19,17 @@ MEASURE_TIMINGS = false
 
 ### The number of threads per block
 ### Each node will be given an entire block of thread to render all of its points
+### Default to the maximum number of threads per block
 # PER_NODE_KERNEL_BLOCK_SIZE = 1
-PER_NODE_KERNEL_BLOCK_SIZE = 256
+# PER_NODE_KERNEL_BLOCK_SIZE = 256
 # PER_NODE_KERNEL_BLOCK_SIZE = 512
+
+### The number of blocks per node
+### Default to the number of blocks per SM
+# NB_BLOCKS_PER_NODE = 1
+NB_BLOCKS_PER_NODE = 2
+# NB_BLOCKS_PER_NODE = 4
+# NB_BLOCKS_PER_NODE = 8
 
 
 #########################################################################

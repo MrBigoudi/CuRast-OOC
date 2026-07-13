@@ -318,12 +318,12 @@ void Visibility::fillVisibilityCache(
 }
 
 
-void Visibility::updateVisibilityCache(
+bool Visibility::updateVisibilityCache(
     const mat4& view, const mat4& proj, 
     OctreeNode* octree_ref,
     std::shared_ptr<AABBRelationshipMap> relationship_map_ref
 ){
-    if(!octree_ref){return;}
+    if(!octree_ref){return false;}
     
     // TODO: just for debugging
     {
@@ -345,5 +345,11 @@ void Visibility::updateVisibilityCache(
     vec3 cameraPos = vec3(glm::inverse(view) * vec4(0.0f, 0.0f, 0.0f, 1.0f));
     std::vector<IdAABB> ordered_nodes = orderNodes(octree_ref->aabb_index, visible_nodes, cameraPos, relationship_map_ref);
 
-    fillVisibilityCache(ordered_nodes, octree_ref, relationship_map_ref);
+    static std::vector<IdAABB> oldOrderedNodes = {};
+    if(ordered_nodes != oldOrderedNodes){
+        oldOrderedNodes = ordered_nodes;
+        fillVisibilityCache(ordered_nodes, octree_ref, relationship_map_ref);
+        return true;
+    }
+    return false;
 }

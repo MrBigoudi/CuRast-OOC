@@ -51,7 +51,8 @@ struct Visibility {
 
 
     /// Update visibility cache and the current octree by taking into account the visibility of each nodes
-    static void updateVisibilityCache(
+    /// Return false it the scene hasn't changed
+    static bool updateVisibilityCache(
         const mat4& view, const mat4& proj, 
         OctreeNode* octree_ref,
         std::shared_ptr<AABBRelationshipMap> relationship_map_ref

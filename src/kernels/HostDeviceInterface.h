@@ -376,6 +376,7 @@ struct CFullOctree {
 	float min_pixel_span = 0.;
 	bool use_voxels_debug_color = false;
 	bool use_aabb_debug_color = false;
+	uint32_t nb_blocks_per_node = 0;
 };
 
 

@@ -436,7 +436,7 @@ void addPointBatches(){
 		// Copy octree once at the beginning
 		timing = Timing::addTiming("copy initial octree", true);
 		// GlobalVariables::mainOctreeCpy = new OctreeNode(*GlobalVariables::mainOctree);
-		GlobalVariables::mainOctreeCpy = MemoryAllocator::newOctreeNodeCpy(*GlobalVariables::mainOctree);
+		GlobalVariables::mainOctreeCpy = MemoryAllocator::newOctreeNodeCpy(GlobalVariables::mainOctree);
 		timing->stop_clock();
 	}
 
@@ -529,15 +529,13 @@ void addPointBatches(){
 	// GlobalVariables::displayCpuMemoryUsage();
 
 
-	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-		std::lock_guard<std::mutex> lock_send(GlobalVariables::isUpdatingMtx);
-		GlobalVariables::swapAABBsMaps();
+	{
+        auto lock = OocSimLodSettings::IS_RUNNING_IN_PARALLEL
+			? std::unique_lock<std::mutex>(GlobalVariables::isUpdatingMtx) 
+			: std::unique_lock<std::mutex>();
+
 		GlobalVariables::swapOctrees();
-		// Free the memory here to avoid having too many octrees stacking
-		GlobalVariables::freeOctreesOnCPU();
-	} else {
 		GlobalVariables::swapAABBsMaps();
-		GlobalVariables::swapOctrees();
 		// Free the memory here to avoid having too many octrees stacking
 		GlobalVariables::freeOctreesOnCPU();
 	}

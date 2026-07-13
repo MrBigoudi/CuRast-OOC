@@ -466,7 +466,8 @@ void drawAllVoxels(
     uint32_t nb_points,
     uint32_t max_lod_level,
     bool use_debug_color,
-    uint8_t subtrees
+    uint8_t subtrees,
+    uint32_t call_index
 ){
     auto block = cg::this_thread_block();
     CChunk* cur_voxels = node->voxels;
@@ -481,7 +482,7 @@ void drawAllVoxels(
 
     while(cur_voxels){
         for(
-            uint32_t i = block.thread_rank(); 
+            uint32_t i = block.thread_rank() + call_index; 
             i < cur_voxels->size; 
             i += block.num_threads()
         ){
@@ -553,7 +554,8 @@ void kernel_visibilityPass(
     auto block = cg::this_thread_block();
 
     // Assign each node to one thread block
-    uint32_t node_index = grid.block_rank();
+    uint32_t node_index = grid.block_rank() / octree.nb_blocks_per_node;
+    uint32_t call_index = grid.block_rank() % octree.nb_blocks_per_node;
     if(node_index >= octree.num_nodes) return;
     
     COctreeNode* node = octree.nodes[node_index];
@@ -563,16 +565,16 @@ void kernel_visibilityPass(
     if(!node->is_visible){return;}
 
     // Draw voxels of not visible children
-    uint32_t max_bound = 16;
+    uint32_t max_bound = 8;
     uint32_t nb_points = min(max_bound, octree.max_lod_level + 1 - node->level);
     drawAllVoxels(
         node, octree.aabbs, target, 
         octree.world, nb_points,
         octree.max_lod_level, octree.use_voxels_debug_color,
-        node->children_visibility ^ 0b11111111
+        node->children_visibility ^ 0b11111111, call_index
     );
     
-    if(octree.debug_lod_to_render == -1){
+    if((call_index == 0) && octree.debug_lod_to_render == -1){
         node->is_large = isLargerThanMinSpanning(octree.min_pixel_span, aabb, target, octree.world);
         node->is_cut = false;
     }
@@ -588,12 +590,13 @@ void kernel_drawOctreeLarge(
     auto block = cg::this_thread_block();
     
     // Assign each node to one thread block
-    uint32_t node_index = grid.block_rank();
+    uint32_t node_index = grid.block_rank() / octree.nb_blocks_per_node;
+    uint32_t call_index = grid.block_rank() % octree.nb_blocks_per_node;
     if(node_index >= octree.num_nodes) return;
     
     COctreeNode* node = octree.nodes[node_index];
 
-    if(octree.debug_lod_to_render == -1){
+    if((call_index == 0) && octree.debug_lod_to_render == -1){
         if(!node->is_visible){return;}
         if(!node->is_large){return;}
 
@@ -622,7 +625,8 @@ void kernel_drawOctreeSmall(
     auto block = cg::this_thread_block();
     
     // Assign each node to one thread block
-    uint32_t node_index = grid.block_rank();
+    uint32_t node_index = grid.block_rank() / octree.nb_blocks_per_node;
+    uint32_t call_index = grid.block_rank() % octree.nb_blocks_per_node;
     if(node_index >= octree.num_nodes) return;
     
     COctreeNode* node = octree.nodes[node_index];
@@ -635,19 +639,23 @@ void kernel_drawOctreeSmall(
                 node, octree.aabbs, target, 
                 octree.world, octree.voxels_nb_points_per_axis,
                 octree.max_lod_level, octree.use_voxels_debug_color,
-                0b11111111
+                0b11111111, call_index
             );
-            drawAllPoints(node, target, octree.world);
+            if(call_index == 0){
+                drawAllPoints(node, target, octree.world);
+            }
         }
     } else {
         bool is_minimal_draw = (node->level == 0) && !node->is_large;
         if(node->is_cut || is_minimal_draw){
-            drawAllPoints(node, target, octree.world);
+            if(call_index == 0){
+                drawAllPoints(node, target, octree.world);
+            }
             drawAllVoxels(
                 node, octree.aabbs, target, 
                 octree.world, octree.voxels_nb_points_per_axis,
                 octree.max_lod_level, octree.use_voxels_debug_color,
-                0b11111111
+                0b11111111, call_index
             );
         }
     }
