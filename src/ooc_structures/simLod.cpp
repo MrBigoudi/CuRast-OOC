@@ -106,7 +106,7 @@ void SimLod::load(
 	std::shared_ptr<AABBRelationshipMap> relationship_map_ref
 ){
 
-	// tmp_ser is here to avoid loading a node multiple time in the parallel context
+	// tmp_set is here to avoid loading a node multiple time in the parallel context
 	mutex mtx_set;
 	std::unordered_set<IdAABB> tmp_set = {};
 
@@ -170,26 +170,14 @@ void SimLod::load(
     // std::lock_guard<std::mutex> lock(LRUCache::caches_sync_mtx);
 
 	if(!OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-		for(Point& point : *points){
+		std::for_each(points->begin(), points->end(), [&](Point& point){
 			tryInsertPoint(point, main_root);
-		}
+		});
 	} else {
-		vector<uint32_t> first_indices = {};
-		uint32_t step_size = 100'000u;
-		uint32_t nb_points = points->size();
-		for(uint32_t i=0; i<nb_points; i+=step_size){first_indices.push_back(i);}
-
-		std::for_each(std::execution::par, first_indices.begin(), first_indices.end(), [&](uint32_t index){
-			for(uint32_t i=0; i<step_size; i++){
-				if((index + i) >= nb_points){break;}
-				tryInsertPoint((*points)[index + i], main_root);
-			}
+		std::for_each(std::execution::par, points->begin(), points->end(), [&](Point& point){
+			tryInsertPoint(point, main_root);
 		});
 	}
-
-	// if(!tmp_set.empty()){
-	// 	println("nb loaded nodes = {}", tmp_set.size());
-	// }
 }
 
 
@@ -558,36 +546,4 @@ void SimLod::insertion(
 		}
 	}
 
-}
-
-
-
-std::unordered_map<OctreeNode*, std::vector<uint32_t>> SimLod::fillPoints(
-	OctreeNode* main_root, 
-	std::shared_ptr<vector<Point>>& points,
-	uint32_t first_index
-){
-	std::unordered_map<OctreeNode*, std::vector<uint32_t>> res = {};
-
-	for(uint32_t i=first_index; i<points->size(); i++){
-		const Point& point = (*points)[i];
-		OctreeNode* leaf = main_root;
-
-		while(true){
-			const AABB& aabb = GlobalVariables::getAABB(leaf->aabb_index);
-			if(!aabb.contains(point.position)){
-				break;
-			}
-			if(!res.contains(leaf)){res[leaf] = {};}
-			res[leaf].push_back(i);
-
-			NodePosition child_index = aabb.getNextChildIndex(point.position);
-			// If not leaf continue
-			if(leaf->children[child_index]){
-				leaf = leaf->children[child_index];
-			}
-		}
-	}
-
-	return res;
 }

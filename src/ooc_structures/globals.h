@@ -420,7 +420,7 @@ struct GlobalVariables {
 	static inline std::shared_ptr<LRUCache> updatesCache = nullptr;
 	static inline std::shared_ptr<LRUCache> visibilityCache = nullptr;
 	// TODO: rework cache version
-	// static inline std::shared_ptr<CPUFallbackCache> cpuCache = nullptr;
+	static inline std::shared_ptr<CPUFallbackCache> cpuCache = nullptr;
 
 	/// The global allocated memory (for batches)
 	static inline uint32_t currentBatchedMemoriesIndex = 0;

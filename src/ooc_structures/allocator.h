@@ -70,7 +70,7 @@ struct AllocatorPool {
 
     /// Create a new entry
     /// Pick the first available element
-    T* allocate() {
+    T* allocate(bool auto_sync = true) {
         // TODO: for now just crash if list is full
         if(nb_allocated_elements.load() == CAPACITY){
             println("ERROR: can't allocate more `{}' elements", typeid(T).name());
@@ -80,7 +80,7 @@ struct AllocatorPool {
         nb_allocated_elements++;
         total_nb_allocation++;
 
-        std::lock_guard<std::mutex> lock(mtx);
+        auto lock = auto_sync ? std::unique_lock<std::mutex>(mtx) : std::unique_lock<std::mutex>();
 
         // Get the first free element of the list
         std::shared_ptr<Entry> entry = elements.back();
@@ -103,7 +103,7 @@ struct AllocatorPool {
 
 
     /// Free an existing entry
-    void deallocate(T* entry_id){
+    void deallocate(T* entry_id, bool auto_sync = true){
         if(!entry_id){return;}
 
         // TODO: for now just crash if list is empty
@@ -115,7 +115,7 @@ struct AllocatorPool {
         nb_allocated_elements--;
         total_nb_deallocation++;
 
-        std::lock_guard<std::mutex> lock(mtx);
+        auto lock = auto_sync ? std::unique_lock<std::mutex>(mtx) : std::unique_lock<std::mutex>();
 
         auto it = elements_map.find(entry_id);
         if(it == elements_map.end()){
@@ -209,23 +209,34 @@ struct MemoryAllocator {
     }
 
     /// Allocate a new chunk and make a copy of the given chunk
-    static Chunk* newChunkCpy(const Chunk& cpy){
+    static Chunk* newChunkCpy(const Chunk* cpy){
         Chunk* chunk = newChunk();
-        chunk->size = cpy.size;
+        chunk->size = cpy->size;
         for(uint32_t i=0; i<OocSimLodSettings::NB_POINTS_PER_CHUNK; i++){
-            chunk->points[i] = cpy.points[i];
+            chunk->points[i] = cpy->points[i];
         }
-        if(cpy.next){chunk->next = newChunkCpy(*cpy.next);}
+        if(cpy->next){
+            chunk->next = newChunkCpy(cpy->next);
+        }
         return chunk;
     }
 
     /// Deallocate a chunk and all it's children
     static void delChunk(Chunk* chunk){
         if(!chunk){return;}
-        delChunk(chunk->next);
-        chunk->next = nullptr;
-        chunksAllocator->deallocate(chunk);
-        chunk = nullptr;
+
+        // Get the chunks to deallocate
+        std::vector<Chunk*> to_destroy = {};
+        Chunk* cur_chunk = chunk;
+        while(cur_chunk){
+            to_destroy.push_back(cur_chunk);
+            cur_chunk = cur_chunk->next;
+        }
+
+        std::lock_guard<std::mutex> lock(chunksAllocator->mtx);
+        std::for_each(to_destroy.begin(), to_destroy.end(), [&](Chunk* cur_chunk){
+            chunksAllocator->deallocate(cur_chunk, false);
+        });
     }
 
 
@@ -240,10 +251,10 @@ struct MemoryAllocator {
     }
 
     /// Allocate a new occupancy grid and make a copy of the given occupancy grid
-    static OccupancyGrid* newOccupancyGridCpy(const OccupancyGrid& cpy){
+    static OccupancyGrid* newOccupancyGridCpy(const OccupancyGrid* cpy){
         OccupancyGrid* grid = newOccupancyGrid();
         for(uint32_t i=0; i<OocSimLodSettings::GRID_SIZE / 32; i++){
-            grid->values[i] = cpy.values[i].load();
+            grid->values[i] = cpy->values[i].load();
         }
         return grid;
     }
@@ -268,19 +279,19 @@ struct MemoryAllocator {
     }
 
     /// Allocate a new node and make a copy of the given node
-    static OctreeNode* newOctreeNodeCpy(const OctreeNode& cpy, bool node_only = false){
-        OctreeNode* node = newOctreeNode(cpy.aabb_index);
+    static OctreeNode* newOctreeNodeCpy(const OctreeNode* cpy, bool node_only = false){
+        OctreeNode* node = newOctreeNode(cpy->aabb_index);
 
-        node->children_ids = cpy.children_ids;
-        node->counter.store(cpy.counter.load());
-        node->points = cpy.points ? newChunkCpy(*cpy.points) : nullptr;
-        node->voxels = cpy.voxels ? newChunkCpy(*cpy.voxels) : nullptr;
-        node->occupancy = cpy.occupancy ? newOccupancyGridCpy(*cpy.occupancy) : nullptr;
+        node->children_ids = cpy->children_ids;
+        node->counter.store(cpy->counter.load());
+        node->points = cpy->points ? newChunkCpy(cpy->points) : nullptr;
+        node->voxels = cpy->voxels ? newChunkCpy(cpy->voxels) : nullptr;
+        node->occupancy = cpy->occupancy ? newOccupancyGridCpy(cpy->occupancy) : nullptr;
 
         if(!node_only){
             for(uint32_t child = 0; child < 8; child++){
-                if(cpy.children[child]){
-                    node->children[child] = newOctreeNodeCpy(*cpy.children[child]);
+                if(cpy->children[child]){
+                    node->children[child] = newOctreeNodeCpy(cpy->children[child]);
                 }
             }
         }
@@ -288,23 +299,96 @@ struct MemoryAllocator {
         return node;
     }
 
+
+    /// Allocate a new node and make a copy of the given node
+    /// The new node will keep children of the partial node if the copy doesn't introduce new children
+    static OctreeNode* newOctreeNodePartialCpy(const OctreeNode* cpy, const OctreeNode* partial){
+        if(!partial){return newOctreeNodeCpy(cpy);}
+
+        OctreeNode* node = newOctreeNode(cpy->aabb_index);
+
+        node->children_ids = cpy->children_ids;
+        node->counter.store(cpy->counter.load());
+        node->points = cpy->points ? newChunkCpy(cpy->points) : nullptr;
+        node->voxels = cpy->voxels ? newChunkCpy(cpy->voxels) : nullptr;
+        node->occupancy = cpy->occupancy ? newOccupancyGridCpy(cpy->occupancy) : nullptr;
+
+        for(uint32_t child = 0; child < 8; child++){
+            const OctreeNode* next_partial = partial->children[child] ? partial->children[child] : nullptr;
+            if(cpy->children[child]){
+                if(next_partial){
+                    node->children[child] = newOctreeNodePartialCpy(cpy->children[child], next_partial);
+                } else {
+                    node->children[child] = newOctreeNodeCpy(cpy->children[child]);
+                }
+            } else if(next_partial) {
+                node->children[child] = newOctreeNodeCpy(next_partial);
+            }
+        }
+
+        return node;
+    }
+
+
     /// Deallocate a node
     static void delOctreeNode(OctreeNode* node){
         if(!node){return;}
-        delChunk(node->points);
-        node->points = nullptr;
-        delChunk(node->voxels);
-        node->voxels = nullptr;
-        delOccupancyGrid(node->occupancy);
-        node->occupancy = nullptr;
 
-        for(uint32_t i=0; i<8; i++){
-            delOctreeNode(node->children[i]);
-            node->children[i] = nullptr;
+        std::vector<Chunk*> chuks_to_delete = {};
+        std::vector<OccupancyGrid*> grids_to_delete = {};
+        std::vector<OctreeNode*> nodes_to_delete = {};
+
+        std::function<void(OctreeNode*)> get_pointers = [&](OctreeNode* cur_node){
+            if(!cur_node){return;}
+            nodes_to_delete.push_back(cur_node);
+
+            if(cur_node->points){
+                Chunk* cur_chunk = cur_node->points;
+                while(cur_chunk){
+                    chuks_to_delete.push_back(cur_chunk);
+                    cur_chunk = cur_chunk->next;
+                }
+            }
+            if(cur_node->voxels){
+                Chunk* cur_chunk = cur_node->voxels;
+                while(cur_chunk){
+                    chuks_to_delete.push_back(cur_chunk);
+                    cur_chunk = cur_chunk->next;
+                }
+            }
+            if(cur_node->occupancy){
+                grids_to_delete.push_back(cur_node->occupancy);
+            }
+            for(uint32_t i=0; i<8; i++){
+                get_pointers(cur_node->children[i]);
+            }
+        };
+
+        get_pointers(node);
+
+        // Delete chunks
+        {
+            std::lock_guard<std::mutex> lock(chunksAllocator->mtx);
+            std::for_each(chuks_to_delete.begin(), chuks_to_delete.end(), [&](Chunk* cur_chunk){
+                chunksAllocator->deallocate(cur_chunk, false);
+            });
         }
 
-        nodesAllocator->deallocate(node);
-        node = nullptr;
+        // Delete grids
+        {
+            std::lock_guard<std::mutex> lock(gridsAllocator->mtx);
+            std::for_each(grids_to_delete.begin(), grids_to_delete.end(), [&](OccupancyGrid* cur_grid){
+                gridsAllocator->deallocate(cur_grid, false);
+            });
+        }
+
+        // Delete nodes
+        {
+            std::lock_guard<std::mutex> lock(nodesAllocator->mtx);
+            std::for_each(nodes_to_delete.begin(), nodes_to_delete.end(), [&](OctreeNode* cur_node){
+                nodesAllocator->deallocate(cur_node, false);
+            });
+        }
     }
 
 };

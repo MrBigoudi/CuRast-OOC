@@ -3,6 +3,7 @@
 #include "allocator.h"
 #include "structureUpdate.h"
 #include "visibility.h"
+#include "outOfCore.h"
 
 
 bool Point::operator==(const Point& rhs) const {
@@ -643,7 +644,7 @@ void GlobalVariables::init(CuRast* instance, CUcontext* context){
 
     updatesCache = std::make_shared<LRUCache>("updates cache", OocSimLodSettings::LRU_UPDATES_CACHE_SIZE);
     visibilityCache = std::make_shared<LRUCache>("visibility cache", OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE);
-    // cpuCache = std::make_shared<CPUFallbackCache>(OocSimLodSettings::LRU_CPU_CACHE_SIZE);
+    cpuCache = std::make_shared<CPUFallbackCache>(OocSimLodSettings::LRU_CPU_CACHE_SIZE);
 
     for(auto& memory : batchedMemories){
         memory.init(instance, context);
@@ -1304,25 +1305,15 @@ void GlobalVariables::updateGPU(CuRast* instance, CUcontext* context, View* view
             return;
         }
         
-        if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-            std::lock_guard<std::mutex> lock_send(isUpdatingMtx);
+        {
+            auto lock = OocSimLodSettings::IS_RUNNING_IN_PARALLEL
+                ? std::unique_lock<std::mutex>(GlobalVariables::isUpdatingMtx) 
+                : std::unique_lock<std::mutex>();
+                
             if(octree_ref.has_value() && octree_ref.value()){
                 allOctreesRefCounter[octree_ref.value()]--;
             }
-
             octree_ref = std::optional<OctreeNode*>(mainOctree);
-
-            if(octree_ref.has_value() && octree_ref.value()){
-                allOctreesRefCounter[octree_ref.value()]++;
-            }
-            relationship_map_ref = aabbRelationshipMapCpy;
-        } else {
-            if(octree_ref.has_value() && octree_ref.value()){
-                allOctreesRefCounter[octree_ref.value()]--;
-            }
-
-            octree_ref = std::optional<OctreeNode*>(mainOctree);
-
             if(octree_ref.has_value() && octree_ref.value()){
                 allOctreesRefCounter[octree_ref.value()]++;
             }
@@ -1330,12 +1321,14 @@ void GlobalVariables::updateGPU(CuRast* instance, CUcontext* context, View* view
         }
 
 
-        Visibility::updateVisibilityCache(VKRenderer::view.view, VKRenderer::view.proj,
+        bool has_scene_changed = Visibility::updateVisibilityCache(VKRenderer::view.view, VKRenderer::view.proj,
             *octree_ref, relationship_map_ref
         );
-        loadOctreeOnGPU(instance, context,
-            *octree_ref, relationship_map_ref
-        );
+        if(has_scene_changed){
+            loadOctreeOnGPU(instance, context,
+                *octree_ref, relationship_map_ref
+            );
+        }
 
     }
 }
@@ -1346,10 +1339,36 @@ void GlobalVariables::swapOctrees(){
 
     allOctreesRefCounter[mainOctree]--;
 
-    // TODO: better copy strategy
-    // For now, the mainOctree after visibility updates is way bigger than the one after updates update
-    // Also, the one after updates update never loads the node in the visibility update tree
-    mainOctree = MemoryAllocator::newOctreeNodeCpy(*mainOctreeCpy);
+    // OctreeNode* new_octree = MemoryAllocator::newOctreeNodeCpy(mainOctreeCpy);
+    // {
+    //     // Augment mainOctreeCpy
+    //     std::function<void(OctreeNode*, OctreeNode*)> recursion = [&](OctreeNode* cur_node, OctreeNode* old_node){
+    //         if(!old_node){return;}
+
+    //         for(uint32_t child_id = 0; child_id < 8; child_id++){
+    //             OctreeNode* cur_child = cur_node->children[child_id];
+    //             OctreeNode* old_child = old_node->children[child_id];
+
+    //             // If the new octree misses one child, add it
+    //             if(old_child && !cur_child){
+    //                 OctreeNode* new_child = MemoryAllocator::newOctreeNodeCpy(old_child, true);
+    //                 cur_node->children[child_id] = new_child;
+    //                 recursion(new_child, cur_child);
+    //             } else {
+    //                 recursion(cur_child, old_child);
+    //             }
+    //         }
+
+    //     };
+    //     std::lock_guard<std::mutex> lock_send(LRUCache::caches_sync_mtx);
+    //     recursion(new_octree, mainOctree);
+    // }
+    // mainOctree = new_octree;
+
+    // // For now, the mainOctree after visibility updates is way bigger than the one after updates update
+    // // Also, the one after updates update never loads the node in the visibility update tree
+    // mainOctree = MemoryAllocator::newOctreeNodeCpy(mainOctreeCpy);
+    mainOctree = MemoryAllocator::newOctreeNodePartialCpy(mainOctreeCpy, mainOctree);
     allOctreesRefCounter[mainOctree] = 1;
 }
 

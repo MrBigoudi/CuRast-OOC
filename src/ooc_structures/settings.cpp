@@ -25,7 +25,27 @@ void OocSimLodSettings::init(){
     IS_RUNNING_IN_PARALLEL = init_field<bool>("IS_RUNNING_IN_PARALLEL", false);
     NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE = init_field<uint32_t>("NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE", 60);
     MEASURE_TIMINGS = init_field<bool>("MEASURE_TIMINGS", false);
-    PER_NODE_KERNEL_BLOCK_SIZE = init_field<uint32_t>("PER_NODE_KERNEL_BLOCK_SIZE", 256);
+
+    CUdevice device;
+    cuCtxGetDevice(&device);
+    int val = 0;
+    CURuntime::assertCudaSuccess(cuDeviceGetAttribute(
+        &val, 
+        CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK, 
+        device)
+    );
+    uint32_t max_threads_per_block = uint32_t(val);
+    CURuntime::assertCudaSuccess(cuDeviceGetAttribute(
+        &val, 
+        CU_DEVICE_ATTRIBUTE_MAX_BLOCKS_PER_MULTIPROCESSOR, 
+        device)
+    );
+    uint32_t max_blocks_per_sm = uint32_t(val);
+    cudaDeviceProp properties;
+    cudaGetDeviceProperties(&properties, 0);
+    uint32_t nb_sm = uint32_t(properties.multiProcessorCount);
+    PER_NODE_KERNEL_BLOCK_SIZE = init_field<uint32_t>("PER_NODE_KERNEL_BLOCK_SIZE", max_threads_per_block);
+    NB_BLOCKS_PER_NODE = init_field<uint32_t>("NB_BLOCKS_PER_NODE", max_blocks_per_sm);
 
     /// Batch sizes
     BATCHES_LIST_SIZE = init_field<uint32_t>("BATCHES_LIST_SIZE", 1'024);
@@ -86,6 +106,7 @@ void OocSimLodSettings::display(){
     println("    - NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE: {}", NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE);
     println("    - MEASURE_TIMINGS: {}", MEASURE_TIMINGS);
     println("    - PER_NODE_KERNEL_BLOCK_SIZE: {}", PER_NODE_KERNEL_BLOCK_SIZE);
+    println("    - NB_BLOCKS_PER_NODE: {}", NB_BLOCKS_PER_NODE);
 
     println("");
     println("Batch sizes:");

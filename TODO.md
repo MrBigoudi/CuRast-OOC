@@ -2,16 +2,16 @@
 
 ## Next steps (in priority order)
 
-- Measure timings and memory usage more precisely 
-- Clean the code + improve comments
-- Allocate memory once on CPU side to avoid new/delete and reuse it on demand
-- Only send new AABBs to the GPU
-
+- Only send new AABBs to the GPU (send deltas more generally, is this worth it ?)
+- Fix the huge CPU cache
+- Better voxel rendering
+- Update the CpyOctree before updating the Octree to include visible nodes and make it a bit bigger ?
 
 ## Coding part
 
+- Delay load / store of nodes as waiting for loading and storing won't be possible on GPU side
+- Clean the code + improve comments
 - Automatically fetch CPU / GPU capacities to set the constants
-- Replace exit(EXIT_FAILURE) with exception raise to catch it in the main and clear the temporary folder
 - Fix Vulkan segfault on quit
 - supress warnings
 - Replace list with fixed size array to prepare for GPU side
@@ -29,4 +29,5 @@
 
 ## Report part
 
+- Update the latex algorithm
 - Write down pipeline / method somewhere in a .md file

@@ -42,7 +42,11 @@ struct OocSimLodSettings {
 
     /// The number of threads per block
     /// Each node will be given an entire block of thread to render all of its points
+    /// Default to the maximum number of threads per block
     static inline uint32_t PER_NODE_KERNEL_BLOCK_SIZE;
+    /// The number of blocks per node
+    /// Default to the number of blocks per SM
+    static inline uint32_t NB_BLOCKS_PER_NODE;
 
 
 
