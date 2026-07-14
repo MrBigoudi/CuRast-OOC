@@ -67,6 +67,13 @@ void OocSimLodSettings::init(){
     NB_ALLOCATED_GRIDS = init_field<uint32_t>("NB_ALLOCATED_GRIDS", 2048);
     NB_ALLOCATED_NODES = init_field<uint32_t>("NB_ALLOCATED_NODES", 2048);
 
+    /// GPU Version buffers
+    INITIAL_MAX_NB_NODES = init_field<uint32_t>("INITIAL_MAX_NB_NODES", 1'000'000);
+    MAX_NB_NODES_TO_LOAD = init_field<uint32_t>("MAX_NB_NODES_TO_LOAD", 512);
+    MAX_NB_NODES_TO_STORE = init_field<uint32_t>("MAX_NB_NODES_TO_STORE", 512);
+    MAX_NB_SPILLING_POINTS = init_field<uint32_t>("MAX_NB_SPILLING_POINTS", 1'000'000);
+    MAX_NB_BACKLOG_VOXELS = init_field<uint32_t>("MAX_NB_BACKLOG_VOXELS", 1'000'000);
+
     /// Ui initial parameters
     SHOW_BOUNDING_BOXES_AT_STARTUP = init_field<bool>("SHOW_BOUNDING_BOXES_AT_STARTUP", false);
     CuRastSettings::showBoundingBoxes = SHOW_BOUNDING_BOXES_AT_STARTUP;
@@ -129,6 +136,14 @@ void OocSimLodSettings::display(){
     println("    - NB_ALLOCATED_CHUNKS: {}", NB_ALLOCATED_CHUNKS);
     println("    - NB_ALLOCATED_GRIDS: {}", NB_ALLOCATED_GRIDS);
     println("    - NB_ALLOCATED_NODES: {}", NB_ALLOCATED_NODES);
+
+    println("");
+    println("GPU version properties:");
+    println("    - INITIAL_MAX_NB_NODES: {}", INITIAL_MAX_NB_NODES);
+    println("    - MAX_NB_NODES_TO_LOAD: {}", MAX_NB_NODES_TO_LOAD);
+    println("    - MAX_NB_NODES_TO_STORE: {}", MAX_NB_NODES_TO_STORE);
+    println("    - MAX_NB_SPILLING_POINTS: {}", MAX_NB_SPILLING_POINTS);
+    println("    - MAX_NB_BACKLOG_VOXELS: {}", MAX_NB_BACKLOG_VOXELS);
 
     println("");
     println("UI initial settings:");

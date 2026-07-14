@@ -105,6 +105,23 @@ struct OocSimLodSettings {
 
 
     /////////////////////////////////////////////////////////////////////////
+    ////////////////////////////// GPU VERSION //////////////////////////////
+    /////////////////////////////////////////////////////////////////////////
+    
+    /// The initial maximum number of nodes allowed to be created during runtime
+    static inline uint32_t INITIAL_MAX_NB_NODES; 
+    /// The maximum number of nodes that can be queried to load from disk
+    static inline uint32_t MAX_NB_NODES_TO_LOAD;
+    /// The maximum number of nodes that can be prepared for storing
+    static inline uint32_t MAX_NB_NODES_TO_STORE;
+    /// The maximum number of spilling points
+    static inline uint32_t MAX_NB_SPILLING_POINTS;
+    /// The maximum number of backlog voxels
+    static inline uint32_t MAX_NB_BACKLOG_VOXELS;
+
+
+
+    /////////////////////////////////////////////////////////////////////////
     ///////////////////////// UI INITIAL PARAMETERS /////////////////////////
     /////////////////////////////////////////////////////////////////////////
 

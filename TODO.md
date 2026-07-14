@@ -2,14 +2,13 @@
 
 ## Next steps (in priority order)
 
+- Delay load / store of nodes as waiting for loading and storing won't be possible on GPU side
 - Only send new AABBs to the GPU (send deltas more generally, is this worth it ?)
 - Fix the huge CPU cache
 - Better voxel rendering
-- Update the CpyOctree before updating the Octree to include visible nodes and make it a bit bigger ?
 
 ## Coding part
 
-- Delay load / store of nodes as waiting for loading and storing won't be possible on GPU side
 - Clean the code + improve comments
 - Automatically fetch CPU / GPU capacities to set the constants
 - Fix Vulkan segfault on quit

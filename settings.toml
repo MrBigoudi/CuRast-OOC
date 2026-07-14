@@ -115,6 +115,23 @@ NB_ALLOCATED_NODES = 32_768
 
 
 #########################################################################
+############################## GPU VERSION ##############################
+#########################################################################
+
+### The initial maximum number of nodes allowed to be created during runtime
+INITIAL_MAX_NB_NODES = 1_000_000
+### The maximum number of nodes that can be queried to load from disk
+MAX_NB_NODES_TO_LOAD = 2_048
+### The maximum number of nodes that can be prepared for storing
+MAX_NB_NODES_TO_STORE = 2_048
+### The maximum number of spilling points
+MAX_NB_SPILLING_POINTS = 1_000_000
+### The maximum number of backlog voxels
+MAX_NB_BACKLOG_VOXELS = 1_000_000
+
+
+
+    #########################################################################
 ######################### UI INITIAL PARAMETERS #########################
 #########################################################################
 

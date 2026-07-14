@@ -369,7 +369,7 @@ struct CudaModularProgram{
 			// "lcudadevrt"
 			// "-verbose",
 			"-O3",           // optimization level
-			"-optimize-unused-variables",
+			// "-optimize-unused-variables",
 			"-split-compile=0",
 		};
 
