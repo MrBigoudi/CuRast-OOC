@@ -123,7 +123,7 @@ const CPUFallbackCache::Entry* CPUFallbackCache::add(const Entry* new_entry){
     if(it != cache_map.end()){
         cache.erase(it->second);
         cache_map.erase(it);
-        delete(*it->second);
+        // delete(*it->second);
     }
 
     const Entry* old_entry = nullptr;
@@ -382,7 +382,7 @@ OctreeNodeSerializable OctreeNodeSerializable::deserialize(const std::string& fi
 OctreeNode* OctreeNodeSerializable::toOctreeNode(const IdAABB& root_aabb_index){
     // std::lock_guard<std::mutex> lock_cache(GlobalVariables::cpuCache->mutex);
 
-    // TODO: rework cache version
+    // // TODO: rework cache version
     // const CPUFallbackCache::Entry* to_store = nullptr;
     // // Check if the node is in CPU cache
     // const CPUFallbackCache::Entry* entry = GlobalVariables::cpuCache->get(root_aabb_index);

@@ -299,6 +299,37 @@ struct MemoryAllocator {
         return node;
     }
 
+
+    /// Allocate a new node and make a copy of the given node
+    /// The new node will keep children of the partial node if the copy doesn't introduce new children
+    static OctreeNode* newOctreeNodePartialCpy(const OctreeNode* cpy, const OctreeNode* partial){
+        if(!partial){return newOctreeNodeCpy(cpy);}
+
+        OctreeNode* node = newOctreeNode(cpy->aabb_index);
+
+        node->children_ids = cpy->children_ids;
+        node->counter.store(cpy->counter.load());
+        node->points = cpy->points ? newChunkCpy(cpy->points) : nullptr;
+        node->voxels = cpy->voxels ? newChunkCpy(cpy->voxels) : nullptr;
+        node->occupancy = cpy->occupancy ? newOccupancyGridCpy(cpy->occupancy) : nullptr;
+
+        for(uint32_t child = 0; child < 8; child++){
+            const OctreeNode* next_partial = partial->children[child] ? partial->children[child] : nullptr;
+            if(cpy->children[child]){
+                if(next_partial){
+                    node->children[child] = newOctreeNodePartialCpy(cpy->children[child], next_partial);
+                } else {
+                    node->children[child] = newOctreeNodeCpy(cpy->children[child]);
+                }
+            } else if(next_partial) {
+                node->children[child] = newOctreeNodeCpy(next_partial);
+            }
+        }
+
+        return node;
+    }
+
+
     /// Deallocate a node
     static void delOctreeNode(OctreeNode* node){
         if(!node){return;}
