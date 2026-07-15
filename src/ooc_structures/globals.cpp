@@ -4,7 +4,7 @@
 #include "structureUpdate.h"
 #include "visibility.h"
 #include "outOfCore.h"
-
+#include "gpuVersion.h"
 
 bool Point::operator==(const Point& rhs) const {
     if(position != rhs.position){return false;}
@@ -717,6 +717,9 @@ void GlobalVariables::destroy(CuRast* instance, CUcontext* context){
     std::lock_guard<std::mutex> lock2(LRUCache::caches_sync_mtx);
     displayCpuMemoryUsage();
     println("GPU Memory Usage:\n{}", getGpuMemoryUsage());
+
+    cudaDeviceSynchronize();
+    GpuVersion::destroy(instance, context);
 }
 
 IdAABB GlobalVariables::createNewAABB(const AABB& aabb){

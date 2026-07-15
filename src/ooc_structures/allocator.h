@@ -334,7 +334,7 @@ struct MemoryAllocator {
     static void delOctreeNode(OctreeNode* node){
         if(!node){return;}
 
-        std::vector<Chunk*> chuks_to_delete = {};
+        std::vector<Chunk*> chunks_to_delete = {};
         std::vector<OccupancyGrid*> grids_to_delete = {};
         std::vector<OctreeNode*> nodes_to_delete = {};
 
@@ -345,14 +345,14 @@ struct MemoryAllocator {
             if(cur_node->points){
                 Chunk* cur_chunk = cur_node->points;
                 while(cur_chunk){
-                    chuks_to_delete.push_back(cur_chunk);
+                    chunks_to_delete.push_back(cur_chunk);
                     cur_chunk = cur_chunk->next;
                 }
             }
             if(cur_node->voxels){
                 Chunk* cur_chunk = cur_node->voxels;
                 while(cur_chunk){
-                    chuks_to_delete.push_back(cur_chunk);
+                    chunks_to_delete.push_back(cur_chunk);
                     cur_chunk = cur_chunk->next;
                 }
             }
@@ -369,7 +369,7 @@ struct MemoryAllocator {
         // Delete chunks
         {
             std::lock_guard<std::mutex> lock(chunksAllocator->mtx);
-            std::for_each(chuks_to_delete.begin(), chuks_to_delete.end(), [&](Chunk* cur_chunk){
+            std::for_each(chunks_to_delete.begin(), chunks_to_delete.end(), [&](Chunk* cur_chunk){
                 chunksAllocator->deallocate(cur_chunk, false);
             });
         }

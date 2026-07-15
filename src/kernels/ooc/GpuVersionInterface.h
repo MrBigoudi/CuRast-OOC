@@ -184,6 +184,3 @@ struct CGlobalVariables {
     CPoint* backlogVoxels = nullptr;
     COctreeNode** backlogVoxelsNodes = nullptr;
 };
-
-
-extern __device__ CGlobalVariables globalVariables;
