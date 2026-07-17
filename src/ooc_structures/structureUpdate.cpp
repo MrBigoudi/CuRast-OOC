@@ -342,7 +342,7 @@ void createCudaMemory(CuRast* editor, CUcontext* context,
 
 	octree->max_lod_level = max_lod_level;
 
-	octree->nb_aabbs = relationship_map_ref->size();
+	octree->nb_aabbs = relationship_map_ref->size;
 
 	// Copy arrays of pointers to GPU
 	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
@@ -422,6 +422,7 @@ void addPointBatches(){
 
 	if(!GlobalVariables::mainOctree){
 		GlobalVariables::aabbRelationshipMap = std::make_shared<AABBRelationshipMap>();
+		GlobalVariables::aabbRelationshipMap->init(1024);
 
 		std::shared_ptr<Timing> timing = Timing::addTiming("init octree", true);
 		std::lock_guard<std::mutex> lock_send(GlobalVariables::isUpdatingMtx);

@@ -77,7 +77,7 @@ struct CPUFallbackCache {
 
     /// The global cache
     CDoubleLinkedList<const Entry*> cache = {};
-	std::unordered_map<IdAABB, CDoubleLinkedList<const Entry*>::Iterator*> cache_map = {};
+	CHashMap<IdAABB, CDoubleLinkedList<const Entry*>::Iterator*> cache_map = {};
 
     /// Creates a cache given its size
     CPUFallbackCache(uint32_t cache_size);

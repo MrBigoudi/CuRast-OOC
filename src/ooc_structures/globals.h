@@ -260,12 +260,13 @@ struct LRUCache {
 
 	const uint32_t CACHE_SIZE;
 	CDoubleLinkedList<IdAABB> cache = {};
-	std::unordered_map<IdAABB, CDoubleLinkedList<IdAABB>::Iterator*> cache_map = {};
+	CHashMap<IdAABB, CDoubleLinkedList<IdAABB>::Iterator*> cache_map = {};
 	std::string name = "";
 
 	LRUCache(const std::string& name, uint32_t cache_size)
 		: name(name), CACHE_SIZE(cache_size){
 		cache.init();
+		cache_map.init(cache_size);
 	}
 
 	/// Add a node to the cache and return the id of a node if it has been removed from the cache
@@ -359,7 +360,7 @@ struct BatchedMemory {
 ////////////////////////// GLOBAL EXTERNAL VARIABLES //////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
 
-typedef std::unordered_map<IdAABB, std::array<IdAABB, 8>> AABBRelationshipMap;
+typedef CHashMap<IdAABB, std::array<IdAABB, 8>> AABBRelationshipMap;
 
 struct GlobalVariables {
 	/// Used to store all the AABBs created during runtime
@@ -377,7 +378,7 @@ struct GlobalVariables {
 	static void swapAABBsMaps();
 	static void swapOctrees();
 
-	static inline std::unordered_map<OctreeNode*, uint32_t> allOctreesRefCounter = {};
+	static inline CHashMap<OctreeNode*, uint32_t> allOctreesRefCounter = {};
 	static void freeOctreesOnCPU();
 
 

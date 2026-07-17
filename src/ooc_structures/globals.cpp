@@ -629,6 +629,9 @@ std::string GlobalVariables::getSimLodOctreeName(bool generate_new_name){
 }
 
 void GlobalVariables::init(CuRast* instance, CUcontext* context){
+    /// The maps
+    allOctreesRefCounter.init(1024);
+
     /// The queue of batches
     batchesQueue = std::deque<std::shared_ptr<PointBatch>>(OocSimLodSettings::BATCHES_LIST_SIZE, nullptr);
     batchesQueueMutexes = std::deque<std::mutex>(OocSimLodSettings::BATCHES_LIST_SIZE);
@@ -729,10 +732,10 @@ IdAABB GlobalVariables::createNewAABB(const AABB& aabb){
         throw(EXIT_FAILURE);
     }
     allAABBs.push_back(aabb);
-    aabbRelationshipMap->insert({id, {
+    aabbRelationshipMap->insert_or_replace(id, {
         INVALID_ID, INVALID_ID, INVALID_ID, INVALID_ID,
         INVALID_ID, INVALID_ID, INVALID_ID, INVALID_ID
-    }});
+    });
     return id;
 }
 const AABB& GlobalVariables::getAABB(const IdAABB& id){
@@ -790,7 +793,7 @@ void GlobalVariables::displayCpuMemoryUsage(){
     uint32_t real_nb_chunks = OctreeNode::getNbChunks(mainOctree) 
         + OctreeNode::getNbChunks(mainOctreeCpy)
     ;
-    uint32_t real_nb_octrees = allOctreesRefCounter.size();
+    uint32_t real_nb_octrees = allOctreesRefCounter.size;
 
     println("    - nb nodes = {}, lost nodes = {}", real_nb_nodes,
         MemoryAllocator::nodesAllocator->nb_allocated_elements.load() - real_nb_nodes
@@ -804,9 +807,10 @@ void GlobalVariables::displayCpuMemoryUsage(){
     println("    - nb octrees = {}, lost octrees = {}", 
         real_nb_octrees, real_nb_octrees - 1
     );
-    for(auto& [node, counter] : allOctreesRefCounter){
+
+    allOctreesRefCounter.map_with_key([&](OctreeNode* node, uint32_t& counter){
         printf("    - counter[%p] = %u\n", node, counter);
-    }
+    });
     println("\n");
 }
 
@@ -1061,19 +1065,20 @@ void GlobalVariables::displayBuffers(){
 
 
 std::optional<IdAABB> LRUCache::add(const IdAABB& aabb_index){
-    auto it = cache_map.find(aabb_index);
+    CDoubleLinkedList<IdAABB>::Iterator** it = cache_map.find(aabb_index);
 
     // If the AABB was already in cache, remove its old version from the list
-    if(it != cache_map.end()){
-        CDoubleLinkedList<IdAABB>::Iterator* list_it = it->second;
+    if(it){
+        CDoubleLinkedList<IdAABB>::Iterator* list_it = *it;
         cache.erase(list_it->value);
-        cache_map.erase(it);
+        cache_map.erase(list_it->value);
+        delete(list_it);
     }
 
     std::optional<IdAABB> old_aabb = nullopt;
 
     // If the cache is full, remove the last node
-    if(cache_map.size() >= CACHE_SIZE){
+    if(cache_map.size >= CACHE_SIZE){
         old_aabb = *cache.back();
         cache.popBack();
         cache_map.erase(old_aabb.value());
@@ -1091,7 +1096,7 @@ bool LRUCache::contains(const IdAABB& aabb_index) {
 }
 
 uint32_t LRUCache::getSize() const {
-    return cache_map.size();
+    return cache_map.size;
 }
 
 
@@ -1382,19 +1387,30 @@ void GlobalVariables::swapOctrees(){
 
 
 void GlobalVariables::freeOctreesOnCPU(){
-    if(allOctreesRefCounter.size() <= 1){
+    if(allOctreesRefCounter.size <= 1){
         return;
     }
 
-    // https://stackoverflow.com/questions/15662412/how-to-remove-multiple-items-from-unordered-map-while-iterating-over-it
-    for (auto it = allOctreesRefCounter.begin(); it != allOctreesRefCounter.end();) {
-        OctreeNode* node = it->first;
-        uint32_t counter = it->second;
-        if(counter == 0) {
-            MemoryAllocator::delOctreeNode(node);
-            it = allOctreesRefCounter.erase(it);
-        } else {
-            it++;
+    // // https://stackoverflow.com/questions/15662412/how-to-remove-multiple-items-from-unordered-map-while-iterating-over-it
+    // for (auto it = allOctreesRefCounter.begin(); it != allOctreesRefCounter.end();) {
+    //     OctreeNode* node = it->first;
+    //     uint32_t counter = it->second;
+    //     if(counter == 0) {
+    //         MemoryAllocator::delOctreeNode(node);
+    //         it = allOctreesRefCounter.erase(it);
+    //     } else {
+    //         it++;
+    //     }
+    // }
+
+    std::vector<OctreeNode*> to_erase = {};
+    allOctreesRefCounter.map_with_key([&](OctreeNode* node, uint32_t counter){
+        if(counter == 0){
+            to_erase.push_back(node);            
         }
+    });
+    for(OctreeNode* node : to_erase){
+        allOctreesRefCounter.erase(node);
+        MemoryAllocator::delOctreeNode(node);
     }
 }

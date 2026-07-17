@@ -116,23 +116,24 @@ OctreeNode* CPUFallbackCache::Entry::toLeafNode() const {
 
 CPUFallbackCache::CPUFallbackCache(uint32_t cache_size): CACHE_SIZE(cache_size){
     cache.init();
+    cache_map.init(cache_size);
 }
 
 const CPUFallbackCache::Entry* CPUFallbackCache::add(const Entry* new_entry){
-    auto it = cache_map.find(new_entry->serializable_node.aabb_index);
+    CDoubleLinkedList<const Entry*>::Iterator** it = cache_map.find(new_entry->serializable_node.aabb_index);
 
     // If the AABB was already in cache, remove its old version from the list
-    if(it != cache_map.end()){
-        CDoubleLinkedList<const Entry*>::Iterator* list_it = it->second;
-        cache.erase(list_it->value);
-        cache_map.erase(it);
-        // delete(*it->second);
+    if(it){
+        CDoubleLinkedList<const Entry*>::Iterator* list_it = *it;
+        cache.erase(list_it);
+        cache_map.erase(list_it->value->serializable_node.aabb_index);
+        delete(list_it);
     }
 
     const Entry* old_entry = nullptr;
 
     // If the cache is full, remove the last node
-    if(cache_map.size() >= CACHE_SIZE){
+    if(cache_map.size >= CACHE_SIZE){
         old_entry = *cache.back();
         cache.popBack();
         cache_map.erase(old_entry->serializable_node.aabb_index);
@@ -146,10 +147,10 @@ const CPUFallbackCache::Entry* CPUFallbackCache::add(const Entry* new_entry){
 }
 
 const CPUFallbackCache::Entry* CPUFallbackCache::get(const IdAABB& aabb_index) {    
-    auto it = cache_map.find(aabb_index);
+    CDoubleLinkedList<const Entry*>::Iterator** it = cache_map.find(aabb_index);
 
-    if(it != cache_map.end()){
-        CDoubleLinkedList<const Entry*>::Iterator* list_it = it->second;
+    if(it){
+        CDoubleLinkedList<const Entry*>::Iterator* list_it = *it;
         const Entry* output = list_it->value;
         return output;
     }

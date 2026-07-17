@@ -26,7 +26,7 @@ struct AllocatorPool {
     /// The last element of the list should always be available (unless the list is full)
     CDoubleLinkedList<std::shared_ptr<Entry>> elements = {};
     /// A map to easily find the next free entry
-	std::unordered_map<T*, typename CDoubleLinkedList<std::shared_ptr<Entry>>::Iterator*> elements_map = {};
+	CHashMap<T*, typename CDoubleLinkedList<std::shared_ptr<Entry>>::Iterator*> elements_map = {};
 
 
     /// For stats
@@ -44,6 +44,7 @@ struct AllocatorPool {
         total_allocated_size = CAPACITY * sizeof(T);
 
         elements.init();
+        elements_map.init(CAPACITY);
 
         for (uint32_t i = 0; i < CAPACITY; i++) {
             std::shared_ptr<Entry> entry = std::make_shared<Entry>();
@@ -69,7 +70,7 @@ struct AllocatorPool {
     uint64_t getSize() const {
         return total_allocated_size 
             + elements.size * sizeof(Entry)
-            + elements_map.size() * (sizeof(T*) + sizeof(typename CDoubleLinkedList<std::shared_ptr<Entry>>::Iterator*))
+            + elements_map.capacity * (sizeof(T*) + sizeof(typename CDoubleLinkedList<std::shared_ptr<Entry>>::Iterator*))
             + sizeof(AllocatorPool<T>);
     }
 
@@ -123,8 +124,8 @@ struct AllocatorPool {
 
         auto lock = auto_sync ? std::unique_lock<std::mutex>(mtx) : std::unique_lock<std::mutex>();
 
-        auto it = elements_map.find(entry_id);
-        if(it == elements_map.end()){
+        typename CDoubleLinkedList<std::shared_ptr<Entry>>::Iterator** it = elements_map.find(entry_id);
+        if(!it){
             println("ERROR: can't deallocate an unknown `{}' element", typeid(T).name());
             throw(EXIT_FAILURE);
         }
@@ -132,7 +133,7 @@ struct AllocatorPool {
         // Reset the element
         entry_id->~T();
 
-        typename CDoubleLinkedList<std::shared_ptr<Entry>>::Iterator* list_it = it->second;
+        typename CDoubleLinkedList<std::shared_ptr<Entry>>::Iterator* list_it = *it;
         std::shared_ptr<Entry> real_entry = list_it->value;
         if(real_entry->is_free){
             println("ERROR: double free of `{}' element {}", typeid(T).name(), (void*)entry_id);
@@ -141,8 +142,9 @@ struct AllocatorPool {
         real_entry->is_free = true;
 
         // Remove the element and put it in the back
-        elements_map.erase(it);
+        elements_map.erase(entry_id);
         elements.erase(list_it);
+        delete(list_it);
         elements.pushBack(real_entry);
         elements_map[entry_id] = elements.end();
     }

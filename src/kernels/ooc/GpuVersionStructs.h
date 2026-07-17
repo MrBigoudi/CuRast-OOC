@@ -28,6 +28,17 @@ struct CDoubleLinkedList {
         last = new LastEntry();
     }
 
+    CDoubleLinkedList(){}
+
+    CDoubleLinkedList(const CDoubleLinkedList& cpy){
+        init();
+        Iterator* it = cpy.begin();
+        while(it){
+            pushBack(it->value);
+            it = it->next;
+        }
+    }
+
     ~CDoubleLinkedList(){
         if(!first){return;}
         clear();
@@ -170,6 +181,7 @@ struct CHashMap {
     /// The array of elements
     struct Entry {
         T element;
+        Key real_key;
         uint64_t key = INVALID_KEY;
     };
     CDoubleLinkedList<Entry>* elements = nullptr;
@@ -241,6 +253,16 @@ struct CHashMap {
         }
     }
 
+    CHashMap(){}
+
+    CHashMap(const CHashMap& cpy){
+        init(cpy.capacity);
+        for(uint64_t i=0; i<capacity; i++){
+            elements[i] = cpy.elements[i];
+        }
+        size = cpy.size;
+    }
+
     ~CHashMap(){
         free(elements);
     }
@@ -277,7 +299,7 @@ struct CHashMap {
             list_it->value.element = new_value;
         } else {
             // Add if not already in the list
-            elems_list.pushFront({new_value, murmur});
+            elems_list.pushFront({new_value, key, murmur});
             size++;
         }
     }
@@ -289,11 +311,10 @@ struct CHashMap {
     }
 
     /// Crash if couldn't find the key
-    T find(Key key){
+    T* find(Key key){
         typename CDoubleLinkedList<Entry>::Iterator* list_it = get_iterator(key);
-        if(list_it){return list_it->value.element;}
-        printf("ERROR: can't find element in map\n");
-        // __trap();
+        if(list_it){return &list_it->value.element;}
+        return nullptr;
     }
 
     void erase(Key key){
@@ -323,15 +344,35 @@ struct CHashMap {
             return list_it->value.element;
         } else {
             // Add if not already in the list
-            elems_list.pushFront({T(), murmur});
+            elems_list.pushFront({T(), key, murmur});
             size++;
+            return elems_list.front()->element;
         }
     }
 
-    const T operator[](Key key) const {
-        typename CDoubleLinkedList<Entry>::Iterator* list_it = get_iterator(key);
-        if(list_it){return list_it->value.element;}
-        printf("ERROR: can't get element in map\n");
-        // __trap();
+    const T& operator[](Key key) const {
+        return (*this)[key];
+    }
+
+    template<typename Func>
+    void map(Func f){
+        for(uint32_t i=0; i<capacity; i++){
+            typename CDoubleLinkedList<Entry>::Iterator* it = elements[i].begin();
+            while(it){
+                f(it->value.element);
+                it = it->next;
+            }
+        }
+    }
+
+    template<typename Func>
+    void map_with_key(Func f){
+        for(uint32_t i=0; i<capacity; i++){
+            typename CDoubleLinkedList<Entry>::Iterator* it = elements[i].begin();
+            while(it){
+                f(it->value.real_key, it->value.element);
+                it = it->next;
+            }
+        }
     }
 };

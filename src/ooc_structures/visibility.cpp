@@ -71,19 +71,19 @@ std::unordered_set<IdAABB> Visibility::getVisibleNodes(
     std::shared_ptr<AABBRelationshipMap> relationship_map_ref
 ){
     std::unordered_set<IdAABB> res = {};
-    res.reserve(relationship_map_ref->size());
+    res.reserve(relationship_map_ref->size);
 
     // println("before get nodes: vis cache size = {}, updates cache size = {}, total nodes = {}, nb_nodes = {}", 
     //     GlobalVariables::visibilityCache->getSize(), GlobalVariables::updatesCache->getSize(), 
     //     relationship_map_ref->size(), res.size()
     // );
 
-    for(const auto& [aabb_index, children] : *relationship_map_ref){
+    relationship_map_ref->map_with_key([&](IdAABB aabb_index, std::array<IdAABB, 8>& children){
         const AABB& aabb = GlobalVariables::getAABB(aabb_index);
         if(frustum.doesIntersect(aabb)){
             res.insert(aabb_index);
         }
-    }
+    });
 
     // println("after get nodes: vis cache size = {}, updates cache size = {}, total nodes = {}, nb_nodes = {}\n", 
     //     GlobalVariables::visibilityCache->getSize(), GlobalVariables::updatesCache->getSize(), 
@@ -136,7 +136,7 @@ std::vector<IdAABB> Visibility::orderNodes(
             println("WTFF");
 
             println("Relationship map: ");
-            for(const auto& [id, children] : *relationship_map_ref){
+            relationship_map_ref->map_with_key([&](IdAABB id, std::array<IdAABB, 8>& children){
                 println("    - [{}]: children: [{}, {}, {}, {}, {}, {}, {}, {}]",
                     id,
                     children[0] == INVALID_ID ? -1 : int32_t(children[0]),
@@ -148,7 +148,7 @@ std::vector<IdAABB> Visibility::orderNodes(
                     children[6] == INVALID_ID ? -1 : int32_t(children[6]),
                     children[7] == INVALID_ID ? -1 : int32_t(children[7])
                 );
-            }
+            });
             println("\n\n\n");
 
             println("All AABBs");
@@ -243,7 +243,7 @@ void Visibility::fillVisibilityCache(
             cur_node->display(id, level, true);
 
             println("Relationship map: ");
-            for(const auto& [id, children] : *relationship_map_ref){
+            relationship_map_ref->map_with_key([&](IdAABB id, std::array<IdAABB, 8>& children){
                 println("    - [{}]: children: [{}, {}, {}, {}, {}, {}, {}, {}]",
                     id,
                     children[0] == INVALID_ID ? -1 : int32_t(children[0]),
@@ -255,7 +255,7 @@ void Visibility::fillVisibilityCache(
                     children[6] == INVALID_ID ? -1 : int32_t(children[6]),
                     children[7] == INVALID_ID ? -1 : int32_t(children[7])
                 );
-            }
+            });
             println("\n\n\n");
 
             println("All AABBs");

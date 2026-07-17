@@ -106,12 +106,16 @@ struct CAllocatorPool {
 
         // auto lock = auto_sync ? std::unique_lock<std::mutex>(mtx) : std::unique_lock<std::mutex>();
 
-        auto it = elements_map.find(entry_id);
-
+        typename CDoubleLinkedList<Entry*>::Iterator** it = elements_map.find(entry_id);
+        if(!it){
+            printf("ERROR: can't deallocate an unknown element\n");
+            // __trap();
+        }
         // Reset the element
         entry_id->~T();
 
-        Entry* real_entry = it->value;
+        typename CDoubleLinkedList<Entry*>::Iterator* list_it = *it;
+        Entry* real_entry = list_it->value;
         if(real_entry->is_free){
             printf("ERROR: double free of `%d' element %p\n", ALLOCATOR_ID, (void*)entry_id);
             // __trap();
@@ -120,8 +124,8 @@ struct CAllocatorPool {
 
         // Remove the element and put it in the back
         elements_map.erase(real_entry->value);
-        elements.erase(it);
-        delete(it);
+        elements.erase(list_it);
+        delete(list_it);
         elements.pushBack(real_entry);
         elements_map[entry_id] = elements.end();
     }
