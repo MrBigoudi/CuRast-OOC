@@ -34,79 +34,34 @@ __device__ CGlobalVariables globalVariables;
 __device__ CMemoryAllocator globalAllocator;
 
 
-__device__ void initChunksAllocator() {
-    CAllocatorPool<CChunk>* allocator = globalAllocator.chunksAllocator;
-    printf("    - capacity: %d, id: %d\n", allocator->CAPACITY, allocator->ALLOCATOR_ID);
-
+template<typename T>
+__device__ void initAllocatorPool(void* pool){
+    CAllocatorPool<T>* allocator = reinterpret_cast<CAllocatorPool<T>*>(pool);
     allocator->elements.init();
-    printf("    - elements initialised, size: %d\n", allocator->elements.size);
-    allocator->elements.size = 1;
-    printf("    - elements initialised, size: %d\n", allocator->elements.size);
-
-
-    printf("    - map initialised, size: %d, capacity: %d\n", allocator->elements_map.size, allocator->elements_map.capacity);
-    allocator->elements_map = {};
-    printf("    - map initialised, size: %d, capacity: %d\n", allocator->elements_map.size, allocator->elements_map.capacity);
     allocator->elements_map.init(allocator->CAPACITY);
-    printf("    - map initialised, size: %d, capacity: %d\n", allocator->elements_map.size, allocator->elements_map.capacity);
-    allocator->elements_map.capacity = 1;
-    allocator->elements_map.size = 2;
-    printf("    - map initialised, size: %d, capacity: %d\n", allocator->elements_map.size, allocator->elements_map.capacity);
 
-    printf("map addr %p\n", &allocator->elements_map);
-    printf("cap addr %p\n", &allocator->elements_map.capacity);
-
-    uint32_t alignment = alignof(CChunk);
-    uint32_t aligned_size = sizeof(CChunk) + ((alignment - (sizeof(CChunk) % alignment)) % alignment);
-
-    // for (uint32_t i = 0; i < allocator->CAPACITY; i++) {
-    //     CAllocatorPool<CChunk>::Entry* entry = new CAllocatorPool<CChunk>::Entry();
-    //     entry->value = new (allocator->allocated_memory + i*aligned_size) CChunk();
-    //     allocator->elements.pushFront(entry);
-    //     allocator->elements_map[entry->value] = allocator->elements.begin();
-    // }
-    printf("    - pool filled\n");
+    uint32_t alignment = alignof(T);
+    uint32_t aligned_size = sizeof(T) + ((alignment - (sizeof(T) % alignment)) % alignment);
+    char* base = reinterpret_cast<char*>(allocator->allocated_memory);
+    for (uint32_t i = 0; i < allocator->CAPACITY; i++) {
+        typename CAllocatorPool<T>::Entry* entry = new CAllocatorPool<T>::Entry();
+        entry->value = new (base + i*aligned_size) T();
+        allocator->elements.pushFront(entry);
+        allocator->elements_map.insert_or_replace(entry->value, allocator->elements.begin());
+    }
 }
 
-// __device__ void initGridsAllocator() {
-//     CAllocatorPool<COccupancyGrid>* allocator = globalAllocator.gridsAllocator;
-//     printf("    - capacity: %d, id: %d\n", allocator->CAPACITY, allocator->ALLOCATOR_ID);
-//     allocator->elements.init();
-//     printf("    - elements initialised, size: %d\n", allocator->elements.size);
-//     allocator->elements_map.init(allocator->CAPACITY);
-//     printf("    - map initialised, size: %d, capacity: %d\n", allocator->elements_map.size, allocator->elements_map.capacity);
+__device__ void initChunksAllocator() {
+    initAllocatorPool<CChunk>(globalAllocator.chunksAllocator);
+}
 
-//     uint32_t alignment = alignof(COccupancyGrid);
-//     uint32_t aligned_size = sizeof(COccupancyGrid) + ((alignment - (sizeof(COccupancyGrid) % alignment)) % alignment);
+__device__ void initGridsAllocator() {
+    initAllocatorPool<COccupancyGrid>(globalAllocator.gridsAllocator);
+}
 
-//     for (uint32_t i = 0; i < allocator->CAPACITY; i++) {
-//         CAllocatorPool<COccupancyGrid>::Entry* entry = new CAllocatorPool<COccupancyGrid>::Entry();
-//         entry->value = new (allocator->allocated_memory + i*aligned_size) COccupancyGrid();
-//         allocator->elements.pushFront(entry);
-//         allocator->elements_map[entry->value] = allocator->elements.begin();
-//     }
-//     printf("    - pool filled\n");
-// }
-
-// __device__ void initNodesAllocator() {
-//     CAllocatorPool<COctreeNode>* allocator = globalAllocator.nodesAllocator;
-//     printf("    - capacity: %d, id: %d\n", allocator->CAPACITY, allocator->ALLOCATOR_ID);
-//     allocator->elements.init();
-//     printf("    - elements initialised, size: %d\n", allocator->elements.size);
-//     allocator->elements_map.init(allocator->CAPACITY);
-//     printf("    - map initialised, size: %d, capacity: %d\n", allocator->elements_map.size, allocator->elements_map.capacity);
-
-//     uint32_t alignment = alignof(COctreeNode);
-//     uint32_t aligned_size = sizeof(COctreeNode) + ((alignment - (sizeof(COctreeNode) % alignment)) % alignment);
-
-//     for (uint32_t i = 0; i < allocator->CAPACITY; i++) {
-//         CAllocatorPool<COctreeNode>::Entry* entry = new CAllocatorPool<COctreeNode>::Entry();
-//         entry->value = new (allocator->allocated_memory + i*aligned_size) COctreeNode();
-//         allocator->elements.pushFront(entry);
-//         allocator->elements_map[entry->value] = allocator->elements.begin();
-//     }
-//     printf("    - pool filled\n");
-// }
+__device__ void initNodesAllocator() {
+    initAllocatorPool<COctreeNode>(globalAllocator.nodesAllocator);
+}
 
 
 
@@ -121,7 +76,7 @@ void kernel_init(){
     // initNodesAllocator();
     // printf("Nodes Allocator initiated\n");
 
-    printf("FROM INIT\n");
+    printf("\nFROM INIT\n");
     printf("    - Nb AABBs: %d / %d\n", globalVariables.nbAABBs, globalVariables.maxNbAABBs);
     printf("    - Nb nodes to load: %d / %d\n", globalVariables.nbNodesToLoad, globalVariables.maxNbNodesToLoad);
     printf("    - Nb nodes to store: %d / %d\n", globalVariables.nbNodesToStore, globalVariables.maxNbNodesToStore);

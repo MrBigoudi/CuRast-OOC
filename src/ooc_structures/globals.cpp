@@ -1065,7 +1065,8 @@ std::optional<IdAABB> LRUCache::add(const IdAABB& aabb_index){
 
     // If the AABB was already in cache, remove its old version from the list
     if(it != cache_map.end()){
-        cache.erase(it->second);
+        CDoubleLinkedList<IdAABB>::Iterator* list_it = it->second;
+        cache.erase(list_it->value);
         cache_map.erase(it);
     }
 
@@ -1073,13 +1074,13 @@ std::optional<IdAABB> LRUCache::add(const IdAABB& aabb_index){
 
     // If the cache is full, remove the last node
     if(cache_map.size() >= CACHE_SIZE){
-        old_aabb = cache.back();
-        cache.pop_back();
+        old_aabb = *cache.back();
+        cache.popBack();
         cache_map.erase(old_aabb.value());
     }
 
     // Insert the new node at the front of the list
-    cache.push_front(aabb_index);
+    cache.pushFront(aabb_index);
     cache_map[aabb_index] = cache.begin();
 
     return old_aabb;
@@ -1100,7 +1101,10 @@ void LRUCache::display() {
 	println("////////////////////// {} //////////////////////", name);
 	println("////////////////////////////////////////////////{}\n", pad);
     uint32_t index = 0;
-	for(const IdAABB& aabb_index : cache){
+
+    CDoubleLinkedList<IdAABB>::Iterator* list_it = cache.begin();
+    while(list_it){
+        const IdAABB& aabb_index = list_it->value;
         const AABB& aabb = GlobalVariables::getAABB(aabb_index);
         std::string output = format("mins = ({}, {}, {}), maxs = ({}, {}, {})",
             aabb.mins.x, 
@@ -1112,6 +1116,7 @@ void LRUCache::display() {
         );
         println("- [ {} ]: {}", index, output);
         index++;
+        list_it = list_it->next;
     }
 	println("\n////////////////////////////////////////////////{}", pad);
     println("////////////////////////////////////////////////{}", pad);

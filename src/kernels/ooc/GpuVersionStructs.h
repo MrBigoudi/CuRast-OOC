@@ -153,202 +153,185 @@ struct CDoubleLinkedList {
 
 
 
+/// From claude
+/// Minimal trait, no <type_traits> dependency (NVRTC-safe)
+template<typename U> struct CIsPointer       { static constexpr bool value = false; };
+template<typename U> struct CIsPointer<U*>   { static constexpr bool value = true;  };
+
+
+
 
 /// A custom implementation of hash maps
 template<typename Key, typename T>
 struct CHashMap {
-    uint64_t size = 42;
-    uint64_t capacity = 12;
+    uint64_t capacity = 0;
+    uint64_t size = 0;
 
     /// The array of elements
-    T* elements = nullptr;
-    /// The corresponding keys
-    uint64_t* keys = nullptr;
+    struct Entry {
+        T element;
+        uint64_t key = INVALID_KEY;
+    };
+    CDoubleLinkedList<Entry>* elements = nullptr;
 
     /// How often we probe for an empty slot before giving up
-	constexpr static uint32_t MAX_ATTEMPTS = 10;
     constexpr static uint64_t INVALID_KEY = 0xffffffffffffffff;
     constexpr static uint64_t SEED = 2915580697;
 
     /// Murmur originates from here: https://github.com/aappleby/smhasher
-	/// https://github.com/aappleby/smhasher/blob/master/src/MurmurHash2.cpp
-	static uint64_t hash_murmur(Key key) {
-		const uint64_t m = 0xc6a4a7935bd1e995;
-        const int r = 47;
-
-        uint32_t len = sizeof(Key);
-
-        uint64_t h = SEED ^ (len * m);
-
-        const uint64_t* data = (const uint64_t*)key;
-        const uint64_t* end = data + (len/8);
-
-        while(data != end){
-            uint64_t k = *data++;
-
-            k *= m; 
-            k ^= k >> r; 
-            k *= m; 
-            
-            h ^= k;
-            h *= m; 
-        }
-
-        const unsigned char * data2 = (const unsigned char*)data;
-
-        switch(len & 7)
-        {
-        case 7: h ^= uint64_t(data2[6]) << 48;
-        case 6: h ^= uint64_t(data2[5]) << 40;
-        case 5: h ^= uint64_t(data2[4]) << 32;
-        case 4: h ^= uint64_t(data2[3]) << 24;
-        case 3: h ^= uint64_t(data2[2]) << 16;
-        case 2: h ^= uint64_t(data2[1]) << 8;
-        case 1: h ^= uint64_t(data2[0]);
-                h *= m;
-        };
-        
-        h ^= h >> r;
-        h *= m;
-        h ^= h >> r;
-
+    /// Here is a version proposed by claude
+	/// 64-bit avalanche mix (Murmur3 finalizer) — same core for every branch below
+    static uint64_t mix64(uint64_t h) {
+        h ^= h >> 33;
+        h *= 0xff51afd7ed558ccdULL;
+        h ^= h >> 33;
+        h *= 0xc4ceb9fe1a85ec53ULL;
+        h ^= h >> 33;
         return h;
-	}
+    }
+
+    static uint64_t hash_murmur(const Key& key) {
+        if constexpr (CIsPointer<Key>::value) {
+            // Hash the pointer's address value directly
+            return mix64((uint64_t)(uintptr_t)key ^ SEED);
+        } else if constexpr (sizeof(Key) <= 8) {
+            // Small integral/enum/etc: widen and hash the value itself
+            uint64_t v = 0;
+            __builtin_memcpy(&v, &key, sizeof(Key)); // avoids sign/UB issues from a raw cast
+            return mix64(v ^ SEED);
+        } else {
+            // General fallback: hash the raw bytes of the object itself
+            // NOTE: byte-hashes &key (the object's storage), never `key` reinterpreted as a pointer
+            const uint64_t m = 0xc6a4a7935bd1e995ULL;
+            const int r = 47;
+            uint32_t len = sizeof(Key);
+            uint64_t h = SEED ^ (len * m);
+
+            const uint64_t* data = reinterpret_cast<const uint64_t*>(&key);
+            const uint64_t* end  = data + (len / 8);
+
+            while (data != end) {
+                uint64_t k = *data++;
+                k *= m; k ^= k >> r; k *= m;
+                h ^= k; h *= m;
+            }
+
+            const unsigned char* data2 = reinterpret_cast<const unsigned char*>(data);
+            switch (len & 7) {
+                case 7: h ^= uint64_t(data2[6]) << 48;
+                case 6: h ^= uint64_t(data2[5]) << 40;
+                case 5: h ^= uint64_t(data2[4]) << 32;
+                case 4: h ^= uint64_t(data2[3]) << 24;
+                case 3: h ^= uint64_t(data2[2]) << 16;
+                case 2: h ^= uint64_t(data2[1]) << 8;
+                case 1: h ^= uint64_t(data2[0]);
+                        h *= m;
+            }
+            h ^= h >> r; h *= m; h ^= h >> r;
+            return h;
+        }
+    }
 
     /// Create a map of a given size
     void init(uint64_t new_size){
-        printf("this      %p\n", this);
-        printf("&capacity %p\n", &capacity);
-        printf("&size %p\n", &size);
         capacity = new_size;
-        printf("after = %llu\n", capacity);
-        size = new_size;
-
-        // elements = (T*)malloc(new_size * sizeof(T));
-        // keys = (uint64_t*)malloc(new_size * sizeof(uint64_t));
-        // for(uint32_t i=0; i<capacity; i++){
-        //     keys[i] = INVALID_KEY;
-        // }
+        elements = (CDoubleLinkedList<Entry>*)malloc(capacity * sizeof(CDoubleLinkedList<Entry>));
+        for(uint64_t i=0; i<capacity; i++){
+            elements[i].init();
+        }
     }
 
     ~CHashMap(){
         free(elements);
-        free(keys);
     }
 
-    /// Crash if couldn't find empty spot
-    /// Replace the value if the key is already in the map
-    void insert_or_replace(Key key, T value){
-        uint64_t hash = hash_murmur(key) % capacity;
+    CDoubleLinkedList<Entry>& get_list(uint64_t murmur) {
+        uint64_t hash = murmur % capacity;
+        return elements[hash];
+    }
 
-        uint64_t first_free_index = INVALID_KEY;
-        for(uint32_t nb_tries=0; nb_tries < MAX_ATTEMPTS; nb_tries++){
-            uint64_t index = (hash + nb_tries) % capacity;
-            uint64_t old_key = keys[index];
+    CDoubleLinkedList<Entry>::Iterator* get_iterator(Key& key){
+        return get_iterator(hash_murmur(key));
+    }
 
-            if(old_key == INVALID_KEY && first_free_index == INVALID_KEY){ // Check if found empty space
-                first_free_index = index;
-            } else if(old_key == hash){ // Check if found existing key
-                elements[index] = value;
-                return;
+    CDoubleLinkedList<Entry>::Iterator* get_iterator(uint64_t murmur){
+        uint64_t hash = murmur % capacity;
+        CDoubleLinkedList<Entry>& elems_list = elements[hash];
+        auto list_it = elems_list.begin();
+        while(list_it){
+            if(list_it->value.key == murmur){
+                return list_it;
             }
+            list_it = list_it->next;
         }
-        if(first_free_index != INVALID_KEY){
-            elements[first_free_index] = value;
-            keys[first_free_index] = hash;
+        return nullptr;
+    }
+
+    /// Replace the value if the key is already in the map
+    void insert_or_replace(Key key, T new_value){
+        uint64_t murmur = hash_murmur(key);
+        CDoubleLinkedList<Entry>& elems_list = get_list(murmur);
+        typename CDoubleLinkedList<Entry>::Iterator* list_it = get_iterator(murmur);
+        if(list_it){
+            // Replace if already in the list
+            list_it->value.element = new_value;
+        } else {
+            // Add if not already in the list
+            elems_list.pushFront({new_value, murmur});
             size++;
         }
-
-        printf("ERROR: can't insert new element in map");
-        // __trap();
     }
 
+    /// Check if the map already contains the key
     bool contains(Key key){
-        uint64_t hash = hash_murmur(key) % capacity;
-        for(uint32_t nb_tries=0; nb_tries < MAX_ATTEMPTS; nb_tries++){
-            uint64_t index = (hash + nb_tries) % capacity;
-            uint64_t old_key = keys[index];
-            if(keys[index] == hash){return true;}
-        }
-        return false;
+        typename CDoubleLinkedList<Entry>::Iterator* list_it = get_iterator(key);
+        return list_it != nullptr;
     }
 
     /// Crash if couldn't find the key
     T find(Key key){
-        uint64_t hash = hash_murmur(key) % capacity;
-        for(uint32_t nb_tries=0; nb_tries < MAX_ATTEMPTS; nb_tries++){
-            uint64_t index = (hash + nb_tries) % capacity;
-            uint64_t old_key = keys[index];
-
-            if(keys[index] == hash){
-                return elements[index];
-            }
-        }
-
-        printf("ERROR: can't find element in map");
+        typename CDoubleLinkedList<Entry>::Iterator* list_it = get_iterator(key);
+        if(list_it){return list_it->value.element;}
+        printf("ERROR: can't find element in map\n");
         // __trap();
     }
 
     void erase(Key key){
-        uint64_t hash = hash_murmur(key) % capacity;
-        for(uint32_t nb_tries=0; nb_tries < MAX_ATTEMPTS; nb_tries++){
-            uint64_t index = (hash + nb_tries) % capacity;
-            uint64_t old_key = keys[index];
-
-            if(keys[index] == hash){
-                keys[index] = INVALID_KEY;
-                size--;
-                return;
-            }
+        uint64_t murmur = hash_murmur(key);
+        CDoubleLinkedList<Entry>& elems_list = get_list(murmur);
+        typename CDoubleLinkedList<Entry>::Iterator* list_it = get_iterator(murmur);
+        if(list_it){
+            elems_list.erase(list_it);
+            size--;
         }
     }
 
     void clear(){
         for(uint32_t i=0; i<capacity; i++){
-            keys[i] = INVALID_KEY;
+            elements[i].clear();
         }
         size = 0;
     }
 
-
+    /// Create an empty value for the given key if not already in the map
     T& operator[](Key key){
-        uint64_t hash = hash_murmur(key) % capacity;
-        uint64_t first_free_index = INVALID_KEY;
-        for(uint32_t nb_tries=0; nb_tries < MAX_ATTEMPTS; nb_tries++){
-            uint64_t index = (hash + nb_tries) % capacity;
-            uint64_t old_key = keys[index];
-            if(old_key == INVALID_KEY && first_free_index == INVALID_KEY){ // Check if found empty space
-                first_free_index = index;
-            } else if(old_key == hash){ // Check if found existing key
-                return elements[index];
-            }
-        }
-
-        if(first_free_index != INVALID_KEY){
-            elements[first_free_index] = T();
-            keys[first_free_index] = hash;
+        uint64_t murmur = hash_murmur(key);
+        CDoubleLinkedList<Entry>& elems_list = get_list(murmur);
+        typename CDoubleLinkedList<Entry>::Iterator* list_it = get_iterator(murmur);
+        if(list_it){
+            // Return if already in the list
+            return list_it->value.element;
+        } else {
+            // Add if not already in the list
+            elems_list.pushFront({T(), murmur});
             size++;
-            return elements[first_free_index];
         }
-
-        printf("ERROR: can't find or insert element in map");
-        // __trap();
     }
 
     const T operator[](Key key) const {
-        uint64_t hash = hash_murmur(key) % capacity;
-        uint64_t first_free_index = INVALID_KEY;
-        for(uint32_t nb_tries=0; nb_tries < MAX_ATTEMPTS; nb_tries++){
-            uint64_t index = (hash + nb_tries) % capacity;
-            uint64_t old_key = keys[index];
-            if(old_key == INVALID_KEY && first_free_index == INVALID_KEY){ // Check if found empty space
-                first_free_index = index;
-            } else if(old_key == hash){ // Check if found existing key
-                return elements[index];
-            }
-        }
-
-        printf("ERROR: can't get element in map");
+        typename CDoubleLinkedList<Entry>::Iterator* list_it = get_iterator(key);
+        if(list_it){return list_it->value.element;}
+        printf("ERROR: can't get element in map\n");
         // __trap();
     }
 };

@@ -573,49 +573,51 @@ int main(int argc, char** argv){
 		OocSimLodSettings::init();
 		GlobalVariables::init(CuRast::instance, &context);
 		std::filesystem::create_directories(OocSimLodSettings::TEMPORARY_NODE_STORAGE_DIRECTORY);
-		// initScene();
+		initScene();
 
-		GpuVersion::init(CuRast::instance, &context);
+		// GpuVersion::init(CuRast::instance, &context);
+		// cudaDeviceSynchronize();
+		// std::this_thread::sleep_for(std::chrono::milliseconds(5000));
+		// throw(EXIT_FAILURE);
 
+		if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+			// Loading points routine
+			std::thread thread_loading_points(loadPointcloudRoutine);
+			thread_loading_points.detach();
 
-		// if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-		// 	// Loading points routine
-		// 	std::thread thread_loading_points(loadPointcloudRoutine);
-		// 	thread_loading_points.detach();
+			// Octree update routine
+			std::thread thread_octree_update(updateOctreeRoutine);
+			thread_octree_update.detach();
 
-		// 	// Octree update routine
-		// 	std::thread thread_octree_update(updateOctreeRoutine);
-		// 	thread_octree_update.detach();
+			// Clear unused batches routine
+			std::thread thread_clear_batches(clearUnusedBatchesRoutine);
+			thread_clear_batches.detach();
 
-		// 	// Clear unused batches routine
-		// 	std::thread thread_clear_batches(clearUnusedBatchesRoutine);
-		// 	thread_clear_batches.detach();
+			// Load point clouds on GPU
+			std::thread thread_load_points_on_gpu([&](CuRast* editor){
+				while(true){
+					loadBatchesOnGPU(editor, &context);
+					if(GlobalVariables::mainLoopIsTerminating){return;}
+				}
+			}, CuRast::instance);
+			thread_load_points_on_gpu.detach();
 
-		// 	// Load point clouds on GPU
-		// 	std::thread thread_load_points_on_gpu([&](CuRast* editor){
-		// 		while(true){
-		// 			loadBatchesOnGPU(editor, &context);
-		// 			if(GlobalVariables::mainLoopIsTerminating){return;}
-		// 		}
-		// 	}, CuRast::instance);
-		// 	thread_load_points_on_gpu.detach();
+			// Update the visibility and load Octree on GPU
+			std::thread thread_gpu_update([&](CuRast* editor, CUcontext* context, View* view){
+				std::optional<OctreeNode*> octree_ref = nullopt;
+				std::shared_ptr<AABBRelationshipMap> relationship_map_ref = nullptr;
 
-		// 	// Update the visibility and load Octree on GPU
-		// 	std::thread thread_gpu_update([&](CuRast* editor, CUcontext* context, View* view){
-		// 		std::optional<OctreeNode*> octree_ref = nullopt;
-		// 		std::shared_ptr<AABBRelationshipMap> relationship_map_ref = nullptr;
-
-		// 		while(true){
-		// 			GlobalVariables::updateGPU(
-		// 				CuRast::instance, context, &VKRenderer::view, 
-		// 				octree_ref, relationship_map_ref
-		// 			);
-		// 			if(GlobalVariables::mainLoopIsTerminating){return;}
-		// 		}
+				while(true){
+					GlobalVariables::updateGPU(
+						CuRast::instance, context, &VKRenderer::view, 
+						octree_ref, relationship_map_ref
+					);
+					if(GlobalVariables::mainLoopIsTerminating){return;}
+				}
 				
-		// 	}, CuRast::instance, &context, &VKRenderer::view);
-		// 	thread_gpu_update.detach();
-		// }
+			}, CuRast::instance, &context, &VKRenderer::view);
+			thread_gpu_update.detach();
+		}
 
 		bool was_unified_set = CuRastSettings::useUnifiedMemory;
 		std::optional<OctreeNode*> octree_ref = nullopt;
@@ -643,16 +645,16 @@ int main(int argc, char** argv){
 				Runtime::debugValues["stage 2"] = format("{:.3f}", stage2_millies);
 				Runtime::debugValues["stage 3"] = format("{:.3f}", stage3_millies);
 
-				// // Update visible nodes
-				// if(!OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-				// 	GlobalVariables::updateGPU(
-				// 		CuRast::instance, &context, &VKRenderer::view, 
-				// 		octree_ref, relationship_map_ref
-				// 	);
-				// }
+				// Update visible nodes
+				if(!OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+					GlobalVariables::updateGPU(
+						CuRast::instance, &context, &VKRenderer::view, 
+						octree_ref, relationship_map_ref
+					);
+				}
 
-				// // Free unused memory
-				// freeOctreesOnGPU(CuRast::instance);
+				// Free unused memory
+				freeOctreesOnGPU(CuRast::instance);
 
 				// Display some information bout memory usage
 				if(CuRastSettings::getGpuMemoryUsage){

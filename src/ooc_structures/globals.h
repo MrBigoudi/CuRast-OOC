@@ -8,6 +8,8 @@
 #include <functional>
 
 #include "settings.h"
+#include "kernels/ooc/GpuVersionStructs.h"
+
 
 ///////////////////////////////////////////////////////////////////////////////
 /////////////////////////// GLOBAL ENUM DECLARATION ///////////////////////////
@@ -251,20 +253,20 @@ struct Timing {
 /////////////////////////// LRU CACHING SHENANIGANS ///////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
 
-#include <list>
-
 /// The LRU caches for the nodes
 /// https://www.geeksforgeeks.org/dsa/lru-cache-implementation-using-double-linked-lists/
 struct LRUCache {
 	static inline std::mutex caches_sync_mtx;
 
 	const uint32_t CACHE_SIZE;
-	std::list<IdAABB> cache = {};
-	std::unordered_map<IdAABB, std::list<IdAABB>::iterator> cache_map = {};
+	CDoubleLinkedList<IdAABB> cache = {};
+	std::unordered_map<IdAABB, CDoubleLinkedList<IdAABB>::Iterator*> cache_map = {};
 	std::string name = "";
 
 	LRUCache(const std::string& name, uint32_t cache_size)
-		: name(name), CACHE_SIZE(cache_size){}
+		: name(name), CACHE_SIZE(cache_size){
+		cache.init();
+	}
 
 	/// Add a node to the cache and return the id of a node if it has been removed from the cache
 	std::optional<IdAABB> add(const IdAABB& aabb_index);

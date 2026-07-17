@@ -1,6 +1,5 @@
 #pragma once
 
-#include "CuRast.h"
 #include "globals.h"
 
 #include <array>
@@ -77,8 +76,8 @@ struct CPUFallbackCache {
 	const uint32_t CACHE_SIZE;
 
     /// The global cache
-    std::list<const Entry*> cache = {};
-	std::unordered_map<IdAABB, std::list<const Entry*>::iterator> cache_map = {};
+    CDoubleLinkedList<const Entry*> cache = {};
+	std::unordered_map<IdAABB, CDoubleLinkedList<const Entry*>::Iterator*> cache_map = {};
 
     /// Creates a cache given its size
     CPUFallbackCache(uint32_t cache_size);

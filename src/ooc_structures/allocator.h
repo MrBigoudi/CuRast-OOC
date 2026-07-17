@@ -1,6 +1,7 @@
 #pragma once
 
 #include "globals.h"
+#include "kernels/ooc/GpuVersionStructs.h"
 
 
 /// A pre-allocated pool of elements
@@ -23,9 +24,9 @@ struct AllocatorPool {
 
     /// The double linked list of pre-allocated elements
     /// The last element of the list should always be available (unless the list is full)
-    std::list<std::shared_ptr<Entry>> elements = {};
+    CDoubleLinkedList<std::shared_ptr<Entry>> elements = {};
     /// A map to easily find the next free entry
-	std::unordered_map<T*, typename std::list<std::shared_ptr<Entry>>::iterator> elements_map = {};
+	std::unordered_map<T*, typename CDoubleLinkedList<std::shared_ptr<Entry>>::Iterator*> elements_map = {};
 
 
     /// For stats
@@ -42,19 +43,24 @@ struct AllocatorPool {
         allocated_memory = static_cast<T*>(::operator new[](CAPACITY * sizeof(T), std::align_val_t(alignof(T))));
         total_allocated_size = CAPACITY * sizeof(T);
 
+        elements.init();
+
         for (uint32_t i = 0; i < CAPACITY; i++) {
             std::shared_ptr<Entry> entry = std::make_shared<Entry>();
 
             entry->value = allocated_memory + i;
 
-            elements.push_front(entry);
+            elements.pushFront(entry);
             elements_map[entry->value] = elements.begin();
         }
     }
 
     ~AllocatorPool() {
-        for(std::shared_ptr<Entry>& entry : elements) {
+        typename CDoubleLinkedList<std::shared_ptr<Entry>>::Iterator* loop_it = elements.begin();
+        while(loop_it){
+            std::shared_ptr<Entry>& entry = loop_it->value;
             if(!entry->is_free){entry->value->~T();}
+            loop_it = loop_it->next;
         }
         ::operator delete[](allocated_memory, std::align_val_t(alignof(T)));
     }
@@ -62,8 +68,8 @@ struct AllocatorPool {
 
     uint64_t getSize() const {
         return total_allocated_size 
-            + elements.size() * sizeof(Entry)
-            + elements_map.size() * (sizeof(T*) + sizeof(typename std::list<std::shared_ptr<Entry>>::iterator))
+            + elements.size * sizeof(Entry)
+            + elements_map.size() * (sizeof(T*) + sizeof(typename CDoubleLinkedList<std::shared_ptr<Entry>>::Iterator*))
             + sizeof(AllocatorPool<T>);
     }
 
@@ -83,7 +89,7 @@ struct AllocatorPool {
         auto lock = auto_sync ? std::unique_lock<std::mutex>(mtx) : std::unique_lock<std::mutex>();
 
         // Get the first free element of the list
-        std::shared_ptr<Entry> entry = elements.back();
+        std::shared_ptr<Entry> entry = *elements.back();
         if(!entry->is_free){
             println("ERROR: this should not be possible");
             throw(EXIT_FAILURE);
@@ -92,8 +98,8 @@ struct AllocatorPool {
 
         // Update the element position in the list and in the map
         elements_map.erase(entry->value);
-        elements.pop_back();
-        elements.push_front(entry);
+        elements.popBack();
+        elements.pushFront(entry);
         elements_map[entry->value] = elements.begin();
 
         new (entry->value) T();
@@ -126,7 +132,8 @@ struct AllocatorPool {
         // Reset the element
         entry_id->~T();
 
-        std::shared_ptr<Entry> real_entry = *(it->second);
+        typename CDoubleLinkedList<std::shared_ptr<Entry>>::Iterator* list_it = it->second;
+        std::shared_ptr<Entry> real_entry = list_it->value;
         if(real_entry->is_free){
             println("ERROR: double free of `{}' element {}", typeid(T).name(), (void*)entry_id);
             throw(EXIT_FAILURE);
@@ -134,11 +141,10 @@ struct AllocatorPool {
         real_entry->is_free = true;
 
         // Remove the element and put it in the back
-        auto list_it = it->second;
         elements_map.erase(it);
         elements.erase(list_it);
-        elements.push_back(real_entry);
-        elements_map[entry_id] = std::prev(elements.end());
+        elements.pushBack(real_entry);
+        elements_map[entry_id] = elements.end();
     }
 
     void displayInfo() {
@@ -148,8 +154,12 @@ struct AllocatorPool {
         uint32_t total_deallocation = total_nb_deallocation.load();
 
         uint32_t real_nb_free = 0;
-        for(const std::shared_ptr<Entry>& entry : elements){
+
+        typename CDoubleLinkedList<std::shared_ptr<Entry>>::Iterator* loop_it = elements.begin();
+        while(loop_it){
+            const std::shared_ptr<Entry>& entry = loop_it->value;
             real_nb_free += entry->is_free ? 1 : 0;
+            loop_it = loop_it->next;
         }
 
         println("    - memory consumption: {}", GlobalVariables::formatMemSize(total_allocated_size));

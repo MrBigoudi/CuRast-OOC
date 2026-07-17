@@ -102,6 +102,7 @@ LRU_VISIBILITY_CACHE_SIZE = 32
 LRU_CPU_CACHE_SIZE = 16_384
 
 ### The maximum number of chunks allowed in memory
+# NB_ALLOCATED_CHUNKS = 16
 NB_ALLOCATED_CHUNKS = 16_384
 # NB_ALLOCATED_CHUNKS = 524_288
 ### The maximum number of occupancy grids allowed in memory
