@@ -7,6 +7,7 @@ void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
     host_staging.relationshipMap = alloc<CGlobalVariables::Relationship>(host_staging.maxNbAABBs);
     host_staging.allAABBs = alloc<CAABB>(host_staging.maxNbAABBs);
     
+
     // Exchangeable data
     host_staging.maxNbNodesToLoad = OocSimLodSettings::MAX_NB_NODES_TO_LOAD;
     host_staging.nodesToLoadBuffer = alloc<CIdAABB>(host_staging.maxNbNodesToLoad);
@@ -16,9 +17,19 @@ void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
 
     host_staging.maxNbBatches = OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE;
     host_staging.batchesAddedMask = alloc<bool>(host_staging.maxNbBatches);
+    host_staging.batchesToAdd = alloc<CPointBatch>(host_staging.maxNbBatches);
     
+    // TODO: put in settings
+    host_staging.maxNbResidualPoints = 1'000'000;
+    host_staging.residualPoints = alloc<CPoint>(host_staging.maxNbResidualPoints);
+    
+
     // Lru caches
-    // TODO:
+    host_staging.updatesCacheSize = OocSimLodSettings::LRU_UPDATES_CACHE_SIZE;
+    host_staging.updatesCache = alloc<CIdAABB>(host_staging.updatesCacheSize);
+    host_staging.visibilityCacheSize = OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE;
+    host_staging.visibilityCache = alloc<CIdAABB>(host_staging.visibilityCacheSize);
+
     
     // Temporary buffers
     host_staging.maxNbSpilledPoints = OocSimLodSettings::MAX_NB_SPILLING_POINTS;
@@ -29,6 +40,7 @@ void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
     host_staging.backlogVoxels = alloc<CPoint>(host_staging.maxNbBacklogVoxels);
     host_staging.backlogVoxelsNodes = alloc<COctreeNode*>(host_staging.maxNbBacklogVoxels);
     
+
     // Final allocation
     CUdeviceptr global_variables_ptr = prog->getGlobalsPointer("globalVariables");
     if (global_variables_ptr == 0) {
@@ -42,13 +54,13 @@ void GpuVersion::initAllocators(CuRast* editor, CUcontext* context) {
     CMemoryAllocator host_staging = {};
 
     host_staging.chunksAllocator = allocAllocator<CChunk>(
-        OocSimLodSettings::NB_ALLOCATED_CHUNKS, AllocatorId::ChunkAllocator
+        OocSimLodSettings::NB_ALLOCABLE_CHUNKS, AllocatorId::ChunkAllocator
     );
     host_staging.gridsAllocator = allocAllocator<COccupancyGrid>(
-        OocSimLodSettings::NB_ALLOCATED_GRIDS, AllocatorId::OccupancyGridAllocator
+        OocSimLodSettings::NB_ALLOCABLE_GRIDS, AllocatorId::OccupancyGridAllocator
     );
     host_staging.nodesAllocator = allocAllocator<COctreeNode>(
-        OocSimLodSettings::NB_ALLOCATED_NODES, AllocatorId::OctreeNodeAllocator
+        OocSimLodSettings::NB_ALLOCABLE_NODES, AllocatorId::OctreeNodeAllocator
     );
 
     CUdeviceptr global_allocator_ptr = prog->getGlobalsPointer("globalAllocator");
@@ -70,7 +82,9 @@ void GpuVersion::init(CuRast* editor, CUcontext* context) {
     });
 
     initBuffers(editor, context);
+    println("buffer initialised");
     initAllocators(editor, context);
+    println("allocator initialised");
 
     OptionalLaunchSettings launch_settings = {
         .gridsize = 1,

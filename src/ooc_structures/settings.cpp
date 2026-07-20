@@ -63,9 +63,9 @@ void OocSimLodSettings::init(){
     LRU_UPDATES_CACHE_SIZE = init_field<uint32_t>("LRU_UPDATES_CACHE_SIZE", 128);
     LRU_VISIBILITY_CACHE_SIZE = init_field<uint32_t>("LRU_VISIBILITY_CACHE_SIZE", 512);
     LRU_CPU_CACHE_SIZE = init_field<uint32_t>("LRU_CPU_CACHE_SIZE", 2048);
-    NB_ALLOCATED_CHUNKS = init_field<uint32_t>("NB_ALLOCATED_CHUNKS", 32'000);
-    NB_ALLOCATED_GRIDS = init_field<uint32_t>("NB_ALLOCATED_GRIDS", 2048);
-    NB_ALLOCATED_NODES = init_field<uint32_t>("NB_ALLOCATED_NODES", 2048);
+    NB_ALLOCABLE_CHUNKS = init_field<uint32_t>("NB_ALLOCABLE_CHUNKS", 32'000);
+    NB_ALLOCABLE_GRIDS = init_field<uint32_t>("NB_ALLOCABLE_GRIDS", 2048);
+    NB_ALLOCABLE_NODES = init_field<uint32_t>("NB_ALLOCABLE_NODES", 2048);
 
     /// GPU Version buffers
     INITIAL_MAX_NB_NODES = init_field<uint32_t>("INITIAL_MAX_NB_NODES", 1'000'000);
@@ -133,9 +133,9 @@ void OocSimLodSettings::display(){
     println("    - LRU_UPDATES_CACHE_SIZE: {}", LRU_UPDATES_CACHE_SIZE);
     println("    - LRU_VISIBILITY_CACHE_SIZE: {}", LRU_VISIBILITY_CACHE_SIZE);
     println("    - LRU_CPU_CACHE_SIZE: {}", LRU_CPU_CACHE_SIZE);
-    println("    - NB_ALLOCATED_CHUNKS: {}", NB_ALLOCATED_CHUNKS);
-    println("    - NB_ALLOCATED_GRIDS: {}", NB_ALLOCATED_GRIDS);
-    println("    - NB_ALLOCATED_NODES: {}", NB_ALLOCATED_NODES);
+    println("    - NB_ALLOCABLE_CHUNKS: {}", NB_ALLOCABLE_CHUNKS);
+    println("    - NB_ALLOCABLE_GRIDS: {}", NB_ALLOCABLE_GRIDS);
+    println("    - NB_ALLOCABLE_NODES: {}", NB_ALLOCABLE_NODES);
 
     println("");
     println("GPU version properties:");

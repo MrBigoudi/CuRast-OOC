@@ -22,10 +22,17 @@ struct CDoubleLinkedList {
     /// A pointer to the last entry
     LastEntry* last = nullptr;
     uint32_t size = 0;
+    bool initialised = false;
 
     void init(){
         first = new FirstEntry();
         last = new LastEntry();
+        initialised = true;
+    }
+
+    void init_device(){
+        new (first) FirstEntry();
+        new (last) LastEntry();
     }
 
     CDoubleLinkedList(){}
@@ -40,7 +47,7 @@ struct CDoubleLinkedList {
     }
 
     ~CDoubleLinkedList(){
-        if(!first){return;}
+        if(!initialised){return;}
         clear();
         delete(first);
         delete(last);
@@ -177,6 +184,7 @@ template<typename Key, typename T>
 struct CHashMap {
     uint64_t capacity = 0;
     uint64_t size = 0;
+    bool initialised = false;
 
     /// The array of elements
     struct Entry {
@@ -246,8 +254,16 @@ struct CHashMap {
 
     /// Create a map of a given size
     void init(uint64_t new_size){
+        initialised = true;
         capacity = new_size;
         elements = (CDoubleLinkedList<Entry>*)malloc(capacity * sizeof(CDoubleLinkedList<Entry>));
+        for(uint64_t i=0; i<capacity; i++){
+            elements[i].init();
+        }
+    }
+
+    void init_device(uint64_t new_size){
+        capacity = new_size;
         for(uint64_t i=0; i<capacity; i++){
             elements[i].init();
         }
@@ -264,7 +280,9 @@ struct CHashMap {
     }
 
     ~CHashMap(){
-        free(elements);
+        if(initialised){
+            free(elements);
+        }
     }
 
     CDoubleLinkedList<Entry>& get_list(uint64_t murmur) {

@@ -96,11 +96,11 @@ struct OocSimLodSettings {
     static inline uint32_t LRU_CPU_CACHE_SIZE;
 
     /// The maximum number of chunks allowed in memory
-    static inline uint32_t NB_ALLOCATED_CHUNKS;
+    static inline uint32_t NB_ALLOCABLE_CHUNKS;
     /// The maximum number of occupancy grids allowed in memory
-    static inline uint32_t NB_ALLOCATED_GRIDS;
+    static inline uint32_t NB_ALLOCABLE_GRIDS;
     /// The maximum number of nodes allowed in memory
-    static inline uint32_t NB_ALLOCATED_NODES;
+    static inline uint32_t NB_ALLOCABLE_NODES;
 
 
 

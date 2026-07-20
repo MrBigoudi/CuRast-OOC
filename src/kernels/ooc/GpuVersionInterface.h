@@ -3,23 +3,33 @@
 // TODO: test code to remove
 #include "../../ooc_structures/settings.h"
 
-
 struct CAABB {
 	glm::vec3 mins = {INFINITY, INFINITY, INFINITY};
 	glm::vec3 maxs = {-INFINITY, -INFINITY, -INFINITY};
+
+	inline glm::vec3 getSize() const {return maxs - mins;}
 };
+
 struct CPoint {
 	glm::vec3 position;
 	uint32_t color;
 };
+
+struct CPointBatch {
+	uint64_t count = 0;
+	CPoint* points = nullptr;
+};
+
 struct COccupancyGrid {
 	uint32_t values[OocSimLodSettings::GRID_SIZE / 32] = {0};
 };
+
 struct CChunk{
 	CPoint points[OocSimLodSettings::NB_POINTS_PER_CHUNK];
 	uint32_t size = 0;
 	CChunk* next = nullptr;
 };
+
 struct COctreeNode {
 	COctreeNode* children[8] = {nullptr};
 	CChunk* points = nullptr;
@@ -135,6 +145,8 @@ struct CGlobalVariables {
     uint32_t maxNbAABBs = 0;
     Relationship* relationshipMap = nullptr;
     CAABB* allAABBs = nullptr;
+	/// The main octree
+	COctreeNode* mainOctree = nullptr;
 
 
 
@@ -151,9 +163,16 @@ struct CGlobalVariables {
     uint32_t maxNbNodesToStore = 0;
     COctreeNode** nodesToStoreBuffer = nullptr;
 
-    /// A mask to know which batch has been handled
+    /// A mask to know which batches have been handled
     uint32_t maxNbBatches = 0;
     bool* batchesAddedMask = nullptr;
+	/// The batches to add to the scene
+	CPointBatch* batchesToAdd = nullptr;
+
+	/// The points that couldn't be handled yet
+	uint32_t nbResidualPoints = 0;
+	uint32_t maxNbResidualPoints = 0;
+	CPoint* residualPoints = nullptr;
 
 
 
@@ -165,8 +184,6 @@ struct CGlobalVariables {
     uint32_t visibilityCacheSize = 0;
     CIdAABB* visibilityCache = nullptr;
     
-
-
 
 
     ///////////////////////////////////////////////////////////////////////

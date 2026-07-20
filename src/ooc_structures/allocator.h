@@ -183,9 +183,9 @@ struct MemoryAllocator {
     static inline std::shared_ptr<AllocatorPool<OctreeNode>> nodesAllocator = nullptr;
 
     static void init() {
-        chunksAllocator = std::make_shared<AllocatorPool<Chunk>>(OocSimLodSettings::NB_ALLOCATED_CHUNKS);
-        gridsAllocator = std::make_shared<AllocatorPool<OccupancyGrid>>(OocSimLodSettings::NB_ALLOCATED_GRIDS);
-        nodesAllocator = std::make_shared<AllocatorPool<OctreeNode>>(OocSimLodSettings::NB_ALLOCATED_NODES);
+        chunksAllocator = std::make_shared<AllocatorPool<Chunk>>(OocSimLodSettings::NB_ALLOCABLE_CHUNKS);
+        gridsAllocator = std::make_shared<AllocatorPool<OccupancyGrid>>(OocSimLodSettings::NB_ALLOCABLE_GRIDS);
+        nodesAllocator = std::make_shared<AllocatorPool<OctreeNode>>(OocSimLodSettings::NB_ALLOCABLE_NODES);
     }
     static uint64_t getSize(){
         return chunksAllocator->getSize() + gridsAllocator->getSize() + nodesAllocator->getSize();

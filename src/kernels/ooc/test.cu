@@ -1,3 +1,5 @@
+#include "utils.cuh"
+
 extern "C" __global__
 void kernel_test(){
     int* p = new int(42);
