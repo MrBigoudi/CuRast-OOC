@@ -56,6 +56,8 @@ struct OctreeNodeSerializable {
 /// The LRU cache for the CPU fallback (before storing on disk)
 /// https://www.geeksforgeeks.org/dsa/lru-cache-implementation-using-double-linked-lists/
 struct CPUFallbackCache {
+	// TODO: rework as the allocator to avoid useless free on add
+
 	/// A cache entry
 	struct Entry {
         OctreeNodeSerializable serializable_node;

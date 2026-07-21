@@ -69,6 +69,65 @@ struct CDoubleLinkedList {
         return size == 0;
     }
 
+    bool sanityCheck() const {
+        Iterator* it = first->next;
+        uint32_t cpt_left = 0;
+        while(it){
+            it = it->next;
+            cpt_left++;
+        }
+        uint32_t cpt_right = 0;
+        it = last->prev;
+        while(it){
+            it = it->prev;
+            cpt_right++;
+        }
+
+        return (cpt_left == cpt_right) && (cpt_left == size);
+    }
+
+    // Expect the iterator to already be a part of the list
+    void moveBegin(Iterator* it) {
+        Iterator* prev = it->prev;
+        Iterator* next = it->next;
+        if(prev){
+            // Update old neighbours
+            prev->next = next;
+            if(next){
+                next->prev = prev;
+            } else {
+                last->prev = prev;
+            }
+            // Update new neighbours
+            Iterator* old_front = first->next;
+            it->next = first->next;
+            it->prev = nullptr;
+            first->next = it;
+            old_front->prev = it;
+        }
+    };
+
+    // Expect the iterator to already be a part of the list
+    void moveEnd(Iterator* it) {
+        Iterator* prev = it->prev;
+        Iterator* next = it->next;
+        if(next){
+            // Update old neighbours
+            next->prev = prev;
+            if(prev){
+                prev->next = next;
+            } else {
+                first->next = next;
+            }
+            // Update new neighbours
+            Iterator* old_back = last->prev;
+            it->prev = last->prev;
+            it->next = nullptr;
+            last->prev = it;
+            old_back->next = it;
+        }
+    };
+
     void pushFront(T new_value) {
         Iterator* new_entry = new Iterator();
         new_entry->value = new_value;

@@ -256,6 +256,7 @@ struct Timing {
 /// The LRU caches for the nodes
 /// https://www.geeksforgeeks.org/dsa/lru-cache-implementation-using-double-linked-lists/
 struct LRUCache {
+	// TODO: rework as the allocator to avoid useless free on add
 	static inline std::mutex caches_sync_mtx;
 
 	const uint32_t CACHE_SIZE;

@@ -90,19 +90,17 @@ struct AllocatorPool {
         auto lock = auto_sync ? std::unique_lock<std::mutex>(mtx) : std::unique_lock<std::mutex>();
 
         // Get the first free element of the list
-        std::shared_ptr<Entry> entry = *elements.back();
+        typename CDoubleLinkedList<std::shared_ptr<Entry>>::Iterator* list_it = elements.end(); 
+        std::shared_ptr<Entry> entry = list_it->value;
         if(!entry->is_free){
-            println("ERROR: this should not be possible");
+            println("ERROR: the last element of an allocator should be free if the allocator is not full");
             throw(EXIT_FAILURE);
         }
         entry->is_free = false;
 
-        // Update the element position in the list and in the map
-        elements_map.erase(entry->value);
-        elements.popBack();
-        elements.pushFront(entry);
-        elements_map[entry->value] = elements.begin();
-
+        // Update the element position in the list
+        // No need to update the map as the iterator pointer is unchanged
+        elements.moveBegin(list_it);
         new (entry->value) T();
 
         return entry->value;
@@ -134,19 +132,16 @@ struct AllocatorPool {
         entry_id->~T();
 
         typename CDoubleLinkedList<std::shared_ptr<Entry>>::Iterator* list_it = *it;
-        std::shared_ptr<Entry> real_entry = list_it->value;
-        if(real_entry->is_free){
+        std::shared_ptr<Entry> entry = list_it->value;
+        if(entry->is_free){
             println("ERROR: double free of `{}' element {}", typeid(T).name(), (void*)entry_id);
             throw(EXIT_FAILURE);
         }
-        real_entry->is_free = true;
+        entry->is_free = true;
 
         // Remove the element and put it in the back
-        elements_map.erase(entry_id);
-        elements.erase(list_it);
-        delete(list_it);
-        elements.pushBack(real_entry);
-        elements_map[entry_id] = elements.end();
+        // No need to update the map as the iterator pointer is unchanged
+        elements.moveEnd(list_it);
     }
 
     void displayInfo() {

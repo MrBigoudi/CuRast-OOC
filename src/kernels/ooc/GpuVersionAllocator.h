@@ -63,19 +63,17 @@ struct CAllocatorPool {
         // auto lock = auto_sync ? std::unique_lock<std::mutex>(mtx) : std::unique_lock<std::mutex>();
 
         // Get the first free element of the list
-        Entry* entry = *elements.back();
+        typename CDoubleLinkedList<Entry*>::Iterator* list_it = elements.end(); 
+        Entry* entry = list_it->value;
         if(!entry->is_free){
-            printf("ERROR: this should not be possible\n");
+            printf("ERROR: the last element of an allocator should be free if the allocator is not full\n");
             // __trap();
         }
         entry->is_free = false;
 
-        // Update the element position in the list and in the map
-        elements_map.erase(entry->value);
-        elements.popBack();
-        elements.pushFront(entry);
-        elements_map[entry->value] = elements.begin();
-
+        // Update the element position in the list
+        // No need to update the map as the iterator pointer is unchanged
+        elements.moveBegin(list_it);
         new (entry->value) T();
 
         return entry->value;
@@ -115,19 +113,16 @@ struct CAllocatorPool {
         entry_id->~T();
 
         typename CDoubleLinkedList<Entry*>::Iterator* list_it = *it;
-        Entry* real_entry = list_it->value;
-        if(real_entry->is_free){
+        Entry* entry = list_it->value;
+        if(entry->is_free){
             printf("ERROR: double free of `%d' element %p\n", ALLOCATOR_ID, (void*)entry_id);
             // __trap();
         }
-        real_entry->is_free = true;
+        entry->is_free = true;
 
         // Remove the element and put it in the back
-        elements_map.erase(real_entry->value);
-        elements.erase(list_it);
-        delete(list_it);
-        elements.pushBack(real_entry);
-        elements_map[entry_id] = elements.end();
+        // No need to update the map as the iterator pointer is unchanged
+        elements.moveEnd(list_it);
     }
 
 };
