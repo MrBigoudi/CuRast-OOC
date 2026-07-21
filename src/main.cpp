@@ -573,12 +573,12 @@ int main(int argc, char** argv){
 		OocSimLodSettings::init();
 		GlobalVariables::init(CuRast::instance, &context);
 		std::filesystem::create_directories(OocSimLodSettings::TEMPORARY_NODE_STORAGE_DIRECTORY);
-		initScene();
+		// initScene();
 
-		// GpuVersion::init(CuRast::instance, &context);
-		// cudaDeviceSynchronize();
-		// std::this_thread::sleep_for(std::chrono::milliseconds(5000));
-		// throw(EXIT_FAILURE);
+		GpuVersion::init(CuRast::instance, &context);
+		cudaDeviceSynchronize();
+		std::this_thread::sleep_for(std::chrono::milliseconds(5000));
+		throw(EXIT_FAILURE);
 
 		if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 			// Loading points routine

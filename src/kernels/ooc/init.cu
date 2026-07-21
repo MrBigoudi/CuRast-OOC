@@ -8,17 +8,20 @@ __device__ CMemoryAllocator globalAllocator;
 template<typename T>
 __device__ void initAllocatorPool(void* pool){
     CAllocatorPool<T>* allocator = reinterpret_cast<CAllocatorPool<T>*>(pool);
-    allocator->elements.init_device();
     allocator->elements_map.init_device(allocator->CAPACITY);
 
     uint32_t alignment = alignof(T);
     uint32_t aligned_size = sizeof(T) + ((alignment - (sizeof(T) % alignment)) % alignment);
     char* base = reinterpret_cast<char*>(allocator->allocated_memory);
-    for (uint32_t i = 0; i < allocator->CAPACITY; i++) {
-        typename CAllocatorPool<T>::Entry* entry = new CAllocatorPool<T>::Entry();
+
+    auto it = allocator->elements->begin();
+    uint32_t i = 0;
+    while(it){
+        typename CAllocatorPool<T>::Entry* entry = it->value;
         entry->value = new (base + i*aligned_size) T();
-        allocator->elements.pushFront(entry);
-        allocator->elements_map.insert_or_replace(entry->value, allocator->elements.begin());
+        allocator->elements_map.insert_or_replace(entry->value, it);
+        i++;
+        it = it->next;
     }
 }
 

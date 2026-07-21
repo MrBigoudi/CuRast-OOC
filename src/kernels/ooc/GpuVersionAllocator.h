@@ -33,7 +33,7 @@ struct CAllocatorPool {
 
     /// The double linked list of pre-allocated elements
     /// The last element of the list should always be available (unless the list is full)
-    CDoubleLinkedList<Entry*> elements = {};
+    CDoubleLinkedList<Entry*>* elements = nullptr;
     /// A map to easily find the next free entry
 	CHashMap<T*, typename CDoubleLinkedList<Entry*>::Iterator*> elements_map = {};
 
@@ -63,7 +63,7 @@ struct CAllocatorPool {
         // auto lock = auto_sync ? std::unique_lock<std::mutex>(mtx) : std::unique_lock<std::mutex>();
 
         // Get the first free element of the list
-        typename CDoubleLinkedList<Entry*>::Iterator* list_it = elements.end(); 
+        typename CDoubleLinkedList<Entry*>::Iterator* list_it = elements->end(); 
         Entry* entry = list_it->value;
         if(!entry->is_free){
             printf("ERROR: the last element of an allocator should be free if the allocator is not full\n");
@@ -73,7 +73,7 @@ struct CAllocatorPool {
 
         // Update the element position in the list
         // No need to update the map as the iterator pointer is unchanged
-        elements.moveBegin(list_it);
+        elements->moveBegin(list_it);
         new (entry->value) T();
 
         return entry->value;
@@ -122,7 +122,7 @@ struct CAllocatorPool {
 
         // Remove the element and put it in the back
         // No need to update the map as the iterator pointer is unchanged
-        elements.moveEnd(list_it);
+        elements->moveEnd(list_it);
     }
 
 };
