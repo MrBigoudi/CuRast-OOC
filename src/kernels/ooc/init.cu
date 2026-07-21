@@ -4,9 +4,10 @@
 __device__ CGlobalVariables globalVariables;
 __device__ CMemoryAllocator globalAllocator;
 
+__device__ uint32_t globalCpt = 0;
 
 template<typename T>
-__device__ void initAllocatorPool(void* pool){
+__device__ void initAllocatorPool(uint32_t thread_id, void* pool){
     CAllocatorPool<T>* allocator = reinterpret_cast<CAllocatorPool<T>*>(pool);
 
     uint32_t alignment = alignof(T);
@@ -16,50 +17,61 @@ __device__ void initAllocatorPool(void* pool){
     auto it = allocator->elements->begin();
     uint32_t i = 0;
     while(it){
-        typename CAllocatorPool<T>::Entry* entry = it->value;
-        entry->value = new (base + i*aligned_size) T();
-        allocator->elements_map->insert_or_replace(entry->value, it);
+        T* tmp_key = (T*)(base + i*aligned_size);
+        uint32_t key = (uint32_t)((allocator->elements_map->hash_murmur(tmp_key)) % allocator->CAPACITY);
+        if(key == thread_id){
+            uint32_t cur_cpt = __nv_atomic_fetch_add(&globalCpt, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_SYSTEM);
+            printf("cur_cpt: %d / %d\n", cur_cpt, allocator->CAPACITY);
+            
+            typename CAllocatorPool<T>::Entry* entry = it->value;
+            entry->value = new (base + i*aligned_size) T();
+            allocator->elements_map->insert_or_replace(entry->value, it);
+        }
         i++;
         it = it->next;
     }
 }
 
-__device__ void initChunksAllocator() {
-    initAllocatorPool<CChunk>(globalAllocator.chunksAllocator);
+__device__ void initChunksAllocator(uint32_t thread_id) {
+    initAllocatorPool<CChunk>(thread_id, globalAllocator.chunksAllocator);
 }
 
-__device__ void initGridsAllocator() {
-    initAllocatorPool<COccupancyGrid>(globalAllocator.gridsAllocator);
+__device__ void initGridsAllocator(uint32_t thread_id) {
+    initAllocatorPool<COccupancyGrid>(thread_id, globalAllocator.gridsAllocator);
 }
 
-__device__ void initNodesAllocator() {
-    initAllocatorPool<COctreeNode>(globalAllocator.nodesAllocator);
+__device__ void initNodesAllocator(uint32_t thread_id) {
+    initAllocatorPool<COctreeNode>(thread_id, globalAllocator.nodesAllocator);
 }
 
 
 /// Run on a single thread
 extern "C" __global__
 void kernel_init(){
-    printf("\n\n\n\n\n\n\n");
+    uint32_t thread_id = cg::this_grid().thread_rank();
 
-    initChunksAllocator();
-    printf("Chunks Allocator initiated\n");
-    // initGridsAllocator();
-    // printf("Grids Allocator initiated\n");
-    // initNodesAllocator();
-    // printf("Nodes Allocator initiated\n");
+    if(thread_id == 0){printf("\n\n\n\n\n\n\n");}
 
-    printf("\nFROM INIT\n");
-    printf("    - Nb AABBs: %d / %d\n", globalVariables.nbAABBs, globalVariables.maxNbAABBs);
-    printf("    - Nb nodes to load: %d / %d\n", globalVariables.nbNodesToLoad, globalVariables.maxNbNodesToLoad);
-    printf("    - Nb nodes to store: %d / %d\n", globalVariables.nbNodesToStore, globalVariables.maxNbNodesToStore);
-    printf("    - Nb spilled points: %d / %d\n", globalVariables.nbSpilledPoints, globalVariables.maxNbSpilledPoints);
-    printf("    - Nb backlog voxels: %d / %d\n", globalVariables.nbBacklogVoxels, globalVariables.maxNbBacklogVoxels);
+    initChunksAllocator(thread_id);
+    if(thread_id == 0){printf("Chunks Allocator initiated\n");}
+    initGridsAllocator(thread_id);
+    if(thread_id == 0){printf("Grids Allocator initiated\n");}
+    initNodesAllocator(thread_id);
+    if(thread_id == 0){printf("Nodes Allocator initiated\n");}
 
-    // Initialise empty AABB
-    createNewAABB(CAABB());
+    if(thread_id == 0){
+        printf("\nFROM INIT\n");
+        printf("    - Nb AABBs: %d / %d\n", globalVariables.nbAABBs, globalVariables.maxNbAABBs);
+        printf("    - Nb nodes to load: %d / %d\n", globalVariables.nbNodesToLoad, globalVariables.maxNbNodesToLoad);
+        printf("    - Nb nodes to store: %d / %d\n", globalVariables.nbNodesToStore, globalVariables.maxNbNodesToStore);
+        printf("    - Nb spilled points: %d / %d\n", globalVariables.nbSpilledPoints, globalVariables.maxNbSpilledPoints);
+        printf("    - Nb backlog voxels: %d / %d\n", globalVariables.nbBacklogVoxels, globalVariables.maxNbBacklogVoxels);
 
-    printf("\n\n\n\n\n\n\n");
+        // Initialise empty AABB
+        createNewAABB(CAABB());
+
+        printf("\n\n\n\n\n\n\n");
+    }
 }
 
 /// Run on 1 block of X threads

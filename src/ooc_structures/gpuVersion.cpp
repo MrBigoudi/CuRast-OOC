@@ -87,7 +87,13 @@ void GpuVersion::init(CuRast* editor, CUcontext* context) {
     println("allocator initialised");
 
     OptionalLaunchSettings launch_settings = {
-        .gridsize = 1,
+        .gridsize = max(
+            OocSimLodSettings::NB_ALLOCABLE_CHUNKS,
+            max(
+                OocSimLodSettings::NB_ALLOCABLE_GRIDS,
+                OocSimLodSettings::NB_ALLOCABLE_NODES
+            )
+        ),
         .blocksize = 1
     };
     prog->launch("kernel_init", {}, launch_settings);
