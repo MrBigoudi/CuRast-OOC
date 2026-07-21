@@ -30,11 +30,6 @@ struct CDoubleLinkedList {
         initialised = true;
     }
 
-    void init_device(){
-        new (first) FirstEntry();
-        new (last) LastEntry();
-    }
-
     CDoubleLinkedList(){}
 
     CDoubleLinkedList(const CDoubleLinkedList& cpy){
@@ -316,13 +311,6 @@ struct CHashMap {
         initialised = true;
         capacity = new_size;
         elements = (CDoubleLinkedList<Entry>*)malloc(capacity * sizeof(CDoubleLinkedList<Entry>));
-        for(uint64_t i=0; i<capacity; i++){
-            elements[i].init();
-        }
-    }
-
-    void init_device(uint64_t new_size){
-        capacity = new_size;
         for(uint64_t i=0; i<capacity; i++){
             elements[i].init();
         }

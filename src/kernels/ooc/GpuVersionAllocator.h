@@ -35,7 +35,7 @@ struct CAllocatorPool {
     /// The last element of the list should always be available (unless the list is full)
     CDoubleLinkedList<Entry*>* elements = nullptr;
     /// A map to easily find the next free entry
-	CHashMap<T*, typename CDoubleLinkedList<Entry*>::Iterator*> elements_map = {};
+	CHashMap<T*, typename CDoubleLinkedList<Entry*>::Iterator*>* elements_map = nullptr;
 
     CAllocatorPool(uint32_t capacity, AllocatorId id) : CAPACITY(capacity), ALLOCATOR_ID(id){}
 
@@ -104,7 +104,7 @@ struct CAllocatorPool {
 
         // auto lock = auto_sync ? std::unique_lock<std::mutex>(mtx) : std::unique_lock<std::mutex>();
 
-        typename CDoubleLinkedList<Entry*>::Iterator** it = elements_map.find(entry_id);
+        typename CDoubleLinkedList<Entry*>::Iterator** it = elements_map->find(entry_id);
         if(!it){
             printf("ERROR: can't deallocate an unknown element\n");
             // __trap();
