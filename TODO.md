@@ -2,6 +2,8 @@
 
 ## Next steps (in priority order)
 
+- Modify caches to avoid unecessary new / delete in the double linked list (see hashmap version)
+
 - Delay load / store of nodes as waiting for loading and storing won't be possible on GPU side
 - Only send new AABBs to the GPU (send deltas more generally, is this worth it ?)
 - Fix the huge CPU cache
