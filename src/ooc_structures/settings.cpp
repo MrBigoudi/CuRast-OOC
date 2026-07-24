@@ -25,6 +25,7 @@ void OocSimLodSettings::init(){
     IS_RUNNING_IN_PARALLEL = init_field<bool>("IS_RUNNING_IN_PARALLEL", false);
     NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE = init_field<uint32_t>("NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE", 60);
     MEASURE_TIMINGS = init_field<bool>("MEASURE_TIMINGS", false);
+    IS_USING_GPU_VERSION = init_field<bool>("IS_USING_GPU_VERSION", false);
 
     CUdevice device;
     cuCtxGetDevice(&device);
@@ -114,6 +115,7 @@ void OocSimLodSettings::display(){
     println("    - MEASURE_TIMINGS: {}", MEASURE_TIMINGS);
     println("    - PER_NODE_KERNEL_BLOCK_SIZE: {}", PER_NODE_KERNEL_BLOCK_SIZE);
     println("    - NB_BLOCKS_PER_NODE: {}", NB_BLOCKS_PER_NODE);
+    println("    - IS_USING_GPU_VERSION: {}", IS_USING_GPU_VERSION);
 
     println("");
     println("Batch sizes:");

@@ -2,9 +2,13 @@
 
 #include "laszip/laszip_api.h"
 #include "globals.h"
+#include "gpuVersion.h"
 
 
-void initLoadPointBatches(string file){
+void initLoadPointBatches(string file,
+    std::deque<std::shared_ptr<PointBatch>>& batches_queue,
+    std::deque<std::mutex>& batches_queue_mutexes
+){
     std::shared_ptr<Timing> timing = Timing::addTiming(format("init load file: {}", file), true);
 
 	// Basic checks
@@ -50,8 +54,8 @@ void initLoadPointBatches(string file){
 		while(true){
 			bool found = false;
 			for(uint32_t i=0; i<OocSimLodSettings::BATCHES_LIST_SIZE; i++){
-				std::lock_guard<std::mutex> lock(GlobalVariables::batchesQueueMutexes[i]);
-				if(GlobalVariables::batchesQueue[i]){continue;}
+				std::lock_guard<std::mutex> lock(batches_queue_mutexes[i]);
+				if(batches_queue[i]){continue;}
 				free_index = i;
 				found = true;
 				break;
@@ -61,8 +65,8 @@ void initLoadPointBatches(string file){
 			if(!OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 				uint32_t old_queue_size = OocSimLodSettings::BATCHES_LIST_SIZE;
 				OocSimLodSettings::BATCHES_LIST_SIZE *= 2;
-				GlobalVariables::batchesQueue.resize(OocSimLodSettings::BATCHES_LIST_SIZE);
-				GlobalVariables::batchesQueueMutexes.resize(OocSimLodSettings::BATCHES_LIST_SIZE);
+				batches_queue.resize(OocSimLodSettings::BATCHES_LIST_SIZE);
+				batches_queue_mutexes.resize(OocSimLodSettings::BATCHES_LIST_SIZE);
 			} else {
 				// Wait a bit to give time for the queue to be emptied
 				std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -76,8 +80,8 @@ void initLoadPointBatches(string file){
 		new_batch->count = std::min(num_points - first_point, uint64_t(OocSimLodSettings::MAX_POINTS_PER_BATCHES));
 		new_batch->state = BatchState::ToLoad;
 	
-		std::lock_guard<std::mutex> lock(GlobalVariables::batchesQueueMutexes[free_index]);
-		GlobalVariables::batchesQueue[free_index] = new_batch;
+		std::lock_guard<std::mutex> lock(batches_queue_mutexes[free_index]);
+		batches_queue[free_index] = new_batch;
 	}
 
     timing->stop_clock();
@@ -86,14 +90,17 @@ void initLoadPointBatches(string file){
 
 
 
-void loadPointsInBatches(){
+void loadPointsInBatches(
+    std::deque<std::shared_ptr<PointBatch>>& batches_queue,
+    std::deque<std::mutex>& batches_queue_mutexes
+){
 	std::vector<uint32_t> batches_indices(OocSimLodSettings::MAX_BATCHES_PER_LOAD, 0);
 	uint32_t last_index = 0;
 
 	
 	for(uint32_t i=0; i<OocSimLodSettings::BATCHES_LIST_SIZE; i++){
-		std::lock_guard<std::mutex> lock(GlobalVariables::batchesQueueMutexes[i]);
-		if(GlobalVariables::batchesQueue[i] && GlobalVariables::batchesQueue[i]->state == BatchState::ToLoad){
+		std::lock_guard<std::mutex> lock(batches_queue_mutexes[i]);
+		if(batches_queue[i] && batches_queue[i]->state == BatchState::ToLoad){
 			batches_indices[last_index] = i;
 			last_index++;
 			if(last_index >= OocSimLodSettings::MAX_BATCHES_PER_LOAD){break;}
@@ -112,8 +119,8 @@ void loadPointsInBatches(){
     std::shared_ptr<Timing> timing = Timing::addTiming("load points in batches", true);
 
 	auto lambda = [&](uint32_t index){
-		std::lock_guard<std::mutex> lock(GlobalVariables::batchesQueueMutexes[index]);
-		std::shared_ptr<PointBatch> batch = GlobalVariables::batchesQueue[index];
+		std::lock_guard<std::mutex> lock(batches_queue_mutexes[index]);
+		std::shared_ptr<PointBatch> batch = batches_queue[index];
 
 		laszip_POINTER laszip_reader;
 		if(laszip_create(&laszip_reader)){
@@ -191,13 +198,16 @@ void loadPointsInBatches(){
 }
 
 
-void loadBatchesOnGPU(CuRast* editor, CUcontext* ctx){
+void loadBatchesOnGPU(CuRast* editor, CUcontext* ctx,
+    std::deque<std::shared_ptr<PointBatch>>& batches_queue,
+    std::deque<std::mutex>& batches_queue_mutexes
+){
 	std::vector<uint32_t> batches_indices(OocSimLodSettings::MAX_BATCHES_PER_GPU_LOAD, 0);
 	uint32_t last_index = 0;
 
 	for(uint32_t i=0; i<OocSimLodSettings::BATCHES_LIST_SIZE; i++){
-		std::lock_guard<std::mutex> lock(GlobalVariables::batchesQueueMutexes[i]);
-		if(GlobalVariables::batchesQueue[i] && GlobalVariables::batchesQueue[i]->state == BatchState::Inserted){
+		std::lock_guard<std::mutex> lock(batches_queue_mutexes[i]);
+		if(batches_queue[i] && batches_queue[i]->state == BatchState::Inserted){
 			batches_indices[last_index] = i;
 			last_index++;
 			if(last_index >= OocSimLodSettings::MAX_BATCHES_PER_GPU_LOAD){break;}
@@ -218,8 +228,8 @@ void loadBatchesOnGPU(CuRast* editor, CUcontext* ctx){
 	std::mutex mtx_counter;
 
 	auto lambda = [&](uint32_t index){
-		std::lock_guard<std::mutex> lock(GlobalVariables::batchesQueueMutexes[index]);
-		std::shared_ptr<PointBatch> batch = GlobalVariables::batchesQueue[index];
+		std::lock_guard<std::mutex> lock(batches_queue_mutexes[index]);
+		std::shared_ptr<PointBatch> batch = batches_queue[index];
 
         // Upload positions and colors to GPU
         CUdeviceptr cptr_positions, cptr_colors;
@@ -310,25 +320,164 @@ void loadBatchesOnGPU(CuRast* editor, CUcontext* ctx){
 }
 
 
-void loadPointcloudRoutine(){
+void loadPointcloudRoutine(
+    std::deque<std::shared_ptr<PointBatch>>& batches_queue,
+    std::deque<std::mutex>& batches_queue_mutexes
+){
     while(true){
-        loadPointsInBatches();
+        loadPointsInBatches(batches_queue, batches_queue_mutexes);
 		if(GlobalVariables::mainLoopIsTerminating){return;}
     }
 };
 
-void clearUnusedBatches(){
+void clearUnusedBatches(
+    std::deque<std::shared_ptr<PointBatch>>& batches_queue,
+    std::deque<std::mutex>& batches_queue_mutexes
+){
 	for(uint32_t i=0; i<OocSimLodSettings::BATCHES_LIST_SIZE; i++){
-		std::lock_guard<std::mutex> lock(GlobalVariables::batchesQueueMutexes[i]);
-		if(GlobalVariables::batchesQueue[i] && GlobalVariables::batchesQueue[i]->state == BatchState::ToRemove){
-			GlobalVariables::batchesQueue[i] = nullptr;
+		std::lock_guard<std::mutex> lock(batches_queue_mutexes[i]);
+		if(batches_queue[i] && batches_queue[i]->state == BatchState::ToRemove){
+			batches_queue[i] = nullptr;
 		}
 	}
 }
 
-void clearUnusedBatchesRoutine(){
+void clearUnusedBatchesRoutine(
+    std::deque<std::shared_ptr<PointBatch>>& batches_queue,
+    std::deque<std::mutex>& batches_queue_mutexes
+){
 	while(true){
-		clearUnusedBatches();
+		clearUnusedBatches(batches_queue, batches_queue_mutexes);
+		if(GlobalVariables::mainLoopIsTerminating){return;}
+	}
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/////////////////////////////////////////////////////////////////
+////////////////////////// GPU VERSION //////////////////////////
+/////////////////////////////////////////////////////////////////
+
+void LoaderGpuVersion::init(){
+	batchesQueue = std::deque<std::shared_ptr<PointBatch>>(OocSimLodSettings::BATCHES_LIST_SIZE, nullptr);
+    batchesQueueMutexes = std::deque<std::mutex>(OocSimLodSettings::BATCHES_LIST_SIZE);
+
+	batchesOnGpu = std::vector<uint32_t>(OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE, -1);
+	batchesOnGpuStatus = std::vector<uint32_t>(OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE, true);
+}
+
+
+void LoaderGpuVersion::createNewBatches(string file){
+	initLoadPointBatches(file, batchesQueue, batchesQueueMutexes);
+}
+
+void LoaderGpuVersion::fetchFromDevice(){
+	CURuntime::assertCudaSuccess(cuMemcpyDtoH(
+		batchesOnGpuStatus.data(), 
+		(CUdeviceptr)GpuVersion::hostStaging.batchesAddedMask,
+		OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE * sizeof(uint32_t)
+	));
+	for(uint32_t i=0; i<OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE; i++){
+		if(batchesOnGpuStatus[i]){
+			uint32_t real_index = batchesOnGpu[i];
+			batchesOnGpu[i] = -1;
+			if(real_index != -1){
+				std::lock_guard<std::mutex> lock(batchesQueueMutexes[real_index]);
+				batchesQueue[real_index]->state = BatchState::ToRemove;
+			}
+		}
+	}
+}
+
+void LoaderGpuVersion::sendToDevice(){
+	uint32_t last_index = 0;
+	for(uint32_t i=0; i<OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE; i++){
+		// Check if the batch is still being used on device side
+		if(batchesOnGpu[i] != -1 && !batchesOnGpuStatus[i]){continue;}
+
+		for(uint32_t j=last_index; j<OocSimLodSettings::BATCHES_LIST_SIZE; j++){
+			std::lock_guard<std::mutex> lock(batchesQueueMutexes[j]);
+			if(batchesQueue[j] && batchesQueue[j]->state == BatchState::Loaded){
+				// Mark the batch as being sent to the device
+				last_index = j+1;
+				batchesOnGpu[i] = j;
+				batchesOnGpuStatus[i] = false;
+
+				// Send the batches to device side
+				CUdeviceptr dst_points = ((CUdeviceptr*)(GpuVersion::hostStaging.batchesToAddPointsPointers))[i];
+				const void* src_points = batchesQueue[j]->points->data();
+				size_t     size_points = batchesQueue[j]->count * sizeof(CPoint);
+
+				CUdeviceptr dst_count = (CUdeviceptr)(GpuVersion::hostStaging.batchesToAddCounts) + (i*sizeof(uint32_t));
+				const void* src_count = &batchesQueue[j]->count;
+				size_t     size_count = sizeof(uint32_t);
+
+				CUdeviceptr dst_flag = (CUdeviceptr)(GpuVersion::hostStaging.batchesAddedMask) + (i*sizeof(uint32_t));
+				uint32_t    src_flag = 0;
+				size_t     size_flag = sizeof(uint32_t);
+
+				CURuntime::assertCudaSuccess(cuMemcpyHtoD(dst_points, src_points, size_points));
+				CURuntime::assertCudaSuccess(cuMemcpyHtoD(dst_count, src_count, size_count));
+				CURuntime::assertCudaSuccess(cuMemcpyHtoD(dst_flag, &src_flag, size_flag));
+
+				println("HOST side: index batch queue = {}, index device batch = {}, count = {}, first point = ({}, {}, {})", 
+					j, i, batchesQueue[j]->count, 
+					(*batchesQueue[j]->points)[0].position.x,
+					(*batchesQueue[j]->points)[0].position.y,
+					(*batchesQueue[j]->points)[0].position.z
+				);
+				
+				break;
+			}
+		}
+	}	
+}
+
+void LoaderGpuVersion::run(CuRast* editor, CUcontext* context){
+	while(true){
+		cuCtxSetCurrent(*context);
+
+		// Check if batches are done on GPU side
+		fetchFromDevice();
+
+		// Try loading points from disk
+        loadPointsInBatches(batchesQueue, batchesQueueMutexes);
+
+		// Get the batches to send to device side
+		sendToDevice();
+
+		// Clear completed batches
+		clearUnusedBatches(batchesQueue, batchesQueueMutexes);
+
+		// Exit on demand
 		if(GlobalVariables::mainLoopIsTerminating){return;}
 	}
 }

@@ -689,20 +689,19 @@ std::string GlobalVariables::formatMemSize(uint64_t size_bytes, uint32_t pad){
 
 
 void GlobalVariables::destroy(CuRast* instance, CUcontext* context){
+    println("Begin destroy");
+
     {
         std::lock_guard<std::mutex> lock4(mainLoopIsTerminatingMtx);
         mainLoopIsTerminating = true;
     }
+
     std::this_thread::sleep_for(std::chrono::milliseconds(2000));
-
-    displayTimings();
-    displayBuffers();
-    OocSimLodSettings::display();
-
     cudaDeviceSynchronize();
 
-    // Destroy temporary folder
-    std::filesystem::remove_all(OocSimLodSettings::TEMPORARY_NODE_STORAGE_DIRECTORY);
+    OocSimLodSettings::display();
+    displayTimings();
+    displayBuffers();
 
     cudaDeviceSynchronize();
     for(auto& memory : batchedMemories){
@@ -712,17 +711,13 @@ void GlobalVariables::destroy(CuRast* instance, CUcontext* context){
     cudaDeviceSynchronize();
     freeOctreesOnGPU(CuRast::instance);
 
-    
     cudaDeviceSynchronize();
     freeOctreesOnCPU();
-    
+
     std::lock_guard<std::mutex> lock1(isUpdatingMtx);
     std::lock_guard<std::mutex> lock2(LRUCache::caches_sync_mtx);
     displayCpuMemoryUsage();
     println("GPU Memory Usage:\n{}", getGpuMemoryUsage());
-
-    cudaDeviceSynchronize();
-    GpuVersion::destroy(instance, context);
 }
 
 IdAABB GlobalVariables::createNewAABB(const AABB& aabb){
@@ -1069,10 +1064,8 @@ std::optional<IdAABB> LRUCache::add(const IdAABB& aabb_index){
 
     // If the AABB was already in cache, remove its old version from the list
     if(it){
-        CDoubleLinkedList<IdAABB>::Iterator* list_it = *it;
-        cache.erase(list_it->value);
-        cache_map.erase(list_it->value);
-        delete(list_it);
+        cache.moveBegin(*it);
+        return nullopt;
     }
 
     std::optional<IdAABB> old_aabb = nullopt;
@@ -1081,7 +1074,10 @@ std::optional<IdAABB> LRUCache::add(const IdAABB& aabb_index){
     if(cache_map.size >= CACHE_SIZE){
         old_aabb = *cache.back();
         cache.popBack();
-        cache_map.erase(old_aabb.value());
+        if(!cache_map.erase(old_aabb.value())){
+            println("Erasing an LRU entry should always work at this point: old_aabb.value() = {}", old_aabb.value());
+            throw(EXIT_FAILURE);
+        }
     }
 
     // Insert the new node at the front of the list

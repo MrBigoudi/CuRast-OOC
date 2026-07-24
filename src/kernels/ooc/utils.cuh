@@ -21,15 +21,16 @@ namespace std {
 #include "./glm/glm/gtx/transform.hpp"
 #include "./glm/glm/gtc/quaternion.hpp"
 
+
 #include "./GpuVersionInterface.h"
 #include "./GpuVersionStructs.h"
 #include "./GpuVersionAllocator.h"
 #include "./GpuVersionGlobals.h"
 
-using glm::ivec2;
-using glm::i8vec4;
+using glm::vec2;
 using glm::vec3;
 using glm::vec4;
+using glm::mat4;
 
 namespace cg = cooperative_groups;
 
@@ -39,7 +40,7 @@ namespace cg = cooperative_groups;
 ///////////////////////////////////////////////////////////////////////
 __device__ __forceinline__ CIdAABB createNewAABB(const CAABB& aabb){
     CIdAABB id = __nv_atomic_fetch_add(&globalVariables.nbAABBs, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_SYSTEM);
-    if(id == CINVALID_ID){
+    if(id >= globalVariables.maxNbAABBs || id == CINVALID_ID){
         printf("ERROR: reached the maximum number of nodes that can be created\n");
     }
     globalVariables.allAABBs[id] = aabb;
@@ -49,6 +50,20 @@ __device__ __forceinline__ CIdAABB createNewAABB(const CAABB& aabb){
     };
     return id;
 }
+
+
+
+template<typename T>
+__device__
+T clamp(T value, T min, T max){
+
+	if(value < min) return min;
+	if(value > max) return max;
+
+	return value;
+}
+
+
 
 // https://stackoverflow.com/questions/17399119/how-do-i-use-atomicmax-on-floating-point-values-in-cuda/51549250#51549250
 __device__ __forceinline__ void atomicMinFloatRelaxedOrderSystemScope(float* addr, float value){

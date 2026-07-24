@@ -571,18 +571,75 @@ int main(int argc, char** argv){
 
 		// Create Global things
 		OocSimLodSettings::init();
-		GlobalVariables::init(CuRast::instance, &context);
+		std::filesystem::remove_all(OocSimLodSettings::TEMPORARY_NODE_STORAGE_DIRECTORY);
 		std::filesystem::create_directories(OocSimLodSettings::TEMPORARY_NODE_STORAGE_DIRECTORY);
-		// initScene();
+		if(!OocSimLodSettings::IS_USING_GPU_VERSION){
+			GlobalVariables::init(CuRast::instance, &context);
+			initScene();
+		}
 
-		GpuVersion::init(CuRast::instance, &context);
-		cudaDeviceSynchronize();
-		std::this_thread::sleep_for(std::chrono::milliseconds(5000));
-		throw(EXIT_FAILURE);
+
+
+
+
+
+
+
+
+
+
+		
+
+		if(OocSimLodSettings::IS_USING_GPU_VERSION){
+			GpuVersion::init(CuRast::instance, &context);
+
+			LoaderGpuVersion::createNewBatches("./lion.laz");
+			std::thread thread_loading_points([&](CuRast* editor, CUcontext* context){
+				LoaderGpuVersion::run(editor, context);
+			}, CuRast::instance, &context);
+			thread_loading_points.detach();
+
+			while(true){
+				OptionalLaunchSettings launch_settings = {
+					.gridsize = 1,
+					.blocksize = 1
+				};
+				GpuVersion::prog->launch("kernel_test", {}, launch_settings);
+			
+				bool all_done = true;
+				for(uint32_t i=0; i<OocSimLodSettings::BATCHES_LIST_SIZE; i++){
+					std::lock_guard<std::mutex> lock(LoaderGpuVersion::batchesQueueMutexes[i]);
+					if(LoaderGpuVersion::batchesQueue[i] && LoaderGpuVersion::batchesQueue[i]->state != BatchState::Empty){
+						all_done = false;
+						break;
+					}
+				}
+				if(all_done){break;}
+			}
+
+			GlobalVariables::mainLoopIsTerminating = true;
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			println("GPU version done");
+			throw(EXIT_FAILURE);
+		}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 		if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 			// Loading points routine
-			std::thread thread_loading_points(loadPointcloudRoutine);
+			std::thread thread_loading_points([&](){loadPointcloudRoutine();});
 			thread_loading_points.detach();
 
 			// Octree update routine
@@ -590,7 +647,7 @@ int main(int argc, char** argv){
 			thread_octree_update.detach();
 
 			// Clear unused batches routine
-			std::thread thread_clear_batches(clearUnusedBatchesRoutine);
+			std::thread thread_clear_batches([&](){clearUnusedBatchesRoutine();});
 			thread_clear_batches.detach();
 
 			// Load point clouds on GPU
@@ -674,14 +731,32 @@ int main(int argc, char** argv){
 		);
 
 		// Destruction procedure
-		GlobalVariables::destroy(CuRast::instance, &context);
+		if(!OocSimLodSettings::IS_USING_GPU_VERSION){
+			GlobalVariables::destroy(CuRast::instance, &context);
+		}
+		if(OocSimLodSettings::IS_USING_GPU_VERSION){
+			cudaDeviceSynchronize();
+			println("GPU Memory Usage:\n{}", GlobalVariables::getGpuMemoryUsage());
+			GpuVersion::destroy(CuRast::instance, &context);
+			cudaDeviceSynchronize();
+		}
 		VKRenderer::destroy();
+		std::filesystem::remove_all(OocSimLodSettings::TEMPORARY_NODE_STORAGE_DIRECTORY);
 
 	} catch(int) {
 
 		// Destruction procedure
-		GlobalVariables::destroy(CuRast::instance, &context);
+		if(!OocSimLodSettings::IS_USING_GPU_VERSION){
+			GlobalVariables::destroy(CuRast::instance, &context);
+		}
+		if(OocSimLodSettings::IS_USING_GPU_VERSION){
+			cudaDeviceSynchronize();
+			println("GPU Memory Usage:\n{}", GlobalVariables::getGpuMemoryUsage());
+			GpuVersion::destroy(CuRast::instance, &context);
+			cudaDeviceSynchronize();
+		}
 		VKRenderer::destroy();
-
+		std::filesystem::remove_all(OocSimLodSettings::TEMPORARY_NODE_STORAGE_DIRECTORY);
+		
 	}
 }

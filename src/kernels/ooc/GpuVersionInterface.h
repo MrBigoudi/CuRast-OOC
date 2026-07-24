@@ -1,6 +1,6 @@
 #pragma once
 
-// TODO: test code to remove
+#include <cmath>
 #include "../../ooc_structures/settings.h"
 
 struct CAABB {
@@ -13,11 +13,6 @@ struct CAABB {
 struct CPoint {
 	glm::vec3 position;
 	uint32_t color;
-};
-
-struct CPointBatch {
-	uint64_t count = 0;
-	CPoint* points = nullptr;
 };
 
 struct COccupancyGrid {
@@ -120,6 +115,19 @@ struct COctreeNodeUnified {
 };
 
 
+
+struct CRenderTarget{
+	uint64_t* framebuffer;
+	uint64_t* colorbuffer;
+	int width;
+	int height;
+	glm::mat4 view;
+	glm::mat4 viewI;
+	glm::mat4 proj;
+	glm::vec3 cameraPos;
+};
+
+
 typedef uint32_t CIdAABB;
 constexpr CIdAABB CINVALID_ID = UINT32_MAX;
 
@@ -147,6 +155,11 @@ struct CGlobalVariables {
     CAABB* allAABBs = nullptr;
 	/// The main octree
 	COctreeNode* mainOctree = nullptr;
+	uint32_t mainOctreeMaxLevel = 0;
+
+	/// The buffer of nodes for rendering and looping over
+	uint32_t nbNodes = 0;
+	COctreeNode** nodes = nullptr;
 
 
 
@@ -165,9 +178,11 @@ struct CGlobalVariables {
 
     /// A mask to know which batches have been handled
     uint32_t maxNbBatches = 0;
-    bool* batchesAddedMask = nullptr;
+    uint32_t* batchesAddedMask = nullptr;
 	/// The batches to add to the scene
-	CPointBatch* batchesToAdd = nullptr;
+	CPoint** batchesToAddPoints = nullptr;
+	uint32_t* batchesToAddCounts = nullptr;
+	void* batchesToAddPointsPointers = nullptr; // Just needed for host side
 
 	/// The points that couldn't be handled yet
 	uint32_t nbResidualPoints = 0;

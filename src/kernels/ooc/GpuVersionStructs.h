@@ -27,6 +27,7 @@ struct CDoubleLinkedList {
     void init(){
         first = new FirstEntry();
         last = new LastEntry();
+        size = 0;
         initialised = true;
     }
 
@@ -177,6 +178,7 @@ struct CDoubleLinkedList {
         if(prev){prev->next = next;} else {first->next = next;}
         if(next){next->prev = prev;} else {last->prev = prev;}
         size--;
+        delete(it);
     }
     void erase(T value){
         Iterator* it = first->next;
@@ -196,6 +198,7 @@ struct CDoubleLinkedList {
             delete(first->next);
             first->next = nullptr;
             last->prev = nullptr;
+            size--;
             return;
         }
         Iterator* old_last = last->prev;
@@ -211,6 +214,7 @@ struct CDoubleLinkedList {
             delete(first->next);
             first->next = nullptr;
             last->prev = nullptr;
+            size--;
             return;
         }
         Iterator* old_first = first->next;
@@ -344,6 +348,13 @@ struct CHashMap {
     CDoubleLinkedList<Entry>::Iterator* get_iterator(uint64_t murmur){
         uint64_t hash = murmur % capacity;
         CDoubleLinkedList<Entry>& elems_list = elements[hash];
+
+        // If the list doesn't exist yet, create it
+        if(!elems_list.first){
+            elems_list.init();
+            return nullptr;
+        }
+
         auto list_it = elems_list.begin();
         while(list_it){
             if(list_it->value.key == murmur){
@@ -382,14 +393,16 @@ struct CHashMap {
         return nullptr;
     }
 
-    void erase(Key key){
+    bool erase(Key key){
         uint64_t murmur = hash_murmur(key);
         CDoubleLinkedList<Entry>& elems_list = get_list(murmur);
         typename CDoubleLinkedList<Entry>::Iterator* list_it = get_iterator(murmur);
         if(list_it){
             elems_list.erase(list_it);
             size--;
+            return true;
         }
+        return false;
     }
 
     void clear(){

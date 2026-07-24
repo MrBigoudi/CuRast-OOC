@@ -48,6 +48,9 @@ struct OocSimLodSettings {
     /// Default to the number of blocks per SM
     static inline uint32_t NB_BLOCKS_PER_NODE;
 
+    /// Run the GPU version
+    static inline bool IS_USING_GPU_VERSION;
+
 
 
     /////////////////////////////////////////////////////////////////////////

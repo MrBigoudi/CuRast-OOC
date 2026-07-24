@@ -2,7 +2,15 @@
 
 extern "C" __global__
 void kernel_test(){
-    int* p = new int(42);
-    printf("new test: %d\n", p ? *p : -1);
-    delete p;
+    for(uint32_t i=0; i<globalVariables.maxNbBatches; i++){
+        if(globalVariables.batchesAddedMask[i]){continue;}
+        printf("DEVICE: batchesAddedMask[%d]: count = %d, first point = (%f, %f, %f)\n", 
+            i, 
+            globalVariables.batchesToAddCounts[i],
+            globalVariables.batchesToAddPoints[i][0].position.x, 
+            globalVariables.batchesToAddPoints[i][0].position.y, 
+            globalVariables.batchesToAddPoints[i][0].position.z 
+        );
+        globalVariables.batchesAddedMask[i] = true;
+    }
 }

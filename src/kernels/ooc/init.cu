@@ -4,25 +4,25 @@
 __device__ CGlobalVariables globalVariables;
 __device__ CMemoryAllocator globalAllocator;
 
-__device__ uint32_t globalCpt = 0;
+// __device__ uint32_t globalCpt = 0;
 
 template<typename T>
 __device__ void initAllocatorPool(uint32_t thread_id, void* pool){
     CAllocatorPool<T>* allocator = reinterpret_cast<CAllocatorPool<T>*>(pool);
 
-    uint32_t alignment = alignof(T);
-    uint32_t aligned_size = sizeof(T) + ((alignment - (sizeof(T) % alignment)) % alignment);
+    uint64_t alignment = alignof(T);
+    uint64_t aligned_size = sizeof(T) + ((alignment - (sizeof(T) % alignment)) % alignment);
     char* base = reinterpret_cast<char*>(allocator->allocated_memory);
 
+    // Init empty entries
     auto it = allocator->elements->begin();
-    uint32_t i = 0;
+    uint64_t i = 0;
     while(it){
         T* tmp_key = (T*)(base + i*aligned_size);
         uint32_t key = (uint32_t)((allocator->elements_map->hash_murmur(tmp_key)) % allocator->CAPACITY);
         if(key == thread_id){
-            uint32_t cur_cpt = __nv_atomic_fetch_add(&globalCpt, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_SYSTEM);
-            printf("cur_cpt: %d / %d\n", cur_cpt, allocator->CAPACITY);
-            
+            // uint32_t cur_cpt = __nv_atomic_fetch_add(&globalCpt, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_SYSTEM);
+            // printf("cur_cpt: %d / %d\n", cur_cpt, allocator->CAPACITY);
             typename CAllocatorPool<T>::Entry* entry = it->value;
             entry->value = new (base + i*aligned_size) T();
             allocator->elements_map->insert_or_replace(entry->value, it);
@@ -47,19 +47,24 @@ __device__ void initNodesAllocator(uint32_t thread_id) {
 
 /// Run on a single thread
 extern "C" __global__
-void kernel_init(){
+void kernel_init(uint32_t grid_size){
     uint32_t thread_id = cg::this_grid().thread_rank();
 
-    if(thread_id == 0){printf("\n\n\n\n\n\n\n");}
+    if(thread_id == grid_size-1){printf("\n\n");}
+
+    if(thread_id < globalVariables.maxNbBatches){
+        globalVariables.batchesAddedMask[thread_id] = true;
+        globalVariables.batchesToAddCounts[thread_id] = 0;
+    }
 
     initChunksAllocator(thread_id);
-    if(thread_id == 0){printf("Chunks Allocator initiated\n");}
+    if(thread_id == grid_size-1){printf("Chunks Allocator initiated\n");}
     initGridsAllocator(thread_id);
-    if(thread_id == 0){printf("Grids Allocator initiated\n");}
+    if(thread_id == grid_size-1){printf("Grids Allocator initiated\n");}
     initNodesAllocator(thread_id);
-    if(thread_id == 0){printf("Nodes Allocator initiated\n");}
+    if(thread_id == grid_size-1){printf("Nodes Allocator initiated\n");}
 
-    if(thread_id == 0){
+    if(thread_id == grid_size-1){
         printf("\nFROM INIT\n");
         printf("    - Nb AABBs: %d / %d\n", globalVariables.nbAABBs, globalVariables.maxNbAABBs);
         printf("    - Nb nodes to load: %d / %d\n", globalVariables.nbNodesToLoad, globalVariables.maxNbNodesToLoad);
@@ -70,7 +75,7 @@ void kernel_init(){
         // Initialise empty AABB
         createNewAABB(CAABB());
 
-        printf("\n\n\n\n\n\n\n");
+        printf("\n\n");
     }
 }
 
@@ -81,17 +86,19 @@ void kernel_init_octree(){
 
     if(globalVariables.mainOctree){return;}
     if(globalVariables.batchesAddedMask[0]){return;}
-    CPointBatch batch = globalVariables.batchesToAdd[0];
+
+    CPoint* new_points = globalVariables.batchesToAddPoints[0];
+    uint32_t new_count = globalVariables.batchesToAddCounts[0];
 
     // Assume 1D kernel launch
     uint32_t thread_id = cg::this_grid().thread_rank();
-    if(thread_id > batch.count){return;}
+    if(thread_id > new_count){return;}
 
     // Thread level AABB
     CAABB tmp_aabb = CAABB();
     uint32_t nb_threads = blockDim.x * gridDim.x;
-    for(uint32_t i=thread_id; i<batch.count; i+=nb_threads){
-        CPoint& point = batch.points[i];
+    for(uint32_t i=thread_id; i<new_count; i+=nb_threads){
+        CPoint& point = new_points[i];
 		tmp_aabb.maxs.x = max(tmp_aabb.maxs.x, point.position.x);
 		tmp_aabb.maxs.y = max(tmp_aabb.maxs.y, point.position.y);
 		tmp_aabb.maxs.z = max(tmp_aabb.maxs.z, point.position.z);
@@ -169,6 +176,7 @@ void kernel_init_octree(){
         // Create the main octree
         CIdAABB id = createNewAABB(globalVariables.allAABBs[0]);
         globalVariables.mainOctree = globalAllocator.newOctreeNode(id);
+        globalVariables.mainOctreeMaxLevel = 1;
     }
 
 }
