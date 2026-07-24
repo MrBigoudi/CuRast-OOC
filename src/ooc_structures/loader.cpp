@@ -462,22 +462,17 @@ void LoaderGpuVersion::sendToDevice(){
 }
 
 void LoaderGpuVersion::run(CuRast* editor, CUcontext* context){
-	while(true){
-		cuCtxSetCurrent(*context);
+	cuCtxSetCurrent(*context);
 
-		// Check if batches are done on GPU side
-		fetchFromDevice();
+	// Check if batches are done on GPU side
+	fetchFromDevice();
 
-		// Try loading points from disk
-        loadPointsInBatches(batchesQueue, batchesQueueMutexes);
+	// Try loading points from disk
+	loadPointsInBatches(batchesQueue, batchesQueueMutexes);
 
-		// Get the batches to send to device side
-		sendToDevice();
+	// Get the batches to send to device side
+	sendToDevice();
 
-		// Clear completed batches
-		clearUnusedBatches(batchesQueue, batchesQueueMutexes);
-
-		// Exit on demand
-		if(GlobalVariables::mainLoopIsTerminating){return;}
-	}
+	// Clear completed batches
+	clearUnusedBatches(batchesQueue, batchesQueueMutexes);
 }

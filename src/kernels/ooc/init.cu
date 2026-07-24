@@ -45,17 +45,12 @@ __device__ void initNodesAllocator(uint32_t thread_id) {
 }
 
 
-/// Run on a single thread
 extern "C" __global__
-void kernel_init(uint32_t grid_size){
+void kernel_init_global_allocators(){
     uint32_t thread_id = cg::this_grid().thread_rank();
+    uint32_t grid_size = gridDim.x;
 
     if(thread_id == grid_size-1){printf("\n\n");}
-
-    if(thread_id < globalVariables.maxNbBatches){
-        globalVariables.batchesAddedMask[thread_id] = true;
-        globalVariables.batchesToAddCounts[thread_id] = 0;
-    }
 
     initChunksAllocator(thread_id);
     if(thread_id == grid_size-1){printf("Chunks Allocator initiated\n");}
@@ -72,19 +67,45 @@ void kernel_init(uint32_t grid_size){
         printf("    - Nb spilled points: %d / %d\n", globalVariables.nbSpilledPoints, globalVariables.maxNbSpilledPoints);
         printf("    - Nb backlog voxels: %d / %d\n", globalVariables.nbBacklogVoxels, globalVariables.maxNbBacklogVoxels);
 
-        // Initialise empty AABB
-        createNewAABB(CAABB());
-
         printf("\n\n");
     }
 }
 
-/// Run on 1 block of X threads
-/// This function should only run once after the first point cloud is done being load from disk
 extern "C" __global__
-void kernel_init_octree(){
+void kernel_init_global_buffers(){
+    uint32_t thread_id = cg::this_grid().thread_rank();
 
+    if(thread_id < globalVariables.maxNbAABBs){
+        globalVariables.relationshipMap[thread_id] = CGlobalVariables::Relationship();
+        globalVariables.allAABBs[thread_id] = CAABB();
+        globalVariables.nodes[thread_id] = nullptr;
+    }
+
+    if(thread_id < globalVariables.maxNbNodesToLoad){
+        globalVariables.nodesToLoadBuffer[thread_id] = CINVALID_ID;
+    }
+    if(thread_id < globalVariables.maxNbNodesToStore){
+        globalVariables.nodesToStoreBuffer[thread_id] = nullptr;
+    }
+
+    if(thread_id < globalVariables.maxNbBatches){
+        globalVariables.batchesAddedMask[thread_id] = true;
+        globalVariables.batchesToAddCounts[thread_id] = 0;
+    }
+
+    if(thread_id < globalVariables.updatesCacheSize){
+        globalVariables.updatesCache[thread_id] = CINVALID_ID;
+    } 
+    if(thread_id < globalVariables.visibilityCacheSize){
+        globalVariables.visibilityCache[thread_id] = CINVALID_ID;
+    }    
+}
+
+extern "C" __global__
+void kernel_init_octree_part_1(){
+    // To only run it once
     if(globalVariables.mainOctree){return;}
+    // To only run it after the first batch has been loaded
     if(globalVariables.batchesAddedMask[0]){return;}
 
     CPoint* new_points = globalVariables.batchesToAddPoints[0];
@@ -92,7 +113,7 @@ void kernel_init_octree(){
 
     // Assume 1D kernel launch
     uint32_t thread_id = cg::this_grid().thread_rank();
-    if(thread_id > new_count){return;}
+    if(thread_id >= new_count){return;}
 
     // Thread level AABB
     CAABB tmp_aabb = CAABB();
@@ -132,51 +153,61 @@ void kernel_init_octree(){
         &globalVariables.allAABBs[0].maxs.z,
         tmp_aabb.maxs.z
     );
+}
 
-    if(thread_id == 0){
-        // Sync the threads in the block
-        __syncthreads();
+extern "C" __global__
+void kernel_init_octree_part_2(){
+    // To only run it once
+    if(globalVariables.mainOctree){return;}
+    // To only run it after the first batch has been loaded
+    if(globalVariables.batchesAddedMask[0]){return;}
 
-        // Adding small 2x delta to avoid floating point issues
-        float epsilon = 0.5f;
-        globalVariables.allAABBs[0].mins -= epsilon * globalVariables.allAABBs[0].mins;
-        globalVariables.allAABBs[0].maxs += epsilon * globalVariables.allAABBs[0].maxs;
+    // Adding small 2x delta to avoid floating point issues
+    float epsilon = 0.5f;
+    globalVariables.allAABBs[0].mins -= epsilon * globalVariables.allAABBs[0].mins;
+    globalVariables.allAABBs[0].maxs += epsilon * globalVariables.allAABBs[0].maxs;
 
-        // Make it cubic
-        vec3 size = globalVariables.allAABBs[0].getSize();
-        vec3 half_sizes_x = 0.5f * (vec3(size.x) - size);
-        vec3 half_sizes_y = 0.5f * (vec3(size.y) - size);
-        vec3 half_sizes_z = 0.5f * (vec3(size.z) - size);
-        if(size.x > size.y){
-            if(size.x > size.z){
-                globalVariables.allAABBs[0].mins.y -= half_sizes_x.y;
-                globalVariables.allAABBs[0].maxs.y += half_sizes_x.y;
-                globalVariables.allAABBs[0].mins.z -= half_sizes_x.z;
-                globalVariables.allAABBs[0].maxs.z += half_sizes_x.z;
-            } else {
-                globalVariables.allAABBs[0].mins.y -= half_sizes_z.y;
-                globalVariables.allAABBs[0].maxs.y += half_sizes_z.y;
-                globalVariables.allAABBs[0].mins.x -= half_sizes_z.x;
-                globalVariables.allAABBs[0].maxs.x += half_sizes_z.x;
-            }
+    // Make it cubic
+    vec3 size = globalVariables.allAABBs[0].getSize();
+    vec3 half_sizes_x = 0.5f * (vec3(size.x) - size);
+    vec3 half_sizes_y = 0.5f * (vec3(size.y) - size);
+    vec3 half_sizes_z = 0.5f * (vec3(size.z) - size);
+    if(size.x > size.y){
+        if(size.x > size.z){
+            globalVariables.allAABBs[0].mins.y -= half_sizes_x.y;
+            globalVariables.allAABBs[0].maxs.y += half_sizes_x.y;
+            globalVariables.allAABBs[0].mins.z -= half_sizes_x.z;
+            globalVariables.allAABBs[0].maxs.z += half_sizes_x.z;
         } else {
-            if(size.y > size.z){
-                globalVariables.allAABBs[0].mins.x -= half_sizes_y.x;
-                globalVariables.allAABBs[0].maxs.x += half_sizes_y.x;
-                globalVariables.allAABBs[0].mins.z -= half_sizes_y.z;
-                globalVariables.allAABBs[0].maxs.z += half_sizes_y.z;
-            } else {
-                globalVariables.allAABBs[0].mins.y -= half_sizes_z.y;
-                globalVariables.allAABBs[0].maxs.y += half_sizes_z.y;
-                globalVariables.allAABBs[0].mins.x -= half_sizes_z.x;
-                globalVariables.allAABBs[0].maxs.x += half_sizes_z.x;
-            }
+            globalVariables.allAABBs[0].mins.y -= half_sizes_z.y;
+            globalVariables.allAABBs[0].maxs.y += half_sizes_z.y;
+            globalVariables.allAABBs[0].mins.x -= half_sizes_z.x;
+            globalVariables.allAABBs[0].maxs.x += half_sizes_z.x;
         }
-
-        // Create the main octree
-        CIdAABB id = createNewAABB(globalVariables.allAABBs[0]);
-        globalVariables.mainOctree = globalAllocator.newOctreeNode(id);
-        globalVariables.mainOctreeMaxLevel = 1;
+    } else {
+        if(size.y > size.z){
+            globalVariables.allAABBs[0].mins.x -= half_sizes_y.x;
+            globalVariables.allAABBs[0].maxs.x += half_sizes_y.x;
+            globalVariables.allAABBs[0].mins.z -= half_sizes_y.z;
+            globalVariables.allAABBs[0].maxs.z += half_sizes_y.z;
+        } else {
+            globalVariables.allAABBs[0].mins.y -= half_sizes_z.y;
+            globalVariables.allAABBs[0].maxs.y += half_sizes_z.y;
+            globalVariables.allAABBs[0].mins.x -= half_sizes_z.x;
+            globalVariables.allAABBs[0].maxs.x += half_sizes_z.x;
+        }
     }
 
+    // Create the main octree
+    CIdAABB id = createNewAABB(globalVariables.allAABBs[0]);
+    globalVariables.mainOctree = globalAllocator.newOctreeNode(id);
+    globalVariables.nodes[0] = globalVariables.mainOctree;
+    globalVariables.mainOctreeMaxLevel = 1;
+    globalVariables.nbNodes = 1;
+
+    // TODO: to remove
+    {
+        printf("Initial Octree: \n");
+        displayOctreeNode(globalVariables.mainOctree);
+    }
 }

@@ -122,12 +122,25 @@ void GpuVersion::init(CuRast* editor, CUcontext* context) {
         .gridsize = grid_size,
         .blocksize = 1
     };
-    prog->launch("kernel_init", {&grid_size}, launch_settings);
-    // prog->launch("kernel_test", {}, launch_settings);
+    prog->launch("kernel_init_global_allocators", {}, launch_settings);
+
+    grid_size = max(hostStaging.maxNbAABBs,
+        max(hostStaging.maxNbNodesToLoad,
+            max(hostStaging.maxNbNodesToStore,
+                max(hostStaging.maxNbBatches,
+                    max(hostStaging.updatesCacheSize, hostStaging.visibilityCacheSize)
+                )    
+            )
+        )
+    );
+    launch_settings = {
+        .gridsize = grid_size,
+        .blocksize = 1
+    };
+    prog->launch("kernel_init_global_buffers", {}, launch_settings);
+    LoaderGpuVersion::init();
 
     cudaDeviceSynchronize();
-
-    LoaderGpuVersion::init();
 }
 
 void GpuVersion::destroy(CuRast *editor, CUcontext *context){
@@ -137,4 +150,40 @@ void GpuVersion::destroy(CuRast *editor, CUcontext *context){
         }
     }
     free(hostStaging.batchesToAddPointsPointers);
+}
+
+
+
+void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
+    // Init the octree and the AABB with the first batch of points
+    {
+        OptionalLaunchSettings launch_settings = {
+            .gridsize = 1024,
+            .blocksize = 1
+        };
+        prog->launch("kernel_init_octree_part_1", {}, launch_settings);
+
+        launch_settings = {
+            .gridsize = 1,
+            .blocksize = 1
+        };
+        prog->launch("kernel_init_octree_part_2", {}, launch_settings);
+    }
+}
+
+
+void GpuVersion::renderOctree(RenderTarget& target){
+    OptionalLaunchSettings launch_settings = {
+        .gridsize = OocSimLodSettings::INITIAL_MAX_NB_NODES,
+        .blocksize = 1
+    };
+
+    CRenderTarget real_target = {};
+	real_target.colorbuffer = target.colorbuffer;
+	real_target.width = target.width;
+	real_target.height = target.height;
+    real_target.view = target.view;
+	real_target.proj = target.proj;
+
+    prog->launch("kernel_renderBoundingBoxes", {&real_target}, launch_settings);
 }

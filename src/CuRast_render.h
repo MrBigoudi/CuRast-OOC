@@ -8,6 +8,7 @@
 #include "TextureManager.h"
 
 #include "ooc_structures/globals.h"
+#include "ooc_structures/gpuVersion.h"
 
 using namespace std;
 
@@ -696,6 +697,8 @@ void CuRast::draw(Scene* scene, vector<View> views){
 			if(CuRastSettings::useUnifiedMemory){ drawOctreeAABBUnified(scene, view, target, cfo); } 
 			else { drawOctreeAABB(scene, view, target); }
 		}
+
+		GpuVersion::renderOctree(target);
 
 
 		{

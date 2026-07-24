@@ -140,7 +140,7 @@ void kernel_renderBoundingBoxes(
 	if(index >= globalVariables.nbAABBs) return;
 
     COctreeNode* node = globalVariables.nodes[index];
-    const CAABB& aabb = globalVariables.allAABBs[node->aabb_index];
+    const CAABB& aabb = getAABB(node->aabb_index);
 
     float factor = float(node->level) / float(max(globalVariables.mainOctreeMaxLevel, 1));
     factor = clamp(factor, 0.0f, 1.0f);
@@ -150,5 +150,4 @@ void kernel_renderBoundingBoxes(
     uint32_t color = linearGradient(factor, min_level_color, max_level_color);
     
     drawBoundingBox(target, aabb, color);
-
 }

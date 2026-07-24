@@ -35,9 +35,11 @@ using glm::mat4;
 namespace cg = cooperative_groups;
 
 
-///////////////////////////////////////////////////////////////////////
-////////////////////////// HELPER FUNCTIONS ///////////////////////////
-///////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+////////////////////////// OCTREE HELPER FUNCTIONS ///////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+
+
 __device__ __forceinline__ CIdAABB createNewAABB(const CAABB& aabb){
     CIdAABB id = __nv_atomic_fetch_add(&globalVariables.nbAABBs, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_SYSTEM);
     if(id >= globalVariables.maxNbAABBs || id == CINVALID_ID){
@@ -51,6 +53,76 @@ __device__ __forceinline__ CIdAABB createNewAABB(const CAABB& aabb){
     return id;
 }
 
+
+__device__ __forceinline__ const CAABB& getAABB(const CIdAABB& aabb_index){
+    return globalVariables.allAABBs[aabb_index];
+}
+
+
+__device__ __forceinline__ void displayOctreeNode(
+    const COctreeNode* node, uint32_t id = 0, 
+    uint32_t level = 0, bool node_only = false
+) {
+    CIdAABB aabb_index = node->aabb_index;
+
+    printf("level: %d, id: %d, aabb_index: %d, counter: %d, updated: %d, "
+        "visibility: %d, children visibility: 0b%d%d%d%d%d%d%d%d, "
+        "points location: 0b%d%d%d%d%d%d%d%d, children: 0b%d%d%d%d%d%d%d%d\n",
+
+        level, id, node->aabb_index, node->counter, node->updated, node->is_visible,
+        uint8_t(bool(node->children_visibility & 0x01 << 0)),
+        uint8_t(bool(node->children_visibility & 0x01 << 1)),
+        uint8_t(bool(node->children_visibility & 0x01 << 2)),
+        uint8_t(bool(node->children_visibility & 0x01 << 3)),
+        uint8_t(bool(node->children_visibility & 0x01 << 4)),
+        uint8_t(bool(node->children_visibility & 0x01 << 5)),
+        uint8_t(bool(node->children_visibility & 0x01 << 6)),
+        uint8_t(bool(node->children_visibility & 0x01 << 7)),
+        uint8_t(bool(node->children_ids & 0x01 << 0)),
+        uint8_t(bool(node->children_ids & 0x01 << 1)),
+        uint8_t(bool(node->children_ids & 0x01 << 2)),
+        uint8_t(bool(node->children_ids & 0x01 << 3)),
+        uint8_t(bool(node->children_ids & 0x01 << 4)),
+        uint8_t(bool(node->children_ids & 0x01 << 5)),
+        uint8_t(bool(node->children_ids & 0x01 << 6)),
+        uint8_t(bool(node->children_ids & 0x01 << 7)),
+        uint8_t(node->children[0] != nullptr), 
+        uint8_t(node->children[1] != nullptr), 
+        uint8_t(node->children[2] != nullptr), 
+        uint8_t(node->children[3] != nullptr),
+        uint8_t(node->children[4] != nullptr), 
+        uint8_t(node->children[5] != nullptr), 
+        uint8_t(node->children[6] != nullptr), 
+        uint8_t(node->children[7] != nullptr)
+    );
+    const CAABB& aabb = getAABB(node->aabb_index);
+    printf("    aabb: mins = (%f, %f, %f), maxs = (%f, %f, %f)\n",
+        aabb.mins.x, aabb.mins.y, aabb.mins.z,
+        aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
+    );
+    if(!node_only){
+        for(size_t i=0; i<8; i++){
+            if(node->children[i]){
+                displayOctreeNode(node->children[i], i, level+1);
+            }
+        }
+    }
+};
+
+
+
+
+
+
+
+
+
+
+
+
+//////////////////////////////////////////////////////////////////////////////
+////////////////////////// GLOBAL HELPER FUNCTIONS ///////////////////////////
+//////////////////////////////////////////////////////////////////////////////
 
 
 template<typename T>

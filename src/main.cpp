@@ -594,33 +594,18 @@ int main(int argc, char** argv){
 			GpuVersion::init(CuRast::instance, &context);
 
 			LoaderGpuVersion::createNewBatches("./lion.laz");
+			Runtime::controls->yaw    = -5.582;
+			Runtime::controls->pitch  = -0.294;
+			Runtime::controls->radius = 5.584;
+			Runtime::controls->target = { 0.679, -0.714, 5.163};
+			
 			std::thread thread_loading_points([&](CuRast* editor, CUcontext* context){
-				LoaderGpuVersion::run(editor, context);
+				while(true){
+					LoaderGpuVersion::run(editor, context);
+					if(GlobalVariables::mainLoopIsTerminating){return;}
+				}
 			}, CuRast::instance, &context);
 			thread_loading_points.detach();
-
-			while(true){
-				OptionalLaunchSettings launch_settings = {
-					.gridsize = 1,
-					.blocksize = 1
-				};
-				GpuVersion::prog->launch("kernel_test", {}, launch_settings);
-			
-				bool all_done = true;
-				for(uint32_t i=0; i<OocSimLodSettings::BATCHES_LIST_SIZE; i++){
-					std::lock_guard<std::mutex> lock(LoaderGpuVersion::batchesQueueMutexes[i]);
-					if(LoaderGpuVersion::batchesQueue[i] && LoaderGpuVersion::batchesQueue[i]->state != BatchState::Empty){
-						all_done = false;
-						break;
-					}
-				}
-				if(all_done){break;}
-			}
-
-			GlobalVariables::mainLoopIsTerminating = true;
-			std::this_thread::sleep_for(std::chrono::milliseconds(10));
-			println("GPU version done");
-			throw(EXIT_FAILURE);
 		}
 
 
@@ -637,43 +622,45 @@ int main(int argc, char** argv){
 
 
 
-		if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-			// Loading points routine
-			std::thread thread_loading_points([&](){loadPointcloudRoutine();});
-			thread_loading_points.detach();
+		if(!OocSimLodSettings::IS_USING_GPU_VERSION){
+			if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+				// Loading points routine
+				std::thread thread_loading_points([&](){loadPointcloudRoutine();});
+				thread_loading_points.detach();
 
-			// Octree update routine
-			std::thread thread_octree_update(updateOctreeRoutine);
-			thread_octree_update.detach();
+				// Octree update routine
+				std::thread thread_octree_update(updateOctreeRoutine);
+				thread_octree_update.detach();
 
-			// Clear unused batches routine
-			std::thread thread_clear_batches([&](){clearUnusedBatchesRoutine();});
-			thread_clear_batches.detach();
+				// Clear unused batches routine
+				std::thread thread_clear_batches([&](){clearUnusedBatchesRoutine();});
+				thread_clear_batches.detach();
 
-			// Load point clouds on GPU
-			std::thread thread_load_points_on_gpu([&](CuRast* editor){
-				while(true){
-					loadBatchesOnGPU(editor, &context);
-					if(GlobalVariables::mainLoopIsTerminating){return;}
-				}
-			}, CuRast::instance);
-			thread_load_points_on_gpu.detach();
+				// Load point clouds on GPU
+				std::thread thread_load_points_on_gpu([&](CuRast* editor){
+					while(true){
+						loadBatchesOnGPU(editor, &context);
+						if(GlobalVariables::mainLoopIsTerminating){return;}
+					}
+				}, CuRast::instance);
+				thread_load_points_on_gpu.detach();
 
-			// Update the visibility and load Octree on GPU
-			std::thread thread_gpu_update([&](CuRast* editor, CUcontext* context, View* view){
-				std::optional<OctreeNode*> octree_ref = nullopt;
-				std::shared_ptr<AABBRelationshipMap> relationship_map_ref = nullptr;
+				// Update the visibility and load Octree on GPU
+				std::thread thread_gpu_update([&](CuRast* editor, CUcontext* context, View* view){
+					std::optional<OctreeNode*> octree_ref = nullopt;
+					std::shared_ptr<AABBRelationshipMap> relationship_map_ref = nullptr;
 
-				while(true){
-					GlobalVariables::updateGPU(
-						CuRast::instance, context, &VKRenderer::view, 
-						octree_ref, relationship_map_ref
-					);
-					if(GlobalVariables::mainLoopIsTerminating){return;}
-				}
-				
-			}, CuRast::instance, &context, &VKRenderer::view);
-			thread_gpu_update.detach();
+					while(true){
+						GlobalVariables::updateGPU(
+							CuRast::instance, context, &VKRenderer::view, 
+							octree_ref, relationship_map_ref
+						);
+						if(GlobalVariables::mainLoopIsTerminating){return;}
+					}
+					
+				}, CuRast::instance, &context, &VKRenderer::view);
+				thread_gpu_update.detach();
+			}
 		}
 
 		bool was_unified_set = CuRastSettings::useUnifiedMemory;
@@ -686,7 +673,7 @@ int main(int argc, char** argv){
 				update();
 				CuRast::instance->update();
 				
-				{
+				if(!OocSimLodSettings::IS_USING_GPU_VERSION){
 					if(!was_unified_set && CuRastSettings::useUnifiedMemory){
 						println("Using unified memory...");
 						cudaDeviceSynchronize();
@@ -702,31 +689,55 @@ int main(int argc, char** argv){
 				Runtime::debugValues["stage 2"] = format("{:.3f}", stage2_millies);
 				Runtime::debugValues["stage 3"] = format("{:.3f}", stage3_millies);
 
-				// Update visible nodes
-				if(!OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-					GlobalVariables::updateGPU(
-						CuRast::instance, &context, &VKRenderer::view, 
-						octree_ref, relationship_map_ref
-					);
+				if(!OocSimLodSettings::IS_USING_GPU_VERSION){
+					// Update visible nodes
+					if(!OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+						GlobalVariables::updateGPU(
+							CuRast::instance, &context, &VKRenderer::view, 
+							octree_ref, relationship_map_ref
+						);
+					}
+
+					// Free unused memory
+					freeOctreesOnGPU(CuRast::instance);
+
+					// Display some information bout memory usage
+					if(CuRastSettings::getGpuMemoryUsage){
+						std::lock_guard<std::mutex> lock(GlobalVariables::isUpdatingMtx);
+						println("GPU Memory Usage:\n{}", GlobalVariables::getGpuMemoryUsage());
+						CuRastSettings::getGpuMemoryUsage = false;
+						// TODO: to remove, just for debug
+						GlobalVariables::displayCpuMemoryUsage();
+					}
+
+					GlobalVariables::elapsedFrames++;
 				}
 
-				// Free unused memory
-				freeOctreesOnGPU(CuRast::instance);
 
-				// Display some information bout memory usage
-				if(CuRastSettings::getGpuMemoryUsage){
-					std::lock_guard<std::mutex> lock(GlobalVariables::isUpdatingMtx);
-					println("GPU Memory Usage:\n{}", GlobalVariables::getGpuMemoryUsage());
-					CuRastSettings::getGpuMemoryUsage = false;
-					// TODO: to remove, just for debug
-					GlobalVariables::displayCpuMemoryUsage();
+
+
+
+
+				if(OocSimLodSettings::IS_USING_GPU_VERSION){
+					GpuVersion::updateOctree(CuRast::instance, &context);
+					OptionalLaunchSettings launch_settings = {
+						.gridsize = 1,
+						.blocksize = 1
+					};
+					GpuVersion::prog->launch("kernel_test", {}, launch_settings);
+
+
 				}
 
-				GlobalVariables::elapsedFrames++;
+
+
+
+
+
+
+
 			},
-			[&]() {
-				CuRast::instance->render();
-			},
+			[&]() {CuRast::instance->render();},
 			[&]() {CuRast::instance->postFrame();}
 		);
 
@@ -735,6 +746,7 @@ int main(int argc, char** argv){
 			GlobalVariables::destroy(CuRast::instance, &context);
 		}
 		if(OocSimLodSettings::IS_USING_GPU_VERSION){
+			GlobalVariables::mainLoopIsTerminating = true;
 			cudaDeviceSynchronize();
 			println("GPU Memory Usage:\n{}", GlobalVariables::getGpuMemoryUsage());
 			GpuVersion::destroy(CuRast::instance, &context);
@@ -750,6 +762,7 @@ int main(int argc, char** argv){
 			GlobalVariables::destroy(CuRast::instance, &context);
 		}
 		if(OocSimLodSettings::IS_USING_GPU_VERSION){
+			GlobalVariables::mainLoopIsTerminating = true;
 			cudaDeviceSynchronize();
 			println("GPU Memory Usage:\n{}", GlobalVariables::getGpuMemoryUsage());
 			GpuVersion::destroy(CuRast::instance, &context);

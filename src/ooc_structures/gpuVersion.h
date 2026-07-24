@@ -11,6 +11,8 @@ struct GpuVersion {
     /// Initialises everything needed on device memory
     static void init(CuRast* editor, CUcontext* context);
     static void destroy(CuRast* editor, CUcontext* context);
+    static void updateOctree(CuRast* editor, CUcontext* context);
+    static void renderOctree(RenderTarget& target);
 
     private:
         static inline std::vector<CUdeviceptr> pointers = {};

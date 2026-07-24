@@ -117,14 +117,11 @@ struct COctreeNodeUnified {
 
 
 struct CRenderTarget{
-	uint64_t* framebuffer;
 	uint64_t* colorbuffer;
 	int width;
 	int height;
 	glm::mat4 view;
-	glm::mat4 viewI;
 	glm::mat4 proj;
-	glm::vec3 cameraPos;
 };
 
 
