@@ -384,8 +384,20 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
     prog->launch("kernel_simlod_load_part_4", {}, launch_settings);
 }
 
+
+void GpuVersion::octreeUpdateSimLODCountSplit(CuRast* editor, CUcontext* context){
+    OptionalLaunchSettings launch_settings = {
+        .gridsize = hostStaging.maxNbAABBs,
+        .blocksize = 1
+    };
+    prog->launch("kernel_simlod_count_split", {}, launch_settings);
+}
+
+
+
 void GpuVersion::octreeUpdateSimLOD(CuRast* editor, CUcontext* context){
     octreeUpdateSimLODLoad(editor, context);
+    octreeUpdateSimLODCountSplit(editor, context);
 }
 
 

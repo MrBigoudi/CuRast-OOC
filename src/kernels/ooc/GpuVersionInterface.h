@@ -203,6 +203,13 @@ struct CPoint {
 			| ((uint32_t)b << 16)
 			| ((uint32_t)a << 24);
 	}
+
+	__device__ __forceinline__ const uint8_t getAlpha() const {
+		return (color >> 24);
+	}
+	__device__ __forceinline__ void setAlpha(uint8_t a) {
+		color |= ((uint32_t)a << 24);
+	}
 };
 
 struct COccupancyGrid {
@@ -362,8 +369,9 @@ struct CRenderTarget{
 enum CNodeFlagType {
 	CFlagToLoad,
 	CFlagToStore,
+	CFlagIsSpilling,
+
 	// Pads to be replaced on need
-	CFlagPad2,
 	CFlagPad3,
 	CFlagPad4,
 	CFlagPad5,
@@ -486,6 +494,7 @@ struct CGlobalVariables {
     ////////////////////////// TEMPORARY BUFFERS //////////////////////////
     ///////////////////////////////////////////////////////////////////////
     /// The list of spilled points
+    bool hasSpillingNodes = false;
     uint32_t nbSpilledPoints = 0;
     uint32_t maxNbSpilledPoints = 0;
     CPoint* spilledPoints = nullptr;
