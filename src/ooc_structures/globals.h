@@ -33,6 +33,7 @@ enum BatchState {
 	Empty,
 	ToLoad,
 	Loaded,
+	Sent,
 	Inserted,
 	ToRemove
 };

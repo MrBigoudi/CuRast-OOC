@@ -132,12 +132,36 @@ uint32_t linearGradient(float factor, uint32_t left_color, uint32_t right_color)
 }
 
 
+__device__ 
+void recursiveTraversal(COctreeNode* cur_node, uint32_t cur_level){
+    if(!cur_node){return;}
+    cur_node->level = cur_level;
+
+    globalVariables.nodes[globalVariables.nb_nodes] = cur_node;
+    globalVariables.mainOctreeMaxLevel = max(globalVariables.mainOctreeMaxLevel, cur_level);
+    globalVariables.nb_nodes++;
+
+    for(uint32_t i=0; i<8; i++){
+        recursiveTraversal(cur_node->children[i], cur_level+1);
+    }
+}
+
+
 extern "C" __global__
-void kernel_renderBoundingBoxes(
+void kernel_prepare_rendereable_octree(){
+    globalVariables.mainOctreeMaxLevel = 0;
+    globalVariables.nb_nodes = 0;
+
+    recursiveTraversal(globalVariables.mainOctree, 0);
+}
+
+
+extern "C" __global__
+void kernel_render_bounding_boxes(
 	CRenderTarget target
 ){
 	uint32_t index = cg::this_grid().thread_rank();
-	if(index >= globalVariables.nbAABBs) return;
+	if(index >= globalVariables.nb_nodes){return;}
 
     COctreeNode* node = globalVariables.nodes[index];
     const CAABB& aabb = getAABB(node->aabb_index);

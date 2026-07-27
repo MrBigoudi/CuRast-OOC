@@ -91,6 +91,7 @@ void kernel_init_global_buffers(){
     if(thread_id < globalVariables.maxNbBatches){
         globalVariables.batchesAddedMask[thread_id] = true;
         globalVariables.batchesToAddCounts[thread_id] = 0;
+        globalVariables.batchesToAddBottomUpCounts[thread_id] = 0;
     }
 
     if(thread_id < globalVariables.updatesCacheSize){
@@ -112,12 +113,13 @@ void kernel_init_octree_part_1(){
     uint32_t new_count = globalVariables.batchesToAddCounts[0];
 
     // Assume 1D kernel launch
-    uint32_t thread_id = cg::this_grid().thread_rank();
+    auto grid = cg::this_grid();
+    uint32_t thread_id = grid.thread_rank();
     if(thread_id >= new_count){return;}
 
     // Thread level AABB
     CAABB tmp_aabb = CAABB();
-    uint32_t nb_threads = blockDim.x * gridDim.x;
+    uint32_t nb_threads = grid.num_threads();
     for(uint32_t i=thread_id; i<new_count; i+=nb_threads){
         CPoint& point = new_points[i];
 		tmp_aabb.maxs.x = max(tmp_aabb.maxs.x, point.position.x);
@@ -201,13 +203,10 @@ void kernel_init_octree_part_2(){
     // Create the main octree
     CIdAABB id = createNewAABB(globalVariables.allAABBs[0]);
     globalVariables.mainOctree = globalAllocator.newOctreeNode(id);
-    globalVariables.nodes[0] = globalVariables.mainOctree;
-    globalVariables.mainOctreeMaxLevel = 1;
-    globalVariables.nbNodes = 1;
 
-    // TODO: to remove
-    {
-        printf("Initial Octree: \n");
-        displayOctreeNode(globalVariables.mainOctree);
-    }
+    // // TODO: to remove
+    // {
+    //     printf("Initial Octree: \n");
+    //     displayOctreeNode(globalVariables.mainOctree);
+    // }
 }

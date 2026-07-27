@@ -720,13 +720,6 @@ int main(int argc, char** argv){
 
 				if(OocSimLodSettings::IS_USING_GPU_VERSION){
 					GpuVersion::updateOctree(CuRast::instance, &context);
-					OptionalLaunchSettings launch_settings = {
-						.gridsize = 1,
-						.blocksize = 1
-					};
-					GpuVersion::prog->launch("kernel_test", {}, launch_settings);
-
-
 				}
 
 

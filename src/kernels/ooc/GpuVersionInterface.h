@@ -3,20 +3,215 @@
 #include <cmath>
 #include "../../ooc_structures/settings.h"
 
+enum CNodePosition {
+	CFrontTopLeft,
+	CFrontTopRight,
+	CFrontBottomLeft,
+	CFrontBottomRight,
+	CBackTopLeft,
+	CBackTopRight,
+	CBackBottomLeft,
+	CBackBottomRight,
+};
+__device__ __forceinline__ void updateNodePosition(CNodePosition& position){
+	switch(position){
+        case CFrontTopLeft:
+            position = CFrontTopRight;
+            break;
+        case CFrontTopRight:
+            position = CFrontBottomLeft;
+            break;
+        case CFrontBottomLeft:
+            position = CFrontBottomRight;
+            break;
+        case CFrontBottomRight:
+            position = CBackTopLeft;
+            break;
+        case CBackTopLeft:
+            position = CBackTopRight;
+            break;
+        case CBackTopRight:
+            position = CBackBottomLeft;
+            break;
+        case CBackBottomLeft:
+            position = CBackBottomRight;
+            break;
+        case CBackBottomRight:
+            position = CFrontTopLeft;
+            break;
+    }
+}
+
 struct CAABB {
 	glm::vec3 mins = {INFINITY, INFINITY, INFINITY};
 	glm::vec3 maxs = {-INFINITY, -INFINITY, -INFINITY};
 
-	inline glm::vec3 getSize() const {return maxs - mins;}
+	__device__ __forceinline__  glm::vec3 getSize() const {return maxs - mins;}
+	__device__ __forceinline__  bool contains(const glm::vec3& position) const {
+		return position.x > mins.x && position.x < maxs.x
+			&& position.y > mins.y && position.y < maxs.y
+			&& position.z > mins.z && position.z < maxs.z
+		;
+	}
+	__device__ __forceinline__  void extend(const CNodePosition& position) {
+		glm::vec3 size = getSize();
+		switch (position) {
+			case CFrontTopLeft:
+				maxs.x += size.x;
+				mins.y -= size.y;
+				mins.z -= size.z;
+				break;
+			case CFrontTopRight:
+				mins.x -= size.x;
+				mins.y -= size.y;
+				mins.z -= size.z;
+				break;
+			case CFrontBottomLeft:
+				maxs.x += size.x;
+				maxs.y += size.y;
+				mins.z -= size.z;
+				break;
+			case CFrontBottomRight:
+				mins.x -= size.x;
+				maxs.y += size.y;
+				mins.z -= size.z;
+				break;
+			case CBackTopLeft:
+				maxs.x += size.x;
+				mins.y -= size.y;
+				maxs.z += size.z;
+				break;
+			case CBackTopRight:
+				mins.x -= size.x;
+				mins.y -= size.y;
+				maxs.z += size.z;
+				break;
+			case CBackBottomLeft:
+				maxs.x += size.x;
+				maxs.y += size.y;
+				maxs.z += size.z;
+				break;
+			case CBackBottomRight:
+				mins.x -= size.x;
+				maxs.y += size.y;
+				maxs.z += size.z;
+				break;
+		}
+	}
+
+	__device__ __forceinline__  void shrink(const CNodePosition& position) {
+		glm::vec3 size = getSize()*0.5f;
+		switch (position) {
+			case CFrontTopLeft:
+				maxs.x -= size.x;
+				mins.y += size.y;
+				mins.z += size.z;
+				break;
+			case CFrontTopRight:
+				mins.x += size.x;
+				mins.y += size.y;
+				mins.z += size.z;
+				break;
+			case CFrontBottomLeft:
+				maxs.x -= size.x;
+				maxs.y -= size.y;
+				mins.z += size.z;
+				break;
+			case CFrontBottomRight:
+				mins.x += size.x;
+				maxs.y -= size.y;
+				mins.z += size.z;
+				break;
+			case CBackTopLeft:
+				maxs.x -= size.x;
+				mins.y += size.y;
+				maxs.z -= size.z;
+				break;
+			case CBackTopRight:
+				mins.x += size.x;
+				mins.y += size.y;
+				maxs.z -= size.z;
+				break;
+			case CBackBottomLeft:
+				maxs.x -= size.x;
+				maxs.y -= size.y;
+				maxs.z -= size.z;
+				break;
+			case CBackBottomRight:
+				mins.x += size.x;
+				maxs.y -= size.y;
+				maxs.z -= size.z;
+				break;
+		}
+	}
+
+	__device__ __forceinline__  glm::vec3 getPointNormalizedCoordinates(const glm::vec3& position) const {
+		return glm::vec3(
+			(position.x - mins.x) / (maxs.x - mins.x),
+			(position.y - mins.y) / (maxs.y - mins.y),
+			(position.z - mins.z) / (maxs.z - mins.z)
+		);
+	}
 };
 
 struct CPoint {
 	glm::vec3 position;
 	uint32_t color;
+
+	__device__ __forceinline__ void setColor(uint8_t r, uint8_t g, uint8_t b, uint8_t a = 0xFFu){
+		color = (uint32_t)r
+			| ((uint32_t)g << 8)
+			| ((uint32_t)b << 16)
+			| ((uint32_t)a << 24);
+	}
 };
 
 struct COccupancyGrid {
 	uint32_t values[OocSimLodSettings::GRID_SIZE / 32] = {0};
+
+	/// Store a pair (word_index, bit_index)
+	struct GridIndex {
+		uint32_t word;
+		uint32_t bit;
+		glm::uvec3 grid;
+		__device__ __forceinline__ GridIndex(uint32_t word, uint32_t bit, glm::uvec3 grid):word(word), bit(bit), grid(grid){}
+	};
+
+	__device__ __forceinline__ static GridIndex getCellIndices(const CAABB& aabb, const CPoint& point){
+		glm::vec3 normalized_coordinates = aabb.getPointNormalizedCoordinates(point.position);
+		uint32_t grid_x = glm::clamp(
+			uint32_t(floor(OocSimLodSettings::GRID_SIZE_PER_DIMENSION * normalized_coordinates.x)), 
+			0u, 
+			OocSimLodSettings::GRID_SIZE_PER_DIMENSION - 1u
+		);
+		uint32_t grid_y = glm::clamp(
+			uint32_t(floor(OocSimLodSettings::GRID_SIZE_PER_DIMENSION * normalized_coordinates.y)), 
+			0u, 
+			OocSimLodSettings::GRID_SIZE_PER_DIMENSION - 1u
+		);
+		uint32_t grid_z = glm::clamp(
+			uint32_t(floor(OocSimLodSettings::GRID_SIZE_PER_DIMENSION * normalized_coordinates.z)), 
+			0u, 
+			OocSimLodSettings::GRID_SIZE_PER_DIMENSION - 1u
+		);
+		uint32_t index = grid_x + OocSimLodSettings::GRID_SIZE_PER_DIMENSION * (grid_y + OocSimLodSettings::GRID_SIZE_PER_DIMENSION * grid_z);
+		uint32_t word_index = index >> 5u;
+		uint32_t bit_index = index & 31u;
+		return GridIndex(word_index, bit_index, glm::uvec3(grid_x, grid_y, grid_z));
+	}
+
+	__device__ __forceinline__ bool isCellOcupied(const GridIndex& index) const {
+		return (values[index.word] & (1u << index.bit)) != 0;
+	}
+
+	__device__ __forceinline__ void markCellAsFilled(const GridIndex& index){
+		values[index.word] |= (1u << index.bit);
+	}
+
+	__device__ __forceinline__ static glm::vec3 getCellCentroid(const CAABB& aabb, const GridIndex& index){
+		glm::vec3 world_grid_size = aabb.getSize() / float(OocSimLodSettings::GRID_SIZE_PER_DIMENSION);
+		return aabb.mins + world_grid_size * glm::vec3(index.grid.x, index.grid.y, index.grid.z) + 0.5f * world_grid_size;
+	}
 };
 
 struct CChunk{
@@ -155,7 +350,7 @@ struct CGlobalVariables {
 	uint32_t mainOctreeMaxLevel = 0;
 
 	/// The buffer of nodes for rendering and looping over
-	uint32_t nbNodes = 0;
+	uint32_t nb_nodes = 0;
 	COctreeNode** nodes = nullptr;
 
 
@@ -179,6 +374,7 @@ struct CGlobalVariables {
 	/// The batches to add to the scene
 	CPoint** batchesToAddPoints = nullptr;
 	uint32_t* batchesToAddCounts = nullptr;
+	uint32_t* batchesToAddBottomUpCounts = nullptr;
 	void* batchesToAddPointsPointers = nullptr; // Just needed for host side
 
 	/// The points that couldn't be handled yet

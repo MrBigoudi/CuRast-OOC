@@ -2,7 +2,8 @@
 
 ## Next steps (in priority order)
 
-- Modify caches to avoid unecessary new / delete in the double linked list (see hashmap version)
+- Add device properties in the settings (MaxGridSize, MaxBlockSize, ...)
+- Find better launch settings for kernels + use cuda graphs to reduce overhead costs
 
 - Delay load / store of nodes as waiting for loading and storing won't be possible on GPU side
 - Only send new AABBs to the GPU (send deltas more generally, is this worth it ?)
@@ -11,6 +12,7 @@
 
 ## Coding part
 
+- Modify caches to avoid unecessary new / delete in the double linked list (see hashmap version)
 - Clean the code + improve comments
 - Automatically fetch CPU / GPU capacities to set the constants
 - Fix Vulkan segfault on quit

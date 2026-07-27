@@ -45,8 +45,8 @@ BATCHES_LIST_SIZE = 1_024
 
 ### The maximum number of points per batches
 # MAX_POINTS_PER_BATCHES = 10_000
-# MAX_POINTS_PER_BATCHES = 100_000
-MAX_POINTS_PER_BATCHES = 1_000_000
+MAX_POINTS_PER_BATCHES = 100_000
+# MAX_POINTS_PER_BATCHES = 1_000_000
 
 ### The minimum number of batches that can be loaded from disk at once
 MIN_BATCHES_PER_LOAD = 1

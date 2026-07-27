@@ -430,6 +430,7 @@ void LoaderGpuVersion::sendToDevice(){
 				last_index = j+1;
 				batchesOnGpu[i] = j;
 				batchesOnGpuStatus[i] = false;
+				batchesQueue[j]->state = BatchState::Sent;
 
 				// Send the batches to device side
 				CUdeviceptr dst_points = ((CUdeviceptr*)(GpuVersion::hostStaging.batchesToAddPointsPointers))[i];
@@ -441,19 +442,19 @@ void LoaderGpuVersion::sendToDevice(){
 				size_t     size_count = sizeof(uint32_t);
 
 				CUdeviceptr dst_flag = (CUdeviceptr)(GpuVersion::hostStaging.batchesAddedMask) + (i*sizeof(uint32_t));
-				uint32_t    src_flag = 0;
+				uint32_t    src_flag = false;
 				size_t     size_flag = sizeof(uint32_t);
 
 				CURuntime::assertCudaSuccess(cuMemcpyHtoD(dst_points, src_points, size_points));
 				CURuntime::assertCudaSuccess(cuMemcpyHtoD(dst_count, src_count, size_count));
 				CURuntime::assertCudaSuccess(cuMemcpyHtoD(dst_flag, &src_flag, size_flag));
 
-				println("HOST side: index batch queue = {}, index device batch = {}, count = {}, first point = ({}, {}, {})", 
-					j, i, batchesQueue[j]->count, 
-					(*batchesQueue[j]->points)[0].position.x,
-					(*batchesQueue[j]->points)[0].position.y,
-					(*batchesQueue[j]->points)[0].position.z
-				);
+				// println("HOST side: index batch queue = {}, index device batch = {}, count = {}, first point = ({}, {}, {})", 
+				// 	j, i, batchesQueue[j]->count, 
+				// 	(*batchesQueue[j]->points)[0].position.x,
+				// 	(*batchesQueue[j]->points)[0].position.y,
+				// 	(*batchesQueue[j]->points)[0].position.z
+				// );
 				
 				break;
 			}

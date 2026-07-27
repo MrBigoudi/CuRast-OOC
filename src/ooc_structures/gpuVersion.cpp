@@ -20,6 +20,7 @@ void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
     hostStaging.maxNbBatches = OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE;
     hostStaging.batchesAddedMask = alloc<uint32_t>(hostStaging.maxNbBatches);
     hostStaging.batchesToAddCounts = alloc<uint32_t>(hostStaging.maxNbBatches);
+    hostStaging.batchesToAddBottomUpCounts = alloc<uint32_t>(hostStaging.maxNbBatches);
     hostStaging.batchesToAddPoints = alloc<CPoint*>(hostStaging.maxNbBatches);
     hostStaging.batchesToAddPointsPointers = malloc(hostStaging.maxNbBatches * sizeof(CUdeviceptr));
     for(uint32_t i=0; i<hostStaging.maxNbBatches; i++){
@@ -95,6 +96,7 @@ void GpuVersion::initAllocators(CuRast* editor, CUcontext* context, CUstream* st
 void GpuVersion::init(CuRast* editor, CUcontext* context) {
     prog = new CudaModularProgram({
         "./src/kernels/ooc/init.cu",
+        "./src/kernels/ooc/bottomUp.cu",
         "./src/kernels/ooc/render.cu",
         "./src/kernels/ooc/test.cu",
     });
@@ -169,21 +171,58 @@ void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
         };
         prog->launch("kernel_init_octree_part_2", {}, launch_settings);
     }
+
+
+    // Bottom up update of the octree
+    {
+        OptionalLaunchSettings launch_settings = {
+            .gridsize = OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE,
+            .blocksize = 1024
+        };
+        prog->launch("kernel_bottom_up_update_part_1", {}, launch_settings);
+
+        launch_settings = {
+            .gridsize = 1,
+            .blocksize = 1
+        };
+        prog->launch("kernel_bottom_up_update_part_2", {}, launch_settings);
+    }
+
+    // TODO: to remove, just to flag the batches and display stuff
+    {
+        OptionalLaunchSettings launch_settings = {
+            .gridsize = 1,
+            .blocksize = 1
+        };
+        GpuVersion::prog->launch("kernel_test", {}, launch_settings);
+    }
 }
 
 
 void GpuVersion::renderOctree(RenderTarget& target){
-    OptionalLaunchSettings launch_settings = {
-        .gridsize = OocSimLodSettings::INITIAL_MAX_NB_NODES,
-        .blocksize = 1
-    };
+    // Prepare the octree to be rendered
+    {
+        OptionalLaunchSettings launch_settings = {
+            .gridsize = 1,
+            .blocksize = 1
+        };
+        GpuVersion::prog->launch("kernel_prepare_rendereable_octree", {}, launch_settings);
+    }
 
-    CRenderTarget real_target = {};
-	real_target.colorbuffer = target.colorbuffer;
-	real_target.width = target.width;
-	real_target.height = target.height;
-    real_target.view = target.view;
-	real_target.proj = target.proj;
+    // Render Bounding boxes
+    {
+        OptionalLaunchSettings launch_settings = {
+            .gridsize = OocSimLodSettings::INITIAL_MAX_NB_NODES,
+            .blocksize = 1
+        };
 
-    prog->launch("kernel_renderBoundingBoxes", {&real_target}, launch_settings);
+        CRenderTarget real_target = {};
+        real_target.colorbuffer = target.colorbuffer;
+        real_target.width = target.width;
+        real_target.height = target.height;
+        real_target.view = target.view;
+        real_target.proj = target.proj;
+
+        prog->launch("kernel_render_bounding_boxes", {&real_target}, launch_settings);
+    }
 }
