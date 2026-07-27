@@ -552,19 +552,32 @@ int main(int argc, char** argv){
 		};
 
 		VKRenderer::onFileDrop([&](vector<string> files){
-			if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+			if(OocSimLodSettings::IS_USING_GPU_VERSION){
 				std::for_each(std::execution::par, files.begin(), files.end(), 
 					[&](string& file){
 						if(iEndsWith(file, ".las") || iEndsWith(file, ".laz")){
 							std::thread thread_init_batch([&](std::string file){
-								initLoadPointBatches(file);
+								LoaderGpuVersion::createNewBatches(file);
 							}, file);
 							thread_init_batch.detach();
 						}
 					}
 				);
 			} else {
-				sequential(files);
+				if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+					std::for_each(std::execution::par, files.begin(), files.end(), 
+						[&](string& file){
+							if(iEndsWith(file, ".las") || iEndsWith(file, ".laz")){
+								std::thread thread_init_batch([&](std::string file){
+									initLoadPointBatches(file);
+								}, file);
+								thread_init_batch.detach();
+							}
+						}
+					);
+				} else {
+					sequential(files);
+				}
 			}
 		});
 
