@@ -7,6 +7,10 @@
 struct GpuVersion {
 	static inline CudaModularProgram* prog = nullptr;
     static inline CGlobalVariables hostStaging = {};
+    static inline CUdeviceptr deviceStaging = 0;
+    static inline CUstream stream;
+
+    static inline std::unordered_set<CIdAABB> storedNodes = {}; 
 
     /// Initialises everything needed on device memory
     static void init(CuRast* editor, CUcontext* context);
@@ -15,6 +19,12 @@ struct GpuVersion {
     static void renderOctree(RenderTarget& target);
 
     private:
+        static void octreeUpdateInit(CuRast* editor, CUcontext* context);
+        static void octreeUpdateBottomUp(CuRast* editor, CUcontext* context);
+        static void octreeUpdateSimLOD(CuRast* editor, CUcontext* context);
+        static void octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context);
+
+
         static inline std::vector<CUdeviceptr> pointers = {};
         static void initBuffers(CuRast* editor, CUcontext* context);
         static void initAllocators(CuRast* editor, CUcontext* context, CUstream* stream);

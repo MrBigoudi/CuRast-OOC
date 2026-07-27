@@ -39,6 +39,16 @@ namespace cg = cooperative_groups;
 ////////////////////////// OCTREE HELPER FUNCTIONS ///////////////////////////
 //////////////////////////////////////////////////////////////////////////////
 
+__device__ __forceinline__ void addPointToChunk(CChunk* root_chunk, const CPoint& cur_point){
+    CChunk* cur_chunk = root_chunk;
+    if(cur_chunk->size == OocSimLodSettings::NB_POINTS_PER_CHUNK){
+        cur_chunk->next = globalAllocator.newChunk();
+        cur_chunk = cur_chunk->next;
+    }
+    cur_chunk->points[cur_chunk->size] = cur_point;
+    cur_chunk->size++;
+}
+
 
 __device__ __forceinline__ CIdAABB createNewAABB(const CAABB& aabb){
     CIdAABB id = __nv_atomic_fetch_add(&globalVariables.nbAABBs, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_SYSTEM);

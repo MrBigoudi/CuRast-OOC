@@ -110,6 +110,7 @@ void kernel_bottom_up_update_part_2(){
 		CIdAABB parent_aabb_index = createNewAABB(parent_aabb);
 		// OctreeNode* new_parent = new OctreeNode(parent_aabb_index);
 		COctreeNode* new_parent = globalAllocator.newOctreeNode(parent_aabb_index);
+        globalVariables.nodes[parent_aabb_index] = new_parent;
 
 		new_parent->occupancy = globalAllocator.newOccupancyGrid();
 		new_parent->updated = true;

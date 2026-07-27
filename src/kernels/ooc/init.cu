@@ -79,6 +79,7 @@ void kernel_init_global_buffers(){
         globalVariables.relationshipMap[thread_id] = CGlobalVariables::Relationship();
         globalVariables.allAABBs[thread_id] = CAABB();
         globalVariables.nodes[thread_id] = nullptr;
+        globalVariables.nodesFlags[thread_id] = 0;
     }
 
     if(thread_id < globalVariables.maxNbNodesToLoad){
@@ -203,6 +204,7 @@ void kernel_init_octree_part_2(){
     // Create the main octree
     CIdAABB id = createNewAABB(globalVariables.allAABBs[0]);
     globalVariables.mainOctree = globalAllocator.newOctreeNode(id);
+    globalVariables.nodes[0] = globalVariables.mainOctree;
 
     // // TODO: to remove
     // {

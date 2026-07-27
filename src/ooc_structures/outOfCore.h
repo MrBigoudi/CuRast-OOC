@@ -60,7 +60,7 @@ struct CPUFallbackCache {
 
 	/// A cache entry
 	struct Entry {
-        OctreeNodeSerializable serializable_node;
+        OctreeNodeSerializable serializable_node = {};
         std::optional<ChunkSerializable> serializable_points = nullopt;
         std::optional<ChunkSerializable> serializable_voxels = nullopt;
 

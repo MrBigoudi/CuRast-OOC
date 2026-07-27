@@ -137,10 +137,7 @@ void recursiveTraversal(COctreeNode* cur_node, uint32_t cur_level){
     if(!cur_node){return;}
     cur_node->level = cur_level;
 
-    globalVariables.nodes[globalVariables.nb_nodes] = cur_node;
     globalVariables.mainOctreeMaxLevel = max(globalVariables.mainOctreeMaxLevel, cur_level);
-    globalVariables.nb_nodes++;
-
     for(uint32_t i=0; i<8; i++){
         recursiveTraversal(cur_node->children[i], cur_level+1);
     }
@@ -150,8 +147,6 @@ void recursiveTraversal(COctreeNode* cur_node, uint32_t cur_level){
 extern "C" __global__
 void kernel_prepare_rendereable_octree(){
     globalVariables.mainOctreeMaxLevel = 0;
-    globalVariables.nb_nodes = 0;
-
     recursiveTraversal(globalVariables.mainOctree, 0);
 }
 
@@ -160,10 +155,11 @@ extern "C" __global__
 void kernel_render_bounding_boxes(
 	CRenderTarget target
 ){
-	uint32_t index = cg::this_grid().thread_rank();
-	if(index >= globalVariables.nb_nodes){return;}
+	uint32_t thread_id = cg::this_grid().thread_rank();
+	if(thread_id >= globalVariables.maxNbAABBs){return;}
 
-    COctreeNode* node = globalVariables.nodes[index];
+    COctreeNode* node = globalVariables.nodes[thread_id];
+    if(!node){return;}
     const CAABB& aabb = getAABB(node->aabb_index);
 
     float factor = float(node->level) / float(max(globalVariables.mainOctreeMaxLevel, 1));

@@ -3,6 +3,9 @@
 #include <cmath>
 #include "../../ooc_structures/settings.h"
 
+typedef uint32_t CIdAABB;
+constexpr CIdAABB CINVALID_ID = UINT32_MAX;
+
 enum CNodePosition {
 	CFrontTopLeft,
 	CFrontTopRight,
@@ -152,13 +155,49 @@ struct CAABB {
 			(position.z - mins.z) / (maxs.z - mins.z)
 		);
 	}
+
+	__device__ __forceinline__ CNodePosition getNextChildIndex(const glm::vec3& position) const {
+		glm::vec3 normalized_coordinates = getPointNormalizedCoordinates(position);
+		bool is_front = normalized_coordinates.z >= 0.5f;
+		bool is_top = normalized_coordinates.y >= 0.5f;
+		bool is_right = normalized_coordinates.x >= 0.5f;
+		if(is_right){
+			if(is_top){
+				if(is_front){
+					return CNodePosition::CFrontTopRight;
+				} else {
+					return CNodePosition::CBackTopRight;
+				}
+			} else {
+				if(is_front){
+					return CNodePosition::CFrontBottomRight;
+				} else {
+					return CNodePosition::CBackBottomRight;
+				}
+			}
+		} else {
+			if(is_top){
+				if(is_front){
+					return CNodePosition::CFrontTopLeft;
+				} else {
+					return CNodePosition::CBackTopLeft;
+				}
+			} else {
+				if(is_front){
+					return CNodePosition::CFrontBottomLeft;
+				} else {
+					return CNodePosition::CBackBottomLeft;
+				}
+			}
+		}
+	}
 };
 
 struct CPoint {
 	glm::vec3 position;
 	uint32_t color;
 
-	__device__ __forceinline__ void setColor(uint8_t r, uint8_t g, uint8_t b, uint8_t a = 0xFFu){
+	inline void setColor(uint8_t r, uint8_t g, uint8_t b, uint8_t a = 0xFFu){
 		color = (uint32_t)r
 			| ((uint32_t)g << 8)
 			| ((uint32_t)b << 16)
@@ -225,7 +264,7 @@ struct COctreeNode {
 	CChunk* points = nullptr;
 	CChunk* voxels = nullptr;
 	COccupancyGrid* occupancy = nullptr;
-	uint32_t aabb_index = UINT32_MAX;
+	CIdAABB aabb_index = CINVALID_ID;
 
 	uint32_t counter = 0;
 	uint8_t children_ids = 0b00000000;
@@ -320,8 +359,41 @@ struct CRenderTarget{
 };
 
 
-typedef uint32_t CIdAABB;
-constexpr CIdAABB CINVALID_ID = UINT32_MAX;
+enum CNodeFlagType {
+	CFlagToLoad,
+	CFlagToStore,
+	// Pads to be replaced on need
+	CFlagPad2,
+	CFlagPad3,
+	CFlagPad4,
+	CFlagPad5,
+	CFlagPad6,
+	CFlagPad7,
+	CFlagPad8,
+	CFlagPad9,
+	CFlagPad10,
+	CFlagPad11,
+	CFlagPad12,
+	CFlagPad13,
+	CFlagPad14,
+	CFlagPad15,
+	CFlagPad16,
+	CFlagPad17,
+	CFlagPad18,
+	CFlagPad19,
+	CFlagPad20,
+	CFlagPad21,
+	CFlagPad22,
+	CFlagPad23,
+	CFlagPad24,
+	CFlagPad25,
+	CFlagPad26,
+	CFlagPad27,
+	CFlagPad28,
+	CFlagPad29,
+	CFlagPad30,
+	CFlagPad31,
+};
 
 struct CGlobalVariables {
     ///////////////////////////////////////////////////////////////////////
@@ -350,7 +422,6 @@ struct CGlobalVariables {
 	uint32_t mainOctreeMaxLevel = 0;
 
 	/// The buffer of nodes for rendering and looping over
-	uint32_t nb_nodes = 0;
 	COctreeNode** nodes = nullptr;
 
 
@@ -358,10 +429,27 @@ struct CGlobalVariables {
     ///////////////////////////////////////////////////////////////////////
     ////////////////////////// EXCHANGEABLE DATA //////////////////////////
     ///////////////////////////////////////////////////////////////////////
+	uint32_t* nodesFlags = nullptr;
+
+	/// Data received from the host
+	uint32_t nbNodesReceived = 0;
+	uint32_t maxNbNodesReceived = 256;  // TODO: find a better value
+	uint32_t maxNbPointsChunkPerReceivedNode = 0;
+	uint32_t maxNbVoxelsChunksPerReceivedNode = 256; // TODO: find a better value
+	CIdAABB* receivedAABBIndices = nullptr;
+	uint8_t* receivedChildrenIds = nullptr;
+	uint32_t* receivedPointsCounters = nullptr;
+	uint32_t* receivedVoxelsCounters = nullptr;
+	CPoint** receivedPoints = nullptr;
+	CPoint** receivedVoxels = nullptr;
+	void* receivedPointsPointers = nullptr; // Just needed for host side
+	void* receivedVoxelsPointers = nullptr; // Just needed for host side
+
     /// The buffer of nodes to load from disk
     uint32_t nbNodesToLoad = 0;
     uint32_t maxNbNodesToLoad = 0;
     CIdAABB* nodesToLoadBuffer = nullptr;
+	void* nodesToLoadBufferHost = nullptr; // Just needed for host side
 
     /// The buffer of nodes to store to disk
     uint32_t nbNodesToStore = 0;
@@ -379,7 +467,7 @@ struct CGlobalVariables {
 
 	/// The points that couldn't be handled yet
 	uint32_t nbResidualPoints = 0;
-	uint32_t maxNbResidualPoints = 0;
+	uint32_t maxNbResidualPoints =  1'000'000; // TODO: find a better value
 	CPoint* residualPoints = nullptr;
 
 
