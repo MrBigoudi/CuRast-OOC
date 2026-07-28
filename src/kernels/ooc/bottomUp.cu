@@ -67,13 +67,13 @@ __device__ void fillOccupancyGrid(
                 new_voxel.color = point.color;
                 
                 // Add voxel to voxels chunk list
-                if(!new_parent->voxels){new_parent->voxels =  globalAllocator.newChunk();}
+                if(!new_parent->voxels){new_parent->voxels = globalAllocator.newChunk(false);}
 
                 CChunk* parent_chunk_list = new_parent->voxels;
                 while(parent_chunk_list->next){parent_chunk_list = parent_chunk_list->next;}
 
                 if(parent_chunk_list->size == OocSimLodSettings::NB_POINTS_PER_CHUNK){
-                    parent_chunk_list->next =  globalAllocator.newChunk();
+                    parent_chunk_list->next =  globalAllocator.newChunk(false);
                     parent_chunk_list = parent_chunk_list->next;
                 }
                 parent_chunk_list->points[parent_chunk_list->size] = new_voxel;
@@ -109,10 +109,10 @@ void kernel_bottom_up_update_part_2(){
 		// Create the new parent node
 		CIdAABB parent_aabb_index = createNewAABB(parent_aabb);
 		// OctreeNode* new_parent = new OctreeNode(parent_aabb_index);
-		COctreeNode* new_parent = globalAllocator.newOctreeNode(parent_aabb_index);
+		COctreeNode* new_parent = globalAllocator.newOctreeNode(parent_aabb_index, false);
         globalVariables.nodes[parent_aabb_index] = new_parent;
 
-		new_parent->occupancy = globalAllocator.newOccupancyGrid();
+		new_parent->occupancy = globalAllocator.newOccupancyGrid(false);
 		new_parent->updated = true;
 		cur_child->updated = true;
 		new_parent->children[node_position] = cur_child;

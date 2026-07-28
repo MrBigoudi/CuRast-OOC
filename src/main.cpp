@@ -755,6 +755,7 @@ int main(int argc, char** argv){
 			GlobalVariables::mainLoopIsTerminating = true;
 			cudaDeviceSynchronize();
 			println("GPU Memory Usage:\n{}", GlobalVariables::getGpuMemoryUsage());
+			OocSimLodSettings::display();
 			GpuVersion::destroy(CuRast::instance, &context);
 			cudaDeviceSynchronize();
 		}
@@ -771,6 +772,7 @@ int main(int argc, char** argv){
 			GlobalVariables::mainLoopIsTerminating = true;
 			cudaDeviceSynchronize();
 			println("GPU Memory Usage:\n{}", GlobalVariables::getGpuMemoryUsage());
+			OocSimLodSettings::display();
 			GpuVersion::destroy(CuRast::instance, &context);
 			cudaDeviceSynchronize();
 		}

@@ -313,7 +313,7 @@ void createCudaMemory(CuRast* editor, CUcontext* context,
 		new_node->occupancy = nullptr;
 		new_node->aabb_index = cur_node->aabb_index;
 
-		new_node->counter = cur_node->counter.load();
+		new_node->points_counter = cur_node->counter.load();
 		new_node->children_ids = cur_node->children_ids;
 		new_node->children_visibility = cur_node->children_visibility;
 		new_node->level = level;

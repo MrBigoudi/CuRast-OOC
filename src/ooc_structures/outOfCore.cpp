@@ -57,7 +57,7 @@ std::string getChunkFilePath(const AABB& aabb, bool is_voxel){
 /// A constructor from an existing node
 CPUFallbackCache::Entry::Entry(const OctreeNode* node){
     serializable_node = {};
-    serializable_node.counter = node->counter.load();
+    serializable_node.points_counter = node->counter.load();
     serializable_node.children_ids = node->children_ids;
     serializable_node.aabb_index = node->aabb_index;
 
@@ -99,7 +99,7 @@ OctreeNode* CPUFallbackCache::Entry::toLeafNode() const {
     // OctreeNode* new_node = new OctreeNode(serializable_node.aabb_index);
     OctreeNode* new_node = MemoryAllocator::newOctreeNode(serializable_node.aabb_index);
     
-    new_node->counter.store(serializable_node.counter);
+    new_node->counter.store(serializable_node.points_counter);
     new_node->children_ids = serializable_node.children_ids;
 
     if(serializable_points.has_value()){
@@ -328,7 +328,8 @@ void OctreeNodeSerializable::serialize(const std::string& filepath) const {
     }
 
     // Write fixed-size members
-    file.write(reinterpret_cast<const char*>(&counter), sizeof(counter));
+    file.write(reinterpret_cast<const char*>(&points_counter), sizeof(points_counter));
+    file.write(reinterpret_cast<const char*>(&voxels_counter), sizeof(voxels_counter));
     file.write(reinterpret_cast<const char*>(&children_ids), sizeof(children_ids));
 
     // Write points string
@@ -362,7 +363,8 @@ OctreeNodeSerializable OctreeNodeSerializable::deserialize(const std::string& fi
     }
 
     // Read fixed-size members
-    file.read(reinterpret_cast<char*>(&new_node.counter), sizeof(new_node.counter));
+    file.read(reinterpret_cast<char*>(&new_node.points_counter), sizeof(new_node.points_counter));
+    file.read(reinterpret_cast<char*>(&new_node.voxels_counter), sizeof(new_node.voxels_counter));
     file.read(reinterpret_cast<char*>(&new_node.children_ids), sizeof(new_node.children_ids));
 
     // Read points string

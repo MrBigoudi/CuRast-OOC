@@ -65,10 +65,10 @@ MAX_BATCHES_PER_GPU_LOAD = 100
 MIN_BATCHES_PER_OCTREE_UPDATE = 1
 ### The maximum number of batches that should be added at the same time in the octree
 # MAX_BATCHES_PER_OCTREE_UPDATE = 1
-MAX_BATCHES_PER_OCTREE_UPDATE = 2
+# MAX_BATCHES_PER_OCTREE_UPDATE = 2
 # MAX_BATCHES_PER_OCTREE_UPDATE = 4
 # MAX_BATCHES_PER_OCTREE_UPDATE = 8
-# MAX_BATCHES_PER_OCTREE_UPDATE = 32
+MAX_BATCHES_PER_OCTREE_UPDATE = 32
 
 ### The number of attempts after which the minimum variables are ignored
 MAX_ATTEMPTS_BEFORE_IGNORING_MIN_VARIABLES = 24
@@ -129,8 +129,12 @@ NB_ALLOCABLE_NODES = 1024
 ############################## GPU VERSION ##############################
 #########################################################################
 
+### If set to true, the app will automatically try to find the best values using the device properties
+USE_DEVICE_ATTRIBUTES = false
+# USE_DEVICE_ATTRIBUTES = true
+
 ### The initial maximum number of nodes allowed to be created during runtime
-INITIAL_MAX_NB_NODES = 1_000_000
+MAX_NB_NODES = 1_000_000
 ### The maximum number of nodes that can be queried to load from disk
 MAX_NB_NODES_TO_LOAD = 2_048
 ### The maximum number of nodes that can be prepared for storing

@@ -39,10 +39,11 @@ namespace cg = cooperative_groups;
 ////////////////////////// OCTREE HELPER FUNCTIONS ///////////////////////////
 //////////////////////////////////////////////////////////////////////////////
 
-__device__ __forceinline__ void addPointToChunk(CChunk* root_chunk, const CPoint& cur_point){
+__device__ __forceinline__ void addPointToChunk(CChunk* root_chunk, const CPoint& cur_point, bool will_run_in_parallel){
     CChunk* cur_chunk = root_chunk;
+    while(cur_chunk){cur_chunk = cur_chunk->next;}
     if(cur_chunk->size == OocSimLodSettings::NB_POINTS_PER_CHUNK){
-        cur_chunk->next = globalAllocator.newChunk();
+        cur_chunk->next = globalAllocator.newChunk(will_run_in_parallel);
         cur_chunk = cur_chunk->next;
     }
     cur_chunk->points[cur_chunk->size] = cur_point;
@@ -73,13 +74,19 @@ __device__ __forceinline__ void displayOctreeNode(
     const COctreeNode* node, uint32_t id = 0, 
     uint32_t level = 0, bool node_only = false
 ) {
+    if(!node){
+        printf("Can't display a null node\n");
+        return;
+    }
+
     CIdAABB aabb_index = node->aabb_index;
 
-    printf("level: %d, id: %d, aabb_index: %d, counter: %d, updated: %d, "
+    printf("level: %d, id: %d, aabb_index: %d, nb points: %d, nb voxels: %d, updated: %d, "
         "visibility: %d, children visibility: 0b%d%d%d%d%d%d%d%d, "
         "points location: 0b%d%d%d%d%d%d%d%d, children: 0b%d%d%d%d%d%d%d%d\n",
 
-        level, id, node->aabb_index, node->counter, node->updated, node->is_visible,
+        level, id, node->aabb_index, node->points_counter, node->voxels_counter, 
+        node->updated, node->is_visible,
         uint8_t(bool(node->children_visibility & 0x01 << 0)),
         uint8_t(bool(node->children_visibility & 0x01 << 1)),
         uint8_t(bool(node->children_visibility & 0x01 << 2)),

@@ -39,11 +39,56 @@ struct CAllocatorPool {
 
     CAllocatorPool(uint32_t capacity, AllocatorId id) : CAPACITY(capacity), ALLOCATOR_ID(id){}
 
+
+
+
+
+    /// A temporary allocation counter
+    /// This should be reset before and after each kernel launch
+    /// The reset functions should be call a single time
+    uint32_t tmp_allocation_counter = 0;
+    uint32_t tmp_deallocation_counter = 0;
+    /// An array of pointers to the deallocated elements
+    typename CDoubleLinkedList<Entry*>::Iterator** deallocated_memory = nullptr;
+
+#ifdef __CUDACC__
+    __device__ void reset_temporary_allocations(){
+        uint32_t counter = __nv_atomic_load_n(&tmp_allocation_counter, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_SYSTEM);
+
+        // Update the element position in the list
+        // No need to update the map as the iterator pointer is unchanged
+        typename CDoubleLinkedList<Entry*>::Iterator* list_it = elements->end();
+        for(uint32_t i=0; i<counter; i++){
+            list_it = list_it->prev;
+        }
+        elements->moveBeginWithNexts(list_it);
+
+        __nv_atomic_sub(&tmp_allocation_counter, counter, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_SYSTEM);
+    }
+
+    __device__ void reset_temporary_deallocations(){
+        uint32_t counter = __nv_atomic_load_n(&tmp_deallocation_counter, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_SYSTEM);
+
+        // Remove the element and put it in the back
+        // No need to update the map as the iterator pointer is unchanged
+        for(uint32_t i=0; i<counter; i++){
+            typename CDoubleLinkedList<Entry*>::Iterator* list_it = deallocated_memory[i];
+            elements->moveEnd(list_it);
+        }
+
+        __nv_atomic_sub(&tmp_deallocation_counter, counter, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_SYSTEM);
+    }
+    
+
+
+
+
     /// Create a new entry
     /// Pick the first available element
-    T* allocate(bool auto_sync = true) {
+    __device__ T* allocate(bool will_run_in_parallel) {
         // TODO: for now just crash if list is full
-        if(nb_allocated_elements == CAPACITY){
+        uint32_t old_counter = __nv_atomic_fetch_add(&nb_allocated_elements, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_SYSTEM);
+        if(old_counter == CAPACITY){
             switch(ALLOCATOR_ID){
                 case ChunkAllocator:
                     printf("ERROR: can't allocate more `Chunk' elements\n");
@@ -58,34 +103,38 @@ struct CAllocatorPool {
             // __trap();
         }
 
-        nb_allocated_elements++;
-
-        // auto lock = auto_sync ? std::unique_lock<std::mutex>(mtx) : std::unique_lock<std::mutex>();
-
         // Get the first free element of the list
-        typename CDoubleLinkedList<Entry*>::Iterator* list_it = elements->end(); 
+        typename CDoubleLinkedList<Entry*>::Iterator* list_it = elements->end();
+        if(will_run_in_parallel){
+            uint32_t counter = __nv_atomic_fetch_add(&tmp_allocation_counter, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_SYSTEM);
+            for(uint32_t i=0; i<counter; i++){
+                list_it = list_it->prev;
+            }
+        }
+
         Entry* entry = list_it->value;
         if(!entry->is_free){
             printf("ERROR: the last element of an allocator should be free if the allocator is not full\n");
             // __trap();
         }
         entry->is_free = false;
-
-        // Update the element position in the list
-        // No need to update the map as the iterator pointer is unchanged
-        elements->moveBegin(list_it);
         new (entry->value) T();
+
+        if(!will_run_in_parallel){
+            elements->moveBegin(list_it);
+        }
 
         return entry->value;
     }
 
 
     /// Free an existing entry
-    void deallocate(T* entry_id, bool auto_sync = true){
+    __device__ void deallocate(T* entry_id, bool will_run_in_parallel){
         if(!entry_id){return;}
 
         // TODO: for now just crash if list is empty
-        if(nb_allocated_elements == 0){
+        uint32_t old_counter = __nv_atomic_fetch_sub(&nb_allocated_elements, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_SYSTEM);
+        if(old_counter == 0){
             switch(ALLOCATOR_ID){
                 case ChunkAllocator:
                     printf("ERROR: can't deallocate empty `Chunk' elements\n");
@@ -99,10 +148,6 @@ struct CAllocatorPool {
             }
             // __trap();
         }
-
-        nb_allocated_elements--;
-
-        // auto lock = auto_sync ? std::unique_lock<std::mutex>(mtx) : std::unique_lock<std::mutex>();
 
         typename CDoubleLinkedList<Entry*>::Iterator** it = elements_map->find(entry_id);
         if(!it){
@@ -120,10 +165,14 @@ struct CAllocatorPool {
         }
         entry->is_free = true;
 
-        // Remove the element and put it in the back
-        // No need to update the map as the iterator pointer is unchanged
-        elements->moveEnd(list_it);
+        if(will_run_in_parallel){
+            uint32_t counter = __nv_atomic_fetch_add(&tmp_deallocation_counter, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_SYSTEM);
+            deallocated_memory[counter] = list_it;
+        } else {
+            elements->moveEnd(list_it);
+        }
     }
+#endif // __CUDACC__
 
 };
 
@@ -142,42 +191,36 @@ struct CMemoryAllocator {
     ////////////////////////// CHUNKS //////////////////////////
     ////////////////////////////////////////////////////////////
 
+#ifdef __CUDACC__
+
     /// Allocate a new chunk
-    CChunk* newChunk(){
-        return chunksAllocator->allocate();
+    __device__ CChunk* newChunk(bool will_run_in_parallel){
+        return chunksAllocator->allocate(will_run_in_parallel);
     }
 
     /// Allocate a new chunk and make a copy of the given chunk
-    CChunk* newChunkCpy(const CChunk* cpy){
-        CChunk* chunk = newChunk();
+    __device__ CChunk* newChunkCpy(const CChunk* cpy, bool will_run_in_parallel){
+        CChunk* chunk = newChunk(will_run_in_parallel);
         chunk->size = cpy->size;
         for(uint32_t i=0; i<OocSimLodSettings::NB_POINTS_PER_CHUNK; i++){
             chunk->points[i] = cpy->points[i];
         }
         if(cpy->next){
-            chunk->next = newChunkCpy(cpy->next);
+            chunk->next = newChunkCpy(cpy->next, will_run_in_parallel);
         }
         return chunk;
     }
 
     /// Deallocate a chunk and all it's children
-    void delChunk(CChunk* chunk){
+    __device__ void delChunk(CChunk* chunk, bool will_run_in_parallel){
         if(!chunk){return;}
 
         // Get the chunks to deallocate
-        CDoubleLinkedList<CChunk*> to_destroy = {};
-        to_destroy.init();
         CChunk* cur_chunk = chunk;
         while(cur_chunk){
-            to_destroy.pushBack(cur_chunk);
-            cur_chunk = cur_chunk->next;
-        }
-
-        // std::lock_guard<std::mutex> lock(chunksAllocator->mtx);
-        CDoubleLinkedList<CChunk*>::Iterator* it = to_destroy.begin();
-        while(it != nullptr){
-            chunksAllocator->deallocate(it->value, false);
-            it = it->next;
+            CChunk* next = cur_chunk->next;
+            chunksAllocator->deallocate(cur_chunk, will_run_in_parallel);
+            cur_chunk = next;
         }
     }
 
@@ -188,13 +231,13 @@ struct CMemoryAllocator {
     ////////////////////////////////////////////////////////////
     
     /// Allocate a new occupancy grid
-    COccupancyGrid* newOccupancyGrid(){
-        return gridsAllocator->allocate();
+    __device__ COccupancyGrid* newOccupancyGrid(bool will_run_in_parallel){
+        return gridsAllocator->allocate(will_run_in_parallel);
     }
 
     /// Allocate a new occupancy grid and make a copy of the given occupancy grid
-    COccupancyGrid* newOccupancyGridCpy(const COccupancyGrid* cpy){
-        COccupancyGrid* grid = newOccupancyGrid();
+    __device__ COccupancyGrid* newOccupancyGridCpy(const COccupancyGrid* cpy, bool will_run_in_parallel){
+        COccupancyGrid* grid = newOccupancyGrid(will_run_in_parallel);
         for(uint32_t i=0; i<OocSimLodSettings::GRID_SIZE / 32; i++){
             grid->values[i] = cpy->values[i];
         }
@@ -202,9 +245,9 @@ struct CMemoryAllocator {
     }
 
     /// Deallocate an occupancy grid
-    void delOccupancyGrid(COccupancyGrid* grid){
-        gridsAllocator->deallocate(grid);
-        grid = nullptr;
+    __device__ void delOccupancyGrid(COccupancyGrid* grid, bool will_run_in_parallel){
+        if(!grid){return;}
+        gridsAllocator->deallocate(grid, will_run_in_parallel);
     }
 
 
@@ -214,57 +257,28 @@ struct CMemoryAllocator {
     ////////////////////////////////////////////////////////////
     
     /// Allocate a new node
-    COctreeNode* newOctreeNode(CIdAABB aabb_index){
-        COctreeNode* node = nodesAllocator->allocate();
+    __device__ COctreeNode* newOctreeNode(CIdAABB aabb_index, bool will_run_in_parallel){
+        COctreeNode* node = nodesAllocator->allocate(will_run_in_parallel);
         node->aabb_index = aabb_index;
         return node;
     }
 
     /// Allocate a new node and make a copy of the given node
-    COctreeNode* newOctreeNodeCpy(const COctreeNode* cpy, bool node_only = false){
-        COctreeNode* node = newOctreeNode(cpy->aabb_index);
+    __device__ COctreeNode* newOctreeNodeCpy(const COctreeNode* cpy, bool will_run_in_parallel, bool node_only = false){
+        COctreeNode* node = newOctreeNode(cpy->aabb_index, will_run_in_parallel);
 
         node->children_ids = cpy->children_ids;
-        node->counter = cpy->counter;
-        node->points = cpy->points ? newChunkCpy(cpy->points) : nullptr;
-        node->voxels = cpy->voxels ? newChunkCpy(cpy->voxels) : nullptr;
-        node->occupancy = cpy->occupancy ? newOccupancyGridCpy(cpy->occupancy) : nullptr;
+        node->points_counter = cpy->points_counter;
+        node->voxels_counter = cpy->voxels_counter;
+        node->points = cpy->points ? newChunkCpy(cpy->points, will_run_in_parallel) : nullptr;
+        node->voxels = cpy->voxels ? newChunkCpy(cpy->voxels, will_run_in_parallel) : nullptr;
+        node->occupancy = cpy->occupancy ? newOccupancyGridCpy(cpy->occupancy, will_run_in_parallel) : nullptr;
 
         if(!node_only){
             for(uint32_t child = 0; child < 8; child++){
                 if(cpy->children[child]){
-                    node->children[child] = newOctreeNodeCpy(cpy->children[child]);
+                    node->children[child] = newOctreeNodeCpy(cpy->children[child], will_run_in_parallel, false);
                 }
-            }
-        }
-
-        return node;
-    }
-
-
-    /// Allocate a new node and make a copy of the given node
-    /// The new node will keep children of the partial node if the copy doesn't introduce new children
-    COctreeNode* newOctreeNodePartialCpy(const COctreeNode* cpy, const COctreeNode* partial){
-        if(!partial){return newOctreeNodeCpy(cpy);}
-
-        COctreeNode* node = newOctreeNode(cpy->aabb_index);
-
-        node->children_ids = cpy->children_ids;
-        node->counter = cpy->counter;
-        node->points = cpy->points ? newChunkCpy(cpy->points) : nullptr;
-        node->voxels = cpy->voxels ? newChunkCpy(cpy->voxels) : nullptr;
-        node->occupancy = cpy->occupancy ? newOccupancyGridCpy(cpy->occupancy) : nullptr;
-
-        for(uint32_t child = 0; child < 8; child++){
-            const COctreeNode* next_partial = partial->children[child] ? partial->children[child] : nullptr;
-            if(cpy->children[child]){
-                if(next_partial){
-                    node->children[child] = newOctreeNodePartialCpy(cpy->children[child], next_partial);
-                } else {
-                    node->children[child] = newOctreeNodeCpy(cpy->children[child]);
-                }
-            } else if(next_partial) {
-                node->children[child] = newOctreeNodeCpy(next_partial);
             }
         }
 
@@ -273,75 +287,18 @@ struct CMemoryAllocator {
 
 
     /// Deallocate a node
-    void delOctreeNode(COctreeNode* node){
+    __device__ void delOctreeNode(COctreeNode* node, bool will_run_in_parallel){
         if(!node){return;}
 
-        CDoubleLinkedList<CChunk*> chunks_to_delete = {};
-        chunks_to_delete.init();
-        CDoubleLinkedList<COccupancyGrid*> grids_to_delete = {};
-        grids_to_delete.init();
-        CDoubleLinkedList<COctreeNode*> nodes_to_delete = {};
-        nodes_to_delete.init();
+        delChunk(node->points, will_run_in_parallel);
+        delChunk(node->voxels, will_run_in_parallel);
+        delOccupancyGrid(node->occupancy, will_run_in_parallel);
 
-        CDoubleLinkedList<COctreeNode*> to_visit = {};
-        while(!to_visit.isEmpty()){
-            COctreeNode* cur_node = *to_visit.front();
-            to_visit.popFront();
-
-            nodes_to_delete.pushBack(cur_node);
-            if(cur_node->points){
-                CChunk* cur_chunk = cur_node->points;
-                while(cur_chunk){
-                    chunks_to_delete.pushBack(cur_chunk);
-                    cur_chunk = cur_chunk->next;
-                }
-            }
-            if(cur_node->voxels){
-                CChunk* cur_chunk = cur_node->voxels;
-                while(cur_chunk){
-                    chunks_to_delete.pushBack(cur_chunk);
-                    cur_chunk = cur_chunk->next;
-                }
-            }
-            if(cur_node->occupancy){
-                grids_to_delete.pushBack(cur_node->occupancy);
-            }
-            for(uint32_t i=0; i<8; i++){
-                if(cur_node->children[i]){
-                    to_visit.pushBack(cur_node->children[i]);
-                }
-            }
-        }
-
-        // Delete chunks
-        {
-            // std::lock_guard<std::mutex> lock(chunksAllocator->mtx);
-            CDoubleLinkedList<CChunk*>::Iterator* it = chunks_to_delete.begin();
-            while(it != nullptr){
-                chunksAllocator->deallocate(it->value, false);
-                it = it->next;
-            }
-        }
-
-        // Delete grids
-        {
-            // std::lock_guard<std::mutex> lock(gridsAllocator->mtx);
-            CDoubleLinkedList<COccupancyGrid*>::Iterator* it = grids_to_delete.begin();
-            while(it != nullptr){
-                gridsAllocator->deallocate(it->value, false);
-                it = it->next;
-            }
-        }
-
-        // Delete nodes
-        {
-            // std::lock_guard<std::mutex> lock(nodesAllocator->mtx);
-            CDoubleLinkedList<COctreeNode*>::Iterator* it = nodes_to_delete.begin();
-            while(it != nullptr){
-                nodesAllocator->deallocate(it->value, false);
-                it = it->next;
-            }
+        for(uint32_t i=0; i<8; i++){
+            delOctreeNode(node->children[i], will_run_in_parallel);
         }
     }
+    
+#endif // __CUDACC__
 
 };

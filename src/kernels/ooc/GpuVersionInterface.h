@@ -273,7 +273,12 @@ struct COctreeNode {
 	COccupancyGrid* occupancy = nullptr;
 	CIdAABB aabb_index = CINVALID_ID;
 
-	uint32_t counter = 0;
+	uint32_t points_counter = 0;
+	uint32_t voxels_counter = 0;
+
+	uint32_t points_stored = 0;
+	uint32_t voxels_stored = 0;
+
 	uint8_t children_ids = 0b00000000;
 	uint8_t children_visibility = 0b00000000;
 	uint8_t level = 0;

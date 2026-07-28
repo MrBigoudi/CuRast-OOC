@@ -21,32 +21,39 @@ T init_field(const std::string& toml_entry, const T default_value) {
 
 /// Initialises the settings
 void OocSimLodSettings::init(){
+    /// Device properties
+    CUdevice device;
+    cuCtxGetDevice(&device);
+    int value = 0;
+    CURuntime::assertCudaSuccess(cuDeviceGetAttribute(&value, CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT, device));
+    DEVICE_ATTRIBUTE_NB_SM = (uint32_t)value;
+    CURuntime::assertCudaSuccess(cuDeviceGetAttribute(&value, CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_MULTIPROCESSOR, device));
+    DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM = (uint32_t)value;
+    CURuntime::assertCudaSuccess(cuDeviceGetAttribute(&value, CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK, device));
+    DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK = (uint32_t)value;
+    CURuntime::assertCudaSuccess(cuDeviceGetAttribute(&value, CU_DEVICE_ATTRIBUTE_MAX_BLOCKS_PER_MULTIPROCESSOR, device));
+    DEVICE_ATTRIBUTE_MAX_BLOCKS_PER_SM = (uint32_t)value;
+    CURuntime::assertCudaSuccess(cuDeviceGetAttribute(&value, CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X, device));
+    DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X = (uint32_t)value;
+    CURuntime::assertCudaSuccess(cuDeviceGetAttribute(&value, CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Y, device));
+    DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Y = (uint32_t)value;
+    CURuntime::assertCudaSuccess(cuDeviceGetAttribute(&value, CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Z, device));
+    DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Z = (uint32_t)value;
+    CURuntime::assertCudaSuccess(cuDeviceGetAttribute(&value, CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_X, device));
+    DEVICE_ATTRIBUTE_MAX_GRID_DIM_X = (uint32_t)value;
+    CURuntime::assertCudaSuccess(cuDeviceGetAttribute(&value, CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y, device));
+    DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y = (uint32_t)value;
+    CURuntime::assertCudaSuccess(cuDeviceGetAttribute(&value, CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z, device));
+    DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z = (uint32_t)value;
+
     /// Miscellaneous
     IS_RUNNING_IN_PARALLEL = init_field<bool>("IS_RUNNING_IN_PARALLEL", false);
     NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE = init_field<uint32_t>("NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE", 60);
     MEASURE_TIMINGS = init_field<bool>("MEASURE_TIMINGS", false);
     IS_USING_GPU_VERSION = init_field<bool>("IS_USING_GPU_VERSION", false);
 
-    CUdevice device;
-    cuCtxGetDevice(&device);
-    int val = 0;
-    CURuntime::assertCudaSuccess(cuDeviceGetAttribute(
-        &val, 
-        CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK, 
-        device)
-    );
-    uint32_t max_threads_per_block = uint32_t(val);
-    CURuntime::assertCudaSuccess(cuDeviceGetAttribute(
-        &val, 
-        CU_DEVICE_ATTRIBUTE_MAX_BLOCKS_PER_MULTIPROCESSOR, 
-        device)
-    );
-    uint32_t max_blocks_per_sm = uint32_t(val);
-    cudaDeviceProp properties;
-    cudaGetDeviceProperties(&properties, 0);
-    uint32_t nb_sm = uint32_t(properties.multiProcessorCount);
-    PER_NODE_KERNEL_BLOCK_SIZE = init_field<uint32_t>("PER_NODE_KERNEL_BLOCK_SIZE", max_threads_per_block);
-    NB_BLOCKS_PER_NODE = init_field<uint32_t>("NB_BLOCKS_PER_NODE", max_blocks_per_sm);
+    PER_NODE_KERNEL_BLOCK_SIZE = init_field<uint32_t>("PER_NODE_KERNEL_BLOCK_SIZE", DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK);
+    NB_BLOCKS_PER_NODE = init_field<uint32_t>("NB_BLOCKS_PER_NODE", DEVICE_ATTRIBUTE_MAX_BLOCKS_PER_SM);
 
     /// Batch sizes
     BATCHES_LIST_SIZE = init_field<uint32_t>("BATCHES_LIST_SIZE", 1'024);
@@ -69,7 +76,11 @@ void OocSimLodSettings::init(){
     NB_ALLOCABLE_NODES = init_field<uint32_t>("NB_ALLOCABLE_NODES", 2048);
 
     /// GPU Version buffers
-    INITIAL_MAX_NB_NODES = init_field<uint32_t>("INITIAL_MAX_NB_NODES", 1'000'000);
+    USE_DEVICE_ATTRIBUTES = init_field<bool>("USE_DEVICE_ATTRIBUTES", false);
+    MAX_NB_NODES = USE_DEVICE_ATTRIBUTES
+        ? DEVICE_ATTRIBUTE_MAX_BLOCKS_PER_SM * DEVICE_ATTRIBUTE_NB_SM * DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X
+        : init_field<uint32_t>("MAX_NB_NODES", 1'000'000)
+    ;
     MAX_NB_NODES_TO_LOAD = init_field<uint32_t>("MAX_NB_NODES_TO_LOAD", 512);
     MAX_NB_NODES_TO_STORE = init_field<uint32_t>("MAX_NB_NODES_TO_STORE", 512);
     MAX_NB_SPILLING_POINTS = init_field<uint32_t>("MAX_NB_SPILLING_POINTS", 1'000'000);
@@ -109,6 +120,19 @@ void OocSimLodSettings::display(){
     println("    - GRID_SIZE_PER_DIMENSION: {}", GRID_SIZE_PER_DIMENSION);
 
     println("");
+    println("Device properties:");
+    println("    - DEVICE_ATTRIBUTE_NB_SM: {}", DEVICE_ATTRIBUTE_NB_SM);
+    println("    - DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM: {}", DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM);
+    println("    - DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK: {}", DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK);
+    println("    - DEVICE_ATTRIBUTE_MAX_BLOCKS_PER_SM: {}", DEVICE_ATTRIBUTE_MAX_BLOCKS_PER_SM);
+    println("    - DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X: {}", DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X);
+    println("    - DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Y: {}", DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Y);
+    println("    - DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Z: {}", DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Z);
+    println("    - DEVICE_ATTRIBUTE_MAX_GRID_DIM_X: {}", DEVICE_ATTRIBUTE_MAX_GRID_DIM_X);
+    println("    - DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y: {}", DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y);
+    println("    - DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z: {}", DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z);
+
+    println("");
     println("Miscellaneous:");
     println("    - IS_RUNNING_IN_PARALLEL: {}", IS_RUNNING_IN_PARALLEL);
     println("    - NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE: {}", NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE);
@@ -141,7 +165,8 @@ void OocSimLodSettings::display(){
 
     println("");
     println("GPU version properties:");
-    println("    - INITIAL_MAX_NB_NODES: {}", INITIAL_MAX_NB_NODES);
+    println("    - USE_DEVICE_ATTRIBUTES: {}", USE_DEVICE_ATTRIBUTES);
+    println("    - MAX_NB_NODES: {}", MAX_NB_NODES);
     println("    - MAX_NB_NODES_TO_LOAD: {}", MAX_NB_NODES_TO_LOAD);
     println("    - MAX_NB_NODES_TO_STORE: {}", MAX_NB_NODES_TO_STORE);
     println("    - MAX_NB_SPILLING_POINTS: {}", MAX_NB_SPILLING_POINTS);

@@ -29,6 +29,30 @@ struct OocSimLodSettings {
     ;
 
 
+
+    /////////////////////////////////////////////////////////////////////////
+    /////////////////////////// DEVICE PROPERTIES ///////////////////////////
+    /////////////////////////////////////////////////////////////////////////
+    
+    /// The number of multiprocessors
+    static inline uint32_t DEVICE_ATTRIBUTE_NB_SM;
+    /// The maximum number of threads per sm
+    static inline uint32_t DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM;
+    /// The maximum number of threads per block
+    static inline uint32_t DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK;
+    /// The maximum number of blocks per sm
+    static inline uint32_t DEVICE_ATTRIBUTE_MAX_BLOCKS_PER_SM;
+    /// The maximum block size
+    static inline uint32_t DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X;
+    static inline uint32_t DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Y;
+    static inline uint32_t DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Z;
+    /// The maximum grid size
+    static inline uint32_t DEVICE_ATTRIBUTE_MAX_GRID_DIM_X;
+    static inline uint32_t DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y;
+    static inline uint32_t DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z;
+
+
+
     /////////////////////////////////////////////////////////////////////////
     ///////////////////////////// MISCELLANEOUS /////////////////////////////
     /////////////////////////////////////////////////////////////////////////
@@ -111,8 +135,11 @@ struct OocSimLodSettings {
     ////////////////////////////// GPU VERSION //////////////////////////////
     /////////////////////////////////////////////////////////////////////////
     
+    /// If set to true, the app will automatically try to find the best values using the device properties
+    static inline bool USE_DEVICE_ATTRIBUTES;
+
     /// The initial maximum number of nodes allowed to be created during runtime
-    static inline uint32_t INITIAL_MAX_NB_NODES; 
+    static inline uint32_t MAX_NB_NODES; 
     /// The maximum number of nodes that can be queried to load from disk
     static inline uint32_t MAX_NB_NODES_TO_LOAD;
     /// The maximum number of nodes that can be prepared for storing

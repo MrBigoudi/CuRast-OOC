@@ -5,7 +5,7 @@
 
 void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
     // Unbounded data
-    hostStaging.maxNbAABBs = OocSimLodSettings::INITIAL_MAX_NB_NODES;
+    hostStaging.maxNbAABBs = OocSimLodSettings::MAX_NB_NODES;
     hostStaging.relationshipMap = alloc<CGlobalVariables::Relationship>(hostStaging.maxNbAABBs);
     hostStaging.allAABBs = alloc<CAABB>(hostStaging.maxNbAABBs);
     hostStaging.nodes = alloc<COctreeNode*>(hostStaging.maxNbAABBs);
@@ -298,7 +298,8 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
         std::vector<CPoint> points = {};
         uint32_t points_counter = 0;
         if(loaded[i].serializable_points.has_value()){
-            points.reserve(loaded[i].serializable_node.counter);
+            points_counter = loaded[i].serializable_node.points_counter;
+            points.reserve(points_counter);
             const ChunkSerializable& loaded_points = loaded[i].serializable_points.value(); 
             for(uint32_t j=0; j<loaded_points.points.size(); j++){
                 for(uint32_t k=0; k<loaded_points.sizes[j]; k++){
@@ -318,7 +319,8 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
         std::vector<CPoint> voxels = {};
         uint32_t voxels_counter = 0;
         if(loaded[i].serializable_voxels.has_value()){
-            voxels.reserve(loaded[i].serializable_node.counter);
+            voxels_counter = loaded[i].serializable_node.voxels_counter;
+            voxels.reserve(voxels_counter);
             const ChunkSerializable& loaded_voxels = loaded[i].serializable_voxels.value(); 
             for(uint32_t j=0; j<loaded_voxels.points.size(); j++){
                 for(uint32_t k=0; k<loaded_voxels.sizes[j]; k++){
@@ -387,10 +389,32 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
 
 void GpuVersion::octreeUpdateSimLODCountSplit(CuRast* editor, CUcontext* context){
     OptionalLaunchSettings launch_settings = {
-        .gridsize = hostStaging.maxNbAABBs,
+        .gridsize = 0, // Not used with launchCoopertative
         .blocksize = 1
     };
-    prog->launch("kernel_simlod_count_split", {}, launch_settings);
+    prog->launchCooperative("kernel_simlod_count_split", {}, launch_settings);
+}
+
+void GpuVersion::octreeUpdateSimLODVoxelSampling(CuRast* editor, CUcontext* context){
+    OptionalLaunchSettings launch_settings = {
+        .gridsize = OocSimLodSettings::MAX_POINTS_PER_BATCHES,
+        .blocksize = 1
+    };
+    prog->launch("kernel_simlod_voxel_sampling", {}, launch_settings);
+}
+
+void GpuVersion::octreeUpdateSimLODInsertion(CuRast* editor, CUcontext* context){
+    OptionalLaunchSettings launch_settings = {
+        .gridsize = OocSimLodSettings::MAX_NB_NODES,
+        .blocksize = 1
+    };
+    prog->launch("kernel_simlod_insertion_part_1", {}, launch_settings);
+    
+    launch_settings = {
+        .gridsize = OocSimLodSettings::MAX_POINTS_PER_BATCHES,
+        .blocksize = 1
+    };
+    prog->launch("kernel_simlod_insertion_part_2", {}, launch_settings);
 }
 
 
@@ -398,13 +422,36 @@ void GpuVersion::octreeUpdateSimLODCountSplit(CuRast* editor, CUcontext* context
 void GpuVersion::octreeUpdateSimLOD(CuRast* editor, CUcontext* context){
     octreeUpdateSimLODLoad(editor, context);
     octreeUpdateSimLODCountSplit(editor, context);
+    octreeUpdateSimLODVoxelSampling(editor, context);
+    // octreeUpdateSimLODInsertion(editor, context);
 }
 
 
 
 void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
+    std::this_thread::sleep_for(std::chrono::milliseconds(10000));
     octreeUpdateInit(editor, context);
+
+    // TODO: to remove, just to flag the batches and display stuff
+    {
+        OptionalLaunchSettings launch_settings = {
+            .gridsize = 1,
+            .blocksize = 1
+        };
+        GpuVersion::prog->launch("kernel_test_display", {}, launch_settings);
+    }
+
     octreeUpdateBottomUp(editor, context);
+
+    // TODO: to remove, just to flag the batches and display stuff
+    {
+        OptionalLaunchSettings launch_settings = {
+            .gridsize = 1,
+            .blocksize = 1
+        };
+        GpuVersion::prog->launch("kernel_test_display", {}, launch_settings);
+    }
+    
     octreeUpdateSimLOD(editor, context);
 
     // TODO: to remove, just to flag the batches and display stuff
@@ -415,6 +462,9 @@ void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
         };
         GpuVersion::prog->launch("kernel_test", {}, launch_settings);
     }
+
+    cudaDeviceSynchronize();
+    throw(EXIT_FAILURE);
 }
 
 

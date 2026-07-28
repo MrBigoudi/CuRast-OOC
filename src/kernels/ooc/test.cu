@@ -13,4 +13,13 @@ void kernel_test(){
         // );
         globalVariables.batchesAddedMask[i] = true;
     }
+
+    displayOctreeNode(globalVariables.mainOctree);
+}
+
+extern "C" __global__
+void kernel_test_display(){
+    printf("\n\n\n\n\n");
+    displayOctreeNode(globalVariables.mainOctree);
+    printf("\n\n");
 }

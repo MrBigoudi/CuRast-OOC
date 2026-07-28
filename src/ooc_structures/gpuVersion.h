@@ -24,6 +24,8 @@ struct GpuVersion {
         static void octreeUpdateSimLOD(CuRast* editor, CUcontext* context);
         static void octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context);
         static void octreeUpdateSimLODCountSplit(CuRast* editor, CUcontext* context);
+        static void octreeUpdateSimLODVoxelSampling(CuRast* editor, CUcontext* context);
+        static void octreeUpdateSimLODInsertion(CuRast* editor, CUcontext* context);
 
 
         static inline std::vector<CUdeviceptr> pointers = {};
@@ -226,15 +228,24 @@ struct GpuVersion {
             tmp.elements_map = allocAllocatorElementsMap<T>(size, stream);
 
             // Allocate the memory pool
-            CUdeviceptr pool_ptr = 0;
+            CUdeviceptr allocation_pool_ptr = 0;
             uint64_t alignment = alignof(T);
             uint64_t aligned_size = sizeof(T) + ((alignment - (sizeof(T) % alignment)) % alignment);
-            CURuntime::assertCudaSuccess(cuMemAlloc(&pool_ptr, size * aligned_size));
-            tmp.allocated_memory = reinterpret_cast<T*>(pool_ptr);
+            CURuntime::assertCudaSuccess(cuMemAlloc(&allocation_pool_ptr, size * aligned_size));
+            tmp.allocated_memory = reinterpret_cast<T*>(allocation_pool_ptr);
+
+            // Allocate the deallocation array
+            CUdeviceptr deallocation_pool_ptr = 0;
+            CURuntime::assertCudaSuccess(cuMemAlloc(
+                &deallocation_pool_ptr, 
+                size * sizeof(typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::Iterator*)
+            ));
+            tmp.deallocated_memory = reinterpret_cast<typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::Iterator**>(deallocation_pool_ptr);
 
             CURuntime::assertCudaSuccess(cuMemcpyHtoD(allocator_ptr, &tmp, sizeof(CAllocatorPool<T>)));
             
-            pointers.push_back(pool_ptr);
+            pointers.push_back(deallocation_pool_ptr);
+            pointers.push_back(allocation_pool_ptr);
             pointers.push_back(allocator_ptr);
             return reinterpret_cast<CAllocatorPool<T>*>(allocator_ptr);
         };

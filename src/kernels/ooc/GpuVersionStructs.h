@@ -82,7 +82,7 @@ struct CDoubleLinkedList {
         return (cpt_left == cpt_right) && (cpt_left == size);
     }
 
-    // Expect the iterator to already be a part of the list
+    /// Expect the iterator to already be a part of the list
     void moveBegin(Iterator* it) {
         Iterator* prev = it->prev;
         Iterator* next = it->next;
@@ -103,7 +103,29 @@ struct CDoubleLinkedList {
         }
     };
 
-    // Expect the iterator to already be a part of the list
+    /// Moves the given iterator and all it's next iterations at the beginning of the list
+    /// The given iterator will become the first element of the list followed by its previous next iterations
+    /// The elements that was before this iterator becomes the last element of the list
+    /// Expect the iterator to already be a part of the list
+    void moveBeginWithNexts(Iterator* it){
+        Iterator* prev = it->prev;
+        Iterator* next = it->next;
+        if(prev){
+            Iterator* old_front = first->next;
+            Iterator* old_last = last->prev;
+            old_last->next = old_front;
+            old_front->prev = old_last;
+
+            prev->next = nullptr;
+            last->prev = prev;
+
+            it->prev = nullptr;
+            first->next = it;
+        }
+    }
+
+
+    /// Expect the iterator to already be a part of the list
     void moveEnd(Iterator* it) {
         Iterator* prev = it->prev;
         Iterator* next = it->next;
