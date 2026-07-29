@@ -9,6 +9,7 @@ void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
     hostStaging.relationshipMap = alloc<CGlobalVariables::Relationship>(hostStaging.maxNbAABBs);
     hostStaging.allAABBs = alloc<CAABB>(hostStaging.maxNbAABBs);
     hostStaging.nodes = alloc<COctreeNode*>(hostStaging.maxNbAABBs);
+    hostStaging.packedNodes = alloc<COctreeNode*>(hostStaging.maxNbAABBs);
     hostStaging.nodesFlags = alloc<uint32_t>(hostStaging.maxNbAABBs);
     
 
@@ -446,29 +447,65 @@ void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
 
 
 void GpuVersion::renderOctree(RenderTarget& target){
-    // Prepare the octree to be rendered
+    CRenderTarget real_target = {};
+    real_target.colorbuffer = target.colorbuffer;
+    real_target.width = target.width;
+    real_target.height = target.height;
+    real_target.view = target.view;
+    real_target.proj = target.proj;
+    real_target.camera_pos = target.cameraPos;
+
+    CRenderingSettings real_settings = {};
+    real_settings.nb_blocks_per_node = OocSimLodSettings::NB_BLOCKS_PER_NODE;
+    real_settings.debug_lod_to_render = CuRastSettings::debugLodToRender;
+    real_settings.use_voxels_debug_color = CuRastSettings::voxelsDebugColor;
+    real_settings.min_pixel_span = CuRastSettings::minPixelSpan;
+    real_settings.voxels_nb_points_per_axis = uint32_t(CuRastSettings::voxelsPointsPerAxis);
+
+    // Get the current number of nodes
+    uint32_t nb_nodes = 0;
     {
-        OptionalLaunchSettings launch_settings = {
-            .gridsize = 1,
-            .blocksize = 1
-        };
-        GpuVersion::prog->launch("kernel_prepare_rendereable_octree", {}, launch_settings);
+        // Pointers arithmetic shenanigans to get the correct device address
+        CGlobalVariables tmp = {};
+        uint64_t pad = uint64_t(&(tmp.curNbNodes)) - uint64_t(&tmp);
+        CUdeviceptr dst_device = GpuVersion::deviceStaging + pad;
+        CURuntime::assertCudaSuccess(cuMemcpyDtoH(
+            &nb_nodes, 
+            dst_device,
+            sizeof(uint32_t)
+        ));
+    }
+    if(nb_nodes > 0){
+        // Prepare the octree to be rendered
+        {
+            OptionalLaunchSettings launch_settings = {
+                .gridsize = 1,
+                .blocksize = 1
+            };
+            GpuVersion::prog->launch("kernel_prepare_rendereable_octree", {}, launch_settings);
+        }
+        
+        // Render Bounding boxes
+        if(CuRastSettings::showBoundingBoxes){
+            OptionalLaunchSettings launch_settings = {
+                .gridsize = nb_nodes,
+                .blocksize = 1
+            };
+            prog->launch("kernel_render_bounding_boxes", {&real_target}, launch_settings);
+        }
+
+        // Render nodes
+        {
+            OptionalLaunchSettings launch_settings = {
+                .gridsize = OocSimLodSettings::NB_BLOCKS_PER_NODE * nb_nodes,
+                .blocksize = OocSimLodSettings::PER_NODE_KERNEL_BLOCK_SIZE
+            };
+
+            prog->launch("kernel_visibilityPass", {&real_target, &real_settings}, launch_settings);
+            prog->launch("kernel_drawOctreeLarge", {&real_target, &real_settings}, launch_settings);
+            prog->launch("kernel_drawOctreeSmall", {&real_target, &real_settings}, launch_settings);
+        }
     }
 
-    // Render Bounding boxes
-    {
-        OptionalLaunchSettings launch_settings = {
-            .gridsize = hostStaging.maxNbAABBs,
-            .blocksize = 1
-        };
 
-        CRenderTarget real_target = {};
-        real_target.colorbuffer = target.colorbuffer;
-        real_target.width = target.width;
-        real_target.height = target.height;
-        real_target.view = target.view;
-        real_target.proj = target.proj;
-
-        prog->launch("kernel_render_bounding_boxes", {&real_target}, launch_settings);
-    }
 }

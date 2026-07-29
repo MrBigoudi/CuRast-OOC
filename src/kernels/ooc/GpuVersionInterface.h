@@ -414,6 +414,7 @@ struct CRenderTarget{
 	int height;
 	glm::mat4 view;
 	glm::mat4 proj;
+	glm::vec3 camera_pos;
 };
 
 
@@ -482,6 +483,8 @@ struct CGlobalVariables {
 
 	/// The buffer of nodes for rendering and looping over
 	COctreeNode** nodes = nullptr;
+	uint32_t curNbNodes = 0;
+	COctreeNode** packedNodes = nullptr;
 
 
 
@@ -569,4 +572,13 @@ enum PipelineLevel {
 	LevelSimlodVoxelSampling,
 	LevelSimlodInsertion,
 	LevelSimlod
+};
+
+
+struct CRenderingSettings {
+	uint32_t nb_blocks_per_node = 0;
+	int32_t debug_lod_to_render = 0;
+	bool use_voxels_debug_color = false;
+	uint32_t min_pixel_span = 0;
+	uint32_t voxels_nb_points_per_axis = 0;
 };

@@ -2,7 +2,7 @@
 
 ## Next steps (in priority order)
 
-- Add device properties in the settings (MaxGridSize, MaxBlockSize, ...)
+- Pack nodes to avoid useless launches (repack nodes every frame, after cache update + keep a list of indices to redirect packed nodes with their real place)
 - Find better launch settings for kernels + use cuda graphs to reduce overhead costs
 
 - Delay load / store of nodes as waiting for loading and storing won't be possible on GPU side
