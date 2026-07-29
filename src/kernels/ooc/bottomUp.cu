@@ -39,7 +39,7 @@ void kernel_bottom_up_update_part_1(){
         &globalVariables.batchesToAddBottomUpCounts[block_id],
         nb_new_levels,
         __NV_ATOMIC_RELAXED, 
-        __NV_THREAD_SCOPE_SYSTEM
+        __NV_THREAD_SCOPE_DEVICE
     );
 }
 
@@ -55,11 +55,10 @@ __device__ void fillOccupancyGrid(
 
             // Sample voxel occupancy grid at this location
             COccupancyGrid::GridIndex index = COccupancyGrid::getCellIndices(parent_aabb, point);
-            bool is_cell_occupied = new_parent->occupancy->isCellOcupied(index);
+            bool is_cell_occupied = new_parent->occupancy->markCellAsFilled(index);
 
             // Fill up occupancy grid
             if(!is_cell_occupied){
-                new_parent->occupancy->markCellAsFilled(index);
                 // Create corresponding voxel using this point
                 vec3 voxel_centroid = COccupancyGrid::getCellCentroid(parent_aabb, index);
                 CPoint new_voxel = {};

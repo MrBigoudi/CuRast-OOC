@@ -194,8 +194,8 @@ struct CAABB {
 };
 
 struct CPoint {
-	glm::vec3 position;
-	uint32_t color;
+	glm::vec3 position = {};
+	uint32_t color = 0;
 
 	inline void setColor(uint8_t r, uint8_t g, uint8_t b, uint8_t a = 0xFFu){
 		color = (uint32_t)r
@@ -204,11 +204,28 @@ struct CPoint {
 			| ((uint32_t)a << 24);
 	}
 
+	enum Channel {
+		R, G, B
+	};
+	__device__ __forceinline__ const uint8_t getChannel(Channel channel) const {
+		switch(channel){
+			case R:
+				return uint8_t((color << 24) >> 24);
+			case G:
+				return uint8_t(((color >> 8) << 24) >> 24);
+			case B:
+				return uint8_t(((color >> 16) << 24) >> 24);
+		}
+	}
 	__device__ __forceinline__ const uint8_t getAlpha() const {
-		return (color >> 24);
+		return uint8_t(color >> 24);
+	}
+	__device__ __forceinline__ void resetAlpha() {
+		color &= (0x00FFFFFF); // Reset old alpha value
 	}
 	__device__ __forceinline__ void setAlpha(uint8_t a) {
-		color |= ((uint32_t)a << 24);
+		resetAlpha();
+		color |= (uint32_t(a) << 24);
 	}
 };
 
@@ -246,13 +263,13 @@ struct COccupancyGrid {
 		return GridIndex(word_index, bit_index, glm::uvec3(grid_x, grid_y, grid_z));
 	}
 
-	__device__ __forceinline__ bool isCellOcupied(const GridIndex& index) const {
-		return (values[index.word] & (1u << index.bit)) != 0;
+#ifdef __CUDACC__
+	/// Return true if the cell was already flagged
+	__device__ __forceinline__ bool markCellAsFilled(const GridIndex& index){
+		uint32_t old_value = __nv_atomic_fetch_or(&values[index.word], (1u << index.bit), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+		return (old_value & (1u << index.bit));
 	}
-
-	__device__ __forceinline__ void markCellAsFilled(const GridIndex& index){
-		values[index.word] |= (1u << index.bit);
-	}
+#endif // __CUDACC__
 
 	__device__ __forceinline__ static glm::vec3 getCellCentroid(const CAABB& aabb, const GridIndex& index){
 		glm::vec3 world_grid_size = aabb.getSize() / float(OocSimLodSettings::GRID_SIZE_PER_DIMENSION);
@@ -261,9 +278,14 @@ struct COccupancyGrid {
 };
 
 struct CChunk{
-	CPoint points[OocSimLodSettings::NB_POINTS_PER_CHUNK];
+	CPoint points[OocSimLodSettings::NB_POINTS_PER_CHUNK] = {CPoint()};
 	uint32_t size = 0;
 	CChunk* next = nullptr;
+
+	~CChunk(){
+		size = 0;
+		next = nullptr;
+	}
 };
 
 struct COctreeNode {
@@ -279,7 +301,10 @@ struct COctreeNode {
 	uint32_t points_stored = 0;
 	uint32_t voxels_stored = 0;
 
-	uint8_t children_ids = 0b00000000;
+	uint32_t children_ids = 0b00000000;
+
+	// TODO: pack all of the following in a single uint32_t
+	// uint8_t children_ids = 0b00000000;
 	uint8_t children_visibility = 0b00000000;
 	uint8_t level = 0;
 
@@ -287,6 +312,27 @@ struct COctreeNode {
 	bool is_large = false;
 	bool is_visible = false;
 	bool is_cut = false;
+
+	~COctreeNode(){
+		for(uint32_t i=0; i<8; i++){
+			children[i] = nullptr;
+		}
+		points = nullptr;
+		voxels = nullptr;
+		occupancy = nullptr;
+		aabb_index = CINVALID_ID;
+		points_counter = 0;
+		voxels_counter = 0;
+		points_stored = 0;
+		voxels_stored = 0;
+		children_ids = 0b00000000;
+		children_visibility = 0b00000000;
+		level = 0;
+		updated = false;
+		is_large = false;
+		is_visible = false;
+		is_cut = false;
+	}
 };
 
 struct CFullOctree {
@@ -510,4 +556,17 @@ struct CGlobalVariables {
     uint32_t maxNbBacklogVoxels = 0;
     CPoint* backlogVoxels = nullptr;
     COctreeNode** backlogVoxelsNodes = nullptr;
+};
+
+
+
+
+enum PipelineLevel {
+	LevelInit,
+	LevelBottomUp,
+	LevelSimlodLoad,
+	LevelSimlodSplitCount,
+	LevelSimlodVoxelSampling,
+	LevelSimlodInsertion,
+	LevelSimlod
 };

@@ -22,7 +22,7 @@ void SimLod::update(
 	timing->stop_clock();
 
 	// println("//////////////////////////////////////////////////");
-	// println("////////// Octree after simlod load //////////");
+	// println("//////////// Octree after simlod load ////////////");
 	// println("//////////////////////////////////////////////////");
 	// main_root->display();
 	// GlobalVariables::displayCpuMemoryUsage();

@@ -53,7 +53,7 @@ struct CAllocatorPool {
 
 #ifdef __CUDACC__
     __device__ void reset_temporary_allocations(){
-        uint32_t counter = __nv_atomic_load_n(&tmp_allocation_counter, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_SYSTEM);
+        uint32_t counter = __nv_atomic_load_n(&tmp_allocation_counter, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
 
         // Update the element position in the list
         // No need to update the map as the iterator pointer is unchanged
@@ -63,11 +63,11 @@ struct CAllocatorPool {
         }
         elements->moveBeginWithNexts(list_it);
 
-        __nv_atomic_sub(&tmp_allocation_counter, counter, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_SYSTEM);
+        __nv_atomic_sub(&tmp_allocation_counter, counter, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
     }
 
     __device__ void reset_temporary_deallocations(){
-        uint32_t counter = __nv_atomic_load_n(&tmp_deallocation_counter, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_SYSTEM);
+        uint32_t counter = __nv_atomic_load_n(&tmp_deallocation_counter, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
 
         // Remove the element and put it in the back
         // No need to update the map as the iterator pointer is unchanged
@@ -76,7 +76,7 @@ struct CAllocatorPool {
             elements->moveEnd(list_it);
         }
 
-        __nv_atomic_sub(&tmp_deallocation_counter, counter, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_SYSTEM);
+        __nv_atomic_sub(&tmp_deallocation_counter, counter, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
     }
     
 
@@ -87,7 +87,7 @@ struct CAllocatorPool {
     /// Pick the first available element
     __device__ T* allocate(bool will_run_in_parallel) {
         // TODO: for now just crash if list is full
-        uint32_t old_counter = __nv_atomic_fetch_add(&nb_allocated_elements, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_SYSTEM);
+        uint32_t old_counter = __nv_atomic_fetch_add(&nb_allocated_elements, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
         if(old_counter == CAPACITY){
             switch(ALLOCATOR_ID){
                 case ChunkAllocator:
@@ -106,7 +106,7 @@ struct CAllocatorPool {
         // Get the first free element of the list
         typename CDoubleLinkedList<Entry*>::Iterator* list_it = elements->end();
         if(will_run_in_parallel){
-            uint32_t counter = __nv_atomic_fetch_add(&tmp_allocation_counter, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_SYSTEM);
+            uint32_t counter = __nv_atomic_fetch_add(&tmp_allocation_counter, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
             for(uint32_t i=0; i<counter; i++){
                 list_it = list_it->prev;
             }
@@ -133,7 +133,7 @@ struct CAllocatorPool {
         if(!entry_id){return;}
 
         // TODO: for now just crash if list is empty
-        uint32_t old_counter = __nv_atomic_fetch_sub(&nb_allocated_elements, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_SYSTEM);
+        uint32_t old_counter = __nv_atomic_fetch_sub(&nb_allocated_elements, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
         if(old_counter == 0){
             switch(ALLOCATOR_ID){
                 case ChunkAllocator:
@@ -166,7 +166,7 @@ struct CAllocatorPool {
         entry->is_free = true;
 
         if(will_run_in_parallel){
-            uint32_t counter = __nv_atomic_fetch_add(&tmp_deallocation_counter, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_SYSTEM);
+            uint32_t counter = __nv_atomic_fetch_add(&tmp_deallocation_counter, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
             deallocated_memory[counter] = list_it;
         } else {
             elements->moveEnd(list_it);
@@ -198,19 +198,6 @@ struct CMemoryAllocator {
         return chunksAllocator->allocate(will_run_in_parallel);
     }
 
-    /// Allocate a new chunk and make a copy of the given chunk
-    __device__ CChunk* newChunkCpy(const CChunk* cpy, bool will_run_in_parallel){
-        CChunk* chunk = newChunk(will_run_in_parallel);
-        chunk->size = cpy->size;
-        for(uint32_t i=0; i<OocSimLodSettings::NB_POINTS_PER_CHUNK; i++){
-            chunk->points[i] = cpy->points[i];
-        }
-        if(cpy->next){
-            chunk->next = newChunkCpy(cpy->next, will_run_in_parallel);
-        }
-        return chunk;
-    }
-
     /// Deallocate a chunk and all it's children
     __device__ void delChunk(CChunk* chunk, bool will_run_in_parallel){
         if(!chunk){return;}
@@ -219,6 +206,7 @@ struct CMemoryAllocator {
         CChunk* cur_chunk = chunk;
         while(cur_chunk){
             CChunk* next = cur_chunk->next;
+            cur_chunk->next = nullptr;
             chunksAllocator->deallocate(cur_chunk, will_run_in_parallel);
             cur_chunk = next;
         }
@@ -233,15 +221,6 @@ struct CMemoryAllocator {
     /// Allocate a new occupancy grid
     __device__ COccupancyGrid* newOccupancyGrid(bool will_run_in_parallel){
         return gridsAllocator->allocate(will_run_in_parallel);
-    }
-
-    /// Allocate a new occupancy grid and make a copy of the given occupancy grid
-    __device__ COccupancyGrid* newOccupancyGridCpy(const COccupancyGrid* cpy, bool will_run_in_parallel){
-        COccupancyGrid* grid = newOccupancyGrid(will_run_in_parallel);
-        for(uint32_t i=0; i<OocSimLodSettings::GRID_SIZE / 32; i++){
-            grid->values[i] = cpy->values[i];
-        }
-        return grid;
     }
 
     /// Deallocate an occupancy grid
@@ -263,39 +242,21 @@ struct CMemoryAllocator {
         return node;
     }
 
-    /// Allocate a new node and make a copy of the given node
-    __device__ COctreeNode* newOctreeNodeCpy(const COctreeNode* cpy, bool will_run_in_parallel, bool node_only = false){
-        COctreeNode* node = newOctreeNode(cpy->aabb_index, will_run_in_parallel);
-
-        node->children_ids = cpy->children_ids;
-        node->points_counter = cpy->points_counter;
-        node->voxels_counter = cpy->voxels_counter;
-        node->points = cpy->points ? newChunkCpy(cpy->points, will_run_in_parallel) : nullptr;
-        node->voxels = cpy->voxels ? newChunkCpy(cpy->voxels, will_run_in_parallel) : nullptr;
-        node->occupancy = cpy->occupancy ? newOccupancyGridCpy(cpy->occupancy, will_run_in_parallel) : nullptr;
-
-        if(!node_only){
-            for(uint32_t child = 0; child < 8; child++){
-                if(cpy->children[child]){
-                    node->children[child] = newOctreeNodeCpy(cpy->children[child], will_run_in_parallel, false);
-                }
-            }
-        }
-
-        return node;
-    }
-
 
     /// Deallocate a node
     __device__ void delOctreeNode(COctreeNode* node, bool will_run_in_parallel){
         if(!node){return;}
 
         delChunk(node->points, will_run_in_parallel);
+        node->points = nullptr;
         delChunk(node->voxels, will_run_in_parallel);
+        node->voxels = nullptr;
         delOccupancyGrid(node->occupancy, will_run_in_parallel);
+        node->occupancy = nullptr;
 
         for(uint32_t i=0; i<8; i++){
             delOctreeNode(node->children[i], will_run_in_parallel);
+            node->children[i] = nullptr;
         }
     }
     

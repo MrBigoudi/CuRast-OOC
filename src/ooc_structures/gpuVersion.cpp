@@ -148,9 +148,7 @@ void GpuVersion::init(CuRast* editor, CUcontext* context) {
 
     CURuntime::assertCudaSuccess(cuStreamCreate(&stream, CU_STREAM_NON_BLOCKING));
     initBuffers(editor, context);
-    println("buffer initialised");
     initAllocators(editor, context, &stream);
-    println("allocator initialised");
     cudaDeviceSynchronize();
 
     size_t heap_size = 1024 * 1024 * 1024; // 1Gb for now
@@ -294,7 +292,8 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
     for(uint32_t i = 0; i<nb_nodes_to_load; i++){
         // TODO: better sending strategy, for now, send 1 node at a time with async
         CIdAABB aabb_index = loaded[i].serializable_node.aabb_index;
-        uint8_t children_ids = loaded[i].serializable_node.children_ids;
+        // uint8_t children_ids = loaded[i].serializable_node.children_ids;
+        uint32_t children_ids = uint32_t(loaded[i].serializable_node.children_ids);
         std::vector<CPoint> points = {};
         uint32_t points_counter = 0;
         if(loaded[i].serializable_points.has_value()){
@@ -343,7 +342,8 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
         ));
         CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync(
             (CUdeviceptr)(hostStaging.receivedChildrenIds + (CUdeviceptr)(i*sizeof(uint8_t))), 
-            &children_ids, sizeof(uint8_t), stream
+            // &children_ids, sizeof(uint8_t), stream
+            &children_ids, sizeof(uint32_t), stream
         ));
         CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync(
             (CUdeviceptr)(hostStaging.receivedPointsCounters + (CUdeviceptr)(i*sizeof(uint32_t))), 
@@ -423,35 +423,14 @@ void GpuVersion::octreeUpdateSimLOD(CuRast* editor, CUcontext* context){
     octreeUpdateSimLODLoad(editor, context);
     octreeUpdateSimLODCountSplit(editor, context);
     octreeUpdateSimLODVoxelSampling(editor, context);
-    // octreeUpdateSimLODInsertion(editor, context);
+    octreeUpdateSimLODInsertion(editor, context);
 }
 
 
 
 void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
-    std::this_thread::sleep_for(std::chrono::milliseconds(10000));
     octreeUpdateInit(editor, context);
-
-    // TODO: to remove, just to flag the batches and display stuff
-    {
-        OptionalLaunchSettings launch_settings = {
-            .gridsize = 1,
-            .blocksize = 1
-        };
-        GpuVersion::prog->launch("kernel_test_display", {}, launch_settings);
-    }
-
-    octreeUpdateBottomUp(editor, context);
-
-    // TODO: to remove, just to flag the batches and display stuff
-    {
-        OptionalLaunchSettings launch_settings = {
-            .gridsize = 1,
-            .blocksize = 1
-        };
-        GpuVersion::prog->launch("kernel_test_display", {}, launch_settings);
-    }
-    
+    octreeUpdateBottomUp(editor, context);    
     octreeUpdateSimLOD(editor, context);
 
     // TODO: to remove, just to flag the batches and display stuff
@@ -460,11 +439,9 @@ void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
             .gridsize = 1,
             .blocksize = 1
         };
-        GpuVersion::prog->launch("kernel_test", {}, launch_settings);
+        PipelineLevel level = PipelineLevel::LevelSimlod;
+        GpuVersion::prog->launch("kernel_test", {&level}, launch_settings);
     }
-
-    cudaDeviceSynchronize();
-    throw(EXIT_FAILURE);
 }
 
 

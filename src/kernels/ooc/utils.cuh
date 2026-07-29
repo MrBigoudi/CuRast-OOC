@@ -52,7 +52,7 @@ __device__ __forceinline__ void addPointToChunk(CChunk* root_chunk, const CPoint
 
 
 __device__ __forceinline__ CIdAABB createNewAABB(const CAABB& aabb){
-    CIdAABB id = __nv_atomic_fetch_add(&globalVariables.nbAABBs, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_SYSTEM);
+    CIdAABB id = __nv_atomic_fetch_add(&globalVariables.nbAABBs, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
     if(id >= globalVariables.maxNbAABBs || id == CINVALID_ID){
         printf("ERROR: reached the maximum number of nodes that can be created\n");
     }
@@ -158,22 +158,22 @@ T clamp(T value, T min, T max){
 __device__ __forceinline__ void atomicMinFloatRelaxedOrderSystemScope(float* addr, float value){
     if(value >= 0.f) {
         __nv_atomic_min((int *)addr, __float_as_int(value),
-            __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_SYSTEM
+            __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE
         );
     } else {
         __nv_atomic_max((unsigned int *)addr, __float_as_uint(value),
-            __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_SYSTEM
+            __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE
         );
     }
 }
 __device__ __forceinline__ float atomicMaxFloatRelaxedOrderSystemScope(float* addr, float value){
     if(value >= 0.f) {
         __nv_atomic_max((int *)addr, __float_as_int(value),
-            __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_SYSTEM
+            __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE
         );
     } else {
         __nv_atomic_min((unsigned int *)addr, __float_as_uint(value),
-            __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_SYSTEM
+            __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE
         );
     }
 }

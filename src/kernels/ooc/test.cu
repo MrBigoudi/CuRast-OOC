@@ -4,22 +4,36 @@ extern "C" __global__
 void kernel_test(){
     for(uint32_t i=0; i<globalVariables.maxNbBatches; i++){
         if(globalVariables.batchesAddedMask[i]){continue;}
-        // printf("DEVICE: batchesAddedMask[%d]: count = %d, first point = (%f, %f, %f)\n", 
-        //     i, 
-        //     globalVariables.batchesToAddCounts[i],
-        //     globalVariables.batchesToAddPoints[i][0].position.x, 
-        //     globalVariables.batchesToAddPoints[i][0].position.y, 
-        //     globalVariables.batchesToAddPoints[i][0].position.z 
-        // );
         globalVariables.batchesAddedMask[i] = true;
     }
-
-    displayOctreeNode(globalVariables.mainOctree);
 }
 
 extern "C" __global__
-void kernel_test_display(){
+void kernel_test_display(PipelineLevel level){
     printf("\n\n\n\n\n");
+    switch (level) {
+        case LevelInit:
+            printf("Init\n\n");
+            break;
+        case LevelBottomUp:
+            printf("Bottom up\n\n");
+            break;
+        case LevelSimlodLoad:
+            printf("Simlod load\n\n");
+            break;
+        case LevelSimlodSplitCount:
+            printf("Simlod split count\n\n");
+            break;
+        case LevelSimlodVoxelSampling:
+            printf("Simlod voxel sampling\n\n");
+            break;
+        case LevelSimlodInsertion:
+            printf("Simlod insertion\n\n");
+            break;
+        case LevelSimlod:
+            printf("Simlod\n\n");
+            break;
+    }
     displayOctreeNode(globalVariables.mainOctree);
     printf("\n\n");
 }

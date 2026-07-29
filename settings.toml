@@ -45,8 +45,8 @@ BATCHES_LIST_SIZE = 1_024
 
 ### The maximum number of points per batches
 # MAX_POINTS_PER_BATCHES = 10_000
-MAX_POINTS_PER_BATCHES = 100_000
-# MAX_POINTS_PER_BATCHES = 1_000_000
+# MAX_POINTS_PER_BATCHES = 100_000
+MAX_POINTS_PER_BATCHES = 1_000_000
 
 ### The minimum number of batches that can be loaded from disk at once
 MIN_BATCHES_PER_LOAD = 1
@@ -66,9 +66,9 @@ MIN_BATCHES_PER_OCTREE_UPDATE = 1
 ### The maximum number of batches that should be added at the same time in the octree
 # MAX_BATCHES_PER_OCTREE_UPDATE = 1
 # MAX_BATCHES_PER_OCTREE_UPDATE = 2
-# MAX_BATCHES_PER_OCTREE_UPDATE = 4
+MAX_BATCHES_PER_OCTREE_UPDATE = 4
 # MAX_BATCHES_PER_OCTREE_UPDATE = 8
-MAX_BATCHES_PER_OCTREE_UPDATE = 32
+# MAX_BATCHES_PER_OCTREE_UPDATE = 32
 
 ### The number of attempts after which the minimum variables are ignored
 MAX_ATTEMPTS_BEFORE_IGNORING_MIN_VARIABLES = 24
@@ -140,9 +140,9 @@ MAX_NB_NODES_TO_LOAD = 2_048
 ### The maximum number of nodes that can be prepared for storing
 MAX_NB_NODES_TO_STORE = 2_048
 ### The maximum number of spilling points
-MAX_NB_SPILLING_POINTS = 1_000_000
+MAX_NB_SPILLING_POINTS = 1_000_000 # ~22 b per entry
 ### The maximum number of backlog voxels
-MAX_NB_BACKLOG_VOXELS = 1_000_000
+MAX_NB_BACKLOG_VOXELS = 5_000_000 # ~22 b per entry
 
 
 

@@ -687,18 +687,22 @@ void CuRast::draw(Scene* scene, vector<View> views){
 			cfo = unifiedOctreeBuilder.build();
 		}
 
-		if(CuRastSettings::bruteForceRendering){
-			drawPoints(scene, view, target);
+		if(OocSimLodSettings::IS_USING_GPU_VERSION){
+			GpuVersion::renderOctree(target);
 		} else {
-			if(CuRastSettings::useUnifiedMemory){ drawOctreeUnified(scene, view, target, cfo); } 
-			else { drawOctree(scene, view, target); }
+			if(CuRastSettings::bruteForceRendering){
+				drawPoints(scene, view, target);
+			} else {
+				if(CuRastSettings::useUnifiedMemory){ drawOctreeUnified(scene, view, target, cfo); } 
+				else { drawOctree(scene, view, target); }
+			}
+			if(CuRastSettings::showBoundingBoxes){
+				if(CuRastSettings::useUnifiedMemory){ drawOctreeAABBUnified(scene, view, target, cfo); } 
+				else { drawOctreeAABB(scene, view, target); }
+			}
 		}
-		if(CuRastSettings::showBoundingBoxes){
-			if(CuRastSettings::useUnifiedMemory){ drawOctreeAABBUnified(scene, view, target, cfo); } 
-			else { drawOctreeAABB(scene, view, target); }
-		}
+		
 
-		GpuVersion::renderOctree(target);
 
 
 		{
