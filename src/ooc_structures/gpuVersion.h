@@ -26,6 +26,7 @@ struct GpuVersion {
         static void octreeUpdateSimLODCountSplit(CuRast* editor, CUcontext* context);
         static void octreeUpdateSimLODVoxelSampling(CuRast* editor, CUcontext* context);
         static void octreeUpdateSimLODInsertion(CuRast* editor, CUcontext* context);
+        static void octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context);
 
 
         static inline std::vector<CUdeviceptr> pointers = {};

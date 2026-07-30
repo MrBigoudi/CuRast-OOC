@@ -33,6 +33,9 @@ void kernel_test_display(PipelineLevel level){
         case LevelSimlod:
             printf("Simlod\n\n");
             break;
+        case LevelCacheUpdate:
+            printf("Cache update\n\n");
+            break;
     }
     displayOctreeNode(globalVariables.mainOctree);
     printf("\n\n");

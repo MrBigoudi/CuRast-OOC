@@ -78,7 +78,7 @@ std::unordered_set<IdAABB> Visibility::getVisibleNodes(
     //     relationship_map_ref->size(), res.size()
     // );
 
-    relationship_map_ref->map_with_key([&](IdAABB aabb_index, std::array<IdAABB, 8>& children){
+    relationship_map_ref->mapWithKey([&](IdAABB aabb_index, std::array<IdAABB, 8>& children){
         const AABB& aabb = GlobalVariables::getAABB(aabb_index);
         if(frustum.doesIntersect(aabb)){
             res.insert(aabb_index);
@@ -136,7 +136,7 @@ std::vector<IdAABB> Visibility::orderNodes(
             println("WTFF");
 
             println("Relationship map: ");
-            relationship_map_ref->map_with_key([&](IdAABB id, std::array<IdAABB, 8>& children){
+            relationship_map_ref->mapWithKey([&](IdAABB id, std::array<IdAABB, 8>& children){
                 println("    - [{}]: children: [{}, {}, {}, {}, {}, {}, {}, {}]",
                     id,
                     children[0] == INVALID_ID ? -1 : int32_t(children[0]),
@@ -243,7 +243,7 @@ void Visibility::fillVisibilityCache(
             cur_node->display(id, level, true);
 
             println("Relationship map: ");
-            relationship_map_ref->map_with_key([&](IdAABB id, std::array<IdAABB, 8>& children){
+            relationship_map_ref->mapWithKey([&](IdAABB id, std::array<IdAABB, 8>& children){
                 println("    - [{}]: children: [{}, {}, {}, {}, {}, {}, {}, {}]",
                     id,
                     children[0] == INVALID_ID ? -1 : int32_t(children[0]),

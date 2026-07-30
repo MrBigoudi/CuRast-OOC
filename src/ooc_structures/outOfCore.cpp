@@ -51,6 +51,19 @@ std::string getChunkFilePath(const AABB& aabb, bool is_voxel){
     );
 }
 
+std::string getNodeFilePathV2(const CIdAABB& aabb_index){
+    return format("{}/{}.node", OocSimLodSettings::TEMPORARY_NODE_STORAGE_DIRECTORY, aabb_index);
+}
+std::string getOccupancyFilePathV2(const CIdAABB& aabb_index){
+    return format("{}/{}.grid", OocSimLodSettings::TEMPORARY_NODE_STORAGE_DIRECTORY, aabb_index);
+}
+std::string getChunkFilePathV2(const CIdAABB& aabb_index, bool is_voxel){
+    return format( "{}/{}.{}", 
+        OocSimLodSettings::TEMPORARY_NODE_STORAGE_DIRECTORY, aabb_index,
+        is_voxel ? "voxels" : "points"
+    );
+}
+
 
 
 
@@ -72,6 +85,27 @@ CPUFallbackCache::Entry::Entry(const OctreeNode* node){
     }
 }
 
+/// A constructor from an existing node
+CPUFallbackCache::Entry::Entry(const COctreeNode* node, 
+    const std::vector<CPoint>& points, 
+    const std::vector<CPoint>& voxels
+){
+    serializable_node = {};
+    serializable_node.points_counter = node->points_counter;
+    serializable_node.voxels_counter = node->voxels_counter;
+    serializable_node.children_ids = node->children_ids;
+    serializable_node.aabb_index = node->aabb_index;
+
+    if(!points.empty()){
+        serializable_node.points = getChunkFilePathV2(serializable_node.aabb_index, false);
+        serializable_points = ChunkSerializable(points);
+    }
+    if(!voxels.empty()){
+        serializable_node.voxels = getChunkFilePathV2(serializable_node.aabb_index, true);
+        serializable_voxels = ChunkSerializable(voxels);
+    }
+}
+
 /// A constructor which is deserialized from an aabb
 CPUFallbackCache::Entry CPUFallbackCache::Entry::deserialize(const IdAABB& aabb_index){
     const AABB& aabb = GlobalVariables::getAABB(aabb_index);
@@ -87,6 +121,27 @@ CPUFallbackCache::Entry CPUFallbackCache::Entry::deserialize(const IdAABB& aabb_
     if(new_entry.serializable_node.voxels != ""){
         ChunkSerializable voxels_deserialized = ChunkSerializable::deserialize(
             getChunkFilePath(aabb, true)
+        );
+        new_entry.serializable_voxels = std::optional<ChunkSerializable>(voxels_deserialized);
+    }
+
+    return new_entry;
+}
+
+/// A constructor which is deserialized from an aabb
+CPUFallbackCache::Entry CPUFallbackCache::Entry::deserializeV2(const CIdAABB& aabb_index){
+    Entry new_entry = {};
+    new_entry.serializable_node = OctreeNodeSerializable::deserialize(getNodeFilePathV2(aabb_index));
+    if(new_entry.serializable_node.points != ""){
+        ChunkSerializable points_deserialized = ChunkSerializable::deserialize(
+            getChunkFilePathV2(aabb_index, false)
+        );
+        new_entry.serializable_points = std::optional<ChunkSerializable>(points_deserialized);
+    }
+
+    if(new_entry.serializable_node.voxels != ""){
+        ChunkSerializable voxels_deserialized = ChunkSerializable::deserialize(
+            getChunkFilePathV2(aabb_index, true)
         );
         new_entry.serializable_voxels = std::optional<ChunkSerializable>(voxels_deserialized);
     }
@@ -180,6 +235,30 @@ ChunkSerializable::ChunkSerializable(const Chunk* root_chunk){
 
         cur_chunk = cur_chunk->next;
     }
+}
+
+ChunkSerializable::ChunkSerializable(const std::vector<CPoint>& root_points){
+    uint32_t total_size = root_points.size();
+    if(!total_size){return;}
+    uint32_t nb_chunks = (total_size + OocSimLodSettings::NB_POINTS_PER_CHUNK - 1) / OocSimLodSettings::NB_POINTS_PER_CHUNK;
+    uint32_t last_size = total_size % OocSimLodSettings::NB_POINTS_PER_CHUNK;
+    
+    uint32_t cur_index = 0;
+    for(uint32_t i=0; i<nb_chunks; i++){
+        std::array<Point, OocSimLodSettings::NB_POINTS_PER_CHUNK> new_points = {};
+        sizes.push_back(OocSimLodSettings::NB_POINTS_PER_CHUNK);
+        for(uint32_t j=0; j<OocSimLodSettings::NB_POINTS_PER_CHUNK; j++){
+            new_points[j] = {};
+            new_points[j].position = root_points[cur_index].position;
+            new_points[j].color[0] = uint8_t((root_points[cur_index].color << 24) >> 24);
+            new_points[j].color[1] = uint8_t(((root_points[cur_index].color >> 8) << 24) >> 24);
+            new_points[j].color[2] = uint8_t(((root_points[cur_index].color >> 16) << 24) >> 24);
+            new_points[j].color[3] = uint8_t(root_points[cur_index].color >> 24);
+            cur_index++;
+        }
+        points.push_back(new_points);
+    }
+    sizes.back() = last_size;
 }
 
 void ChunkSerializable::serialize(const std::string& filepath) const {
@@ -313,6 +392,23 @@ void OctreeNodeSerializable::serialize(const OctreeNode* node){
     }
     const AABB& aabb = GlobalVariables::getAABB(to_store.serializable_node.aabb_index);
     stored_node.serialize(getNodeFilePath(aabb));
+}
+
+void OctreeNodeSerializable::serializeV2(const COctreeNode* node, 
+    const std::vector<CPoint>& points, 
+    const std::vector<CPoint>& voxels
+){
+    const CPUFallbackCache::Entry to_store = CPUFallbackCache::Entry(node, points, voxels);
+    const OctreeNodeSerializable& stored_node = to_store.serializable_node;
+    if(to_store.serializable_points.has_value()){
+        const ChunkSerializable& serializable = to_store.serializable_points.value();
+        serializable.serialize(stored_node.points);
+    }
+    if(to_store.serializable_voxels.has_value()){
+        const ChunkSerializable& serializable = to_store.serializable_voxels.value();
+        serializable.serialize(stored_node.voxels);
+    }
+    stored_node.serialize(getNodeFilePathV2(node->aabb_index));
 }
 
 void OctreeNodeSerializable::serialize(const std::string& filepath) const {

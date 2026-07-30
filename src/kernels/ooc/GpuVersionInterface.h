@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include "../../ooc_structures/settings.h"
+#include "./GpuVersionStructs.h"
 
 typedef uint32_t CIdAABB;
 constexpr CIdAABB CINVALID_ID = UINT32_MAX;
@@ -423,8 +424,9 @@ enum CNodeFlagType {
 	CFlagToStore,
 	CFlagIsSpilling,
 
+	CFlagIsOnUpdatesCache,
+
 	// Pads to be replaced on need
-	CFlagPad3,
 	CFlagPad4,
 	CFlagPad5,
 	CFlagPad6,
@@ -453,6 +455,57 @@ enum CNodeFlagType {
 	CFlagPad29,
 	CFlagPad30,
 	CFlagPad31,
+};
+
+/// The LRU caches for the nodes
+/// https://www.geeksforgeeks.org/dsa/lru-cache-implementation-using-double-linked-lists/
+struct CLRUCache {
+	const uint32_t CACHE_SIZE;
+	CDoubleLinkedList<CIdAABB> cache = {};
+	CHashMap<CIdAABB, CDoubleLinkedList<CIdAABB>::Iterator*> cache_map = {};
+
+	__device__ __forceinline__ CLRUCache(uint32_t cache_size) : CACHE_SIZE(cache_size){
+		cache.init();
+		cache_map.init(cache_size);
+	}
+
+	/// Add a node to the cache and return the id of a node if it has been removed from the cache
+	__device__ __forceinline__ CIdAABB add(const CIdAABB& aabb_index){
+		CDoubleLinkedList<CIdAABB>::Iterator** it = cache_map.find(aabb_index);
+
+		// If the AABB was already in cache, remove its old version from the list
+		if(it){
+			cache.moveBegin(*it);
+			return CINVALID_ID;
+		}
+
+		// If the cache is full, remove the last node
+		if(cache_map.size >= CACHE_SIZE){
+			CDoubleLinkedList<CIdAABB>::Iterator* end = cache.end();
+			CIdAABB old_aabb = end->value;
+			end->value = aabb_index;
+			cache.moveBegin(end);
+			// cache_map.erase(old_aabb);
+			cache_map.partialErase(old_aabb);
+			cache_map[aabb_index] = end;
+			return old_aabb;
+		}
+
+		// Insert the new node at the front of the list
+		cache.pushFront(aabb_index);
+		cache_map[aabb_index] = cache.begin();
+		return CINVALID_ID;
+	}
+
+	/// Check if a node is already in cache
+	__device__ __forceinline__ bool contains(const CIdAABB& aabb_index) {
+		return cache_map.contains(aabb_index);
+	}
+
+	/// Returns the number of occupied cell in the cache
+	__device__ __forceinline__ uint32_t getSize() const {
+		return cache_map.size;
+	}
 };
 
 struct CGlobalVariables {
@@ -493,13 +546,14 @@ struct CGlobalVariables {
     ///////////////////////////////////////////////////////////////////////
 	uint32_t* nodesFlags = nullptr;
 
+	/// TODO: use cuda unified memory for them ??
 	/// Data received from the host
 	uint32_t nbNodesReceived = 0;
-	uint32_t maxNbNodesReceived = 256;  // TODO: find a better value
-	uint32_t maxNbPointsChunkPerReceivedNode = 0;
+	uint32_t maxNbNodesReceived = 0;
+	uint32_t maxNbPointsChunksPerReceivedNode = 0;
 	uint32_t maxNbVoxelsChunksPerReceivedNode = 256; // TODO: find a better value
 	CIdAABB* receivedAABBIndices = nullptr;
-	uint8_t* receivedChildrenIds = nullptr;
+	uint32_t* receivedChildrenIds = nullptr;
 	uint32_t* receivedPointsCounters = nullptr;
 	uint32_t* receivedVoxelsCounters = nullptr;
 	CPoint** receivedPoints = nullptr;
@@ -511,12 +565,9 @@ struct CGlobalVariables {
     uint32_t nbNodesToLoad = 0;
     uint32_t maxNbNodesToLoad = 0;
     CIdAABB* nodesToLoadBuffer = nullptr;
-	void* nodesToLoadBufferHost = nullptr; // Just needed for host side
 
     /// The buffer of nodes to store to disk
     uint32_t nbNodesToStore = 0;
-    uint32_t maxNbNodesToStore = 0;
-    COctreeNode** nodesToStoreBuffer = nullptr;
 
     /// A mask to know which batches have been handled
     uint32_t maxNbBatches = 0;
@@ -538,9 +589,11 @@ struct CGlobalVariables {
     ///////////////////////////// LRU CACHES //////////////////////////////
     ///////////////////////////////////////////////////////////////////////
     uint32_t updatesCacheSize = 0;
-    CIdAABB* updatesCache = nullptr;
+    uint32_t nbEntryInUpdatesCache = 0;
+    CLRUCache* updatesCache = nullptr;
     uint32_t visibilityCacheSize = 0;
-    CIdAABB* visibilityCache = nullptr;
+    uint32_t nbEntryInVisibilityCache = 0;
+    CLRUCache* visibilityCache = nullptr;
     
 
 
@@ -571,7 +624,8 @@ enum PipelineLevel {
 	LevelSimlodSplitCount,
 	LevelSimlodVoxelSampling,
 	LevelSimlodInsertion,
-	LevelSimlod
+	LevelSimlod,
+	LevelCacheUpdate
 };
 
 

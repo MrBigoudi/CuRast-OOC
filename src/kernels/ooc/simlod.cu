@@ -48,14 +48,6 @@ void kernel_simlod_load_part_1(){
             }
         }
     }
-}
-
-
-/// Run on a single thread
-extern "C" __global__
-void kernel_simlod_load_part_2(){
-    // TODO: rethink this safeguard
-    if(!globalVariables.mainOctree){return;}
 
     // Reset previous simlod values
     globalVariables.nbNodesReceived = 0;
@@ -63,14 +55,24 @@ void kernel_simlod_load_part_2(){
     globalVariables.nbNodesToStore = 0;
     globalVariables.nbSpilledPoints = 0;
     globalVariables.nbBacklogVoxels = 0;
+}
+
+
+/// Run on "maxNbAABBs" threads
+extern "C" __global__
+void kernel_simlod_load_part_2(){
+    // TODO: rethink this safeguard
+    if(!globalVariables.mainOctree){return;}
+
+    auto grid = cg::this_grid();
+    uint32_t thread_id = grid.thread_rank();
+	if(thread_id >= globalVariables.maxNbAABBs){return;}
 
     // Count nodes to load
-    for(uint32_t i=0; i<globalVariables.nbAABBs; i++){
-        if(globalVariables.nodesFlags[i] & (1u << CFlagToLoad)){
-            globalVariables.nodesToLoadBuffer[globalVariables.nbNodesToLoad] = (CIdAABB)i;
-            globalVariables.nbNodesToLoad++;
-            globalVariables.nodesFlags[i] &= (0u << CFlagToLoad);
-        }
+    if(globalVariables.nodesFlags[thread_id] & (1u << CFlagToLoad)){
+        uint32_t index = __nv_atomic_fetch_add(&globalVariables.nbNodesToLoad, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+        globalVariables.nodesToLoadBuffer[index] = (CIdAABB)thread_id;
+        globalVariables.nodesFlags[thread_id] &= (0u << CFlagToLoad);
     }
 
 }

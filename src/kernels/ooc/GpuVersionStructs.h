@@ -290,14 +290,17 @@ struct CHashMap {
         return h;
     }
 
-    static uint64_t hash_murmur(const Key& key) {
+    static uint64_t hashMurmur(const Key& key) {
         if constexpr (CIsPointer<Key>::value) {
             // Hash the pointer's address value directly
             return mix64((uint64_t)(uintptr_t)key ^ SEED);
         } else if constexpr (sizeof(Key) <= 8) {
             // Small integral/enum/etc: widen and hash the value itself
             uint64_t v = 0;
-            __builtin_memcpy(&v, &key, sizeof(Key)); // avoids sign/UB issues from a raw cast
+            const unsigned char* src = reinterpret_cast<const unsigned char*>(&key);
+            for (uint32_t i = 0; i < sizeof(Key); ++i) {
+                v |= (uint64_t)src[i] << (8 * i);
+            }
             return mix64(v ^ SEED);
         } else {
             // General fallback: hash the raw bytes of the object itself
@@ -358,16 +361,16 @@ struct CHashMap {
         }
     }
 
-    CDoubleLinkedList<Entry>& get_list(uint64_t murmur) {
+    CDoubleLinkedList<Entry>& getList(uint64_t murmur) {
         uint64_t hash = murmur % capacity;
         return elements[hash];
     }
 
-    CDoubleLinkedList<Entry>::Iterator* get_iterator(Key& key){
-        return get_iterator(hash_murmur(key));
+    CDoubleLinkedList<Entry>::Iterator* getIterator(Key& key){
+        return getIterator(hashMurmur(key));
     }
 
-    CDoubleLinkedList<Entry>::Iterator* get_iterator(uint64_t murmur){
+    CDoubleLinkedList<Entry>::Iterator* getIterator(uint64_t murmur){
         uint64_t hash = murmur % capacity;
         CDoubleLinkedList<Entry>& elems_list = elements[hash];
 
@@ -388,37 +391,58 @@ struct CHashMap {
     }
 
     /// Replace the value if the key is already in the map
-    void insert_or_replace(Key key, T new_value){
-        uint64_t murmur = hash_murmur(key);
-        CDoubleLinkedList<Entry>& elems_list = get_list(murmur);
-        typename CDoubleLinkedList<Entry>::Iterator* list_it = get_iterator(murmur);
+    void insertOrReplace(Key key, T new_value){
+        uint64_t murmur = hashMurmur(key);
+        CDoubleLinkedList<Entry>& elems_list = getList(murmur);
+        typename CDoubleLinkedList<Entry>::Iterator* list_it = getIterator(murmur);
         if(list_it){
             // Replace if already in the list
             list_it->value.element = new_value;
         } else {
             // Add if not already in the list
-            elems_list.pushFront({new_value, key, murmur});
+            // Check if some previously deleted elements are available
+            typename CDoubleLinkedList<Entry>::Iterator* end = elems_list.end();
+            if(end && end->value.key == INVALID_KEY){ // If so, replace it
+                end->value = {new_value, key, murmur};
+                elems_list.moveBegin(end);
+            } else { // Else, insert a brand new element
+                elems_list.pushFront({new_value, key, murmur});
+            }
             size++;
         }
     }
 
     /// Check if the map already contains the key
     bool contains(Key key){
-        typename CDoubleLinkedList<Entry>::Iterator* list_it = get_iterator(key);
+        typename CDoubleLinkedList<Entry>::Iterator* list_it = getIterator(key);
         return list_it != nullptr;
     }
 
     /// Crash if couldn't find the key
     T* find(Key key){
-        typename CDoubleLinkedList<Entry>::Iterator* list_it = get_iterator(key);
+        typename CDoubleLinkedList<Entry>::Iterator* list_it = getIterator(key);
         if(list_it){return &list_it->value.element;}
         return nullptr;
     }
 
+    bool partialErase(Key key){
+        uint64_t murmur = hashMurmur(key);
+        CDoubleLinkedList<Entry>& elems_list = getList(murmur);
+        typename CDoubleLinkedList<Entry>::Iterator* list_it = getIterator(murmur);
+        if(list_it){
+            // Flag the element as wrong and put it in the back of the list
+            list_it->value.key = INVALID_KEY;
+            elems_list.moveEnd(list_it);
+            size--;
+            return true;
+        }
+        return false;
+    }
+
     bool erase(Key key){
-        uint64_t murmur = hash_murmur(key);
-        CDoubleLinkedList<Entry>& elems_list = get_list(murmur);
-        typename CDoubleLinkedList<Entry>::Iterator* list_it = get_iterator(murmur);
+        uint64_t murmur = hashMurmur(key);
+        CDoubleLinkedList<Entry>& elems_list = getList(murmur);
+        typename CDoubleLinkedList<Entry>::Iterator* list_it = getIterator(murmur);
         if(list_it){
             elems_list.erase(list_it);
             size--;
@@ -436,15 +460,22 @@ struct CHashMap {
 
     /// Create an empty value for the given key if not already in the map
     T& operator[](Key key){
-        uint64_t murmur = hash_murmur(key);
-        CDoubleLinkedList<Entry>& elems_list = get_list(murmur);
-        typename CDoubleLinkedList<Entry>::Iterator* list_it = get_iterator(murmur);
+        uint64_t murmur = hashMurmur(key);
+        CDoubleLinkedList<Entry>& elems_list = getList(murmur);
+        typename CDoubleLinkedList<Entry>::Iterator* list_it = getIterator(murmur);
         if(list_it){
             // Return if already in the list
             return list_it->value.element;
         } else {
             // Add if not already in the list
-            elems_list.pushFront({T(), key, murmur});
+            // Check if some previously deleted elements are available
+            typename CDoubleLinkedList<Entry>::Iterator* end = elems_list.end();
+            if(end && end->value.key == INVALID_KEY){ // If so, replace it
+                end->value = {T(), key, murmur};
+                elems_list.moveBegin(end);
+            } else { // Else, insert a brand new element
+                elems_list.pushFront({T(), key, murmur});
+            }
             size++;
             return elems_list.front()->element;
         }
@@ -466,7 +497,7 @@ struct CHashMap {
     }
 
     template<typename Func>
-    void map_with_key(Func f){
+    void mapWithKey(Func f){
         for(uint32_t i=0; i<capacity; i++){
             typename CDoubleLinkedList<Entry>::Iterator* it = elements[i].begin();
             while(it){

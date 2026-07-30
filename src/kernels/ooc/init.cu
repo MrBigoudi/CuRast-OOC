@@ -19,13 +19,13 @@ __device__ void initAllocatorPool(uint32_t thread_id, void* pool){
     uint64_t i = 0;
     while(it){
         T* tmp_key = (T*)(base + i*aligned_size);
-        uint32_t key = (uint32_t)((allocator->elements_map->hash_murmur(tmp_key)) % allocator->CAPACITY);
+        uint32_t key = (uint32_t)((allocator->elements_map->hashMurmur(tmp_key)) % allocator->CAPACITY);
         if(key == thread_id){
             // uint32_t cur_cpt = __nv_atomic_fetch_add(&globalCpt, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
             // printf("cur_cpt: %d / %d\n", cur_cpt, allocator->CAPACITY);
             typename CAllocatorPool<T>::Entry* entry = it->value;
             entry->value = new (base + i*aligned_size) T();
-            allocator->elements_map->insert_or_replace(entry->value, it);
+            allocator->elements_map->insertOrReplace(entry->value, it);
         }
         allocator->deallocated_memory[i] = nullptr;
         i++;
@@ -85,9 +85,6 @@ void kernel_init_global_buffers(){
     if(thread_id < globalVariables.maxNbNodesToLoad){
         globalVariables.nodesToLoadBuffer[thread_id] = CINVALID_ID;
     }
-    if(thread_id < globalVariables.maxNbNodesToStore){
-        globalVariables.nodesToStoreBuffer[thread_id] = nullptr;
-    }
 
     if(thread_id < globalVariables.maxNbBatches){
         globalVariables.batchesAddedMask[thread_id] = true;
@@ -95,12 +92,10 @@ void kernel_init_global_buffers(){
         globalVariables.batchesToAddBottomUpCounts[thread_id] = 0;
     }
 
-    if(thread_id < globalVariables.updatesCacheSize){
-        globalVariables.updatesCache[thread_id] = CINVALID_ID;
-    } 
-    if(thread_id < globalVariables.visibilityCacheSize){
-        globalVariables.visibilityCache[thread_id] = CINVALID_ID;
-    }    
+    if(thread_id == 0){
+        globalVariables.updatesCache = new CLRUCache(globalVariables.updatesCacheSize);
+        globalVariables.visibilityCache = new CLRUCache(globalVariables.visibilityCacheSize);
+    }   
 }
 
 extern "C" __global__

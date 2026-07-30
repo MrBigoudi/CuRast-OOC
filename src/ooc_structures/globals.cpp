@@ -727,7 +727,7 @@ IdAABB GlobalVariables::createNewAABB(const AABB& aabb){
         throw(EXIT_FAILURE);
     }
     allAABBs.push_back(aabb);
-    aabbRelationshipMap->insert_or_replace(id, {
+    aabbRelationshipMap->insertOrReplace(id, {
         INVALID_ID, INVALID_ID, INVALID_ID, INVALID_ID,
         INVALID_ID, INVALID_ID, INVALID_ID, INVALID_ID
     });
@@ -803,7 +803,7 @@ void GlobalVariables::displayCpuMemoryUsage(){
         real_nb_octrees, real_nb_octrees - 1
     );
 
-    allOctreesRefCounter.map_with_key([&](OctreeNode* node, uint32_t& counter){
+    allOctreesRefCounter.mapWithKey([&](OctreeNode* node, uint32_t& counter){
         printf("    - counter[%p] = %u\n", node, counter);
     });
     println("\n");
@@ -1400,7 +1400,7 @@ void GlobalVariables::freeOctreesOnCPU(){
     // }
 
     std::vector<OctreeNode*> to_erase = {};
-    allOctreesRefCounter.map_with_key([&](OctreeNode* node, uint32_t counter){
+    allOctreesRefCounter.mapWithKey([&](OctreeNode* node, uint32_t counter){
         if(counter == 0){
             to_erase.push_back(node);            
         }

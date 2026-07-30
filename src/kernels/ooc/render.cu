@@ -388,20 +388,17 @@ bool isLargerThanMinSpanning(
 
 
 __device__ 
-uint32_t recursiveTraversal(COctreeNode* cur_node, uint32_t cur_level, uint32_t node_index){
+void recursiveTraversal(COctreeNode* cur_node, uint32_t cur_level){
+    if(!cur_node){return;}
     cur_node->level = cur_level;
 
-    globalVariables.packedNodes[node_index] = cur_node;
-    uint32_t next_index = node_index + 1;
+    globalVariables.packedNodes[globalVariables.curNbNodes] = cur_node;
+    globalVariables.curNbNodes++;
 
     globalVariables.mainOctreeMaxLevel = max(globalVariables.mainOctreeMaxLevel, cur_level);
     for(uint32_t i=0; i<8; i++){
-        if(cur_node->children[i]){
-            next_index = recursiveTraversal(cur_node->children[i], cur_level+1, next_index);
-        }
+        recursiveTraversal(cur_node->children[i], cur_level+1);
     }
-
-    return next_index;
 }
 
 
@@ -409,7 +406,10 @@ extern "C" __global__
 void kernel_prepare_rendereable_octree(){
     if(globalVariables.curNbNodes == 0){return;}
     globalVariables.mainOctreeMaxLevel = 0;
-    uint32_t real_nb_nodes = recursiveTraversal(globalVariables.mainOctree, 0, 0);
+    globalVariables.curNbNodes = 0;
+    recursiveTraversal(globalVariables.mainOctree, 0);
+
+    // printf("Real nb nodes: %d\n", globalVariables.curNbNodes);
 }
 
 
@@ -418,7 +418,7 @@ void kernel_render_bounding_boxes(
 	CRenderTarget target
 ){
 	uint32_t thread_id = cg::this_grid().thread_rank();
-	if(thread_id >= globalVariables.maxNbAABBs){return;}
+	if(thread_id >= globalVariables.curNbNodes){return;}
 
     COctreeNode* node = globalVariables.packedNodes[thread_id];
     const CAABB& aabb = getAABB(node->aabb_index);
@@ -445,14 +445,19 @@ void kernel_visibilityPass(
     // Assign each node to one thread block
     uint32_t node_index = grid.block_rank() / settings.nb_blocks_per_node;
     uint32_t call_index = grid.block_rank() % settings.nb_blocks_per_node;
-    if(node_index >= globalVariables.maxNbAABBs){return;}
+    if(node_index >= globalVariables.curNbNodes){return;}
     
     COctreeNode* node = globalVariables.packedNodes[node_index];
 
     // TODO: Frustum culling
     // if(!node->is_visible){return;}
     node->is_visible = true;
-    node->children_visibility = 0b11111111;
+    node->children_visibility = 0b00000000;
+    for(uint32_t i=0; i<8; i++){
+        if(node->children[i]){
+            node->children_visibility |= (0x01 << i);
+        }
+    }
 
     uint32_t max_bound = 8;
     uint32_t nb_points_per_axis = min(8, globalVariables.mainOctreeMaxLevel + 1 - node->level);
@@ -481,7 +486,7 @@ void kernel_drawOctreeLarge(
     // Assign each node to one thread block
     uint32_t node_index = grid.block_rank() / settings.nb_blocks_per_node;
     uint32_t call_index = grid.block_rank() % settings.nb_blocks_per_node;
-    if(node_index >= globalVariables.maxNbAABBs){return;}
+    if(node_index >= globalVariables.curNbNodes){return;}
     
     COctreeNode* node = globalVariables.packedNodes[node_index];
 
@@ -516,7 +521,7 @@ void kernel_drawOctreeSmall(
     // Assign each node to one thread block
     uint32_t node_index = grid.block_rank() / settings.nb_blocks_per_node;
     uint32_t call_index = grid.block_rank() % settings.nb_blocks_per_node;
-    if(node_index >= globalVariables.maxNbAABBs){return;}
+    if(node_index >= globalVariables.curNbNodes){return;}
     
     COctreeNode* node = globalVariables.packedNodes[node_index];
     if(!node->is_visible){return;}

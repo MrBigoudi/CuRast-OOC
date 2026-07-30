@@ -611,14 +611,6 @@ int main(int argc, char** argv){
 			Runtime::controls->pitch  = -0.294;
 			Runtime::controls->radius = 5.584;
 			Runtime::controls->target = { 0.679, -0.714, 5.163};
-			
-			std::thread thread_loading_points([&](CuRast* editor, CUcontext* context){
-				while(true){
-					LoaderGpuVersion::run(editor, context);
-					if(GlobalVariables::mainLoopIsTerminating){return;}
-				}
-			}, CuRast::instance, &context);
-			thread_loading_points.detach();
 		}
 
 
@@ -752,15 +744,18 @@ int main(int argc, char** argv){
 			GlobalVariables::destroy(CuRast::instance, &context);
 		}
 		if(OocSimLodSettings::IS_USING_GPU_VERSION){
-			GlobalVariables::mainLoopIsTerminating = true;
-			cudaDeviceSynchronize();
+			{
+				std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
+				GlobalVariables::mainLoopIsTerminating = true;
+				cudaDeviceSynchronize();
+			}
 			println("GPU Memory Usage:\n{}", GlobalVariables::getGpuMemoryUsage());
 			OocSimLodSettings::display();
 			GpuVersion::destroy(CuRast::instance, &context);
 			cudaDeviceSynchronize();
 		}
-		VKRenderer::destroy();
 		std::filesystem::remove_all(OocSimLodSettings::TEMPORARY_NODE_STORAGE_DIRECTORY);
+		VKRenderer::destroy();
 
 	} catch(int) {
 
@@ -769,15 +764,18 @@ int main(int argc, char** argv){
 			GlobalVariables::destroy(CuRast::instance, &context);
 		}
 		if(OocSimLodSettings::IS_USING_GPU_VERSION){
-			GlobalVariables::mainLoopIsTerminating = true;
-			cudaDeviceSynchronize();
+			{
+				std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
+				GlobalVariables::mainLoopIsTerminating = true;
+				cudaDeviceSynchronize();
+			}
 			println("GPU Memory Usage:\n{}", GlobalVariables::getGpuMemoryUsage());
 			OocSimLodSettings::display();
 			GpuVersion::destroy(CuRast::instance, &context);
 			cudaDeviceSynchronize();
 		}
-		VKRenderer::destroy();
 		std::filesystem::remove_all(OocSimLodSettings::TEMPORARY_NODE_STORAGE_DIRECTORY);
+		VKRenderer::destroy();
 		
 	}
 }

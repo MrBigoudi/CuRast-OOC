@@ -25,6 +25,7 @@ struct ChunkSerializable {
 
     ChunkSerializable(){};
     ChunkSerializable(const Chunk* root_chunk);
+    ChunkSerializable(const std::vector<CPoint>& points);
     void serialize(const std::string& filepath) const;
     static ChunkSerializable deserialize(const std::string& filepath);
     Chunk* toChunk() const;
@@ -45,6 +46,7 @@ struct OctreeNodeSerializable {
 
     /// Serializes all nodes, points, and voxels
     static void serialize(const OctreeNode* node);
+    static void serializeV2(const COctreeNode* node, const std::vector<CPoint>& points, const std::vector<CPoint>& voxels);
     static OctreeNode* toOctreeNode(const IdAABB& node_aabb_index);
 
     private:
@@ -68,8 +70,10 @@ struct CPUFallbackCache {
         Entry(){}
 		/// A constructor from an existing node
 		Entry(const OctreeNode* node);
+		Entry(const COctreeNode* node, const std::vector<CPoint>& points, const std::vector<CPoint>& voxels);
         /// A constructor which is deserialized from an aabb
         static Entry deserialize(const IdAABB& aabb_index);
+        static Entry deserializeV2(const CIdAABB& aabb_index);
 
 		/// Builds an octree node from an entry
 		OctreeNode* toLeafNode() const;
