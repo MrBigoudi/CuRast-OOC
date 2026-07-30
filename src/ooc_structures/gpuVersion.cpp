@@ -585,6 +585,15 @@ void GpuVersion::renderOctree(RenderTarget& target){
     real_settings.min_pixel_span = CuRastSettings::minPixelSpan;
     real_settings.voxels_nb_points_per_axis = uint32_t(CuRastSettings::voxelsPointsPerAxis);
 
+    // Prepare the octree to be rendered
+    {
+        OptionalLaunchSettings launch_settings = {
+            .gridsize = 1,
+            .blocksize = 1
+        };
+        GpuVersion::prog->launch("kernel_prepare_rendereable_octree", {}, launch_settings);
+    }
+    
     // Get the current number of nodes
     uint32_t nb_nodes = 0;
     {
@@ -599,14 +608,6 @@ void GpuVersion::renderOctree(RenderTarget& target){
         ));
     }
     if(nb_nodes > 0){
-        // Prepare the octree to be rendered
-        {
-            OptionalLaunchSettings launch_settings = {
-                .gridsize = 1,
-                .blocksize = 1
-            };
-            GpuVersion::prog->launch("kernel_prepare_rendereable_octree", {}, launch_settings);
-        }
 
         // Render Bounding boxes
         if(CuRastSettings::showBoundingBoxes){

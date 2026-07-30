@@ -52,7 +52,6 @@ void kernel_simlod_load_part_1(){
     // Reset previous simlod values
     globalVariables.nbNodesReceived = 0;
     globalVariables.nbNodesToLoad = 0;
-    globalVariables.nbNodesToStore = 0;
     globalVariables.nbSpilledPoints = 0;
     globalVariables.nbBacklogVoxels = 0;
 }
@@ -98,7 +97,6 @@ void kernel_simlod_load_part_3(){
 
     COctreeNode* loaded_node = globalAllocator.newOctreeNode(aabb_index, true);
     globalVariables.nodes[aabb_index] = loaded_node;
-    __nv_atomic_add(&globalVariables.curNbNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
     loaded_node->children_ids = children_ids;
     loaded_node->points_counter = nb_points;
     loaded_node->updated = true;
@@ -276,7 +274,6 @@ void simlodSplit(uint32_t thread_id, uint32_t nb_threads){
                     
                     CIdAABB id = createNewAABB(child_aabb);
                     COctreeNode* new_child = globalAllocator.newOctreeNode(id, true);
-                    __nv_atomic_add(&globalVariables.curNbNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
                     spilling_node->children[j] = new_child;
                     globalVariables.nodes[id] = new_child;
                     relationship.children[j] = id;

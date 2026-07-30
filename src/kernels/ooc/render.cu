@@ -404,7 +404,7 @@ void recursiveTraversal(COctreeNode* cur_node, uint32_t cur_level){
 
 extern "C" __global__
 void kernel_prepare_rendereable_octree(){
-    if(globalVariables.curNbNodes == 0){return;}
+    if(!globalVariables.mainOctree){return;}
     globalVariables.mainOctreeMaxLevel = 0;
     globalVariables.curNbNodes = 0;
     recursiveTraversal(globalVariables.mainOctree, 0);

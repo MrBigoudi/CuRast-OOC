@@ -110,7 +110,6 @@ void kernel_bottom_up_update_part_2(){
 		// OctreeNode* new_parent = new OctreeNode(parent_aabb_index);
 		COctreeNode* new_parent = globalAllocator.newOctreeNode(parent_aabb_index, false);
         globalVariables.nodes[parent_aabb_index] = new_parent;
-        __nv_atomic_add(&globalVariables.curNbNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
 
 		new_parent->occupancy = globalAllocator.newOccupancyGrid(false);
 		new_parent->updated = true;

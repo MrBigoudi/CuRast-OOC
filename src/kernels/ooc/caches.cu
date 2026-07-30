@@ -126,6 +126,8 @@ void kernel_prepare_store_part_3(){
 /// Run on a single thread
 extern "C" __global__
 void kernel_prepare_store_part_4(){
+    globalVariables.nbNodesToStore = 0;
+    
     // Because "delOctreeNode" was called in simlodSplit
     globalAllocator.chunksAllocator->reset_temporary_deallocations();
     globalAllocator.gridsAllocator->reset_temporary_deallocations();

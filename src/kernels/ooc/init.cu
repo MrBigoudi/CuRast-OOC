@@ -200,5 +200,4 @@ void kernel_init_octree_part_2(){
     CIdAABB id = createNewAABB(globalVariables.allAABBs[0]);
     globalVariables.mainOctree = globalAllocator.newOctreeNode(id, false);
     globalVariables.nodes[0] = globalVariables.mainOctree;
-    globalVariables.curNbNodes = 1;
 }
