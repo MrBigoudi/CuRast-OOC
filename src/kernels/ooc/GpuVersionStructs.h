@@ -385,6 +385,9 @@ struct CHashMap {
             if(list_it->value.key == murmur){
                 return list_it;
             }
+            if(list_it->value.key == INVALID_KEY){
+                return nullptr;
+            }
             list_it = list_it->next;
         }
         return nullptr;
@@ -418,7 +421,7 @@ struct CHashMap {
         return list_it != nullptr;
     }
 
-    /// Crash if couldn't find the key
+    /// Return nullptr if couldn't find the key
     T* find(Key key){
         typename CDoubleLinkedList<Entry>::Iterator* list_it = getIterator(key);
         if(list_it){return &list_it->value.element;}

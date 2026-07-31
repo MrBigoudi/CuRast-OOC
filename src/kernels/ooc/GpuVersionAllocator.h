@@ -54,11 +54,11 @@ struct CAllocatorPool {
 #ifdef __CUDACC__
     __device__ void reset_temporary_allocations(){
         uint32_t counter = __nv_atomic_load_n(&tmp_allocation_counter, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-
+        if(counter == 0){return;}
         // Update the element position in the list
         // No need to update the map as the iterator pointer is unchanged
         typename CDoubleLinkedList<Entry*>::Iterator* list_it = elements->end();
-        for(uint32_t i=0; i<counter; i++){
+        for(uint32_t i=0; i<(counter-1); i++){
             list_it = list_it->prev;
         }
         elements->moveBeginWithNexts(list_it);
@@ -68,7 +68,8 @@ struct CAllocatorPool {
 
     __device__ void reset_temporary_deallocations(){
         uint32_t counter = __nv_atomic_load_n(&tmp_deallocation_counter, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-
+        if(counter == 0){return;}
+        
         // Remove the element and put it in the back
         // No need to update the map as the iterator pointer is unchanged
         for(uint32_t i=0; i<counter; i++){
@@ -87,20 +88,20 @@ struct CAllocatorPool {
     /// Pick the first available element
     __device__ T* allocate(bool will_run_in_parallel) {
         // TODO: for now just crash if list is full
-        uint32_t old_counter = __nv_atomic_fetch_add(&nb_allocated_elements, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-        if(old_counter == CAPACITY){
+        uint32_t new_counter = __nv_atomic_fetch_add(&nb_allocated_elements, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+        new_counter++;
+        if(new_counter >= CAPACITY){
             switch(ALLOCATOR_ID){
                 case ChunkAllocator:
                     printf("ERROR: can't allocate more `Chunk' elements\n");
-                    break;
+                    customAssert();
                 case OccupancyGridAllocator:
                     printf("ERROR: can't allocate more `OccupancyGrid' elements\n");
-                    break;
+                    customAssert();
                 case OctreeNodeAllocator:
                     printf("ERROR: can't allocate more `OctreeNode' elements\n");
-                    break;
+                    customAssert();
             }
-            // __trap();
         }
 
         // Get the first free element of the list
@@ -114,8 +115,17 @@ struct CAllocatorPool {
 
         Entry* entry = list_it->value;
         if(!entry->is_free){
-            printf("ERROR: the last element of an allocator should be free if the allocator is not full\n");
-            // __trap();
+            switch(ALLOCATOR_ID){
+                case ChunkAllocator:
+                    printf("ERROR `Chunk' allocator: the last element of an allocator should be free if the allocator is not full\n");
+                    customAssert();
+                case OccupancyGridAllocator:
+                    printf("ERROR `OccupancyGrid' allocator: the last element of an allocator should be free if the allocator is not full\n");
+                    customAssert();
+                case OctreeNodeAllocator:
+                    printf("ERROR `OctreeNode' allocator: the last element of an allocator should be free if the allocator is not full\n");
+                    customAssert();
+            }
         }
         entry->is_free = false;
         new (entry->value) T();
@@ -134,25 +144,33 @@ struct CAllocatorPool {
 
         // TODO: for now just crash if list is empty
         uint32_t old_counter = __nv_atomic_fetch_sub(&nb_allocated_elements, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-        if(old_counter == 0){
+        if(old_counter == 0 || old_counter > CAPACITY){ // To handle underflow
             switch(ALLOCATOR_ID){
                 case ChunkAllocator:
                     printf("ERROR: can't deallocate empty `Chunk' elements\n");
-                    break;
+                    customAssert();
                 case OccupancyGridAllocator:
                     printf("ERROR: can't deallocate empty `OccupancyGrid' elements\n");
-                    break;
+                    customAssert();
                 case OctreeNodeAllocator:
                     printf("ERROR: can't deallocate empty `OctreeNode' elements\n");
-                    break;
+                    customAssert();
             }
-            // __trap();
         }
 
         typename CDoubleLinkedList<Entry*>::Iterator** it = elements_map->find(entry_id);
         if(!it){
-            printf("ERROR: can't deallocate an unknown element\n");
-            // __trap();
+            switch(ALLOCATOR_ID){
+                case ChunkAllocator:
+                    printf("ERROR `Chunk' allocator: can't deallocate an unknown element\n");
+                    customAssert();
+                case OccupancyGridAllocator:
+                    printf("ERROR `OccupancyGrid' allocator: can't deallocate an unknown element\n");
+                    customAssert();
+                case OctreeNodeAllocator:
+                    printf("ERROR `OctreeNode' allocator: can't deallocate an unknown element\n");
+                    customAssert();
+            }
         }
         // Reset the element
         entry_id->~T();
@@ -160,8 +178,17 @@ struct CAllocatorPool {
         typename CDoubleLinkedList<Entry*>::Iterator* list_it = *it;
         Entry* entry = list_it->value;
         if(entry->is_free){
-            printf("ERROR: double free of `%d' element %p\n", ALLOCATOR_ID, (void*)entry_id);
-            // __trap();
+            switch(ALLOCATOR_ID){
+                case ChunkAllocator:
+                    printf("ERROR `Chunk' allocator: double free of element %p\n", (void*)entry_id);
+                    customAssert();
+                case OccupancyGridAllocator:
+                    printf("ERROR `OccupancyGrid' allocator: double free of element %p\n", (void*)entry_id);
+                    customAssert();
+                case OctreeNodeAllocator:
+                    printf("ERROR `OctreeNode' allocator: double free of element %p\n", (void*)entry_id);
+                    customAssert();
+            }
         }
         entry->is_free = true;
 
@@ -244,7 +271,7 @@ struct CMemoryAllocator {
 
 
     /// Deallocate a node
-    __device__ void delOctreeNode(COctreeNode* node, bool will_run_in_parallel){
+    __device__ void delOctreeNode(COctreeNode* node, bool node_only, bool will_run_in_parallel){
         if(!node){return;}
 
         delChunk(node->points, will_run_in_parallel);
@@ -255,7 +282,7 @@ struct CMemoryAllocator {
         node->occupancy = nullptr;
 
         for(uint32_t i=0; i<8; i++){
-            delOctreeNode(node->children[i], will_run_in_parallel);
+            if(!node_only){delOctreeNode(node->children[i], false, will_run_in_parallel);}
             node->children[i] = nullptr;
         }
     }

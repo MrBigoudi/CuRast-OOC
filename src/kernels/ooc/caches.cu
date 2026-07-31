@@ -5,7 +5,10 @@ __device__
 void fillUpdatesCacheRecursive(COctreeNode* cur_node){
     if(!cur_node){return;}
     for(uint32_t i=0; i<8; i++){fillUpdatesCacheRecursive(cur_node->children[i]);}
-    if(cur_node->updated){globalVariables.updatesCache->add(cur_node->aabb_index);}
+    if(cur_node->updated){
+        cur_node->updated = false;
+        globalVariables.updatesCache->add(cur_node->aabb_index);
+    }
 }
 
 /// Run on a single thread
@@ -116,18 +119,16 @@ void kernel_prepare_store_part_3(){
 	if(thread_id >= globalVariables.maxNbAABBs){return;}
 
     if(globalVariables.nodesFlags[thread_id] & (1u << CFlagToStore)){
-        globalAllocator.delOctreeNode(globalVariables.nodes[thread_id], true);
+        globalAllocator.delOctreeNode(globalVariables.nodes[thread_id], true, true);
         globalVariables.nodes[thread_id] = nullptr;
-        globalVariables.nodesFlags[thread_id] &= (0u << CFlagToStore);
+        globalVariables.nodesFlags[thread_id] &= ~(1u << CFlagToStore);
     }
 
 }
 
 /// Run on a single thread
 extern "C" __global__
-void kernel_prepare_store_part_4(){
-    globalVariables.nbNodesToStore = 0;
-    
+void kernel_prepare_store_part_4(){    
     // Because "delOctreeNode" was called in simlodSplit
     globalAllocator.chunksAllocator->reset_temporary_deallocations();
     globalAllocator.gridsAllocator->reset_temporary_deallocations();

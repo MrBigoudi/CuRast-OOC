@@ -437,11 +437,11 @@ void LoaderGpuVersion::sendToDevice(){
 				const void* src_points = batchesQueue[j]->points->data();
 				size_t     size_points = batchesQueue[j]->count * sizeof(CPoint);
 
-				CUdeviceptr dst_count = (CUdeviceptr)(GpuVersion::hostStaging.batchesToAddCounts) + (i*sizeof(uint32_t));
+				CUdeviceptr dst_count = (CUdeviceptr)(GpuVersion::hostStaging.batchesToAddCounts) + (CUdeviceptr)(i*sizeof(uint32_t));
 				const void* src_count = &batchesQueue[j]->count;
 				size_t     size_count = sizeof(uint32_t);
 
-				CUdeviceptr dst_flag = (CUdeviceptr)(GpuVersion::hostStaging.batchesAddedMask) + (i*sizeof(uint32_t));
+				CUdeviceptr dst_flag = (CUdeviceptr)(GpuVersion::hostStaging.batchesAddedMask) + (CUdeviceptr)(i*sizeof(uint32_t));
 				uint32_t    src_flag = false;
 				size_t     size_flag = sizeof(uint32_t);
 
@@ -449,12 +449,12 @@ void LoaderGpuVersion::sendToDevice(){
 				CURuntime::assertCudaSuccess(cuMemcpyHtoD(dst_count, src_count, size_count));
 				CURuntime::assertCudaSuccess(cuMemcpyHtoD(dst_flag, &src_flag, size_flag));
 
-				// println("HOST side: index batch queue = {}, index device batch = {}, count = {}, first point = ({}, {}, {})", 
-				// 	j, i, batchesQueue[j]->count, 
-				// 	(*batchesQueue[j]->points)[0].position.x,
-				// 	(*batchesQueue[j]->points)[0].position.y,
-				// 	(*batchesQueue[j]->points)[0].position.z
-				// );
+				println("HOST side: index batch queue = {}, index device batch = {}, count = {}, first point = ({}, {}, {})", 
+					j, i, batchesQueue[j]->count, 
+					(*batchesQueue[j]->points)[0].position.x,
+					(*batchesQueue[j]->points)[0].position.y,
+					(*batchesQueue[j]->points)[0].position.z
+				);
 				
 				break;
 			}
@@ -468,12 +468,12 @@ void LoaderGpuVersion::run(CuRast* editor, CUcontext* context){
 	// Check if batches are done on GPU side
 	fetchFromDevice();
 
+	// Clear completed batches
+	clearUnusedBatches(batchesQueue, batchesQueueMutexes);
+
 	// Try loading points from disk
 	loadPointsInBatches(batchesQueue, batchesQueueMutexes);
 
 	// Get the batches to send to device side
 	sendToDevice();
-
-	// Clear completed batches
-	clearUnusedBatches(batchesQueue, batchesQueueMutexes);
 }

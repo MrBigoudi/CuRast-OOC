@@ -208,7 +208,8 @@ void drawAllVoxels(
     COctreeNode* node,
     uint32_t nb_points_per_axis,
     uint8_t subtrees,
-    uint32_t call_index
+    uint32_t call_index,
+    bool from_missing_nodes
 ){
     auto block = cg::this_thread_block();
 
@@ -233,6 +234,7 @@ void drawAllVoxels(
             uint32_t index = aabb.getNextChildIndex(voxel.position);
             if(subtrees & (0x01 << index)){
                 uint32_t voxel_color = settings.use_voxels_debug_color ? color : voxel.color;
+                voxel_color = from_missing_nodes ? 0xff0000ff : voxel_color;
                 drawVoxel(target, voxel.position, voxel_color,
                     voxel_size, nb_points_per_axis
                 );
@@ -439,6 +441,8 @@ void kernel_visibilityPass(
 	CRenderTarget target,
     CRenderingSettings settings
 ){
+    if(settings.debug_lod_to_render != -1){return;}
+
 	auto grid = cg::this_grid();
     auto block = cg::this_thread_block();
 
@@ -465,10 +469,11 @@ void kernel_visibilityPass(
     // Draw voxels of not visible children
     drawAllVoxels(
         target, settings, node, nb_points_per_axis,
-        node->children_visibility ^ 0b11111111, call_index
+        node->children_visibility ^ 0b11111111, call_index, 
+        true
     );
     
-    if((call_index == 0) && settings.debug_lod_to_render == -1){
+    if(call_index == 0){
         node->is_large = isLargerThanMinSpanning(target, settings, node);
         node->is_cut = false;
     }
@@ -531,7 +536,8 @@ void kernel_drawOctreeSmall(
             drawAllVoxels(
                 target, settings, node,
                 settings.voxels_nb_points_per_axis,
-                0b11111111, call_index
+                0b11111111, call_index,
+                false
             );
             if(call_index == 0){
                 drawAllPoints(target, node);
@@ -546,7 +552,8 @@ void kernel_drawOctreeSmall(
             drawAllVoxels(
                 target, settings, node,
                 settings.voxels_nb_points_per_axis,
-                0b11111111, call_index
+                0b11111111, call_index,
+                false
             );
         }
     }

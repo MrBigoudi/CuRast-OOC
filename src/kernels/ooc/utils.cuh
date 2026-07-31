@@ -11,6 +11,11 @@ namespace std {
 };
 // =======================
 
+
+// https://forums.developer.nvidia.com/t/using-assert-in-cuda-code/21816
+#define customAssert() { printf("Assertion failure!\n"); asm("trap;"); }
+
+
 // #include <curand_kernel.h>
 #include <cooperative_groups.h>
 #include <cooperative_groups/memcpy_async.h>
@@ -39,28 +44,13 @@ namespace cg = cooperative_groups;
 ////////////////////////// OCTREE HELPER FUNCTIONS ///////////////////////////
 //////////////////////////////////////////////////////////////////////////////
 
-__device__ __forceinline__ void addPointToChunk(CChunk* root_chunk, const CPoint& cur_point, bool will_run_in_parallel){
-    CChunk* cur_chunk = root_chunk;
-    while(cur_chunk){cur_chunk = cur_chunk->next;}
-    if(cur_chunk->size == OocSimLodSettings::NB_POINTS_PER_CHUNK){
-        cur_chunk->next = globalAllocator.newChunk(will_run_in_parallel);
-        cur_chunk = cur_chunk->next;
-    }
-    cur_chunk->points[cur_chunk->size] = cur_point;
-    cur_chunk->size++;
-}
-
-
 __device__ __forceinline__ CIdAABB createNewAABB(const CAABB& aabb){
     CIdAABB id = __nv_atomic_fetch_add(&globalVariables.nbAABBs, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
     if(id >= globalVariables.maxNbAABBs || id == CINVALID_ID){
         printf("ERROR: reached the maximum number of nodes that can be created\n");
+        customAssert();
     }
     globalVariables.allAABBs[id] = aabb;
-    globalVariables.relationshipMap[id] = {
-        CINVALID_ID, CINVALID_ID, CINVALID_ID, CINVALID_ID,
-        CINVALID_ID, CINVALID_ID, CINVALID_ID, CINVALID_ID
-    };
     return id;
 }
 
@@ -70,13 +60,10 @@ __device__ __forceinline__ const CAABB& getAABB(const CIdAABB& aabb_index){
 }
 
 
-__device__ __forceinline__ void displayOctreeNode(
-    const COctreeNode* node, uint32_t id = 0, 
-    uint32_t level = 0, bool node_only = false
-) {
+__device__ __forceinline__ void displayOctreeNode(const COctreeNode* node, uint32_t id = 0, uint32_t level = 0){
     if(!node){
-        printf("Can't display a null node\n");
-        return;
+        printf("ERROR: can't display a null node\n");
+        customAssert();
     }
 
     CIdAABB aabb_index = node->aabb_index;
@@ -117,16 +104,54 @@ __device__ __forceinline__ void displayOctreeNode(
         aabb.mins.x, aabb.mins.y, aabb.mins.z,
         aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
     );
-    if(!node_only){
-        for(size_t i=0; i<8; i++){
-            if(node->children[i]){
-                displayOctreeNode(node->children[i], i, level+1);
+}
+
+
+__device__ __forceinline__ void displayOctreeRec(const COctreeNode* node, uint32_t id = 0, uint32_t level = 0){
+    displayOctreeNode(node, id, level);
+    for(size_t i=0; i<8; i++){
+        if(node->children[i]){
+            displayOctreeRec(node->children[i], i, level+1);
+        }
+    }
+}
+
+
+__device__ __forceinline__ void displayOctreeIt(const COctreeNode* node, uint32_t id = 0, uint32_t level = 0){
+
+    struct Tmp {
+        const COctreeNode* node;
+        uint32_t id;
+        uint32_t level;
+    };
+
+    CDoubleLinkedList<Tmp> to_display = {};
+    to_display.init();
+    to_display.pushBack({node, id, level});
+
+    uint32_t total_points = 0;
+    uint32_t total_voxels = 0;
+
+    while(!to_display.isEmpty()){
+        Tmp* tmp = to_display.front();
+        const COctreeNode* cur_node = tmp->node;
+        uint32_t cur_id = tmp->id;
+        uint32_t cur_level = tmp->level;
+        to_display.popFront();
+
+        total_points += cur_node->points_counter;
+        total_voxels += cur_node->voxels_counter;
+
+        displayOctreeNode(cur_node, cur_id, cur_level);
+        for(uint32_t i=0; i<8; i++){
+            if(cur_node->children[i]){
+                to_display.pushBack({cur_node->children[i], i, cur_level+1});
             }
         }
     }
-};
 
-
+    printf("Total points: %d, total voxels: %d\n\n", total_points, total_voxels);
+}
 
 
 

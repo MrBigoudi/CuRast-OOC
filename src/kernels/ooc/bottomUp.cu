@@ -5,42 +5,77 @@ void kernel_bottom_up_update_part_1(){
     // TODO: rethink this safeguard
     if(!globalVariables.mainOctree){return;}
 
+    // auto grid = cg::this_grid();
+    // auto block = cg::this_thread_block();
+
+    // uint32_t block_id = grid.block_rank();
+    // uint32_t thread_id = block.thread_rank();
+    // uint32_t nb_threads = block.num_threads();
+
+    // // printf("nb blocks: %llu, nb theads: %llu, nb theads per block: %u\n", grid.num_blocks(), grid.num_threads(), nb_threads);
+
+    // if(block_id >= globalVariables.maxNbBatches){return;}
+    // if(globalVariables.batchesAddedMask[block_id]){return;}
+
+    // CPoint* new_points = globalVariables.batchesToAddPoints[block_id];
+    // uint32_t nb_new_points = globalVariables.batchesToAddCounts[block_id];
+
+    // // Find max new level per thread
+    // CNodePosition node_position = CFrontTopLeft;
+    // CAABB new_aabb = getAABB(globalVariables.mainOctree->aabb_index);
+    // uint32_t nb_new_levels = 0;
+
+    // for(uint32_t i = thread_id; i < nb_new_points; i += nb_threads){
+    //     CPoint& point = new_points[i];
+    //     while(!new_aabb.contains(point.position)){
+    //         nb_new_levels++;
+    //         new_aabb.extend(node_position);
+    //         updateNodePosition(node_position);
+    //     }
+    // }
+
+    // // Combine max new level per block
+    // __nv_atomic_max(
+    //     &globalVariables.batchesToAddBottomUpCounts[block_id],
+    //     nb_new_levels,
+    //     __NV_ATOMIC_RELAXED, 
+    //     __NV_THREAD_SCOPE_DEVICE
+    // );
+
+
     auto grid = cg::this_grid();
-    auto block = cg::this_thread_block();
+    uint32_t thread_id = grid.thread_rank();
+    uint32_t nb_threads = grid.num_threads();
 
-    uint32_t block_id = grid.block_rank();
-    uint32_t thread_id = block.thread_rank();
-    uint32_t nb_threads = block.num_threads();
-
-    // printf("nb blocks: %llu, nb theads: %llu, nb theads per block: %u\n", grid.num_blocks(), grid.num_threads(), nb_threads);
-
-    if(block_id >= globalVariables.maxNbBatches){return;}
-    if(globalVariables.batchesAddedMask[block_id]){return;}
-
-    CPoint* new_points = globalVariables.batchesToAddPoints[block_id];
-    uint32_t nb_new_points = globalVariables.batchesToAddCounts[block_id];
-
-    // Find max new level per thread
+    uint32_t nb_new_levels = 0;
     CNodePosition node_position = CFrontTopLeft;
     CAABB new_aabb = getAABB(globalVariables.mainOctree->aabb_index);
-    uint32_t nb_new_levels = 0;
 
-    for(uint32_t i = thread_id; i < nb_new_points; i += nb_threads){
-        CPoint& point = new_points[i];
-        while(!new_aabb.contains(point.position)){
-            nb_new_levels++;
-            new_aabb.extend(node_position);
-            updateNodePosition(node_position);
+    for(uint32_t batch = 0; batch < globalVariables.maxNbBatches; batch++){
+        if(globalVariables.batchesAddedMask[batch]){continue;}
+
+        CPoint* new_points = globalVariables.batchesToAddPoints[batch];
+        uint32_t nb_new_points = globalVariables.batchesToAddCounts[batch];
+
+        for(uint32_t i=thread_id; i<nb_new_points; i+=nb_threads){
+            CPoint& point = new_points[i];
+            while(!new_aabb.contains(point.position)){
+                nb_new_levels++;
+                new_aabb.extend(node_position);
+                updateNodePosition(node_position);
+            }
         }
+
     }
 
     // Combine max new level per block
     __nv_atomic_max(
-        &globalVariables.batchesToAddBottomUpCounts[block_id],
+        &globalVariables.batchesToAddBottomUpCounts[0],
         nb_new_levels,
         __NV_ATOMIC_RELAXED, 
         __NV_THREAD_SCOPE_DEVICE
     );
+
 }
 
 
@@ -90,11 +125,12 @@ void kernel_bottom_up_update_part_2(){
     if(!globalVariables.mainOctree){return;}
 
     // Combine max new level in total
-    uint32_t nb_new_levels = 0;
-    for(uint32_t i=0; i<globalVariables.maxNbBatches; i++){
-        nb_new_levels = max(nb_new_levels, globalVariables.batchesToAddBottomUpCounts[i]);
-        globalVariables.batchesToAddBottomUpCounts[i] = 0;
-    }
+    // uint32_t nb_new_levels = 0;
+    // for(uint32_t i=0; i<globalVariables.maxNbBatches; i++){
+    //     nb_new_levels = max(nb_new_levels, globalVariables.batchesToAddBottomUpCounts[i]);
+    //     globalVariables.batchesToAddBottomUpCounts[i] = 0;
+    // }
+    uint32_t nb_new_levels = globalVariables.batchesToAddBottomUpCounts[0];
 
     // Bottom up update of the main octree
     COctreeNode* cur_child = globalVariables.mainOctree;

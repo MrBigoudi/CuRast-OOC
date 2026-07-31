@@ -206,7 +206,7 @@ struct CPoint {
 	}
 
 	enum Channel {
-		R, G, B
+		R, G, B, A
 	};
 	__device__ __forceinline__ const uint8_t getChannel(Channel channel) const {
 		switch(channel){
@@ -216,10 +216,12 @@ struct CPoint {
 				return uint8_t(((color >> 8) << 24) >> 24);
 			case B:
 				return uint8_t(((color >> 16) << 24) >> 24);
+			case A:
+				return uint8_t(color >> 24);
 		}
 	}
 	__device__ __forceinline__ const uint8_t getAlpha() const {
-		return uint8_t(color >> 24);
+		return getChannel(Channel::A);
 	}
 	__device__ __forceinline__ void resetAlpha() {
 		color &= (0x00FFFFFF); // Reset old alpha value
@@ -605,6 +607,7 @@ struct CGlobalVariables {
     uint32_t nbSpilledPoints = 0;
     uint32_t maxNbSpilledPoints = 0;
     CPoint* spilledPoints = nullptr;
+    uint32_t nbSpillingNodes = 0;
     COctreeNode** spillingNodes = nullptr;
 
     /// The backlog buffer for new voxels
@@ -612,6 +615,8 @@ struct CGlobalVariables {
     uint32_t maxNbBacklogVoxels = 0;
     CPoint* backlogVoxels = nullptr;
     COctreeNode** backlogVoxelsNodes = nullptr;
+
+	uint32_t maxPointsPerLeaf = 0;
 };
 
 

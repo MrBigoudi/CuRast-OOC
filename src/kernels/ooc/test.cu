@@ -9,7 +9,7 @@ void kernel_test(){
 }
 
 extern "C" __global__
-void kernel_test_display(PipelineLevel level){
+void kernel_test_display(PipelineLevel level, bool display_octree){
     printf("\n\n\n\n\n");
     switch (level) {
         case LevelInit:
@@ -37,6 +37,9 @@ void kernel_test_display(PipelineLevel level){
             printf("Cache update\n\n");
             break;
     }
-    displayOctreeNode(globalVariables.mainOctree);
-    printf("\n\n");
+    
+    if(display_octree){
+        displayOctreeIt(globalVariables.mainOctree);
+        printf("\n\n");
+    }
 }
