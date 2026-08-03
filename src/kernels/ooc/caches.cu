@@ -38,7 +38,7 @@ void kernel_prepare_store_part_1(){
         uint32_t index = __nv_atomic_fetch_add(&globalVariables.nbNodesToStore, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
 
         if(index >= globalVariables.maxNbNodesReceived){
-            printf("Too many nodes are being stored, skipping this one\n");
+            printf("ERROR: Too many nodes are being stored, skipping this one\n");
             return;
         }
 
@@ -55,7 +55,7 @@ void kernel_prepare_store_part_1(){
         while(cur_chunk){
             for(uint32_t i=0; i<cur_chunk->size; i++){
                 if(cur_point_index >= MAX_NB_POINTS){
-                    printf("Too many points in the node, some will be skipped to store it: index %d / %d\n",
+                    printf("ERROR: Too many points in the node, some will be skipped to store it: index %d / %d\n",
                         cur_point_index, MAX_NB_POINTS
                     );
                     break;
@@ -71,7 +71,7 @@ void kernel_prepare_store_part_1(){
         while(cur_chunk){
             for(uint32_t i=0; i<cur_chunk->size; i++){
                 if(cur_point_index >= MAX_NB_VOXELS){
-                    printf("Too many voxels in the node, some will be skipped to store it: index %d / %d\n",
+                    printf("ERROR: Too many voxels in the node, some will be skipped to store it: index %d / %d\n",
                         cur_point_index, MAX_NB_VOXELS
                     );
                     break;

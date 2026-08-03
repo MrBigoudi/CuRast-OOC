@@ -21,8 +21,6 @@ __device__ void initAllocatorPool(uint32_t thread_id, void* pool){
         T* tmp_key = (T*)(base + i*aligned_size);
         uint32_t key = (uint32_t)((allocator->elements_map->hashMurmur(tmp_key)) % allocator->CAPACITY);
         if(key == thread_id){
-            // uint32_t cur_cpt = __nv_atomic_fetch_add(&globalCpt, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-            // printf("cur_cpt: %d / %d\n", cur_cpt, allocator->CAPACITY);
             typename CAllocatorPool<T>::Entry* entry = it->value;
             entry->value = new (base + i*aligned_size) T();
             allocator->elements_map->insertOrReplace(entry->value, it);
@@ -52,22 +50,8 @@ void kernel_init_global_allocators(){
     uint32_t grid_size = gridDim.x;
 
     initChunksAllocator(thread_id);
-    // if(thread_id == grid_size-1){printf("Chunks Allocator initiated\n");}
     initGridsAllocator(thread_id);
-    // if(thread_id == grid_size-1){printf("Grids Allocator initiated\n");}
     initNodesAllocator(thread_id);
-    // if(thread_id == grid_size-1){printf("Nodes Allocator initiated\n");}
-
-    // if(thread_id == grid_size-1){
-    //     printf("\nFROM INIT\n");
-    //     printf("    - Nb AABBs: %d / %d\n", globalVariables.nbAABBs, globalVariables.maxNbAABBs);
-    //     printf("    - Nb nodes to load: %d / %d\n", globalVariables.nbNodesToLoad, globalVariables.maxNbNodesToLoad);
-    //     printf("    - Nb nodes to store: %d / %d\n", globalVariables.nbNodesToStore, globalVariables.maxNbNodesToStore);
-    //     printf("    - Nb spilled points: %d / %d\n", globalVariables.nbSpilledPoints, globalVariables.maxNbSpilledPoints);
-    //     printf("    - Nb backlog voxels: %d / %d\n", globalVariables.nbBacklogVoxels, globalVariables.maxNbBacklogVoxels);
-
-    //     printf("\n\n");
-    // }
 }
 
 extern "C" __global__
@@ -115,6 +99,9 @@ void kernel_init_octree_part_1(){
 
     // Thread level AABB
     CAABB tmp_aabb = CAABB();
+    tmp_aabb.mins = new_points[0].position;
+    tmp_aabb.maxs = new_points[0].position;
+
     uint32_t nb_threads = grid.num_threads();
     for(uint32_t i=thread_id; i<new_count; i+=nb_threads){
         CPoint& point = new_points[i];
@@ -200,4 +187,38 @@ void kernel_init_octree_part_2(){
     CIdAABB id = createNewAABB(globalVariables.allAABBs[0]);
     globalVariables.mainOctree = globalAllocator.newOctreeNode(id, false);
     globalVariables.nodes[id] = globalVariables.mainOctree;
+}
+
+
+extern "C" __global__
+void kernel_fill_new_grids(){
+    auto grid = cg::this_grid();
+    auto block = cg::this_thread_block();
+    uint32_t nb_blocks = grid.num_blocks();
+
+    uint32_t block_id = grid.block_rank();
+    uint32_t thread_id = block.thread_rank();
+    uint32_t nb_thread_per_blocks = block.num_threads();
+
+    for(uint32_t node_id = block_id; node_id < globalVariables.nbGridsToInit; node_id += nb_blocks){
+        CIdAABB aabb_index = globalVariables.gridsToInit[node_id];
+        COctreeNode* node = globalVariables.nodes[aabb_index];
+        COccupancyGrid* occupancy = node->occupancy;
+
+        uint32_t grid_size = OocSimLodSettings::GRID_SIZE / 32;
+        for(uint32_t i=thread_id; i<grid_size; i+=nb_thread_per_blocks){
+            occupancy->values[i] = 0;
+        }
+
+        // Loop over it's voxels if already have some
+        CChunk* cur_chunk = node->voxels;
+        const CAABB& aabb = getAABB(aabb_index);
+        while(cur_chunk){
+            for(uint32_t i=thread_id; i<cur_chunk->size; i+=nb_thread_per_blocks){
+                COccupancyGrid::GridIndex index = COccupancyGrid::getCellIndices(aabb, cur_chunk->points[i]);
+                occupancy->markCellAsFilled(index);
+            }
+            cur_chunk = cur_chunk->next;
+        }
+    }
 }

@@ -50,6 +50,9 @@ struct CAABB {
 	glm::vec3 mins = {INFINITY, INFINITY, INFINITY};
 	glm::vec3 maxs = {-INFINITY, -INFINITY, -INFINITY};
 
+	__device__ __forceinline__  CAABB(){}
+	__device__ __forceinline__  CAABB(const CAABB& cpy) : mins(cpy.mins), maxs(cpy.maxs){}
+
 	__device__ __forceinline__  glm::vec3 getSize() const {return maxs - mins;}
 	__device__ __forceinline__  bool contains(const glm::vec3& position) const {
 		return position.x > mins.x && position.x < maxs.x
@@ -198,6 +201,9 @@ struct CPoint {
 	glm::vec3 position = {};
 	uint32_t color = 0;
 
+	__device__ __forceinline__ CPoint():position(glm::vec3(0,0,0)), color(0) {}
+	__device__ __forceinline__ CPoint(const CPoint& cpy):position(cpy.position), color(cpy.color) {}
+
 	inline void setColor(uint8_t r, uint8_t g, uint8_t b, uint8_t a = 0xFFu){
 		color = (uint32_t)r
 			| ((uint32_t)g << 8)
@@ -285,6 +291,12 @@ struct CChunk{
 	uint32_t size = 0;
 	CChunk* next = nullptr;
 
+	__device__ __forceinline__ CChunk(): size(0), next(nullptr) {
+		// for(uint32_t i=0; i<OocSimLodSettings::NB_POINTS_PER_CHUNK; i++){
+		// 	points[i] = CPoint();
+		// }
+	}
+
 	~CChunk(){
 		size = 0;
 		next = nullptr;
@@ -304,7 +316,7 @@ struct COctreeNode {
 	uint32_t points_stored = 0;
 	uint32_t voxels_stored = 0;
 
-	uint32_t children_ids = 0b00000000;
+	uint32_t children_ids = 0;
 
 	// TODO: pack all of the following in a single uint32_t
 	// uint8_t children_ids = 0b00000000;
@@ -315,6 +327,17 @@ struct COctreeNode {
 	bool is_large = false;
 	bool is_visible = false;
 	bool is_cut = false;
+
+	__device__ __forceinline__ COctreeNode(): points(nullptr), voxels(nullptr), occupancy(nullptr),
+		aabb_index(CINVALID_ID), points_counter(0), voxels_counter(0),
+		points_stored(0), voxels_stored(0), children_ids(0),
+		children_visibility(0b00000000), level(0),
+		updated(false), is_large(false), is_visible(false), is_cut(false) 
+	{
+		for(uint32_t i=0; i<8; i++){
+			children[i] = nullptr;
+		}
+	}
 
 	~COctreeNode(){
 		for(uint32_t i=0; i<8; i++){
@@ -567,6 +590,9 @@ struct CGlobalVariables {
     uint32_t nbNodesToLoad = 0;
     uint32_t maxNbNodesToLoad = 0;
     CIdAABB* nodesToLoadBuffer = nullptr;
+
+	uint32_t nbGridsToInit = 0;
+	CIdAABB* gridsToInit = nullptr;
 
     /// The buffer of nodes to store to disk
     uint32_t nbNodesToStore = 0;

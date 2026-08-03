@@ -46,8 +46,8 @@ BATCHES_LIST_SIZE = 1_024
 ### The maximum number of points per batches
 # MAX_POINTS_PER_BATCHES = 10_000
 # MAX_POINTS_PER_BATCHES = 100_000
-# MAX_POINTS_PER_BATCHES = 1_000_000
-MAX_POINTS_PER_BATCHES = 4_000_000
+MAX_POINTS_PER_BATCHES = 1_000_000
+# MAX_POINTS_PER_BATCHES = 4_000_000
 # MAX_POINTS_PER_BATCHES = 10_000_000
 
 ### The minimum number of batches that can be loaded from disk at once
@@ -66,9 +66,9 @@ MAX_BATCHES_PER_GPU_LOAD = 100
 ### The minimum number of batches that should be added at the same time in the octree
 MIN_BATCHES_PER_OCTREE_UPDATE = 1
 ### The maximum number of batches that should be added at the same time in the octree
-MAX_BATCHES_PER_OCTREE_UPDATE = 1
+# MAX_BATCHES_PER_OCTREE_UPDATE = 1
 # MAX_BATCHES_PER_OCTREE_UPDATE = 2
-# MAX_BATCHES_PER_OCTREE_UPDATE = 4
+MAX_BATCHES_PER_OCTREE_UPDATE = 4
 # MAX_BATCHES_PER_OCTREE_UPDATE = 8
 # MAX_BATCHES_PER_OCTREE_UPDATE = 32
 

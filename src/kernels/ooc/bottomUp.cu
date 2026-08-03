@@ -5,43 +5,6 @@ void kernel_bottom_up_update_part_1(){
     // TODO: rethink this safeguard
     if(!globalVariables.mainOctree){return;}
 
-    // auto grid = cg::this_grid();
-    // auto block = cg::this_thread_block();
-
-    // uint32_t block_id = grid.block_rank();
-    // uint32_t thread_id = block.thread_rank();
-    // uint32_t nb_threads = block.num_threads();
-
-    // // printf("nb blocks: %llu, nb theads: %llu, nb theads per block: %u\n", grid.num_blocks(), grid.num_threads(), nb_threads);
-
-    // if(block_id >= globalVariables.maxNbBatches){return;}
-    // if(globalVariables.batchesAddedMask[block_id]){return;}
-
-    // CPoint* new_points = globalVariables.batchesToAddPoints[block_id];
-    // uint32_t nb_new_points = globalVariables.batchesToAddCounts[block_id];
-
-    // // Find max new level per thread
-    // CNodePosition node_position = CFrontTopLeft;
-    // CAABB new_aabb = getAABB(globalVariables.mainOctree->aabb_index);
-    // uint32_t nb_new_levels = 0;
-
-    // for(uint32_t i = thread_id; i < nb_new_points; i += nb_threads){
-    //     CPoint& point = new_points[i];
-    //     while(!new_aabb.contains(point.position)){
-    //         nb_new_levels++;
-    //         new_aabb.extend(node_position);
-    //         updateNodePosition(node_position);
-    //     }
-    // }
-
-    // // Combine max new level per block
-    // __nv_atomic_max(
-    //     &globalVariables.batchesToAddBottomUpCounts[block_id],
-    //     nb_new_levels,
-    //     __NV_ATOMIC_RELAXED, 
-    //     __NV_THREAD_SCOPE_DEVICE
-    // );
-
 
     auto grid = cg::this_grid();
     uint32_t thread_id = grid.thread_rank();
@@ -79,7 +42,7 @@ void kernel_bottom_up_update_part_1(){
 }
 
 
-__device__ void fillOccupancyGrid(
+__device__ void addNewVoxels(
     COctreeNode* new_parent,
     const CAABB& parent_aabb, 
     const CChunk* child_chunk_list
@@ -112,10 +75,12 @@ __device__ void fillOccupancyGrid(
                 }
                 parent_chunk_list->points[parent_chunk_list->size] = new_voxel;
                 parent_chunk_list->size++;
+                new_parent->voxels_counter++;
             }
         }
         child_chunk_list = child_chunk_list->next;
     }
+    new_parent->voxels_stored = new_parent->voxels_counter;
 };
 
 /// Run on a single thread
@@ -124,12 +89,7 @@ void kernel_bottom_up_update_part_2(){
     // TODO: rethink this safeguard
     if(!globalVariables.mainOctree){return;}
 
-    // Combine max new level in total
-    // uint32_t nb_new_levels = 0;
-    // for(uint32_t i=0; i<globalVariables.maxNbBatches; i++){
-    //     nb_new_levels = max(nb_new_levels, globalVariables.batchesToAddBottomUpCounts[i]);
-    //     globalVariables.batchesToAddBottomUpCounts[i] = 0;
-    // }
+    // TODO: store a single value instead of full array
     uint32_t nb_new_levels = globalVariables.batchesToAddBottomUpCounts[0];
 
     // Bottom up update of the main octree
@@ -148,13 +108,17 @@ void kernel_bottom_up_update_part_2(){
         globalVariables.nodes[parent_aabb_index] = new_parent;
 
 		new_parent->occupancy = globalAllocator.newOccupancyGrid(false);
+        uint32_t index = globalVariables.nbGridsToInit;
+        globalVariables.nbGridsToInit++;
+        globalVariables.gridsToInit[index] = parent_aabb_index;
+
 		new_parent->updated = true;
 		cur_child->updated = true;
 		new_parent->children[node_position] = cur_child;
 
 		// Sample voxels to fill new occupancy grid
-		fillOccupancyGrid(new_parent, parent_aabb, cur_child->points);
-		fillOccupancyGrid(new_parent, parent_aabb, cur_child->voxels);
+		addNewVoxels(new_parent, parent_aabb, cur_child->points);
+		addNewVoxels(new_parent, parent_aabb, cur_child->voxels);
 
 		// Update the AABB maps
 		globalVariables.relationshipMap[parent_aabb_index].children[node_position] = cur_child->aabb_index;

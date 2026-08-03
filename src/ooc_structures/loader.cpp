@@ -448,13 +448,6 @@ void LoaderGpuVersion::sendToDevice(){
 				CURuntime::assertCudaSuccess(cuMemcpyHtoD(dst_points, src_points, size_points));
 				CURuntime::assertCudaSuccess(cuMemcpyHtoD(dst_count, src_count, size_count));
 				CURuntime::assertCudaSuccess(cuMemcpyHtoD(dst_flag, &src_flag, size_flag));
-
-				println("HOST side: index batch queue = {}, index device batch = {}, count = {}, first point = ({}, {}, {})", 
-					j, i, batchesQueue[j]->count, 
-					(*batchesQueue[j]->points)[0].position.x,
-					(*batchesQueue[j]->points)[0].position.y,
-					(*batchesQueue[j]->points)[0].position.z
-				);
 				
 				break;
 			}

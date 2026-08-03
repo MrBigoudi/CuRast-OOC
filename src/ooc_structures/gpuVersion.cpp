@@ -61,6 +61,8 @@ void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
     hostStaging.maxNbNodesToLoad = OocSimLodSettings::MAX_NB_NODES_TO_LOAD;
     hostStaging.nodesToLoadBuffer = alloc<CIdAABB>(hostStaging.maxNbNodesToLoad);
 
+    hostStaging.gridsToInit = alloc<CIdAABB>(hostStaging.maxNbAABBs);
+
     hostStaging.maxNbBatches = OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE;
     hostStaging.batchesAddedMask = alloc<uint32_t>(hostStaging.maxNbBatches);
     hostStaging.batchesToAddCounts = alloc<uint32_t>(hostStaging.maxNbBatches);
@@ -269,7 +271,7 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
 		sizeof(uint32_t)
 	));
     if(nb_nodes_to_load == 0){return;}
-    println("\nNb nodes to load: {}\n\n", nb_nodes_to_load);
+    // println("\nNb nodes to load: {}\n\n", nb_nodes_to_load);
 
     // Get the ids of the nodes to load
     std::vector<CIdAABB> ids(nb_nodes_to_load, CINVALID_ID);
@@ -349,28 +351,16 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
         if(nbs_points[i]){
             CURuntime::assertCudaSuccess(cuMemcpyHtoD( 
                 ((CUdeviceptr*)(GpuVersion::hostStaging.receivedPointsPointers))[i],
-                points.data(), nbs_points[i]*sizeof(uint32_t)
+                points.data(), nbs_points[i]*sizeof(CPoint)
             ));
         }
         if(nbs_voxels[i]){
             CURuntime::assertCudaSuccess(cuMemcpyHtoD( 
                 ((CUdeviceptr*)(GpuVersion::hostStaging.receivedVoxelsPointers))[i],
-                voxels.data(), nbs_voxels[i]*sizeof(uint32_t)
+                voxels.data(), nbs_voxels[i]*sizeof(CPoint)
             ));
         }
-
-        // vec3 first_point = nbs_points[i] ? points[0].position : vec3();
-        // vec3 first_voxel = nbs_voxels[i] ? voxels[0].position : vec3();
-        // println("HOST side {} / {}:", i+1, nb_nodes_to_load);
-        // println("    id: {}, children_ids: {}, points_counter: {}, voxels_counter: {}",
-        //     ids[i], children_ids[i], nbs_points[i], nbs_voxels[i]
-        // );
-        // println("    first point = ({}, {}, {}), first voxel = ({}, {}, {})",
-        //     first_point.x, first_point.y, first_point.z,
-        //     first_voxel.x, first_voxel.y, first_voxel.z
-        // );
     }
-    // println("\n\n\n");
 
     pad = uint64_t(&(tmp.nbNodesReceived)) - uint64_t(&tmp);
     dst_device = GpuVersion::deviceStaging + pad;
@@ -405,6 +395,11 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
     };
     prog->launch("kernel_simlod_load_part_3", {}, launch_settings);
     launch_settings = {
+        .gridsize = nb_nodes_to_load,
+        .blocksize = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X
+    };
+    prog->launch("kernel_fill_new_grids", {}, launch_settings);
+    launch_settings = {
         .gridsize = hostStaging.maxNbAABBs,
         .blocksize = 1
     };
@@ -418,15 +413,15 @@ void GpuVersion::octreeUpdateSimLODCountSplit(CuRast* editor, CUcontext* context
         .blocksize = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK
     };
     prog->launchCooperative("kernel_simlod_count_split", {}, launch_settings);
-    // OptionalLaunchSettings launch_settings = {
-    //     .gridsize = 1,
-    //     .blocksize = 1
-    // };
-    // prog->launch("kernel_simlod_count_split", {}, launch_settings);
 }
 
 void GpuVersion::octreeUpdateSimLODVoxelSampling(CuRast* editor, CUcontext* context){
     OptionalLaunchSettings launch_settings = {
+        .gridsize = 32,
+        .blocksize = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X
+    };
+    prog->launch("kernel_fill_new_grids", {}, launch_settings);
+    launch_settings = {
         .gridsize = OocSimLodSettings::MAX_POINTS_PER_BATCHES,
         .blocksize = 1
     };
@@ -451,19 +446,11 @@ void GpuVersion::octreeUpdateSimLODInsertion(CuRast* editor, CUcontext* context)
 
 void GpuVersion::octreeUpdateSimLOD(CuRast* editor, CUcontext* context){
     octreeUpdateSimLODLoad(editor, context);
-    // TODO: to remove, just to flag the batches and display stuff
-    {
-        OptionalLaunchSettings launch_settings = {
-            .gridsize = 1,
-            .blocksize = 1
-        };
-        PipelineLevel level = PipelineLevel::LevelSimlodLoad;
-        bool display_octree = true;
-        GpuVersion::prog->launch("kernel_test_display", {&level, &display_octree}, launch_settings);
-    }
 
     octreeUpdateSimLODCountSplit(editor, context);
+
     octreeUpdateSimLODVoxelSampling(editor, context);
+
     octreeUpdateSimLODInsertion(editor, context);
 }
 
@@ -504,7 +491,7 @@ void GpuVersion::octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context){
 		sizeof(uint32_t)
 	));
     if(nb_nodes_to_store == 0){return;}
-    println("\nNb nodes to store: {}\n\n", nb_nodes_to_store);
+    // println("\nNb nodes to store: {}\n\n", nb_nodes_to_store);
 
     std::vector<CIdAABB> ids(nb_nodes_to_store, CINVALID_ID);
     std::vector<uint32_t> children_ids(nb_nodes_to_store, 0);
@@ -567,49 +554,15 @@ void GpuVersion::octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context){
 
 
 void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
-    static uint32_t cpt = 0;
-    cpt++;
-	println("\n\n\n\n\n\n\n\nstep = {}", cpt);
-
     LoaderGpuVersion::run(editor, context);
     octreeUpdateInit(editor, context);
 
     octreeUpdateBottomUp(editor, context);
-    // TODO: to remove, just to flag the batches and display stuff
-    {
-        OptionalLaunchSettings launch_settings = {
-            .gridsize = 1,
-            .blocksize = 1
-        };
-        PipelineLevel level = PipelineLevel::LevelBottomUp;
-        bool display_octree = true;
-        GpuVersion::prog->launch("kernel_test_display", {&level, &display_octree}, launch_settings);
-    }
 
 
     octreeUpdateSimLOD(editor, context);
-    // TODO: to remove, just to flag the batches and display stuff
-    {
-        OptionalLaunchSettings launch_settings = {
-            .gridsize = 1,
-            .blocksize = 1
-        };
-        PipelineLevel level = PipelineLevel::LevelSimlod;
-        bool display_octree = true;
-        GpuVersion::prog->launch("kernel_test_display", {&level, &display_octree}, launch_settings);
-    }
     
     octreeUpdateCacheUpdate(editor, context);
-    // TODO: to remove, just to flag the batches and display stuff
-    {
-        OptionalLaunchSettings launch_settings = {
-            .gridsize = 1,
-            .blocksize = 1
-        };
-        PipelineLevel level = PipelineLevel::LevelCacheUpdate;
-        bool display_octree = true;
-        GpuVersion::prog->launch("kernel_test_display", {&level, &display_octree}, launch_settings);
-    }
 
     // TODO: to remove, just to flag the batches and display stuff
     {
@@ -619,6 +572,7 @@ void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
         };
         GpuVersion::prog->launch("kernel_test", {}, launch_settings);
     }
+
 
 }
 
@@ -662,22 +616,24 @@ void GpuVersion::renderOctree(RenderTarget& target){
         ));
     }
     if(nb_nodes > 0){
-
         // Render Bounding boxes
         if(CuRastSettings::showBoundingBoxes){
             OptionalLaunchSettings launch_settings = {
                 .gridsize = nb_nodes,
                 .blocksize = 1
             };
-            prog->launch("kernel_render_bounding_boxes", {&real_target}, launch_settings);
+            prog->launch("kernel_render_bounding_boxes", {&real_target, &real_settings}, launch_settings);
         }
 
         // Render nodes
         {
             OptionalLaunchSettings launch_settings = {
-                .gridsize = OocSimLodSettings::NB_BLOCKS_PER_NODE * nb_nodes,
+                .gridsize = nb_nodes,
                 .blocksize = OocSimLodSettings::PER_NODE_KERNEL_BLOCK_SIZE
             };
+
+            // // TODO: to remove
+            // prog->launch("kernel_render_all_nodes", {&real_target, &real_settings}, launch_settings);
 
             prog->launch("kernel_visibilityPass", {&real_target, &real_settings}, launch_settings);
             prog->launch("kernel_drawOctreeLarge", {&real_target, &real_settings}, launch_settings);

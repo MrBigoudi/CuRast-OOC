@@ -231,13 +231,13 @@ std::optional<CUdeviceptr> allocateChunks(
 		}
 
 		for(uint32_t j=0; j<tmp->size; j++){
-			CPoint tmp_point = {
-				.position = cur_chunk->points[j].position, 
-				.color = (uint32_t)cur_chunk->points[j].color[0]
-					| ((uint32_t)cur_chunk->points[j].color[1] << 8)
-					| ((uint32_t)cur_chunk->points[j].color[2] << 16)
-					| (0xFFu << 24)
-			};
+			CPoint tmp_point = {};
+			tmp_point.position = cur_chunk->points[j].position;
+			tmp_point.color = (uint32_t)cur_chunk->points[j].color[0]
+				| ((uint32_t)cur_chunk->points[j].color[1] << 8)
+				| ((uint32_t)cur_chunk->points[j].color[2] << 16)
+				| (0xFFu << 24)
+			;
 			tmp->points[j] = tmp_point;
 		}
 	};

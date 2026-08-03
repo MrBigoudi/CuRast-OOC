@@ -606,8 +606,8 @@ int main(int argc, char** argv){
 		if(OocSimLodSettings::IS_USING_GPU_VERSION){
 			GpuVersion::init(CuRast::instance, &context);
 
-			// LoaderGpuVersion::createNewBatches("./lion.laz");
-			LoaderGpuVersion::createNewBatches("./banyo.las");
+			LoaderGpuVersion::createNewBatches("./lion.laz");
+			// LoaderGpuVersion::createNewBatches("./banyo.las");
 			Runtime::controls->yaw    = -5.582;
 			Runtime::controls->pitch  = -0.294;
 			Runtime::controls->radius = 5.584;

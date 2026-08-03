@@ -111,19 +111,6 @@ void kernel_simlod_load_part_3(){
     CPoint* points = globalVariables.receivedPoints[thread_id];
     CPoint* voxels = globalVariables.receivedVoxels[thread_id];
 
-    // vec3 first_point = nb_points ? points[0].position : vec3(0,0,0);
-    // vec3 first_voxel = nb_voxels ? voxels[0].position : vec3(0,0,0);
-    // CAABB aabb = getAABB(aabb_index);
-
-    // printf("DEVICE side %d / %d:\n    first point = (%f, %f, %f), first voxel = (%f, %f, %f)\n    id: %d, children_ids: %d, points_counter: %d, voxels_counter: %d\n    aabb = {.mins(%f, %f, %f), .maxs(%f, %f, %f)}\n",
-    //     thread_id+1, globalVariables.nbNodesReceived,
-    //     first_point.x, first_point.y, first_point.z,
-    //     first_voxel.x, first_voxel.y, first_voxel.z,
-    //     aabb_index, children_ids, nb_points, nb_voxels,
-    //     aabb.mins.x, aabb.mins.y, aabb.mins.z,
-    //     aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
-    // );
-
     COctreeNode* loaded_node = globalAllocator.newOctreeNode(aabb_index, true);
     if(globalVariables.nodes[aabb_index]){
         printf("ERROR: at this point the node should not exist\n");
@@ -150,21 +137,19 @@ void kernel_simlod_load_part_3(){
     if(nb_voxels > 0){
         // Rebuild occupancy
         loaded_node->occupancy = globalAllocator.newOccupancyGrid(true);
+        uint32_t index = __nv_atomic_fetch_add(&globalVariables.nbGridsToInit, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+        globalVariables.gridsToInit[index] = aabb_index;
 
         loaded_node->voxels = globalAllocator.newChunk(true);
         CChunk* cur_chunk = loaded_node->voxels;
         for(uint32_t i=0; i<nb_voxels; i++){
             const CPoint& cur_point = voxels[i];
             cur_chunk = addPointToChunk(cur_chunk, cur_point);
-
-            // Sample voxel occupancy grid at this location
-            const CAABB& aabb = getAABB(aabb_index);
-            COccupancyGrid::GridIndex index = COccupancyGrid::getCellIndices(aabb, voxels[i]);
-            loaded_node->occupancy->markCellAsFilled(index);
         }
     }
 
 }
+
 
 /// Run on "maxNbAABBs" threads
 /// Rebuild the relationships of the loaded nodes
@@ -172,6 +157,9 @@ extern "C" __global__
 void kernel_simlod_load_part_4(){
     // TODO: rethink this safeguard
     if(!globalVariables.mainOctree){return;}
+
+    // Because "kernel_fill_new_grids" should be launched just before
+    globalVariables.nbGridsToInit = 0;
 
     auto grid = cg::this_grid();
     uint32_t thread_id = grid.thread_rank();
@@ -185,7 +173,6 @@ void kernel_simlod_load_part_4(){
         if(cur_node->children[i]){continue;}
         CIdAABB child_aabb = globalVariables.relationshipMap[cur_node->aabb_index].children[i];
         if(child_aabb != CINVALID_ID && globalVariables.nodes[child_aabb]){
-            // printf("Does this happen ?\n");
             cur_node->children[i] = globalVariables.nodes[child_aabb];
         }
     }
@@ -281,16 +268,6 @@ void simlodCount(uint32_t thread_id, uint32_t nb_threads){
 
         for(uint32_t i=thread_id; i<nb_new_points; i+=nb_threads){
             updateLeafCounter(&new_points[i]);
-
-            if(i==0){
-                printf("Device side: batch = %d / %d, count = %d, first point = (%f, %f, %f), nb spilled points: %d, nb_threads: %d\n", 
-                    batch, globalVariables.maxNbBatches, nb_new_points, 
-                    new_points[i].position.x,
-                    new_points[i].position.y,
-                    new_points[i].position.z,
-                    globalVariables.nbSpilledPoints, nb_threads
-                );
-            }
         }
     }
 
@@ -315,6 +292,8 @@ void simlodSplit(uint32_t thread_id, uint32_t nb_threads){
 
         if(!spilling_node->occupancy){
             spilling_node->occupancy = globalAllocator.newOccupancyGrid(true);
+            uint32_t index = __nv_atomic_fetch_add(&globalVariables.nbGridsToInit, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            globalVariables.gridsToInit[index] = spilling_node_id;
         }
 
         for(uint32_t j=0; j<8; j++){
@@ -337,17 +316,18 @@ void simlodSplit(uint32_t thread_id, uint32_t nb_threads){
         CChunk* current_chunk = spilling_node->points;
         if(current_chunk){
             while(current_chunk){
+                uint32_t index = __nv_atomic_fetch_add(&globalVariables.nbSpilledPoints, current_chunk->size, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
                 for(uint32_t j=0; j<current_chunk->size; j++){
-                    uint32_t index = __nv_atomic_fetch_add(&globalVariables.nbSpilledPoints, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-                    if(index >= globalVariables.maxNbSpilledPoints){
+                    uint32_t real_index = index + j;
+                    if(real_index >= globalVariables.maxNbSpilledPoints){
                         printf("ERROR: reached the maximum number of spilled points\n");
                         customAssert();
                     }
                     // Flag the point as not accepted
                     CPoint cur_point = current_chunk->points[j];
                     cur_point.resetAlpha();
-                    globalVariables.spilledPoints[index].position = cur_point.position;
-                    globalVariables.spilledPoints[index].color = cur_point.color;
+                    globalVariables.spilledPoints[real_index].position = cur_point.position;
+                    globalVariables.spilledPoints[real_index].color = cur_point.color;
                 }
                 current_chunk = current_chunk->next;
             }
@@ -381,30 +361,10 @@ void kernel_simlod_count_split(){
         grid.sync();
         if(globalVariables.nbSpillingNodes == 0){break;}
 
-        // TODO: temporary to remove
-        {
-            if(thread_id == 0){
-                printf("\n\n\n\n\nSimlod count: it %d\n\n", cpt);
-                displayOctreeIt(globalVariables.mainOctree);
-                printf("\n\n");
-            }
-            grid.sync();
-        }
-
 
         simlodSplit(thread_id, nb_threads);
         grid.sync();
         globalVariables.nbSpillingNodes = 0;
-
-        // TODO: temporary to remove
-        {
-            if(thread_id == 0){
-                printf("\n\n\n\n\nSimlod split: it %d\n\n", cpt);
-                displayOctreeIt(globalVariables.mainOctree);
-                printf("\n\n");
-            }
-            grid.sync();
-        }
 
         if(thread_id == 0){
             // Because "delChunk" was called in simlodSplit
@@ -494,6 +454,9 @@ extern "C" __global__
 void kernel_simlod_voxel_sampling(){
     // TODO: rethink this safeguard
     if(!globalVariables.mainOctree){return;}
+
+    // Because "kernel_fill_new_grids" should be launched just before
+    globalVariables.nbGridsToInit = 0;
 
     auto grid = cg::this_grid();
     uint32_t thread_id = grid.thread_rank();
