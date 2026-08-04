@@ -464,7 +464,7 @@ void kernel_visibilityPass(
 
         // TODO: Frustum culling
         // if(!node->is_visible){return;}
-        node->setFlag(CFlagIsVisible);
+        globalVariables.setFlag(node->aabb_index, CFlagIsVisible);
         node->children_visibility = 0b00000000;
         uint32_t tmp = 0;
         for(uint32_t i=0; i<8; i++){
@@ -486,8 +486,12 @@ void kernel_visibilityPass(
         );
         
         if(thread_id == 0){
-            node->is_large = isLargerThanMinSpanning(target, settings, node);
-            node->is_cut = false;
+            if(isLargerThanMinSpanning(target, settings, node)){
+                globalVariables.setFlag(node->aabb_index, CFlagIsLarge);
+            } else {
+                globalVariables.unsetFlag(node->aabb_index, CFlagIsLarge);
+            }
+            globalVariables.unsetFlag(node->aabb_index, CFlagIsCut);
         }
     }
 }
@@ -511,11 +515,11 @@ void kernel_drawOctreeLarge(
         COctreeNode* node = globalVariables.packedNodes[node_index];
 
         if(settings.debug_lod_to_render == -1){
-            if(!node->isVisible()){continue;}
-            if(!node->isLarge()){continue;}
+            if(!globalVariables.isVisible(node->aabb_index)){continue;}
+            if(!globalVariables.isLarge(node->aabb_index)){continue;}
 
             bool has_points = node->points_counter > 0;
-            if(has_points && node->isVisible()){
+            if(has_points && globalVariables.isVisible(node->aabb_index)){
                 drawAllPoints(target, node);
             }
 
@@ -523,9 +527,9 @@ void kernel_drawOctreeLarge(
             for(uint32_t i=0; i<8; i++){
                 COctreeNode* child = node->children[i];
                 if(!child){continue;}
-                if(child->isLarge()){continue;}
-                if(!child->isVisible()){continue;}
-                child->setFlag(CFlagIsCut);
+                if(globalVariables.isLarge(child->aabb_index)){continue;}
+                if(!globalVariables.isVisible(child->aabb_index)){continue;}
+                globalVariables.setFlag(child->aabb_index, CFlagIsCut);
             }
         }
     }
@@ -547,7 +551,7 @@ void kernel_drawOctreeSmall(
     // Assign each node to one thread block
     for(uint32_t node_index = block_id; node_index < globalVariables.curNbNodes; node_index += nb_blocks){
         COctreeNode* node = globalVariables.packedNodes[node_index];
-        if(!node->isVisible()){continue;}
+        if(!globalVariables.isVisible(node->aabb_index)){continue;}
 
         if(settings.debug_lod_to_render != -1){
             if(node->level == settings.debug_lod_to_render){
@@ -559,8 +563,8 @@ void kernel_drawOctreeSmall(
                 drawAllPoints(target, node);
             }
         } else {
-            bool is_minimal_draw = (node->level == 0) && !node->isLarge();
-            if(node->isCut() || is_minimal_draw){
+            bool is_minimal_draw = (node->level == 0) && !globalVariables.isLarge(node->aabb_index);
+            if(globalVariables.isCut(node->aabb_index) || is_minimal_draw){
                 drawAllPoints(target, node);
                 drawAllVoxels(
                     target, settings, node,

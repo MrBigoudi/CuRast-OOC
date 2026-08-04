@@ -1213,8 +1213,8 @@ void BatchedMemory::display() const {
             println("Chunk: size = {}", ((CChunk*)src)->size);
         } else if(sizes[i] == sizeof(COctreeNode)){
             COctreeNode* node = (COctreeNode*)src;
-            println("level: {}, counter: {}, updated: {}, visibility: {}, children visibility: 0b{}{}{}{}{}{}{}{}, points location: 0b{}{}{}{}{}{}{}{}, children: 0b{}{}{}{}{}{}{}{}",
-                node->level, node->points_counter, node->isUpdated(), node->isVisible(),
+            println("level: {}, counter: {}, children visibility: 0b{}{}{}{}{}{}{}{}, points location: 0b{}{}{}{}{}{}{}{}, children: 0b{}{}{}{}{}{}{}{}",
+                node->level, node->points_counter,
                 uint8_t(bool(node->children_visibility & 0x01 << 0)),
                 uint8_t(bool(node->children_visibility & 0x01 << 1)),
                 uint8_t(bool(node->children_visibility & 0x01 << 2)),

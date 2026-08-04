@@ -66,9 +66,9 @@ MAX_BATCHES_PER_GPU_LOAD = 100
 ### The minimum number of batches that should be added at the same time in the octree
 MIN_BATCHES_PER_OCTREE_UPDATE = 1
 ### The maximum number of batches that should be added at the same time in the octree
-# MAX_BATCHES_PER_OCTREE_UPDATE = 1
+MAX_BATCHES_PER_OCTREE_UPDATE = 1
 # MAX_BATCHES_PER_OCTREE_UPDATE = 2
-MAX_BATCHES_PER_OCTREE_UPDATE = 4
+# MAX_BATCHES_PER_OCTREE_UPDATE = 4
 # MAX_BATCHES_PER_OCTREE_UPDATE = 8
 # MAX_BATCHES_PER_OCTREE_UPDATE = 32
 

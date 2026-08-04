@@ -112,8 +112,8 @@ void kernel_bottom_up_update_part_2(){
         globalVariables.nbGridsToInit++;
         globalVariables.gridsToInit[index] = parent_aabb_index;
 
-		new_parent->updated = true;
-		cur_child->updated = true;
+        globalVariables.setFlag(new_parent->aabb_index, CFlagIsUpdated);
+        globalVariables.setFlag(cur_child->aabb_index, CFlagIsUpdated);
 		new_parent->children[node_position] = cur_child;
 
 		// Sample voxels to fill new occupancy grid

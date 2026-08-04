@@ -560,7 +560,7 @@ void insertPoint(const CPoint& point){
     COctreeNode* cur_node = globalVariables.mainOctree;
     // Reach all corresponding leaves
     while(cur_node){
-        cur_node->updated = true;
+        globalVariables.setFlag(cur_node->aabb_index, CFlagIsUpdated); // Do not require to be synced because it's the only flag type changed in the kernel
         // Find next child
         const CAABB& aabb = getAABB(cur_node->aabb_index);
         CNodePosition child_position = aabb.getNextChildIndex(point.position);
@@ -588,7 +588,7 @@ void insertPoint(const CPoint& point){
 
 __device__
 void insertVoxel(const CPoint& voxel, COctreeNode* cur_node){
-    cur_node->updated = true;
+    globalVariables.setFlag(cur_node->aabb_index, CFlagIsUpdated); // Do not require to be synced because it's the only flag type changed in the kernel
 
     uint32_t voxel_index = __nv_atomic_fetch_add(&cur_node->voxels_stored, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
     uint32_t chunk_index = voxel_index / OocSimLodSettings::NB_POINTS_PER_CHUNK;

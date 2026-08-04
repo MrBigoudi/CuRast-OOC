@@ -361,28 +361,10 @@ struct COctreeNode {
 	uint8_t children_visibility = 0b00000000;
 	uint8_t level = 0;
 
-	uint32_t flags = 0;
-
-	__device__ __forceinline__ bool isUpdated()        const {return flags & (0x01 << CFlagIsUpdated);}
-	__device__ __forceinline__ bool isLarge()          const {return flags & (0x01 << CFlagIsLarge);}
-	__device__ __forceinline__ bool isVisible()        const {return flags & (0x01 << CFlagIsVisible);}
-	__device__ __forceinline__ bool isCut()            const {return flags & (0x01 << CFlagIsCut);}
-	__device__ __forceinline__ bool isToLoad()         const {return flags & (0x01 << CFlagToLoad);}
-	__device__ __forceinline__ bool isToStore()        const {return flags & (0x01 << CFlagToStore);}
-	__device__ __forceinline__ bool isSpilling()       const {return flags & (0x01 << CFlagIsSpilling);}
-	__device__ __forceinline__ bool isOnUpdatesCache() const {return flags & (0x01 << CFlagIsOnUpdatesCache);}
-
-#ifdef __CUDACC__
-	__device__ __forceinline__ void setFlag(const CNodeFlagType& flag){flags |= (0x01 << flag);}
-	__device__ __forceinline__ void setFlagSync(const CNodeFlagType& flags){
-		__nv_atomic_or(&flags, (0x01 << flag), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-	}
-#endif // __CUDACC__
-
 	__device__ __forceinline__ COctreeNode(): points(nullptr), voxels(nullptr), occupancy(nullptr),
 		aabb_index(CINVALID_ID), points_counter(0), voxels_counter(0),
 		points_stored(0), voxels_stored(0), children_ids(0),
-		children_visibility(0b00000000), level(0), flags(0) 
+		children_visibility(0b00000000), level(0)
 	{
 		for(uint32_t i=0; i<8; i++){
 			children[i] = nullptr;
@@ -404,7 +386,6 @@ struct COctreeNode {
 		children_ids = 0b00000000;
 		children_visibility = 0b00000000;
 		level = 0;
-		flags = 0;
 	}
 };
 
@@ -654,6 +635,48 @@ struct CGlobalVariables {
     COctreeNode** backlogVoxelsNodes = nullptr;
 
 	uint32_t maxPointsPerLeaf = 0;
+
+
+
+#ifdef __CUDACC__
+	__device__ __forceinline__ bool isUpdated(const CIdAABB& aabb_index) const {
+		return nodesFlags[aabb_index] & (0x01 << CFlagIsUpdated);
+	}
+	__device__ __forceinline__ bool isLarge(const CIdAABB& aabb_index) const {
+		return nodesFlags[aabb_index] & (0x01 << CFlagIsLarge);
+	}
+	__device__ __forceinline__ bool isVisible(const CIdAABB& aabb_index) const {
+		return nodesFlags[aabb_index] & (0x01 << CFlagIsVisible);
+	}
+	__device__ __forceinline__ bool isCut(const CIdAABB& aabb_index) const {
+		return nodesFlags[aabb_index] & (0x01 << CFlagIsCut);
+	}
+	__device__ __forceinline__ bool isToLoad(const CIdAABB& aabb_index) const {
+		return nodesFlags[aabb_index] & (0x01 << CFlagToLoad);
+	}
+	__device__ __forceinline__ bool isToStore(const CIdAABB& aabb_index) const {
+		return nodesFlags[aabb_index] & (0x01 << CFlagToStore);
+	}
+	__device__ __forceinline__ bool isSpilling(const CIdAABB& aabb_index) const {
+		return nodesFlags[aabb_index] & (0x01 << CFlagIsSpilling);
+	}
+	__device__ __forceinline__ bool isOnUpdatesCache(const CIdAABB& aabb_index) const {
+		return nodesFlags[aabb_index] & (0x01 << CFlagIsOnUpdatesCache);
+	}
+
+	__device__ __forceinline__ void setFlag(const CIdAABB& aabb_index, const CNodeFlagType& flag){
+		nodesFlags[aabb_index] |= (0x01 << flag);
+	}
+	__device__ __forceinline__ void setFlagSync(const CIdAABB& aabb_index, const CNodeFlagType& flag){
+		__nv_atomic_or(&nodesFlags[aabb_index], (0x01 << flag), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+	}
+	__device__ __forceinline__ void unsetFlag(const CIdAABB& aabb_index, const CNodeFlagType& flag){
+		nodesFlags[aabb_index] &= ~(1u << flag);
+	}
+	__device__ __forceinline__ void unsetFlagSync(const CIdAABB& aabb_index, const CNodeFlagType& flag){
+		__nv_atomic_and(&nodesFlags[aabb_index], ~(1u << flag), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+	}
+#endif // __CUDACC__
 };
 
 

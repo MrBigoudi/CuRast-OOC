@@ -5,8 +5,8 @@ __device__
 void fillUpdatesCacheRecursive(COctreeNode* cur_node){
     if(!cur_node){return;}
     for(uint32_t i=0; i<8; i++){fillUpdatesCacheRecursive(cur_node->children[i]);}
-    if(cur_node->updated){
-        cur_node->updated = false;
+    if(globalVariables.isUpdated(cur_node->aabb_index)){
+        globalVariables.unsetFlag(cur_node->aabb_index, CFlagIsUpdated);
         globalVariables.updatesCache->add(cur_node->aabb_index);
     }
 }
@@ -82,7 +82,8 @@ void kernel_prepare_store_part_1(){
             cur_chunk = cur_chunk->next;
         }
 
-        globalVariables.nodesFlags[node->aabb_index] |= (1u << CFlagToStore);
+        // Do not require to be synced because it's the only flag type changed in the kernel
+        globalVariables.setFlag(node->aabb_index, CFlagToStore); 
     }
 
 }
@@ -102,7 +103,7 @@ void kernel_prepare_store_part_2(){
 
     for(uint32_t i=0; i<8; i++){
         COctreeNode* child = node->children[i];
-        if(child && (globalVariables.nodesFlags[child->aabb_index] & (1u << CFlagToStore))){
+        if(child && globalVariables.isToStore(child->aabb_index)){
             node->children[i] = nullptr;
         }
     }
@@ -118,10 +119,10 @@ void kernel_prepare_store_part_3(){
     uint32_t thread_id = grid.thread_rank();
 	if(thread_id >= globalVariables.maxNbAABBs){return;}
 
-    if(globalVariables.nodesFlags[thread_id] & (1u << CFlagToStore)){
+    if(globalVariables.isToStore(thread_id)){
         globalAllocator.delOctreeNode(globalVariables.nodes[thread_id], true, true);
         globalVariables.nodes[thread_id] = nullptr;
-        globalVariables.nodesFlags[thread_id] &= ~(1u << CFlagToStore);
+        globalVariables.unsetFlag(thread_id, CFlagToStore);
     }
 
 }
