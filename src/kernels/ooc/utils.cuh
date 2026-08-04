@@ -73,7 +73,7 @@ __device__ __forceinline__ void displayOctreeNode(const COctreeNode* node, uint3
         "points location: 0b%d%d%d%d%d%d%d%d, children: 0b%d%d%d%d%d%d%d%d\n",
 
         level, id, node->aabb_index, node->points_counter, node->voxels_counter, 
-        node->updated, node->is_visible,
+        node->isUpdated(), node->isVisible(),
         uint8_t(bool(node->children_visibility & 0x01 << 0)),
         uint8_t(bool(node->children_visibility & 0x01 << 1)),
         uint8_t(bool(node->children_visibility & 0x01 << 2)),

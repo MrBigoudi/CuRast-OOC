@@ -464,7 +464,7 @@ void kernel_visibilityPass(
 
         // TODO: Frustum culling
         // if(!node->is_visible){return;}
-        node->is_visible = true;
+        node->setFlag(CFlagIsVisible);
         node->children_visibility = 0b00000000;
         uint32_t tmp = 0;
         for(uint32_t i=0; i<8; i++){
@@ -511,11 +511,11 @@ void kernel_drawOctreeLarge(
         COctreeNode* node = globalVariables.packedNodes[node_index];
 
         if(settings.debug_lod_to_render == -1){
-            if(!node->is_visible){continue;}
-            if(!node->is_large){continue;}
+            if(!node->isVisible()){continue;}
+            if(!node->isLarge()){continue;}
 
             bool has_points = node->points_counter > 0;
-            if(has_points && node->is_visible){
+            if(has_points && node->isVisible()){
                 drawAllPoints(target, node);
             }
 
@@ -523,9 +523,9 @@ void kernel_drawOctreeLarge(
             for(uint32_t i=0; i<8; i++){
                 COctreeNode* child = node->children[i];
                 if(!child){continue;}
-                if(child->is_large){continue;}
-                if(!child->is_visible){continue;}
-                child->is_cut = true;
+                if(child->isLarge()){continue;}
+                if(!child->isVisible()){continue;}
+                child->setFlag(CFlagIsCut);
             }
         }
     }
@@ -547,7 +547,7 @@ void kernel_drawOctreeSmall(
     // Assign each node to one thread block
     for(uint32_t node_index = block_id; node_index < globalVariables.curNbNodes; node_index += nb_blocks){
         COctreeNode* node = globalVariables.packedNodes[node_index];
-        if(!node->is_visible){continue;}
+        if(!node->isVisible()){continue;}
 
         if(settings.debug_lod_to_render != -1){
             if(node->level == settings.debug_lod_to_render){
@@ -559,8 +559,8 @@ void kernel_drawOctreeSmall(
                 drawAllPoints(target, node);
             }
         } else {
-            bool is_minimal_draw = (node->level == 0) && !node->is_large;
-            if(node->is_cut || is_minimal_draw){
+            bool is_minimal_draw = (node->level == 0) && !node->isLarge();
+            if(node->isCut() || is_minimal_draw){
                 drawAllPoints(target, node);
                 drawAllVoxels(
                     target, settings, node,

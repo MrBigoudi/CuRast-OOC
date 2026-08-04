@@ -319,10 +319,11 @@ void createCudaMemory(CuRast* editor, CUcontext* context,
 		new_node->children_visibility = cur_node->children_visibility;
 		new_node->level = level;
 
-		new_node->updated = cur_node->updated;
-		new_node->is_large = cur_node->is_large;
-		new_node->is_visible = cur_node->is_visible;
-		new_node->is_cut = cur_node->is_cut;
+		uint32_t flags = cur_node->updated << CFlagIsUpdated;
+		flags |= cur_node->is_large << CFlagIsLarge;
+		flags |= cur_node->is_visible << CFlagIsVisible;
+		flags |= cur_node->is_cut << CFlagIsCut;
+		new_node->flags = flags;
 
 		if(level > max_lod_level){
 			max_lod_level = level;

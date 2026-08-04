@@ -303,6 +303,45 @@ struct CChunk{
 	}
 };
 
+enum CNodeFlagType {
+	CFlagIsUpdated,
+	CFlagIsLarge,
+	CFlagIsVisible,
+	CFlagIsCut,
+
+	CFlagToLoad,
+	CFlagToStore,
+	CFlagIsSpilling,
+
+	CFlagIsOnUpdatesCache,
+
+	// Pads to be replaced on need
+	CFlagPad8,
+	CFlagPad9,
+	CFlagPad10,
+	CFlagPad11,
+	CFlagPad12,
+	CFlagPad13,
+	CFlagPad14,
+	CFlagPad15,
+	CFlagPad16,
+	CFlagPad17,
+	CFlagPad18,
+	CFlagPad19,
+	CFlagPad20,
+	CFlagPad21,
+	CFlagPad22,
+	CFlagPad23,
+	CFlagPad24,
+	CFlagPad25,
+	CFlagPad26,
+	CFlagPad27,
+	CFlagPad28,
+	CFlagPad29,
+	CFlagPad30,
+	CFlagPad31,
+};
+
 struct COctreeNode {
 	COctreeNode* children[8] = {nullptr};
 	CChunk* points = nullptr;
@@ -316,23 +355,34 @@ struct COctreeNode {
 	uint32_t points_stored = 0;
 	uint32_t voxels_stored = 0;
 
-	uint32_t children_ids = 0;
-
 	// TODO: pack all of the following in a single uint32_t
+	uint32_t children_ids = 0;
 	// uint8_t children_ids = 0b00000000;
 	uint8_t children_visibility = 0b00000000;
 	uint8_t level = 0;
 
-	bool updated = false;
-	bool is_large = false;
-	bool is_visible = false;
-	bool is_cut = false;
+	uint32_t flags = 0;
+
+	__device__ __forceinline__ bool isUpdated()        const {return flags & (0x01 << CFlagIsUpdated);}
+	__device__ __forceinline__ bool isLarge()          const {return flags & (0x01 << CFlagIsLarge);}
+	__device__ __forceinline__ bool isVisible()        const {return flags & (0x01 << CFlagIsVisible);}
+	__device__ __forceinline__ bool isCut()            const {return flags & (0x01 << CFlagIsCut);}
+	__device__ __forceinline__ bool isToLoad()         const {return flags & (0x01 << CFlagToLoad);}
+	__device__ __forceinline__ bool isToStore()        const {return flags & (0x01 << CFlagToStore);}
+	__device__ __forceinline__ bool isSpilling()       const {return flags & (0x01 << CFlagIsSpilling);}
+	__device__ __forceinline__ bool isOnUpdatesCache() const {return flags & (0x01 << CFlagIsOnUpdatesCache);}
+
+#ifdef __CUDACC__
+	__device__ __forceinline__ void setFlag(const CNodeFlagType& flag){flags |= (0x01 << flag);}
+	__device__ __forceinline__ void setFlagSync(const CNodeFlagType& flags){
+		__nv_atomic_or(&flags, (0x01 << flag), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+	}
+#endif // __CUDACC__
 
 	__device__ __forceinline__ COctreeNode(): points(nullptr), voxels(nullptr), occupancy(nullptr),
 		aabb_index(CINVALID_ID), points_counter(0), voxels_counter(0),
 		points_stored(0), voxels_stored(0), children_ids(0),
-		children_visibility(0b00000000), level(0),
-		updated(false), is_large(false), is_visible(false), is_cut(false) 
+		children_visibility(0b00000000), level(0), flags(0) 
 	{
 		for(uint32_t i=0; i<8; i++){
 			children[i] = nullptr;
@@ -354,10 +404,7 @@ struct COctreeNode {
 		children_ids = 0b00000000;
 		children_visibility = 0b00000000;
 		level = 0;
-		updated = false;
-		is_large = false;
-		is_visible = false;
-		is_cut = false;
+		flags = 0;
 	}
 };
 
@@ -444,43 +491,7 @@ struct CRenderTarget{
 };
 
 
-enum CNodeFlagType {
-	CFlagToLoad,
-	CFlagToStore,
-	CFlagIsSpilling,
 
-	CFlagIsOnUpdatesCache,
-
-	// Pads to be replaced on need
-	CFlagPad4,
-	CFlagPad5,
-	CFlagPad6,
-	CFlagPad7,
-	CFlagPad8,
-	CFlagPad9,
-	CFlagPad10,
-	CFlagPad11,
-	CFlagPad12,
-	CFlagPad13,
-	CFlagPad14,
-	CFlagPad15,
-	CFlagPad16,
-	CFlagPad17,
-	CFlagPad18,
-	CFlagPad19,
-	CFlagPad20,
-	CFlagPad21,
-	CFlagPad22,
-	CFlagPad23,
-	CFlagPad24,
-	CFlagPad25,
-	CFlagPad26,
-	CFlagPad27,
-	CFlagPad28,
-	CFlagPad29,
-	CFlagPad30,
-	CFlagPad31,
-};
 
 /// The LRU caches for the nodes
 /// https://www.geeksforgeeks.org/dsa/lru-cache-implementation-using-double-linked-lists/
