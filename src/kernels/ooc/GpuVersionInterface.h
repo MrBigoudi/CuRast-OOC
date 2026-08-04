@@ -361,10 +361,12 @@ struct COctreeNode {
 	uint8_t children_visibility = 0b00000000;
 	uint8_t level = 0;
 
+	CAABB aabb = CAABB();
+
 	__device__ __forceinline__ COctreeNode(): points(nullptr), voxels(nullptr), occupancy(nullptr),
 		aabb_index(CINVALID_ID), points_counter(0), voxels_counter(0),
 		points_stored(0), voxels_stored(0), children_ids(0),
-		children_visibility(0b00000000), level(0)
+		children_visibility(0b00000000), level(0), aabb(CAABB())
 	{
 		for(uint32_t i=0; i<8; i++){
 			children[i] = nullptr;
@@ -386,6 +388,7 @@ struct COctreeNode {
 		children_ids = 0b00000000;
 		children_visibility = 0b00000000;
 		level = 0;
+		aabb = CAABB();
 	}
 };
 
@@ -543,16 +546,17 @@ struct CGlobalVariables {
         }
     };
     /// The list of all AABBs created during runtime
-    uint32_t nbAABBs = 0;
-    uint32_t maxNbAABBs = 0;
+	uint32_t totalNbNodes = 0;
+    uint32_t maxNbConcurrentNodes = 0;
     Relationship* relationshipMap = nullptr;
-    CAABB* allAABBs = nullptr;
+	uint32_t* nodesFlags = nullptr;
+
 	/// The main octree
+	bool isInitialised = false;
 	COctreeNode* mainOctree = nullptr;
 	uint32_t mainOctreeMaxLevel = 0;
 
 	/// The buffer of nodes for rendering and looping over
-	COctreeNode** nodes = nullptr;
 	uint32_t curNbNodes = 0;
 	COctreeNode** packedNodes = nullptr;
 
@@ -561,33 +565,25 @@ struct CGlobalVariables {
     ///////////////////////////////////////////////////////////////////////
     ////////////////////////// EXCHANGEABLE DATA //////////////////////////
     ///////////////////////////////////////////////////////////////////////
-	uint32_t* nodesFlags = nullptr;
 
 	/// TODO: use cuda unified memory for them ??
-	/// Data received from the host
-	uint32_t nbNodesReceived = 0;
-	uint32_t maxNbNodesReceived = 0;
-	uint32_t maxNbPointsChunksPerReceivedNode = 0;
-	uint32_t maxNbVoxelsChunksPerReceivedNode = 256; // TODO: find a better value
-	CIdAABB* receivedAABBIndices = nullptr;
-	uint32_t* receivedChildrenIds = nullptr;
-	uint32_t* receivedPointsCounters = nullptr;
-	uint32_t* receivedVoxelsCounters = nullptr;
-	CPoint** receivedPoints = nullptr;
-	CPoint** receivedVoxels = nullptr;
-	void* receivedPointsPointers = nullptr; // Just needed for host side
-	void* receivedVoxelsPointers = nullptr; // Just needed for host side
-
-    /// The buffer of nodes to load from disk
-    uint32_t nbNodesToLoad = 0;
-    uint32_t maxNbNodesToLoad = 0;
-    CIdAABB* nodesToLoadBuffer = nullptr;
+	/// Data exchanged from the host
+	uint32_t nbNodesExchanged = 0;
+	uint32_t maxNbNodesExchanged = 0;
+	uint32_t maxNbPointsChunksPerExchangedNode = 0;
+	uint32_t maxNbVoxelsChunksPerExchangedNode = 256; // TODO: find a better value
+	CIdAABB* exchangedAABBIndices = nullptr;
+	CAABB* exchangedAABBs = nullptr;
+	uint32_t* exchangedChildrenIds = nullptr;
+	uint32_t* exchangedPointsCounters = nullptr;
+	uint32_t* exchangedVoxelsCounters = nullptr;
+	CPoint** exchangedPoints = nullptr;
+	CPoint** exchangedVoxels = nullptr;
+	void* exchangedPointsPointers = nullptr; // Just needed for host side
+	void* exchangedVoxelsPointers = nullptr; // Just needed for host side
 
 	uint32_t nbGridsToInit = 0;
-	CIdAABB* gridsToInit = nullptr;
-
-    /// The buffer of nodes to store to disk
-    uint32_t nbNodesToStore = 0;
+	COctreeNode** gridsToInit = nullptr;
 
     /// A mask to know which batches have been handled
     uint32_t maxNbBatches = 0;

@@ -44,19 +44,13 @@ namespace cg = cooperative_groups;
 ////////////////////////// OCTREE HELPER FUNCTIONS ///////////////////////////
 //////////////////////////////////////////////////////////////////////////////
 
-__device__ __forceinline__ CIdAABB createNewAABB(const CAABB& aabb){
-    CIdAABB id = __nv_atomic_fetch_add(&globalVariables.nbAABBs, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-    if(id >= globalVariables.maxNbAABBs || id == CINVALID_ID){
+__device__ __forceinline__ CIdAABB createNewNodeId(){
+    CIdAABB id = __nv_atomic_fetch_add(&globalVariables.totalNbNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+    if(id >= globalVariables.maxNbConcurrentNodes || id == CINVALID_ID){
         printf("ERROR: reached the maximum number of nodes that can be created\n");
         customAssert();
     }
-    globalVariables.allAABBs[id] = aabb;
     return id;
-}
-
-
-__device__ __forceinline__ const CAABB& getAABB(const CIdAABB& aabb_index){
-    return globalVariables.allAABBs[aabb_index];
 }
 
 
@@ -97,7 +91,7 @@ __device__ __forceinline__ void displayOctreeNode(const COctreeNode* node, uint3
         uint8_t(node->children[6] != nullptr), 
         uint8_t(node->children[7] != nullptr)
     );
-    const CAABB& aabb = getAABB(node->aabb_index);
+    const CAABB& aabb = node->aabb;
     printf("    aabb: mins = (%f, %f, %f), maxs = (%f, %f, %f)\n",
         aabb.mins.x, aabb.mins.y, aabb.mins.z,
         aabb.maxs.x, aabb.maxs.y, aabb.maxs.z

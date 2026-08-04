@@ -215,7 +215,7 @@ void drawAllVoxels(
     uint32_t nb_thread_per_blocks = block.num_threads();
 
     CChunk* cur_voxels = node->voxels;
-    const CAABB& aabb = getAABB(node->aabb_index);
+    const CAABB& aabb = node->aabb;
     vec3 voxel_size = (aabb.maxs - aabb.mins) / float(OocSimLodSettings::GRID_SIZE_PER_DIMENSION);
 
     float color_factor = float(node->level) / float(max(globalVariables.mainOctreeMaxLevel, 1));
@@ -351,7 +351,7 @@ bool isLargerThanMinSpanning(
     COctreeNode* node
 ){
 
-    const CAABB& aabb = getAABB(node->aabb_index);
+    const CAABB& aabb = node->aabb;
 
     // Check if Camera is inside the node
     vec3 cam = target.camera_pos;
@@ -394,26 +394,50 @@ bool isLargerThanMinSpanning(
 
 
 __device__ 
-void recursiveTraversal(COctreeNode* cur_node, uint32_t cur_level){
+void computeRealLevelsRec(COctreeNode* cur_node, uint32_t cur_level){
     if(!cur_node){return;}
     cur_node->level = cur_level;
 
-    globalVariables.packedNodes[globalVariables.curNbNodes] = cur_node;
-    globalVariables.curNbNodes++;
-
     globalVariables.mainOctreeMaxLevel = max(globalVariables.mainOctreeMaxLevel, cur_level);
     for(uint32_t i=0; i<8; i++){
-        recursiveTraversal(cur_node->children[i], cur_level+1);
+        computeRealLevelsRec(cur_node->children[i], cur_level+1);
     }
 }
 
 
 extern "C" __global__
 void kernel_prepare_rendereable_octree(){
-    if(!globalVariables.mainOctree){return;}
+    if(!globalVariables.isInitialised){return;}
+
+    // Compute the correct node levels
     globalVariables.mainOctreeMaxLevel = 0;
-    globalVariables.curNbNodes = 0;
-    recursiveTraversal(globalVariables.mainOctree, 0);
+    computeRealLevelsRec(globalVariables.mainOctree, 0);
+
+    // Repack the nodes
+    uint32_t real_nb_nodes = 0;
+    uint32_t begin = 0;
+    uint32_t end = globalVariables.curNbNodes-1;
+    while(begin <= end){
+        if(globalVariables.packedNodes[begin]){
+            begin++;
+            real_nb_nodes++;
+        } else {
+            COctreeNode* last_non_empty = globalVariables.packedNodes[end];
+            while(!last_non_empty){
+                end--;
+                last_non_empty = globalVariables.packedNodes[end];
+            }
+            if(end < begin){break;}
+            if(!last_non_empty){
+                printf("ERROR: at this point a non empty node should have been found\n");
+                customAssert();
+            }
+            globalVariables.packedNodes[begin] = last_non_empty;
+            globalVariables.packedNodes[end] = nullptr;
+        }
+    }
+
+    globalVariables.curNbNodes = real_nb_nodes;
 }
 
 
@@ -422,23 +446,27 @@ void kernel_render_bounding_boxes(
 	CRenderTarget target,
     CRenderingSettings settings
 ){
-	uint32_t thread_id = cg::this_grid().thread_rank();
-	if(thread_id >= globalVariables.curNbNodes){return;}
+	auto grid = cg::this_grid();
+    uint32_t thread_id = grid.thread_rank();
+    uint32_t nb_threads = grid.num_threads();
 
-    COctreeNode* node = globalVariables.packedNodes[thread_id];
-    const CAABB& aabb = getAABB(node->aabb_index);
-    if(settings.debug_lod_to_render != -1 && thread_id != settings.debug_lod_to_render){
-        return;
+    for(uint32_t node_index = thread_id; node_index < globalVariables.curNbNodes; node_index += nb_threads){
+
+        COctreeNode* node = globalVariables.packedNodes[node_index];
+        const CAABB& aabb = node->aabb;
+        if(settings.debug_lod_to_render != -1){
+            return;
+        }
+
+        float factor = float(node->level) / float(max(globalVariables.mainOctreeMaxLevel, 1));
+        factor = clamp(factor, 0.0f, 1.0f);
+        uint32_t min_level_color = 0xff00ff00; // green
+        uint32_t max_level_color = 0xff0000ff; // red
+
+        uint32_t color = linearGradient(factor, min_level_color, max_level_color);
+        
+        drawBoundingBox(target, aabb, color);
     }
-
-    float factor = float(node->level) / float(max(globalVariables.mainOctreeMaxLevel, 1));
-    factor = clamp(factor, 0.0f, 1.0f);
-    uint32_t min_level_color = 0xff00ff00; // green
-    uint32_t max_level_color = 0xff0000ff; // red
-
-    uint32_t color = linearGradient(factor, min_level_color, max_level_color);
-    
-    drawBoundingBox(target, aabb, color);
 }
 
 

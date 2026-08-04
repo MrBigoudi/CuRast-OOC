@@ -95,6 +95,9 @@ CPUFallbackCache::Entry::Entry(const COctreeNode* node,
     serializable_node.voxels_counter = node->voxels_counter;
     serializable_node.children_ids = node->children_ids;
     serializable_node.aabb_index = node->aabb_index;
+    serializable_node.aabb = AABB();
+    serializable_node.aabb.maxs = node->aabb.maxs;
+    serializable_node.aabb.mins = node->aabb.mins;
 
     if(!points.empty()){
         serializable_node.points = getChunkFilePathV2(serializable_node.aabb_index, false);
@@ -440,6 +443,12 @@ void OctreeNodeSerializable::serialize(const std::string& filepath) const {
 
     // Write aabb
     file.write(reinterpret_cast<const char*>(&aabb_index), sizeof(aabb_index));
+    file.write(reinterpret_cast<const char*>(&aabb.mins.x), sizeof(float));
+    file.write(reinterpret_cast<const char*>(&aabb.mins.y), sizeof(float));
+    file.write(reinterpret_cast<const char*>(&aabb.mins.z), sizeof(float));
+    file.write(reinterpret_cast<const char*>(&aabb.maxs.x), sizeof(float));
+    file.write(reinterpret_cast<const char*>(&aabb.maxs.y), sizeof(float));
+    file.write(reinterpret_cast<const char*>(&aabb.maxs.z), sizeof(float));
 
     file.close();
 }
@@ -477,6 +486,12 @@ OctreeNodeSerializable OctreeNodeSerializable::deserialize(const std::string& fi
 
     // Read aabb
     file.read(reinterpret_cast<char*>(&new_node.aabb_index), sizeof(aabb_index));
+    file.read(reinterpret_cast<char*>(&new_node.aabb.mins.x), sizeof(float));
+    file.read(reinterpret_cast<char*>(&new_node.aabb.mins.y), sizeof(float));
+    file.read(reinterpret_cast<char*>(&new_node.aabb.mins.z), sizeof(float));
+    file.read(reinterpret_cast<char*>(&new_node.aabb.maxs.x), sizeof(float));
+    file.read(reinterpret_cast<char*>(&new_node.aabb.maxs.y), sizeof(float));
+    file.read(reinterpret_cast<char*>(&new_node.aabb.maxs.z), sizeof(float));
 
     return new_node;
 }

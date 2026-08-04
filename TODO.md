@@ -1,12 +1,8 @@
 # TODO list
 
 
-- Rename AABB indices with node index
-
-- Remove nodes flags
-- Remove allAABBs, keep a single rootAABB
-- 
-
+- Use cuda graphs to combine repetitive kernel launches
+- Use nsight systems to find the bottlenecks
 
 
 ## Next steps (in priority order)

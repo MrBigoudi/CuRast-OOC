@@ -14,117 +14,121 @@ void fillUpdatesCacheRecursive(COctreeNode* cur_node){
 /// Run on a single thread
 extern "C" __global__
 void kernel_update_updates_cache(){
-    // TODO: rethink this safeguard
-    if(!globalVariables.mainOctree){return;}
+    if(!globalVariables.isInitialised){return;}
+
+    globalVariables.nbNodesExchanged = 0;
     fillUpdatesCacheRecursive(globalVariables.mainOctree);
 }
 
-/// Run on "maxNbAABBs" threads
+
+/// Run on an unknown number of threads
 extern "C" __global__
 void kernel_prepare_store_part_1(){
-    // TODO: rethink this safeguard
-    if(!globalVariables.mainOctree){return;}
+    if(!globalVariables.isInitialised){return;}
 
     auto grid = cg::this_grid();
     uint32_t thread_id = grid.thread_rank();
-	if(thread_id >= globalVariables.maxNbAABBs){return;}
+    uint32_t nb_threads = grid.num_threads();
 
-    COctreeNode* node = globalVariables.nodes[thread_id];
-    if(!node){return;}
+    for(uint32_t node_index = thread_id; node_index < globalVariables.curNbNodes; node_index += nb_threads){
 
-    if(!globalVariables.updatesCache->contains(node->aabb_index)
-        && !globalVariables.visibilityCache->contains(node->aabb_index)    
-    ){
-        uint32_t index = __nv_atomic_fetch_add(&globalVariables.nbNodesToStore, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+        COctreeNode* node = globalVariables.packedNodes[node_index];
 
-        if(index >= globalVariables.maxNbNodesReceived){
-            printf("ERROR: Too many nodes are being stored, skipping this one\n");
-            return;
-        }
+        if(!globalVariables.updatesCache->contains(node->aabb_index)
+            && !globalVariables.visibilityCache->contains(node->aabb_index)    
+        ){
+            uint32_t exchanged_index = __nv_atomic_fetch_add(&globalVariables.nbNodesExchanged, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
 
-        globalVariables.receivedAABBIndices[index] = node->aabb_index;
-        globalVariables.receivedChildrenIds[index] = node->children_ids;
-        globalVariables.receivedPointsCounters[index] = node->points_counter;
-        globalVariables.receivedVoxelsCounters[index] = node->voxels_counter;
-        
-        const uint32_t MAX_NB_POINTS = globalVariables.maxNbPointsChunksPerReceivedNode * OocSimLodSettings::NB_POINTS_PER_CHUNK;
-        const uint32_t MAX_NB_VOXELS = globalVariables.maxNbVoxelsChunksPerReceivedNode * OocSimLodSettings::NB_POINTS_PER_CHUNK;
-        
-        CChunk* cur_chunk = node->points;
-        uint32_t cur_point_index = 0;
-        while(cur_chunk){
-            for(uint32_t i=0; i<cur_chunk->size; i++){
-                if(cur_point_index >= MAX_NB_POINTS){
-                    printf("ERROR: Too many points in the node, some will be skipped to store it: index %d / %d\n",
-                        cur_point_index, MAX_NB_POINTS
-                    );
-                    break;
-                }
-                globalVariables.receivedPoints[index][cur_point_index] = cur_chunk->points[i];
-                cur_point_index++;
+            if(exchanged_index >= globalVariables.maxNbNodesExchanged){
+                printf("ERROR: Too many nodes are being stored, skipping this one\n");
+                return;
             }
-            cur_chunk = cur_chunk->next;
-        }
 
-        cur_chunk = node->voxels;
-        cur_point_index = 0;
-        while(cur_chunk){
-            for(uint32_t i=0; i<cur_chunk->size; i++){
-                if(cur_point_index >= MAX_NB_VOXELS){
-                    printf("ERROR: Too many voxels in the node, some will be skipped to store it: index %d / %d\n",
-                        cur_point_index, MAX_NB_VOXELS
-                    );
-                    break;
+            globalVariables.exchangedAABBIndices[exchanged_index] = node->aabb_index;
+            globalVariables.exchangedChildrenIds[exchanged_index] = node->children_ids;
+            globalVariables.exchangedPointsCounters[exchanged_index] = node->points_counter;
+            globalVariables.exchangedVoxelsCounters[exchanged_index] = node->voxels_counter;
+            
+            const uint32_t MAX_NB_POINTS = globalVariables.maxNbPointsChunksPerExchangedNode * OocSimLodSettings::NB_POINTS_PER_CHUNK;
+            const uint32_t MAX_NB_VOXELS = globalVariables.maxNbVoxelsChunksPerExchangedNode * OocSimLodSettings::NB_POINTS_PER_CHUNK;
+            
+            CChunk* cur_chunk = node->points;
+            uint32_t cur_point_index = 0;
+            while(cur_chunk){
+                for(uint32_t i=0; i<cur_chunk->size; i++){
+                    if(cur_point_index >= MAX_NB_POINTS){
+                        printf("ERROR: Too many points in the node, some will be skipped to store it: index %d / %d\n",
+                            cur_point_index, MAX_NB_POINTS
+                        );
+                        break;
+                    }
+                    globalVariables.exchangedPoints[exchanged_index][cur_point_index] = cur_chunk->points[i];
+                    cur_point_index++;
                 }
-                globalVariables.receivedVoxels[index][cur_point_index] = cur_chunk->points[i];
-                cur_point_index++;
+                cur_chunk = cur_chunk->next;
             }
-            cur_chunk = cur_chunk->next;
-        }
 
-        // Do not require to be synced because it's the only flag type changed in the kernel
-        globalVariables.setFlag(node->aabb_index, CFlagToStore); 
+            cur_chunk = node->voxels;
+            cur_point_index = 0;
+            while(cur_chunk){
+                for(uint32_t i=0; i<cur_chunk->size; i++){
+                    if(cur_point_index >= MAX_NB_VOXELS){
+                        printf("ERROR: Too many voxels in the node, some will be skipped to store it: index %d / %d\n",
+                            cur_point_index, MAX_NB_VOXELS
+                        );
+                        break;
+                    }
+                    globalVariables.exchangedVoxels[exchanged_index][cur_point_index] = cur_chunk->points[i];
+                    cur_point_index++;
+                }
+                cur_chunk = cur_chunk->next;
+            }
+
+            // Do not require to be synced because it's the only flag type changed in the kernel
+            globalVariables.setFlag(node->aabb_index, CFlagToStore); 
+        }
     }
-
 }
 
-/// Run on "maxNbAABBs" threads
+/// Run on an unknown number of threads
 extern "C" __global__
 void kernel_prepare_store_part_2(){
-    // TODO: rethink this safeguard
-    if(!globalVariables.mainOctree){return;}
+    if(!globalVariables.isInitialised){return;}
 
     auto grid = cg::this_grid();
     uint32_t thread_id = grid.thread_rank();
-	if(thread_id >= globalVariables.maxNbAABBs){return;}
+    uint32_t nb_threads = grid.num_threads();
 
-    COctreeNode* node = globalVariables.nodes[thread_id];
-    if(!node){return;}
+    for(uint32_t node_index = thread_id; node_index < globalVariables.curNbNodes; node_index += nb_threads){
 
-    for(uint32_t i=0; i<8; i++){
-        COctreeNode* child = node->children[i];
-        if(child && globalVariables.isToStore(child->aabb_index)){
-            node->children[i] = nullptr;
+        COctreeNode* node = globalVariables.packedNodes[node_index];
+
+        for(uint32_t i=0; i<8; i++){
+            COctreeNode* child = node->children[i];
+            if(child && globalVariables.isToStore(child->aabb_index)){
+                node->children[i] = nullptr;
+            }
         }
     }
 }
 
-/// Run on "maxNbAABBs" threads
+/// Run on an unknown number of threads
 extern "C" __global__
 void kernel_prepare_store_part_3(){
-    // TODO: rethink this safeguard
-    if(!globalVariables.mainOctree){return;}
+    if(!globalVariables.isInitialised){return;}
 
     auto grid = cg::this_grid();
     uint32_t thread_id = grid.thread_rank();
-	if(thread_id >= globalVariables.maxNbAABBs){return;}
+    uint32_t nb_threads = grid.num_threads();
 
-    if(globalVariables.isToStore(thread_id)){
-        globalAllocator.delOctreeNode(globalVariables.nodes[thread_id], true, true);
-        globalVariables.nodes[thread_id] = nullptr;
-        globalVariables.unsetFlag(thread_id, CFlagToStore);
+    for(uint32_t node_index = thread_id; node_index < globalVariables.curNbNodes; node_index += nb_threads){
+        COctreeNode* node = globalVariables.packedNodes[node_index];
+        if(globalVariables.isToStore(node->aabb_index)){
+            globalAllocator.delOctreeNode(node, true, true);
+            globalVariables.packedNodes[node_index] = nullptr;
+            globalVariables.unsetFlag(node->aabb_index, CFlagToStore);
+        }
     }
-
 }
 
 /// Run on a single thread

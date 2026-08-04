@@ -10,6 +10,7 @@ void kernel_test(){
 
 extern "C" __global__
 void kernel_test_display(PipelineLevel level, bool display_octree){
+    if(!globalVariables.isInitialised){return;}
     printf("\n\n\n\n\n");
     switch (level) {
         case LevelInit:

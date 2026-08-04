@@ -5,63 +5,59 @@
 
 void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
     // Unbounded data
-    hostStaging.maxNbAABBs = OocSimLodSettings::MAX_NB_NODES;
-    hostStaging.relationshipMap = alloc<CGlobalVariables::Relationship>(hostStaging.maxNbAABBs);
-    hostStaging.allAABBs = alloc<CAABB>(hostStaging.maxNbAABBs);
-    hostStaging.nodes = alloc<COctreeNode*>(hostStaging.maxNbAABBs);
-    hostStaging.packedNodes = alloc<COctreeNode*>(hostStaging.maxNbAABBs);
-    hostStaging.nodesFlags = alloc<uint32_t>(hostStaging.maxNbAABBs);
-    
+    hostStaging.maxNbConcurrentNodes = OocSimLodSettings::MAX_NB_NODES;
+    hostStaging.relationshipMap = alloc<CGlobalVariables::Relationship>(hostStaging.maxNbConcurrentNodes);
+    hostStaging.packedNodes = alloc<COctreeNode*>(hostStaging.maxNbConcurrentNodes);
+    hostStaging.nodesFlags = alloc<uint32_t>(hostStaging.maxNbConcurrentNodes);
+
 
     // Exchangeable data
-    hostStaging.maxNbNodesReceived = OocSimLodSettings::MAX_NB_NODES_TO_STORE;
+    hostStaging.maxNbNodesExchanged = OocSimLodSettings::MAX_NB_NODES_TO_STORE;
 
-    hostStaging.receivedAABBIndices = alloc<CIdAABB>(hostStaging.maxNbNodesReceived);
-    hostStaging.receivedChildrenIds = alloc<uint32_t>(hostStaging.maxNbNodesReceived);
-    hostStaging.receivedPointsCounters = alloc<uint32_t>(hostStaging.maxNbNodesReceived);
-    hostStaging.receivedVoxelsCounters = alloc<uint32_t>(hostStaging.maxNbNodesReceived);
-    hostStaging.receivedPoints = alloc<CPoint*>(hostStaging.maxNbNodesReceived);
-    hostStaging.receivedVoxels = alloc<CPoint*>(hostStaging.maxNbNodesReceived);
-    hostStaging.maxNbPointsChunksPerReceivedNode = 
+    hostStaging.exchangedAABBIndices = alloc<CIdAABB>(hostStaging.maxNbNodesExchanged);
+    hostStaging.exchangedAABBs = alloc<CAABB>(hostStaging.maxNbNodesExchanged);
+    hostStaging.exchangedChildrenIds = alloc<uint32_t>(hostStaging.maxNbNodesExchanged);
+    hostStaging.exchangedPointsCounters = alloc<uint32_t>(hostStaging.maxNbNodesExchanged);
+    hostStaging.exchangedVoxelsCounters = alloc<uint32_t>(hostStaging.maxNbNodesExchanged);
+    hostStaging.exchangedPoints = alloc<CPoint*>(hostStaging.maxNbNodesExchanged);
+    hostStaging.exchangedVoxels = alloc<CPoint*>(hostStaging.maxNbNodesExchanged);
+    hostStaging.maxNbPointsChunksPerExchangedNode = 
         (OocSimLodSettings::MAX_POINTS_PER_LEAF + OocSimLodSettings::NB_POINTS_PER_CHUNK - 1) 
         / OocSimLodSettings::NB_POINTS_PER_CHUNK
     ;
-    hostStaging.receivedPointsPointers = malloc(hostStaging.maxNbNodesReceived * sizeof(CUdeviceptr));
-    hostStaging.receivedVoxelsPointers = malloc(hostStaging.maxNbNodesReceived * sizeof(CUdeviceptr));
-    for(uint32_t i=0; i<hostStaging.maxNbNodesReceived; i++){
+    hostStaging.exchangedPointsPointers = malloc(hostStaging.maxNbNodesExchanged * sizeof(CUdeviceptr));
+    hostStaging.exchangedVoxelsPointers = malloc(hostStaging.maxNbNodesExchanged * sizeof(CUdeviceptr));
+    for(uint32_t i=0; i<hostStaging.maxNbNodesExchanged; i++){
         CUdeviceptr new_ptr = 0;
         CURuntime::assertCudaSuccess(
             cuMemAlloc(
                 &new_ptr, 
-                OocSimLodSettings::NB_POINTS_PER_CHUNK * hostStaging.maxNbPointsChunksPerReceivedNode * sizeof(CPoint)
+                OocSimLodSettings::NB_POINTS_PER_CHUNK * hostStaging.maxNbPointsChunksPerExchangedNode * sizeof(CPoint)
             )
         );
-        ((CUdeviceptr*)(hostStaging.receivedPointsPointers))[i] = new_ptr;
+        ((CUdeviceptr*)(hostStaging.exchangedPointsPointers))[i] = new_ptr;
         pointers.push_back(new_ptr);
         CURuntime::assertCudaSuccess(
             cuMemAlloc(
                 &new_ptr, 
-                OocSimLodSettings::NB_POINTS_PER_CHUNK * hostStaging.maxNbVoxelsChunksPerReceivedNode * sizeof(CPoint)
+                OocSimLodSettings::NB_POINTS_PER_CHUNK * hostStaging.maxNbVoxelsChunksPerExchangedNode * sizeof(CPoint)
             )
         );
-        ((CUdeviceptr*)(hostStaging.receivedVoxelsPointers))[i] = new_ptr;
+        ((CUdeviceptr*)(hostStaging.exchangedVoxelsPointers))[i] = new_ptr;
         pointers.push_back(new_ptr);
         CURuntime::assertCudaSuccess(cuMemcpyHtoD(
-            (CUdeviceptr)hostStaging.receivedPoints,
-            hostStaging.receivedPointsPointers,
-            hostStaging.maxNbNodesReceived * sizeof(CUdeviceptr)
+            (CUdeviceptr)hostStaging.exchangedPoints,
+            hostStaging.exchangedPointsPointers,
+            hostStaging.maxNbNodesExchanged * sizeof(CUdeviceptr)
         ));
         CURuntime::assertCudaSuccess(cuMemcpyHtoD(
-            (CUdeviceptr)hostStaging.receivedVoxels,
-            hostStaging.receivedVoxelsPointers,
-            hostStaging.maxNbNodesReceived * sizeof(CUdeviceptr)
+            (CUdeviceptr)hostStaging.exchangedVoxels,
+            hostStaging.exchangedVoxelsPointers,
+            hostStaging.maxNbNodesExchanged * sizeof(CUdeviceptr)
         ));
     }
 
-    hostStaging.maxNbNodesToLoad = OocSimLodSettings::MAX_NB_NODES_TO_LOAD;
-    hostStaging.nodesToLoadBuffer = alloc<CIdAABB>(hostStaging.maxNbNodesToLoad);
-
-    hostStaging.gridsToInit = alloc<CIdAABB>(hostStaging.maxNbAABBs);
+    hostStaging.gridsToInit = alloc<COctreeNode*>(hostStaging.maxNbConcurrentNodes);
 
     hostStaging.maxNbBatches = OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE;
     hostStaging.batchesAddedMask = alloc<uint32_t>(hostStaging.maxNbBatches);
@@ -169,12 +165,10 @@ void GpuVersion::init(CuRast* editor, CUcontext* context) {
     };
     prog->launch("kernel_init_global_allocators", {}, launch_settings);
 
-    grid_size = max(hostStaging.maxNbAABBs,
-        max(hostStaging.maxNbNodesToLoad,
+    grid_size = max(hostStaging.maxNbConcurrentNodes,
             max(hostStaging.maxNbBatches,
                 max(hostStaging.updatesCacheSize, hostStaging.visibilityCacheSize)
             )
-        )
     );
     launch_settings = {
         .gridsize = grid_size,
@@ -193,8 +187,8 @@ void GpuVersion::destroy(CuRast *editor, CUcontext *context){
             CURuntime::assertCudaSuccess(cuMemFree(ptr));
         }
     }
-    free(hostStaging.receivedPointsPointers);
-    free(hostStaging.receivedVoxelsPointers);
+    free(hostStaging.exchangedPointsPointers);
+    free(hostStaging.exchangedVoxelsPointers);
     free(hostStaging.batchesToAddPointsPointers);
 
     cudaDeviceSynchronize();
@@ -288,7 +282,7 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
 
     // Pointers arithmetic shenanigans to get the correct device address
     CGlobalVariables tmp = {};
-    uint64_t pad = uint64_t(&(tmp.nbNodesToLoad)) - uint64_t(&tmp);
+    uint64_t pad = uint64_t(&(tmp.nbNodesExchanged)) - uint64_t(&tmp);
     CUdeviceptr dst_device = GpuVersion::deviceStaging + pad;
 
     // Get the number of nodes to load
@@ -305,7 +299,7 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
     std::vector<CIdAABB> ids(nb_nodes_to_load, CINVALID_ID);
     CURuntime::assertCudaSuccess(cuMemcpyDtoH(
 		ids.data(), 
-		(CUdeviceptr)hostStaging.nodesToLoadBuffer,
+		(CUdeviceptr)hostStaging.exchangedAABBIndices,
 		nb_nodes_to_load * sizeof(CIdAABB)
 	));
 
@@ -317,9 +311,9 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
     }
 
     // Send the nodes back to the device
-    if(nb_nodes_to_load > hostStaging.maxNbNodesReceived){
+    if(nb_nodes_to_load > hostStaging.maxNbNodesExchanged){
         println("ERROR: can't send more than {} nodes back to the device... tried to send {}", 
-            hostStaging.maxNbNodesReceived, nb_nodes_to_load
+            hostStaging.maxNbNodesExchanged, nb_nodes_to_load
         );
         throw(EXIT_FAILURE);
     }
@@ -327,10 +321,13 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
     std::vector<uint32_t> children_ids(nb_nodes_to_load, 0);
     std::vector<uint32_t> nbs_points(nb_nodes_to_load, 0);
     std::vector<uint32_t> nbs_voxels(nb_nodes_to_load, 0);
+    std::vector<CAABB> aabbs(nb_nodes_to_load, CAABB());
 
     for(uint32_t i = 0; i<nb_nodes_to_load; i++){
         ids[i] = loaded[i].serializable_node.aabb_index;
         children_ids[i] = uint32_t(loaded[i].serializable_node.children_ids);
+        aabbs[i].maxs = loaded[i].serializable_node.aabb.maxs;
+        aabbs[i].mins = loaded[i].serializable_node.aabb.mins;
 
         std::vector<CPoint> points = {};
         if(loaded[i].serializable_points.has_value()){
@@ -378,40 +375,45 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
 
         if(nbs_points[i]){
             CURuntime::assertCudaSuccess(cuMemcpyHtoD( 
-                ((CUdeviceptr*)(GpuVersion::hostStaging.receivedPointsPointers))[i],
+                ((CUdeviceptr*)(GpuVersion::hostStaging.exchangedPointsPointers))[i],
                 points.data(), nbs_points[i]*sizeof(CPoint)
             ));
         }
         if(nbs_voxels[i]){
             CURuntime::assertCudaSuccess(cuMemcpyHtoD( 
-                ((CUdeviceptr*)(GpuVersion::hostStaging.receivedVoxelsPointers))[i],
+                ((CUdeviceptr*)(GpuVersion::hostStaging.exchangedVoxelsPointers))[i],
                 voxels.data(), nbs_voxels[i]*sizeof(CPoint)
             ));
         }
     }
 
-    pad = uint64_t(&(tmp.nbNodesReceived)) - uint64_t(&tmp);
+    pad = uint64_t(&(tmp.nbNodesExchanged)) - uint64_t(&tmp);
     dst_device = GpuVersion::deviceStaging + pad;
     CURuntime::assertCudaSuccess(cuMemcpyHtoD(
 		dst_device,	&nb_nodes_to_load, sizeof(uint32_t)
 	));
     CURuntime::assertCudaSuccess(cuMemcpyHtoD(
-		(CUdeviceptr)hostStaging.receivedAABBIndices,
+		(CUdeviceptr)hostStaging.exchangedAABBIndices,
 		ids.data(),
 		nb_nodes_to_load * sizeof(CIdAABB)
 	));
     CURuntime::assertCudaSuccess(cuMemcpyHtoD(
-		(CUdeviceptr)hostStaging.receivedChildrenIds,
+		(CUdeviceptr)hostStaging.exchangedAABBs,
+		aabbs.data(),
+		nb_nodes_to_load * sizeof(CAABB)
+	));
+    CURuntime::assertCudaSuccess(cuMemcpyHtoD(
+		(CUdeviceptr)hostStaging.exchangedChildrenIds,
 		children_ids.data(),
 		nb_nodes_to_load * sizeof(uint32_t)
 	));
     CURuntime::assertCudaSuccess(cuMemcpyHtoD(
-		(CUdeviceptr)hostStaging.receivedPointsCounters,
+		(CUdeviceptr)hostStaging.exchangedPointsCounters,
 		nbs_points.data(),
 		nb_nodes_to_load * sizeof(uint32_t)
 	));
     CURuntime::assertCudaSuccess(cuMemcpyHtoD(
-		(CUdeviceptr)hostStaging.receivedVoxelsCounters,
+		(CUdeviceptr)hostStaging.exchangedVoxelsCounters,
 		nbs_voxels.data(),
 		nb_nodes_to_load * sizeof(uint32_t)
 	));
@@ -422,17 +424,31 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
         .blocksize = 1
     };
     prog->launch("kernel_simlod_load_part_3", {}, launch_settings);
+
     launch_settings = {
         .gridsize = nb_nodes_to_load,
         .blocksize = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X
     };
     prog->launch("kernel_fill_new_grids", {}, launch_settings);
+
     launch_settings = {
-        .gridsize = hostStaging.maxNbAABBs,
+        .gridsize = nb_nodes_to_load,
         .blocksize = 1
     };
     prog->launch("kernel_simlod_load_part_4", {}, launch_settings);
 }
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 void GpuVersion::octreeUpdateSimLODCountSplit(CuRast* editor, CUcontext* context){
@@ -442,6 +458,19 @@ void GpuVersion::octreeUpdateSimLODCountSplit(CuRast* editor, CUcontext* context
     };
     prog->launchCooperative("kernel_simlod_count_split", {}, launch_settings);
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 void GpuVersion::octreeUpdateSimLODVoxelSampling(CuRast* editor, CUcontext* context){
     OptionalLaunchSettings launch_settings = {
@@ -456,9 +485,20 @@ void GpuVersion::octreeUpdateSimLODVoxelSampling(CuRast* editor, CUcontext* cont
     prog->launch("kernel_simlod_voxel_sampling", {}, launch_settings);
 }
 
+
+
+
+
+
+
+
+
+
+
+
 void GpuVersion::octreeUpdateSimLODInsertion(CuRast* editor, CUcontext* context){
     OptionalLaunchSettings launch_settings = {
-        .gridsize = OocSimLodSettings::MAX_NB_NODES,
+        .gridsize = 1024, // TODO: Should be the current number of node
         .blocksize = 1
     };
     prog->launch("kernel_simlod_insertion_part_1", {}, launch_settings);
@@ -469,6 +509,18 @@ void GpuVersion::octreeUpdateSimLODInsertion(CuRast* editor, CUcontext* context)
     };
     prog->launch("kernel_simlod_insertion_part_2", {}, launch_settings);
 }
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -483,6 +535,19 @@ void GpuVersion::octreeUpdateSimLOD(CuRast* editor, CUcontext* context){
 }
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
 void GpuVersion::octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context){
     OptionalLaunchSettings launch_settings = {
         .gridsize = 1,
@@ -491,7 +556,7 @@ void GpuVersion::octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context){
     prog->launch("kernel_update_updates_cache", {}, launch_settings);
 
     launch_settings = {
-        .gridsize = OocSimLodSettings::MAX_NB_NODES,
+        .gridsize = 1024, // TODO: Should be the current number of node
         .blocksize = 1
     };
     prog->launch("kernel_prepare_store_part_1", {}, launch_settings);
@@ -508,7 +573,7 @@ void GpuVersion::octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context){
 
     // Pointers arithmetic shenanigans to get the correct device address
     CGlobalVariables tmp = {};
-    uint64_t pad = uint64_t(&(tmp.nbNodesToStore)) - uint64_t(&tmp);
+    uint64_t pad = uint64_t(&(tmp.nbNodesExchanged)) - uint64_t(&tmp);
     CUdeviceptr dst_device = GpuVersion::deviceStaging + pad;
 
     // Get the number of nodes to store
@@ -523,27 +588,33 @@ void GpuVersion::octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context){
 
     std::vector<CIdAABB> ids(nb_nodes_to_store, CINVALID_ID);
     std::vector<uint32_t> children_ids(nb_nodes_to_store, 0);
+    std::vector<CAABB> aabbs(nb_nodes_to_store, CAABB());
     std::vector<uint32_t> nbs_points(nb_nodes_to_store, 0);
     std::vector<uint32_t> nbs_voxels(nb_nodes_to_store, 0);
 
     CURuntime::assertCudaSuccess(cuMemcpyDtoH(
 		ids.data(),
-		(CUdeviceptr)hostStaging.receivedAABBIndices, 
+		(CUdeviceptr)hostStaging.exchangedAABBIndices, 
 		nb_nodes_to_store * sizeof(CIdAABB)
 	));
     CURuntime::assertCudaSuccess(cuMemcpyDtoH(
 		children_ids.data(),
-		(CUdeviceptr)hostStaging.receivedChildrenIds, 
+		(CUdeviceptr)hostStaging.exchangedChildrenIds, 
 		nb_nodes_to_store * sizeof(uint32_t)
 	));
     CURuntime::assertCudaSuccess(cuMemcpyDtoH(
+		aabbs.data(),
+		(CUdeviceptr)hostStaging.exchangedAABBs, 
+		nb_nodes_to_store * sizeof(CAABB)
+	));
+    CURuntime::assertCudaSuccess(cuMemcpyDtoH(
 		nbs_points.data(),
-		(CUdeviceptr)hostStaging.receivedPointsCounters, 
+		(CUdeviceptr)hostStaging.exchangedPointsCounters, 
 		nb_nodes_to_store * sizeof(uint32_t)
 	));
     CURuntime::assertCudaSuccess(cuMemcpyDtoH(
 		nbs_voxels.data(),
-		(CUdeviceptr)hostStaging.receivedVoxelsCounters, 
+		(CUdeviceptr)hostStaging.exchangedVoxelsCounters, 
 		nb_nodes_to_store * sizeof(uint32_t)
 	));
     for(uint32_t i=0; i<nb_nodes_to_store; i++){
@@ -552,7 +623,7 @@ void GpuVersion::octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context){
         if(cur_nb_points > 0){
             CURuntime::assertCudaSuccess(cuMemcpyDtoH(
                 points.data(),
-                ((CUdeviceptr*)(GpuVersion::hostStaging.receivedPointsPointers))[i],
+                ((CUdeviceptr*)(GpuVersion::hostStaging.exchangedPointsPointers))[i],
                 cur_nb_points * sizeof(CPoint)
             ));
         }
@@ -562,7 +633,7 @@ void GpuVersion::octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context){
         if(cur_nb_voxels > 0){
             CURuntime::assertCudaSuccess(cuMemcpyDtoH(
                 voxels.data(),
-                ((CUdeviceptr*)(GpuVersion::hostStaging.receivedVoxelsPointers))[i],
+                ((CUdeviceptr*)(GpuVersion::hostStaging.exchangedVoxelsPointers))[i],
                 cur_nb_voxels * sizeof(CPoint)
             ));
         }
@@ -570,6 +641,7 @@ void GpuVersion::octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context){
         // Store the node on disk
         COctreeNode node = {};
         node.aabb_index = ids[i];
+        node.aabb = aabbs[i];
         node.children_ids = children_ids[i];
         node.points_counter = cur_nb_points;
         node.voxels_counter = cur_nb_voxels;
@@ -584,9 +656,18 @@ void GpuVersion::octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context){
 void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
     LoaderGpuVersion::run(editor, context);
     octreeUpdateInit(editor, context);
+    // // TODO: to remove, just to flag the batches and display stuff
+    // {
+    //     OptionalLaunchSettings launch_settings = {
+    //         .gridsize = 1,
+    //         .blocksize = 1
+    //     };
+    //     PipelineLevel level = PipelineLevel::LevelInit;
+    //     bool display_octree = true;
+    //     GpuVersion::prog->launch("kernel_test_display", {&level, &display_octree}, launch_settings);
+    // }
 
     octreeUpdateBottomUp(editor, context);
-
 
     octreeUpdateSimLOD(editor, context);
     

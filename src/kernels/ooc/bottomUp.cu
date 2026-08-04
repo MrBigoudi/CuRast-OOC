@@ -1,9 +1,10 @@
 #include "utils.cuh"
 
+
+/// Run on "maxPointsPerBatches" threads
 extern "C" __global__
 void kernel_bottom_up_update_part_1(){
-    // TODO: rethink this safeguard
-    if(!globalVariables.mainOctree){return;}
+    if(!globalVariables.isInitialised){return;}
 
 
     auto grid = cg::this_grid();
@@ -12,7 +13,7 @@ void kernel_bottom_up_update_part_1(){
 
     uint32_t nb_new_levels = 0;
     CNodePosition node_position = CFrontTopLeft;
-    CAABB new_aabb = getAABB(globalVariables.mainOctree->aabb_index);
+    CAABB new_aabb = globalVariables.mainOctree->aabb;
 
     for(uint32_t batch = 0; batch < globalVariables.maxNbBatches; batch++){
         if(globalVariables.batchesAddedMask[batch]){continue;}
@@ -55,7 +56,8 @@ __device__ void addNewVoxels(
             COccupancyGrid::GridIndex index = COccupancyGrid::getCellIndices(parent_aabb, point);
             bool is_cell_occupied = new_parent->occupancy->markCellAsFilled(index);
 
-            // Fill up occupancy grid
+            // Fill up voxels chunks
+            // The occupancy grid will be erased later anyways so don't bother filling it here
             if(!is_cell_occupied){
                 // Create corresponding voxel using this point
                 vec3 voxel_centroid = COccupancyGrid::getCellCentroid(parent_aabb, index);
@@ -86,8 +88,7 @@ __device__ void addNewVoxels(
 /// Run on a single thread
 extern "C" __global__
 void kernel_bottom_up_update_part_2(){
-    // TODO: rethink this safeguard
-    if(!globalVariables.mainOctree){return;}
+    if(!globalVariables.isInitialised){return;}
 
     // TODO: store a single value instead of full array
     uint32_t nb_new_levels = globalVariables.batchesToAddBottomUpCount;
@@ -97,28 +98,34 @@ void kernel_bottom_up_update_part_2(){
     CNodePosition node_position = CFrontTopLeft;
 
     for(uint32_t i=0; i<nb_new_levels; i++){
-		// Create the new AABB
-		CAABB parent_aabb = getAABB(cur_child->aabb_index);
-		parent_aabb.extend(node_position);
-
 		// Create the new parent node
-		CIdAABB parent_aabb_index = createNewAABB(parent_aabb);
-		// OctreeNode* new_parent = new OctreeNode(parent_aabb_index);
+		CIdAABB parent_aabb_index = createNewNodeId();
 		COctreeNode* new_parent = globalAllocator.newOctreeNode(parent_aabb_index, false);
-        globalVariables.nodes[parent_aabb_index] = new_parent;
+		uint32_t node_index = globalVariables.curNbNodes;
+        globalVariables.curNbNodes++;
+        if(node_index >= globalVariables.maxNbConcurrentNodes){
+            printf("ERROR: Can't create more nodes in the bottom up update\n");
+            customAssert();
+        }
+        globalVariables.packedNodes[node_index] = new_parent;
 
+        // Create the new AABB
+        new_parent->aabb = cur_child->aabb;
+		new_parent->aabb.extend(node_position);
+        
+        // Create the occupancy
 		new_parent->occupancy = globalAllocator.newOccupancyGrid(false);
-        uint32_t index = globalVariables.nbGridsToInit;
+        uint32_t grid_index = globalVariables.nbGridsToInit;
         globalVariables.nbGridsToInit++;
-        globalVariables.gridsToInit[index] = parent_aabb_index;
+        globalVariables.gridsToInit[grid_index] = new_parent;
 
         globalVariables.setFlag(new_parent->aabb_index, CFlagIsUpdated);
         globalVariables.setFlag(cur_child->aabb_index, CFlagIsUpdated);
 		new_parent->children[node_position] = cur_child;
 
 		// Sample voxels to fill new occupancy grid
-		addNewVoxels(new_parent, parent_aabb, cur_child->points);
-		addNewVoxels(new_parent, parent_aabb, cur_child->voxels);
+		addNewVoxels(new_parent, new_parent->aabb, cur_child->points);
+		addNewVoxels(new_parent, new_parent->aabb, cur_child->voxels);
 
 		// Update the AABB maps
 		globalVariables.relationshipMap[parent_aabb_index].children[node_position] = cur_child->aabb_index;
