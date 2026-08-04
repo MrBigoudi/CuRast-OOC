@@ -73,7 +73,6 @@ void kernel_init_global_buffers(){
     if(thread_id < globalVariables.maxNbBatches){
         globalVariables.batchesAddedMask[thread_id] = true;
         globalVariables.batchesToAddCounts[thread_id] = 0;
-        globalVariables.batchesToAddBottomUpCounts[thread_id] = 0;
     }
 
     if(thread_id == 0){
@@ -82,36 +81,49 @@ void kernel_init_global_buffers(){
     }   
 }
 
+
+
+
+
+
+/// Run on "maxPointsPerBatches" threads
 extern "C" __global__
 void kernel_init_octree_part_1(){
     // To only run it once
     if(globalVariables.mainOctree){return;}
-    // To only run it after the first batch has been loaded
-    if(globalVariables.batchesAddedMask[0]){return;}
 
-    CPoint* new_points = globalVariables.batchesToAddPoints[0];
-    uint32_t new_count = globalVariables.batchesToAddCounts[0];
 
     // Assume 1D kernel launch
     auto grid = cg::this_grid();
     uint32_t thread_id = grid.thread_rank();
-    if(thread_id >= new_count){return;}
+    uint32_t nb_threads = grid.num_threads();
 
     // Thread level AABB
     CAABB tmp_aabb = CAABB();
-    tmp_aabb.mins = new_points[0].position;
-    tmp_aabb.maxs = new_points[0].position;
+    bool is_init = false;
 
-    uint32_t nb_threads = grid.num_threads();
-    for(uint32_t i=thread_id; i<new_count; i+=nb_threads){
-        CPoint& point = new_points[i];
-		tmp_aabb.maxs.x = max(tmp_aabb.maxs.x, point.position.x);
-		tmp_aabb.maxs.y = max(tmp_aabb.maxs.y, point.position.y);
-		tmp_aabb.maxs.z = max(tmp_aabb.maxs.z, point.position.z);
-		tmp_aabb.mins.x = min(tmp_aabb.mins.x, point.position.x);
-		tmp_aabb.mins.y = min(tmp_aabb.mins.y, point.position.y);
-		tmp_aabb.mins.z = min(tmp_aabb.mins.z, point.position.z);
-	}
+    for(uint32_t batch = 0; batch < globalVariables.maxNbBatches; batch++){
+        if(globalVariables.batchesAddedMask[batch]){continue;}
+        CPoint* new_points = globalVariables.batchesToAddPoints[batch];
+        uint32_t nb_new_points = globalVariables.batchesToAddCounts[batch];
+
+        for(uint32_t i=thread_id; i<nb_new_points; i+=nb_threads){
+            CPoint& point = new_points[i];
+            if(!is_init){
+                tmp_aabb.mins = new_points[i].position;
+                tmp_aabb.maxs = new_points[i].position;
+                is_init = true;
+                continue;
+            }
+
+            tmp_aabb.maxs.x = max(tmp_aabb.maxs.x, point.position.x);
+            tmp_aabb.maxs.y = max(tmp_aabb.maxs.y, point.position.y);
+            tmp_aabb.maxs.z = max(tmp_aabb.maxs.z, point.position.z);
+            tmp_aabb.mins.x = min(tmp_aabb.mins.x, point.position.x);
+            tmp_aabb.mins.y = min(tmp_aabb.mins.y, point.position.y);
+            tmp_aabb.mins.z = min(tmp_aabb.mins.z, point.position.z);
+        }
+    }
 
     // Block level AABB
     atomicMinFloatRelaxedOrderSystemScope(
@@ -140,6 +152,8 @@ void kernel_init_octree_part_1(){
     );
 }
 
+
+/// Run on a single thread
 extern "C" __global__
 void kernel_init_octree_part_2(){
     // To only run it once

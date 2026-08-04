@@ -603,7 +603,7 @@ struct CGlobalVariables {
 	/// The batches to add to the scene
 	CPoint** batchesToAddPoints = nullptr;
 	uint32_t* batchesToAddCounts = nullptr;
-	uint32_t* batchesToAddBottomUpCounts = nullptr;
+	uint32_t batchesToAddBottomUpCount = 0;
 	void* batchesToAddPointsPointers = nullptr; // Just needed for host side
 
 	/// The points that couldn't be handled yet

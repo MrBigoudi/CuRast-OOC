@@ -66,7 +66,6 @@ void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
     hostStaging.maxNbBatches = OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE;
     hostStaging.batchesAddedMask = alloc<uint32_t>(hostStaging.maxNbBatches);
     hostStaging.batchesToAddCounts = alloc<uint32_t>(hostStaging.maxNbBatches);
-    hostStaging.batchesToAddBottomUpCounts = alloc<uint32_t>(hostStaging.maxNbBatches);
     hostStaging.batchesToAddPoints = alloc<CPoint*>(hostStaging.maxNbBatches);
     hostStaging.batchesToAddPointsPointers = malloc(hostStaging.maxNbBatches * sizeof(CUdeviceptr));
     for(uint32_t i=0; i<hostStaging.maxNbBatches; i++){
@@ -216,7 +215,7 @@ void GpuVersion::destroy(CuRast *editor, CUcontext *context){
 
 void GpuVersion::octreeUpdateInit(CuRast* editor, CUcontext* context){
     OptionalLaunchSettings launch_settings = {
-        .gridsize = 1024,
+        .gridsize = OocSimLodSettings::MAX_POINTS_PER_BATCHES,
         .blocksize = 1
     };
     prog->launch("kernel_init_octree_part_1", {}, launch_settings);
@@ -228,11 +227,20 @@ void GpuVersion::octreeUpdateInit(CuRast* editor, CUcontext* context){
     prog->launch("kernel_init_octree_part_2", {}, launch_settings);
 }
 
+
+
+
+
+
+
+
+
+
+
+
+
+
 void GpuVersion::octreeUpdateBottomUp(CuRast* editor, CUcontext* context){
-    // OptionalLaunchSettings launch_settings = {
-    //     .gridsize = OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE,
-    //     .blocksize = 1024
-    // };
     OptionalLaunchSettings launch_settings = {
         .gridsize = OocSimLodSettings::MAX_POINTS_PER_BATCHES,
         .blocksize = 1
@@ -245,6 +253,26 @@ void GpuVersion::octreeUpdateBottomUp(CuRast* editor, CUcontext* context){
     };
     prog->launch("kernel_bottom_up_update_part_2", {}, launch_settings);
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
     OptionalLaunchSettings launch_settings = {

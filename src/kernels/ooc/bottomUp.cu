@@ -33,7 +33,7 @@ void kernel_bottom_up_update_part_1(){
 
     // Combine max new level per block
     __nv_atomic_max(
-        &globalVariables.batchesToAddBottomUpCounts[0],
+        &globalVariables.batchesToAddBottomUpCount,
         nb_new_levels,
         __NV_ATOMIC_RELAXED, 
         __NV_THREAD_SCOPE_DEVICE
@@ -90,7 +90,7 @@ void kernel_bottom_up_update_part_2(){
     if(!globalVariables.mainOctree){return;}
 
     // TODO: store a single value instead of full array
-    uint32_t nb_new_levels = globalVariables.batchesToAddBottomUpCounts[0];
+    uint32_t nb_new_levels = globalVariables.batchesToAddBottomUpCount;
 
     // Bottom up update of the main octree
     COctreeNode* cur_child = globalVariables.mainOctree;

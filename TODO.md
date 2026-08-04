@@ -1,5 +1,14 @@
 # TODO list
 
+
+- Rename AABB indices with node index
+
+- Remove nodes flags
+- Remove allAABBs, keep a single rootAABB
+- 
+
+
+
 ## Next steps (in priority order)
 
 - Pack nodes to avoid useless launches (repack nodes every frame, after cache update + keep a list of indices to redirect packed nodes with their real place)
