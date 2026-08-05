@@ -94,7 +94,9 @@ void kernel_prepare_store_part_1_filling_buffers(){
     }
 }
 
-/// Run on an unknown number of threads
+
+
+/// Run on min("curNbNodes", "NB SMs" * "Max threads per SM") blocks of size 1
 extern "C" __global__
 void kernel_prepare_store_part_2_resetting_children(){
     if(!globalVariables.isInitialised){return;}

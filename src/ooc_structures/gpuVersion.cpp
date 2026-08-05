@@ -735,20 +735,31 @@ void GpuVersion::renderOctree(RenderTarget& target){
     }
 
     if(curNbNodes > 0){
-        // Render Bounding boxes
-        if(CuRastSettings::showBoundingBoxes){
-            OptionalLaunchSettings launch_settings = {
-                .gridsize = curNbNodes,
-                .blocksize = 1
-            };
-            prog->launch("kernel_render_bounding_boxes", {&real_target, &real_settings}, launch_settings);
+        {
+            // Render Bounding boxes
+            uint32_t grid_size = min(
+                OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM,
+                curNbNodes
+            );
+
+            if(CuRastSettings::showBoundingBoxes){
+                OptionalLaunchSettings launch_settings = {
+                    .gridsize = grid_size,
+                    .blocksize = 1
+                };
+                prog->launch("kernel_render_bounding_boxes", {&real_target, &real_settings}, launch_settings);
+            }
         }
 
         // Render nodes
         {
+            uint32_t block_size = min(
+                OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM,
+                OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X
+            );
             OptionalLaunchSettings launch_settings = {
-                .gridsize = curNbNodes,
-                .blocksize = OocSimLodSettings::PER_NODE_KERNEL_BLOCK_SIZE
+                .gridsize = OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM,
+                .blocksize = block_size
             };
 
             // // TODO: to remove

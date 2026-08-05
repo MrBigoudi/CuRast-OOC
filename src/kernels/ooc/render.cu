@@ -225,11 +225,7 @@ void drawAllVoxels(
     uint32_t color = linearGradient(color_factor, min_level_color, max_level_color);   
 
     while(cur_voxels){
-        for(
-            uint32_t i = thread_id; 
-            i < cur_voxels->size; 
-            i += nb_threads_per_block
-        ){
+        for(uint32_t i = thread_id; i < cur_voxels->size; i += nb_threads_per_block){
             const CPoint& voxel = cur_voxels->points[i];
             
             uint32_t index = aabb.getNextChildIndex(voxel.position);
@@ -258,18 +254,10 @@ void drawAllPoints(
     CChunk* cur_points = node->points;
 
     while(cur_points){
-        // Assign each thread in block a separate starting point.
-        // Advance each thread by block size, e.g. 256, with each iteration.
-        // Might make sense to have a multiple of 256 points per CChunk, e.g. 1024
-        for(
-            uint32_t i = thread_id; 
-            i < cur_points->size; 
-            i += nb_threads_per_block
-        ){
+        for(uint32_t i = thread_id; i < cur_points->size; i += nb_threads_per_block){
             const CPoint& point = cur_points->points[i];
             drawPoint(target, point.position, point.color);
         }
-        
         cur_points = cur_points->next;
     }
 }
@@ -405,6 +393,9 @@ void computeRealLevelsRec(COctreeNode* cur_node, uint32_t cur_level){
 }
 
 
+
+
+/// Run on a single thread
 extern "C" __global__
 void kernel_prepare_rendereable_octree(){
     if(!globalVariables.isInitialised){return;}
@@ -441,6 +432,10 @@ void kernel_prepare_rendereable_octree(){
 }
 
 
+
+
+
+/// Run on min("curNbNodes", "NB SMs" * "Max threads per SM") blocks of size 1
 extern "C" __global__
 void kernel_render_bounding_boxes(
 	CRenderTarget target,
@@ -471,6 +466,9 @@ void kernel_render_bounding_boxes(
 
 
 
+
+
+/// Run on "NB SMs" blocks of size min("Max threads per SM", "Max block dim")
 extern "C" __global__
 void kernel_visibilityPass(
 	CRenderTarget target,
@@ -525,6 +523,11 @@ void kernel_visibilityPass(
 }
 
 
+
+
+
+
+/// Run on "NB SMs" blocks of size min("Max threads per SM", "Max block dim")
 extern "C" __global__
 void kernel_drawOctreeLarge(
 	CRenderTarget target,
@@ -563,6 +566,12 @@ void kernel_drawOctreeLarge(
     }
 }
 
+
+
+
+
+
+/// Run on "NB SMs" blocks of size min("Max threads per SM", "Max block dim")
 extern "C" __global__
 void kernel_drawOctreeSmall(
 	CRenderTarget target,
