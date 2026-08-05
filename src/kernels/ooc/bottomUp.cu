@@ -1,9 +1,10 @@
 #include "utils.cuh"
 
 
-/// Run on "maxPointsPerBatches" threads
+/// Run on "NB SMs" * "Max threads per SM" blocks of size 1
+/// Each thread is filling independently it's own counter before combining all of them
 extern "C" __global__
-void kernel_bottom_up_update_part_1(){
+void kernel_bottom_up_update_part_1_counting(){
     if(!globalVariables.isInitialised){return;}
 
 
@@ -87,7 +88,7 @@ __device__ void addNewVoxels(
 
 /// Run on a single thread
 extern "C" __global__
-void kernel_bottom_up_update_part_2(){
+void kernel_bottom_up_update_part_2_instancing(){
     if(!globalVariables.isInitialised){return;}
 
     // TODO: store a single value instead of full array
@@ -135,4 +136,7 @@ void kernel_bottom_up_update_part_2(){
 	}
 
     globalVariables.mainOctree = cur_child;
+
+    // Need to be reset before simlod loading phase
+    globalVariables.nbNodesExchanged = 0;
 }

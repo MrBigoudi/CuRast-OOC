@@ -4,7 +4,6 @@
 __device__ CGlobalVariables globalVariables;
 __device__ CMemoryAllocator globalAllocator;
 
-// __device__ uint32_t globalCpt = 0;
 
 template<typename T>
 __device__ void initAllocatorPool(uint32_t thread_id, void* pool){
@@ -88,9 +87,10 @@ void kernel_init_global_buffers(){
 
 
 
-/// Run on "maxPointsPerBatches" threads
+/// Run on "NB SMs" * "Max threads per SM" blocks of size 1
+/// Each thread is filling independently it's own bounding box before combining all of them
 extern "C" __global__
-void kernel_init_octree_part_1(){
+void kernel_init_octree_part_1_aabb_measuring(){
     // To only run it once
     if(globalVariables.isInitialised){return;}
 
@@ -156,7 +156,7 @@ void kernel_init_octree_part_1(){
 
 /// Run on a single thread
 extern "C" __global__
-void kernel_init_octree_part_2(){
+void kernel_init_octree_part_2_refining(){
     // To only run it once
     if(globalVariables.isInitialised){return;}
     // To only run it after the first batch has been loaded
@@ -204,6 +204,9 @@ void kernel_init_octree_part_2(){
 }
 
 
+/// Run on "NB SMs" blocks of size min("Max threads per SM", "Max block dim")
+/// Each block is filling its assigned grids
+/// Each thread in a block is filling it's assigned coordinates in the current grid
 extern "C" __global__
 void kernel_fill_new_grids(){
     auto grid = cg::this_grid();
@@ -212,14 +215,14 @@ void kernel_fill_new_grids(){
 
     uint32_t block_id = grid.block_rank();
     uint32_t thread_id = block.thread_rank();
-    uint32_t nb_thread_per_blocks = block.num_threads();
+    uint32_t nb_threads_per_block = block.num_threads();
 
     for(uint32_t node_id = block_id; node_id < globalVariables.nbGridsToInit; node_id += nb_blocks){
         COctreeNode* node = globalVariables.gridsToInit[node_id];
         COccupancyGrid* occupancy = node->occupancy;
 
         uint32_t grid_size = OocSimLodSettings::GRID_SIZE / 32;
-        for(uint32_t i=thread_id; i<grid_size; i+=nb_thread_per_blocks){
+        for(uint32_t i=thread_id; i<grid_size; i+=nb_threads_per_block){
             occupancy->values[i] = 0;
         }
 
@@ -227,7 +230,7 @@ void kernel_fill_new_grids(){
         CChunk* cur_chunk = node->voxels;
         const CAABB& aabb = node->aabb;
         while(cur_chunk){
-            for(uint32_t i=thread_id; i<cur_chunk->size; i+=nb_thread_per_blocks){
+            for(uint32_t i=thread_id; i<cur_chunk->size; i+=nb_threads_per_block){
                 COccupancyGrid::GridIndex index = COccupancyGrid::getCellIndices(aabb, cur_chunk->points[i]);
                 occupancy->markCellAsFilled(index);
             }

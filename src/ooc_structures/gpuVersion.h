@@ -12,6 +12,13 @@ struct GpuVersion {
 
     static inline std::unordered_set<CIdAABB> storedNodes = {}; 
 
+
+	static inline void* exchangedPointsPointers = nullptr;
+	static inline void* exchangedVoxelsPointers = nullptr;
+	static inline void* batchesToAddPointsPointers = nullptr;
+    static inline void* nbExchangedNodes = nullptr;
+    static inline uint32_t curNbNodes = 0;
+
     /// Initialises everything needed on device memory
     static void init(CuRast* editor, CUcontext* context);
     static void destroy(CuRast* editor, CUcontext* context);
@@ -27,9 +34,11 @@ struct GpuVersion {
         static void octreeUpdateSimLODVoxelSampling(CuRast* editor, CUcontext* context);
         static void octreeUpdateSimLODInsertion(CuRast* editor, CUcontext* context);
         static void octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context);
+        static void octreeUpdateFillNewGrids(CuRast* editor, CUcontext* context);
 
 
         static inline std::vector<CUdeviceptr> pointers = {};
+        static void initHostSide(CuRast* editor, CUcontext* context);
         static void initBuffers(CuRast* editor, CUcontext* context);
         static void initAllocators(CuRast* editor, CUcontext* context, CUstream* stream);
 

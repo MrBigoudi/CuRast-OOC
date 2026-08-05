@@ -1,8 +1,7 @@
 # TODO list
 
-
-- Use cuda graphs to combine repetitive kernel launches
 - Use nsight systems to find the bottlenecks
+- Use cuda graphs to combine repetitive kernel launches
 
 
 ## Next steps (in priority order)

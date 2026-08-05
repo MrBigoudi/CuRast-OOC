@@ -21,9 +21,9 @@ void kernel_update_updates_cache(){
 }
 
 
-/// Run on an unknown number of threads
+/// Run on min("curNbNodes", "NB SMs" * "Max threads per SM") blocks of size 1
 extern "C" __global__
-void kernel_prepare_store_part_1(){
+void kernel_prepare_store_part_1_filling_buffers(){
     if(!globalVariables.isInitialised){return;}
 
     auto grid = cg::this_grid();
@@ -85,57 +85,41 @@ void kernel_prepare_store_part_1(){
             }
 
             // Do not require to be synced because it's the only flag type changed in the kernel
-            globalVariables.setFlag(node->aabb_index, CFlagToStore); 
-        }
-    }
-}
-
-/// Run on an unknown number of threads
-extern "C" __global__
-void kernel_prepare_store_part_2(){
-    if(!globalVariables.isInitialised){return;}
-
-    auto grid = cg::this_grid();
-    uint32_t thread_id = grid.thread_rank();
-    uint32_t nb_threads = grid.num_threads();
-
-    for(uint32_t node_index = thread_id; node_index < globalVariables.curNbNodes; node_index += nb_threads){
-
-        COctreeNode* node = globalVariables.packedNodes[node_index];
-
-        for(uint32_t i=0; i<8; i++){
-            COctreeNode* child = node->children[i];
-            if(child && globalVariables.isToStore(child->aabb_index)){
-                node->children[i] = nullptr;
-            }
-        }
-    }
-}
-
-/// Run on an unknown number of threads
-extern "C" __global__
-void kernel_prepare_store_part_3(){
-    if(!globalVariables.isInitialised){return;}
-
-    auto grid = cg::this_grid();
-    uint32_t thread_id = grid.thread_rank();
-    uint32_t nb_threads = grid.num_threads();
-
-    for(uint32_t node_index = thread_id; node_index < globalVariables.curNbNodes; node_index += nb_threads){
-        COctreeNode* node = globalVariables.packedNodes[node_index];
-        if(globalVariables.isToStore(node->aabb_index)){
+            globalVariables.setFlag(node->aabb_index, CFlagToStore);
             globalAllocator.delOctreeNode(node, true, true);
             globalVariables.packedNodes[node_index] = nullptr;
+        } else {
             globalVariables.unsetFlag(node->aabb_index, CFlagToStore);
         }
     }
 }
 
-/// Run on a single thread
+/// Run on an unknown number of threads
 extern "C" __global__
-void kernel_prepare_store_part_4(){    
-    // Because "delOctreeNode" was called in simlodSplit
-    globalAllocator.chunksAllocator->reset_temporary_deallocations();
-    globalAllocator.gridsAllocator->reset_temporary_deallocations();
-    globalAllocator.nodesAllocator->reset_temporary_deallocations();
+void kernel_prepare_store_part_2_resetting_children(){
+    if(!globalVariables.isInitialised){return;}
+
+    auto grid = cg::this_grid();
+    uint32_t thread_id = grid.thread_rank();
+    uint32_t nb_threads = grid.num_threads();
+
+    for(uint32_t node_index = thread_id; node_index < globalVariables.curNbNodes; node_index += nb_threads){
+
+        COctreeNode* node = globalVariables.packedNodes[node_index];
+        if(!node){continue;} // Skip if this is one of the node that has just been removed
+
+        for(uint32_t i=0; i<8; i++){
+            CIdAABB child_index = globalVariables.relationshipMap[node->aabb_index].children[i];
+            if(child_index != CINVALID_ID && globalVariables.isToStore(child_index)){
+                node->children[i] = nullptr;
+            }
+        }
+    }
+
+    if(thread_id == 0){
+        // Because "delOctreeNode" was called in simlodSplit
+        globalAllocator.chunksAllocator->reset_temporary_deallocations();
+        globalAllocator.gridsAllocator->reset_temporary_deallocations();
+        globalAllocator.nodesAllocator->reset_temporary_deallocations();
+    }
 }

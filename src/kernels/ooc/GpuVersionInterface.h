@@ -579,8 +579,6 @@ struct CGlobalVariables {
 	uint32_t* exchangedVoxelsCounters = nullptr;
 	CPoint** exchangedPoints = nullptr;
 	CPoint** exchangedVoxels = nullptr;
-	void* exchangedPointsPointers = nullptr; // Just needed for host side
-	void* exchangedVoxelsPointers = nullptr; // Just needed for host side
 
 	uint32_t nbGridsToInit = 0;
 	COctreeNode** gridsToInit = nullptr;
@@ -592,7 +590,6 @@ struct CGlobalVariables {
 	CPoint** batchesToAddPoints = nullptr;
 	uint32_t* batchesToAddCounts = nullptr;
 	uint32_t batchesToAddBottomUpCount = 0;
-	void* batchesToAddPointsPointers = nullptr; // Just needed for host side
 
 	/// The points that couldn't be handled yet
 	uint32_t nbResidualPoints = 0;
@@ -666,11 +663,17 @@ struct CGlobalVariables {
 	__device__ __forceinline__ void setFlagSync(const CIdAABB& aabb_index, const CNodeFlagType& flag){
 		__nv_atomic_or(&nodesFlags[aabb_index], (0x01 << flag), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
 	}
+	__device__ __forceinline__ uint32_t fetchSetFlagSync(const CIdAABB& aabb_index, const CNodeFlagType& flag){
+		return __nv_atomic_fetch_or(&nodesFlags[aabb_index], (0x01 << flag), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+	}
 	__device__ __forceinline__ void unsetFlag(const CIdAABB& aabb_index, const CNodeFlagType& flag){
 		nodesFlags[aabb_index] &= ~(1u << flag);
 	}
 	__device__ __forceinline__ void unsetFlagSync(const CIdAABB& aabb_index, const CNodeFlagType& flag){
 		__nv_atomic_and(&nodesFlags[aabb_index], ~(1u << flag), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+	}
+	__device__ __forceinline__ uint32_t fetchUnsetFlagSync(const CIdAABB& aabb_index, const CNodeFlagType& flag){
+		return __nv_atomic_fetch_and(&nodesFlags[aabb_index], ~(1u << flag), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
 	}
 #endif // __CUDACC__
 };

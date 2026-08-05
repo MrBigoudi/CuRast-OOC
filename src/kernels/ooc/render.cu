@@ -212,7 +212,7 @@ void drawAllVoxels(
 ){
     auto block = cg::this_thread_block();
     uint32_t thread_id = block.thread_rank();
-    uint32_t nb_thread_per_blocks = block.num_threads();
+    uint32_t nb_threads_per_block = block.num_threads();
 
     CChunk* cur_voxels = node->voxels;
     const CAABB& aabb = node->aabb;
@@ -228,7 +228,7 @@ void drawAllVoxels(
         for(
             uint32_t i = thread_id; 
             i < cur_voxels->size; 
-            i += nb_thread_per_blocks
+            i += nb_threads_per_block
         ){
             const CPoint& voxel = cur_voxels->points[i];
             
@@ -253,7 +253,7 @@ void drawAllPoints(
 ){
     auto block = cg::this_thread_block();
     uint32_t thread_id = block.thread_rank();
-    uint32_t nb_thread_per_blocks = block.num_threads();
+    uint32_t nb_threads_per_block = block.num_threads();
 
     CChunk* cur_points = node->points;
 
@@ -264,7 +264,7 @@ void drawAllPoints(
         for(
             uint32_t i = thread_id; 
             i < cur_points->size; 
-            i += nb_thread_per_blocks
+            i += nb_threads_per_block
         ){
             const CPoint& point = cur_points->points[i];
             drawPoint(target, point.position, point.color);
@@ -484,7 +484,7 @@ void kernel_visibilityPass(
 
     uint32_t block_id = grid.block_rank();
     uint32_t thread_id = block.thread_rank();
-    uint32_t nb_thread_per_blocks = block.num_threads();
+    uint32_t nb_threads_per_block = block.num_threads();
 
     // Assign each node to one thread block
     for(uint32_t node_index = block_id; node_index < globalVariables.curNbNodes; node_index += nb_blocks){
@@ -536,7 +536,7 @@ void kernel_drawOctreeLarge(
 
     uint32_t block_id = grid.block_rank();
     uint32_t thread_id = block.thread_rank();
-    uint32_t nb_thread_per_blocks = block.num_threads();
+    uint32_t nb_threads_per_block = block.num_threads();
 
     // Assign each node to one thread block
     for(uint32_t node_index = block_id; node_index < globalVariables.curNbNodes; node_index += nb_blocks){
@@ -574,7 +574,7 @@ void kernel_drawOctreeSmall(
 
     uint32_t block_id = grid.block_rank();
     uint32_t thread_id = block.thread_rank();
-    uint32_t nb_thread_per_blocks = block.num_threads();
+    uint32_t nb_threads_per_block = block.num_threads();
 
     // Assign each node to one thread block
     for(uint32_t node_index = block_id; node_index < globalVariables.curNbNodes; node_index += nb_blocks){

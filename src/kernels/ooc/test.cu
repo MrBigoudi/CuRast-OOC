@@ -3,7 +3,6 @@
 extern "C" __global__
 void kernel_test(){
     for(uint32_t i=0; i<globalVariables.maxNbBatches; i++){
-        if(globalVariables.batchesAddedMask[i]){continue;}
         globalVariables.batchesAddedMask[i] = true;
     }
 }

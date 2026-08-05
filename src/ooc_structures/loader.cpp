@@ -433,7 +433,7 @@ void LoaderGpuVersion::sendToDevice(){
 				batchesQueue[j]->state = BatchState::Sent;
 
 				// Send the batches to device side
-				CUdeviceptr dst_points = ((CUdeviceptr*)(GpuVersion::hostStaging.batchesToAddPointsPointers))[i];
+				CUdeviceptr dst_points = ((CUdeviceptr*)(GpuVersion::batchesToAddPointsPointers))[i];
 				const void* src_points = batchesQueue[j]->points->data();
 				size_t     size_points = batchesQueue[j]->count * sizeof(CPoint);
 
