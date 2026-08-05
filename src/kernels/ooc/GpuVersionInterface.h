@@ -694,7 +694,6 @@ enum PipelineLevel {
 
 
 struct CRenderingSettings {
-	uint32_t nb_blocks_per_node = 0;
 	int32_t debug_lod_to_render = 0;
 	bool use_voxels_debug_color = false;
 	uint32_t min_pixel_span = 0;

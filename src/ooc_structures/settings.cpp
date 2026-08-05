@@ -52,9 +52,6 @@ void OocSimLodSettings::init(){
     MEASURE_TIMINGS = init_field<bool>("MEASURE_TIMINGS", false);
     IS_USING_GPU_VERSION = init_field<bool>("IS_USING_GPU_VERSION", false);
 
-    PER_NODE_KERNEL_BLOCK_SIZE = init_field<uint32_t>("PER_NODE_KERNEL_BLOCK_SIZE", DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK);
-    NB_BLOCKS_PER_NODE = init_field<uint32_t>("NB_BLOCKS_PER_NODE", DEVICE_ATTRIBUTE_MAX_BLOCKS_PER_SM);
-
     /// Batch sizes
     BATCHES_LIST_SIZE = init_field<uint32_t>("BATCHES_LIST_SIZE", 1'024);
     MAX_POINTS_PER_BATCHES = init_field<uint32_t>("MAX_POINTS_PER_BATCHES", 1'000'000);
@@ -76,13 +73,8 @@ void OocSimLodSettings::init(){
     NB_ALLOCABLE_NODES = init_field<uint32_t>("NB_ALLOCABLE_NODES", 2048);
 
     /// GPU Version buffers
-    USE_DEVICE_ATTRIBUTES = init_field<bool>("USE_DEVICE_ATTRIBUTES", false);
-    MAX_NB_NODES = USE_DEVICE_ATTRIBUTES
-        ? DEVICE_ATTRIBUTE_MAX_BLOCKS_PER_SM * DEVICE_ATTRIBUTE_NB_SM * DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X
-        : init_field<uint32_t>("MAX_NB_NODES", 1'000'000)
-    ;
-    MAX_NB_NODES_TO_LOAD = init_field<uint32_t>("MAX_NB_NODES_TO_LOAD", 512);
-    MAX_NB_NODES_TO_STORE = init_field<uint32_t>("MAX_NB_NODES_TO_STORE", 512);
+    MAX_NB_NODES = init_field<uint32_t>("MAX_NB_NODES", 1'000'000);
+    MAX_NB_NODES_TO_EXCHANGE = init_field<uint32_t>("MAX_NB_NODES_TO_LOAD", 128);
     MAX_NB_SPILLING_POINTS = init_field<uint32_t>("MAX_NB_SPILLING_POINTS", 1'000'000);
     MAX_NB_BACKLOG_VOXELS = init_field<uint32_t>("MAX_NB_BACKLOG_VOXELS", 1'000'000);
 
@@ -101,8 +93,8 @@ void OocSimLodSettings::init(){
     CuRastSettings::voxelsDebugColor = USE_VOXELS_DEBUG_COLOR_AT_STARTUP;
     USE_AUTO_FREE_OLD_OCTREE_ON_GPU_AT_STARTUP = init_field<bool>("USE_AUTO_FREE_OLD_OCTREE_ON_GPU_AT_STARTUP", true);
     CuRastSettings::autoFreeOldOctreeMemoryOnGPU = USE_AUTO_FREE_OLD_OCTREE_ON_GPU_AT_STARTUP;
-    DIFFERENTIATE_VISIBLE_NODES_AABB_AT_STARTUP = init_field<bool>("DIFFERENTIATE_VISIBLE_NODES_AABB_AT_STARTUP", false);
-    CuRastSettings::showVisibleNodes = DIFFERENTIATE_VISIBLE_NODES_AABB_AT_STARTUP;
+    DISPLAY_VISIBLE_NODES_AABB_AT_STARTUP = init_field<bool>("DIFFERENTIATE_VISIBLE_NODES_AABB_AT_STARTUP", false);
+    CuRastSettings::showVisibleNodes = DISPLAY_VISIBLE_NODES_AABB_AT_STARTUP;
 }
 
 
@@ -137,8 +129,6 @@ void OocSimLodSettings::display(){
     println("    - IS_RUNNING_IN_PARALLEL: {}", IS_RUNNING_IN_PARALLEL);
     println("    - NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE: {}", NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE);
     println("    - MEASURE_TIMINGS: {}", MEASURE_TIMINGS);
-    println("    - PER_NODE_KERNEL_BLOCK_SIZE: {}", PER_NODE_KERNEL_BLOCK_SIZE);
-    println("    - NB_BLOCKS_PER_NODE: {}", NB_BLOCKS_PER_NODE);
     println("    - IS_USING_GPU_VERSION: {}", IS_USING_GPU_VERSION);
 
     println("");
@@ -165,10 +155,8 @@ void OocSimLodSettings::display(){
 
     println("");
     println("GPU version properties:");
-    println("    - USE_DEVICE_ATTRIBUTES: {}", USE_DEVICE_ATTRIBUTES);
     println("    - MAX_NB_NODES: {}", MAX_NB_NODES);
-    println("    - MAX_NB_NODES_TO_LOAD: {}", MAX_NB_NODES_TO_LOAD);
-    println("    - MAX_NB_NODES_TO_STORE: {}", MAX_NB_NODES_TO_STORE);
+    println("    - MAX_NB_NODES_TO_EXCHANGE: {}", MAX_NB_NODES_TO_EXCHANGE);
     println("    - MAX_NB_SPILLING_POINTS: {}", MAX_NB_SPILLING_POINTS);
     println("    - MAX_NB_BACKLOG_VOXELS: {}", MAX_NB_BACKLOG_VOXELS);
 
@@ -181,7 +169,7 @@ void OocSimLodSettings::display(){
     println("    - MIN_PIXEL_SPAN_AT_STARTUP: {}", MIN_PIXEL_SPAN_AT_STARTUP);
     println("    - USE_VOXELS_DEBUG_COLOR_AT_STARTUP: {}", USE_VOXELS_DEBUG_COLOR_AT_STARTUP);
     println("    - USE_AUTO_FREE_OLD_OCTREE_ON_GPU_AT_STARTUP: {}", USE_AUTO_FREE_OLD_OCTREE_ON_GPU_AT_STARTUP);
-    println("    - DIFFERENTIATE_VISIBLE_NODES_AABB_AT_STARTUP: {}", DIFFERENTIATE_VISIBLE_NODES_AABB_AT_STARTUP);
+    println("    - DISPLAY_VISIBLE_NODES_AABB_AT_STARTUP: {}", DISPLAY_VISIBLE_NODES_AABB_AT_STARTUP);
 
 	println("\n//////////////////////////////////////////////////////////");
 	println("//////////////////////////////////////////////////////////");

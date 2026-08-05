@@ -435,7 +435,7 @@ void kernel_prepare_rendereable_octree(){
 
 
 
-/// Run on min("curNbNodes", "NB SMs" * "Max threads per SM") blocks of size 1
+/// Run on "NB SMs" * "Max threads per SM" blocks of size 1
 extern "C" __global__
 void kernel_render_bounding_boxes(
 	CRenderTarget target,

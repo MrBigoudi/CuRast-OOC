@@ -63,15 +63,6 @@ struct OocSimLodSettings {
     static inline uint32_t NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE;
     /// Measure the timings
     static inline bool MEASURE_TIMINGS;
-
-    /// The number of threads per block
-    /// Each node will be given an entire block of thread to render all of its points
-    /// Default to the maximum number of threads per block
-    static inline uint32_t PER_NODE_KERNEL_BLOCK_SIZE;
-    /// The number of blocks per node
-    /// Default to the number of blocks per SM
-    static inline uint32_t NB_BLOCKS_PER_NODE;
-
     /// Run the GPU version
     static inline bool IS_USING_GPU_VERSION;
 
@@ -134,16 +125,11 @@ struct OocSimLodSettings {
     /////////////////////////////////////////////////////////////////////////
     ////////////////////////////// GPU VERSION //////////////////////////////
     /////////////////////////////////////////////////////////////////////////
-    
-    /// If set to true, the app will automatically try to find the best values using the device properties
-    static inline bool USE_DEVICE_ATTRIBUTES;
 
     /// The initial maximum number of nodes allowed to be created during runtime
     static inline uint32_t MAX_NB_NODES; 
-    /// The maximum number of nodes that can be queried to load from disk
-    static inline uint32_t MAX_NB_NODES_TO_LOAD;
-    /// The maximum number of nodes that can be prepared for storing
-    static inline uint32_t MAX_NB_NODES_TO_STORE;
+    /// The maximum number of nodes that can be exchanged at once between the host and the device
+    static inline uint32_t MAX_NB_NODES_TO_EXCHANGE;
     /// The maximum number of spilling points
     static inline uint32_t MAX_NB_SPILLING_POINTS;
     /// The maximum number of backlog voxels
@@ -170,7 +156,7 @@ struct OocSimLodSettings {
     /// Activate the automatic free of unused GPU memory
     static inline bool USE_AUTO_FREE_OLD_OCTREE_ON_GPU_AT_STARTUP;
     /// Use a white color for the visible nodes' bounding boxes
-	static inline bool DIFFERENTIATE_VISIBLE_NODES_AABB_AT_STARTUP;
+	static inline bool DISPLAY_VISIBLE_NODES_AABB_AT_STARTUP;
     
 
 

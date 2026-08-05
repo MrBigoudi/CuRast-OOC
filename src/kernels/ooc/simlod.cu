@@ -79,7 +79,7 @@ __device__ __forceinline__ CChunk* addPointToChunk(CChunk* initial_chunk, const 
 }
 
 
-/// Run on "nbNodesExchanged" threads
+/// Run on "maxNbNodesExchanged" threads
 /// Load the newly exchanged nodes
 extern "C" __global__
 void kernel_simlod_load_part_2_rebuilding_nodes(){
@@ -139,7 +139,7 @@ void kernel_simlod_load_part_2_rebuilding_nodes(){
 }
 
 
-/// Run on "nbNodesExchanged" threads
+/// Run on "maxNbNodesExchanged" threads
 /// Rebuild the relationships of the loaded nodes
 extern "C" __global__
 void kernel_simlod_load_part_3_rebuilding_children(){
@@ -354,7 +354,7 @@ void simlodSplit(uint32_t first_point, uint32_t step){
 
 
 
-/// Run on "MaxActiveBlocksPerMultiprocessor" blocks of size "Max block size"
+/// Run on "MaxActiveBlocksPerMultiprocessor" cooperative blocks of size "Max block size"
 /// Update the nodes counters
 extern "C" __global__
 void kernel_simlod_count_split(){
@@ -541,7 +541,7 @@ void allocateChunks(CChunk* root_chunk, uint32_t required_chunks, uint32_t total
 
 
 
-/// Run on min("curNbNodes", "NB SMs" * "Max threads per SM") blocks of size 1
+/// Run on "NB SMs" * "Max threads per SM" blocks of size 1
 /// Allocate the necessary new chunks
 extern "C" __global__
 void kernel_simlod_insertion_part_1_chunks_allocations(){

@@ -5,8 +5,8 @@
 
 void GpuVersion::initHostSide(CuRast* editor, CUcontext* context) {
     // Host side data
-    exchangedPointsPointers = malloc(OocSimLodSettings::MAX_NB_NODES_TO_STORE * sizeof(CUdeviceptr));
-    exchangedVoxelsPointers = malloc(OocSimLodSettings::MAX_NB_NODES_TO_STORE * sizeof(CUdeviceptr));
+    exchangedPointsPointers = malloc(OocSimLodSettings::MAX_NB_NODES_TO_EXCHANGE * sizeof(CUdeviceptr));
+    exchangedVoxelsPointers = malloc(OocSimLodSettings::MAX_NB_NODES_TO_EXCHANGE * sizeof(CUdeviceptr));
     batchesToAddPointsPointers = malloc(OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE * sizeof(CUdeviceptr));
     CURuntime::assertCudaSuccess(cuMemAllocHost(&nbExchangedNodes, sizeof(uint32_t)));
     *(uint32_t*)nbExchangedNodes = 0;
@@ -22,7 +22,7 @@ void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
 
 
     // Exchangeable data
-    hostStaging.maxNbNodesExchanged = OocSimLodSettings::MAX_NB_NODES_TO_STORE;
+    hostStaging.maxNbNodesExchanged = OocSimLodSettings::MAX_NB_NODES_TO_EXCHANGE;
     hostStaging.exchangedAABBIndices = alloc<CIdAABB>(hostStaging.maxNbNodesExchanged);
     hostStaging.exchangedAABBs = alloc<CAABB>(hostStaging.maxNbNodesExchanged);
     hostStaging.exchangedChildrenIds = alloc<uint32_t>(hostStaging.maxNbNodesExchanged);
@@ -426,17 +426,13 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
 	));
 
     launch_settings = {
-        .gridsize = nb_nodes_to_load,
+        .gridsize = OocSimLodSettings::MAX_NB_NODES_TO_EXCHANGE,
         .blocksize = 1
     };
     prog->launch("kernel_simlod_load_part_2_rebuilding_nodes", {}, launch_settings);
 
     octreeUpdateFillNewGrids(editor, context);
 
-    launch_settings = {
-        .gridsize = nb_nodes_to_load,
-        .blocksize = 1
-    };
     prog->launch("kernel_simlod_load_part_3_rebuilding_children", {}, launch_settings);
 }
 
@@ -496,32 +492,15 @@ void GpuVersion::octreeUpdateSimLODVoxelSampling(CuRast* editor, CUcontext* cont
 
 
 void GpuVersion::octreeUpdateSimLODInsertion(CuRast* editor, CUcontext* context){
-    // Get the number of nodes to load
-    uint64_t pad = uint64_t(&(hostStaging.curNbNodes)) - uint64_t(&hostStaging);
-    CUdeviceptr src_device = deviceStaging + pad;
-    CURuntime::assertCudaSuccess(cuMemcpyDtoH(
-		nbExchangedNodes, 
-		src_device,
-		sizeof(uint32_t)
-	));
-    curNbNodes = *(uint32_t*)(nbExchangedNodes);
-    if(curNbNodes == 0){return;}
-
-    uint32_t grid_size = min(
-        OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM,
-        curNbNodes
-    );
+    uint32_t grid_size = OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM 
+        * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM
+    ;
     OptionalLaunchSettings launch_settings = {
         .gridsize = grid_size,
         .blocksize = 1
     };
-    prog->launch("kernel_simlod_insertion_part_1_chunks_allocations", {}, launch_settings);
-    
 
-    launch_settings = {
-        .gridsize = OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM,
-        .blocksize = 1
-    };
+    prog->launch("kernel_simlod_insertion_part_1_chunks_allocations", {}, launch_settings);
     prog->launch("kernel_simlod_insertion_part_2_filling", {}, launch_settings);
 }
 
@@ -570,10 +549,9 @@ void GpuVersion::octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context){
     };
     prog->launch("kernel_update_updates_cache", {}, launch_settings);
 
-    uint32_t grid_size = min(
-        OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM,
-        curNbNodes
-    );
+    uint32_t grid_size = OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM 
+        * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM
+    ;
     launch_settings = {
         .gridsize = grid_size,
         .blocksize = 1
@@ -706,7 +684,6 @@ void GpuVersion::renderOctree(RenderTarget& target){
     real_target.camera_pos = target.cameraPos;
 
     CRenderingSettings real_settings = {};
-    real_settings.nb_blocks_per_node = OocSimLodSettings::NB_BLOCKS_PER_NODE;
     real_settings.debug_lod_to_render = CuRastSettings::debugLodToRender;
     real_settings.use_voxels_debug_color = CuRastSettings::voxelsDebugColor;
     real_settings.min_pixel_span = CuRastSettings::minPixelSpan;
@@ -721,55 +698,39 @@ void GpuVersion::renderOctree(RenderTarget& target){
         prog->launch("kernel_prepare_rendereable_octree", {}, launch_settings);
     }
 
-    // Get the current number of nodes
+
+    // Render bounding boxes
     {
-        // Pointers arithmetic shenanigans to get the correct device address
-        uint64_t pad = uint64_t(&(hostStaging.curNbNodes)) - uint64_t(&hostStaging);
-        CUdeviceptr src_device = deviceStaging + pad;
-        CURuntime::assertCudaSuccess(cuMemcpyDtoH(
-            nbExchangedNodes, 
-            src_device,
-            sizeof(uint32_t)
-        ));
-        curNbNodes = *(uint32_t*)(nbExchangedNodes);
-    }
+        uint32_t grid_size = OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM 
+            * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM
+        ;
 
-    if(curNbNodes > 0){
-        {
-            // Render Bounding boxes
-            uint32_t grid_size = min(
-                OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM,
-                curNbNodes
-            );
-
-            if(CuRastSettings::showBoundingBoxes){
-                OptionalLaunchSettings launch_settings = {
-                    .gridsize = grid_size,
-                    .blocksize = 1
-                };
-                prog->launch("kernel_render_bounding_boxes", {&real_target, &real_settings}, launch_settings);
-            }
-        }
-
-        // Render nodes
-        {
-            uint32_t block_size = min(
-                OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM,
-                OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X
-            );
+        if(CuRastSettings::showBoundingBoxes){
             OptionalLaunchSettings launch_settings = {
-                .gridsize = OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM,
-                .blocksize = block_size
+                .gridsize = grid_size,
+                .blocksize = 1
             };
-
-            // // TODO: to remove
-            // prog->launch("kernel_render_all_nodes", {&real_target, &real_settings}, launch_settings);
-
-            prog->launch("kernel_visibilityPass", {&real_target, &real_settings}, launch_settings);
-            prog->launch("kernel_drawOctreeLarge", {&real_target, &real_settings}, launch_settings);
-            prog->launch("kernel_drawOctreeSmall", {&real_target, &real_settings}, launch_settings);
+            prog->launch("kernel_render_bounding_boxes", {&real_target, &real_settings}, launch_settings);
         }
     }
 
+    // Render nodes
+    {
+        uint32_t block_size = min(
+            OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM,
+            OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X
+        );
+        OptionalLaunchSettings launch_settings = {
+            .gridsize = OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM,
+            .blocksize = block_size
+        };
+
+        // // TODO: to remove
+        // prog->launch("kernel_render_all_nodes", {&real_target, &real_settings}, launch_settings);
+
+        prog->launch("kernel_visibilityPass", {&real_target, &real_settings}, launch_settings);
+        prog->launch("kernel_drawOctreeLarge", {&real_target, &real_settings}, launch_settings);
+        prog->launch("kernel_drawOctreeSmall", {&real_target, &real_settings}, launch_settings);
+    }
 
 }

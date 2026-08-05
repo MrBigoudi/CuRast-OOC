@@ -152,11 +152,11 @@ void drawOctree(Scene* scene, View view, RenderTarget& target){
 		cfo.voxels_nb_points_per_axis = uint32_t(CuRastSettings::voxelsPointsPerAxis);
 		cfo.min_pixel_span = CuRastSettings::minPixelSpan;
 		cfo.use_voxels_debug_color = CuRastSettings::voxelsDebugColor;
-		cfo.nb_blocks_per_node = OocSimLodSettings::NB_BLOCKS_PER_NODE;
+		cfo.nb_blocks_per_node = 1;
         
 		OptionalLaunchSettings launch_settings = {
-			.gridsize = OocSimLodSettings::NB_BLOCKS_PER_NODE * cfo.num_nodes,
-			.blocksize = OocSimLodSettings::PER_NODE_KERNEL_BLOCK_SIZE
+			.gridsize = cfo.num_nodes,
+			.blocksize = 1024
 		};
 
 		prog->launch("kernel_visibilityPass", {&cfo, &target}, launch_settings);
@@ -177,10 +177,10 @@ void drawOctreeUnified(Scene* scene, View view, RenderTarget& target, CFullOctre
 	cfo.min_pixel_span = CuRastSettings::minPixelSpan;
 	cfo.use_voxels_debug_color = CuRastSettings::voxelsDebugColor;
         
-	uint32_t numThreads = cfo.num_nodes * OocSimLodSettings::PER_NODE_KERNEL_BLOCK_SIZE;
+	uint32_t numThreads = cfo.num_nodes * 1024;
 	OptionalLaunchSettings launch_settings = {
 		.gridsize = cfo.num_nodes,
-		.blocksize = OocSimLodSettings::PER_NODE_KERNEL_BLOCK_SIZE
+		.blocksize = 1024
 	};
 
 	prog->launch("kernel_visibilityPass", {&cfo, &target}, launch_settings);
