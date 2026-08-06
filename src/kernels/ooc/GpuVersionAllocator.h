@@ -239,6 +239,29 @@ struct CMemoryAllocator {
         }
     }
 
+    /// Copy an existing chunk
+    __device__ CChunk* newChunkPartialCpy(CChunk* cpy, bool will_run_in_parallel){
+        if(!cpy){return nullptr;}
+
+        CChunk* first_chunk = newChunk(will_run_in_parallel);
+        CChunk* cpy_chunk = cpy;
+        CChunk* cur_chunk = first_chunk;
+
+        while(cpy_chunk){
+            cur_chunk->size = cpy_chunk->size;
+            for(uint32_t i=0; i<cur_chunk->size; i++){
+                cur_chunk->points[i] = cpy_chunk->points[i];
+            }
+            if(cpy_chunk->next){
+                CChunk* next_chunk = newChunk(will_run_in_parallel);
+                cur_chunk->next = next_chunk;
+                cur_chunk = next_chunk;
+            }
+            cpy_chunk = cpy_chunk->next;
+        }
+        return first_chunk;
+    }
+
 
 
     ////////////////////////////////////////////////////////////
@@ -269,6 +292,29 @@ struct CMemoryAllocator {
         return node;
     }
 
+    /// Copy an existing node
+    __device__ COctreeNode* newOctreeNodePartialCpy(COctreeNode* cpy, bool will_run_in_parallel){
+        if(!cpy){return nullptr;}
+        COctreeNode* node = newOctreeNode(cpy->aabb_index, will_run_in_parallel);
+
+        node->children_ids = cpy->children_ids;
+        node->points_counter = cpy->points_counter;
+        node->voxels_counter = cpy->voxels_counter;
+
+        node->points = cpy->points ? newChunkPartialCpy(cpy->points, will_run_in_parallel) : nullptr;
+        node->voxels = cpy->voxels ? newChunkPartialCpy(cpy->voxels, will_run_in_parallel) : nullptr;
+
+        node->level = cpy->level;
+        node->children_visibility = cpy->children_visibility;
+        node->aabb = cpy->aabb;
+
+        for(uint32_t i=0; i<8; i++){
+            node->children[i] = nullptr;
+        }
+
+        return node;
+    }
+
 
     /// Deallocate a node
     __device__ void delOctreeNode(COctreeNode* node, bool node_only, bool will_run_in_parallel){
@@ -285,6 +331,8 @@ struct CMemoryAllocator {
             if(!node_only){delOctreeNode(node->children[i], false, will_run_in_parallel);}
             node->children[i] = nullptr;
         }
+
+        nodesAllocator->deallocate(node, will_run_in_parallel);
     }
     
 #endif // __CUDACC__

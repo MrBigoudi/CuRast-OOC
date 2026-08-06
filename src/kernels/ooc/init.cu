@@ -43,34 +43,43 @@ __device__ void initNodesAllocator(uint32_t thread_id) {
 }
 
 
+/// Run on "NB SMs" * "Max threads per SM" blocks of size 1
 extern "C" __global__
 void kernel_init_global_allocators(){
-    uint32_t thread_id = cg::this_grid().thread_rank();
-    uint32_t grid_size = gridDim.x;
+    auto grid = cg::this_grid();
+    uint32_t thread_id = grid.thread_rank();
 
     initChunksAllocator(thread_id);
     initGridsAllocator(thread_id);
     initNodesAllocator(thread_id);
 }
 
+/// Run on "NB SMs" * "Max threads per SM" blocks of size 1
 extern "C" __global__
 void kernel_init_global_buffers(){
-    uint32_t thread_id = cg::this_grid().thread_rank();
+    auto grid = cg::this_grid();
+    uint32_t thread_id = grid.thread_rank();
+    uint32_t nb_threads = grid.num_threads();
 
-    if(thread_id < globalVariables.maxNbConcurrentNodes){
+    for(uint32_t i = thread_id; i < globalVariables.maxNbConcurrentNodes; i += nb_threads){
         globalVariables.relationshipMap[thread_id] = CGlobalVariables::Relationship();
         globalVariables.packedNodes[thread_id] = nullptr;
+        globalVariables.renderingPackedNodes[thread_id] = nullptr;
         globalVariables.nodesFlags[thread_id] = 0;
     }
 
-    if(thread_id < globalVariables.maxNbBatches){
+
+    for(uint32_t i = thread_id; i < globalVariables.maxNbBatches; i += nb_threads){
         globalVariables.batchesAddedMask[thread_id] = true;
         globalVariables.batchesToAddCounts[thread_id] = 0;
     }
 
+
     if(thread_id == 0){
         globalVariables.updatesCache = new CLRUCache(globalVariables.updatesCacheSize);
         globalVariables.visibilityCache = new CLRUCache(globalVariables.visibilityCacheSize);
+
+        globalVariables.renderingOctreeCopySempahore = new CSemaphore(CSemaphore::State::FREE);
         
         // Create the main octree
         CIdAABB id = createNewNodeId();
@@ -79,8 +88,26 @@ void kernel_init_global_buffers(){
         globalVariables.mainOctree->aabb.maxs = {-INFINITY, -INFINITY, -INFINITY};
         globalVariables.packedNodes[0] = globalVariables.mainOctree;
         globalVariables.curNbNodes = 1;
+        globalVariables.setFlagSync(id, CFlagIsNew);
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -105,6 +132,7 @@ void kernel_init_octree_part_1_aabb_measuring(){
 
     for(uint32_t batch = 0; batch < globalVariables.maxNbBatches; batch++){
         if(globalVariables.batchesAddedMask[batch]){continue;}
+        
         CPoint* new_points = globalVariables.batchesToAddPoints[batch];
         uint32_t nb_new_points = globalVariables.batchesToAddCounts[batch];
 
@@ -157,6 +185,8 @@ void kernel_init_octree_part_1_aabb_measuring(){
 /// Run on a single thread
 extern "C" __global__
 void kernel_init_octree_part_2_refining(){
+    globalVariables.isUpdating = false; // To reset the flag
+
     // To only run it once
     if(globalVariables.isInitialised){return;}
     // To only run it after the first batch has been loaded
@@ -200,7 +230,6 @@ void kernel_init_octree_part_2_refining(){
 
 
     globalVariables.isInitialised = true;
-    
 }
 
 
@@ -209,6 +238,7 @@ void kernel_init_octree_part_2_refining(){
 /// Each thread in a block is filling it's assigned coordinates in the current grid
 extern "C" __global__
 void kernel_fill_new_grids(){
+
     auto grid = cg::this_grid();
     auto block = cg::this_thread_block();
     uint32_t nb_blocks = grid.num_blocks();

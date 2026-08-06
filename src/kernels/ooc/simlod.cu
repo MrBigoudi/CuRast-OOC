@@ -183,7 +183,8 @@ void kernel_simlod_load_part_3_rebuilding_children(){
         }
 
         // Flag the node as not needing to be loaded anymore
-        globalVariables.unsetFlag(cur_node->aabb_index, CFlagToLoad);
+        globalVariables.unsetFlagSync(cur_node->aabb_index, CFlagToLoad);
+        globalVariables.setFlagSync(cur_node->aabb_index, CFlagIsNew);
     }
 
     if(thread_id==0){
@@ -299,6 +300,7 @@ void simlodSplit(uint32_t first_point, uint32_t step){
         spilling_node->points_stored = 0; // also reset the previous counter
 
         spilling_node->children_ids = 0;
+        globalVariables.setFlagSync(spilling_node_id, CFlagHasSpilled);
 
         if(!spilling_node->occupancy){
             spilling_node->occupancy = globalAllocator.newOccupancyGrid(true);
@@ -322,6 +324,8 @@ void simlodSplit(uint32_t first_point, uint32_t step){
                 // Create the new AABB
                 new_child->aabb = spilling_node->aabb;
                 new_child->aabb.shrink((CNodePosition)j);
+
+                globalVariables.setFlagSync(new_child_id, CFlagIsNew);
             }
         }
 
@@ -585,7 +589,7 @@ void insertPoint(const CPoint& point){
     COctreeNode* cur_node = globalVariables.mainOctree;
     // Reach all corresponding leaves
     while(cur_node){
-        globalVariables.setFlag(cur_node->aabb_index, CFlagIsUpdated); // Do not require to be synced because it's the only flag type changed in the kernel
+        globalVariables.setFlagSync(cur_node->aabb_index, CFlagIsUpdated);
         // Find next child
         const CAABB& aabb = cur_node->aabb;
         CNodePosition child_position = aabb.getNextChildIndex(point.position);
@@ -594,6 +598,8 @@ void insertPoint(const CPoint& point){
         if(cur_node->children[child_position]){
             cur_node = cur_node->children[child_position];
         } else {
+            globalVariables.setFlagSync(cur_node->aabb_index, CFlagHasNewPoints);
+
             uint32_t point_index = __nv_atomic_fetch_add(&cur_node->points_stored, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
             uint32_t chunk_index = point_index / OocSimLodSettings::NB_POINTS_PER_CHUNK;
             CChunk* cur_chunk = cur_node->points;
@@ -613,7 +619,8 @@ void insertPoint(const CPoint& point){
 
 __device__
 void insertVoxel(const CPoint& voxel, COctreeNode* cur_node){
-    globalVariables.setFlag(cur_node->aabb_index, CFlagIsUpdated); // Do not require to be synced because it's the only flag type changed in the kernel
+    globalVariables.setFlagSync(cur_node->aabb_index, CFlagIsUpdated);
+    globalVariables.setFlagSync(cur_node->aabb_index, CFlagHasNewVoxels);
 
     uint32_t voxel_index = __nv_atomic_fetch_add(&cur_node->voxels_stored, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
     uint32_t chunk_index = voxel_index / OocSimLodSettings::NB_POINTS_PER_CHUNK;

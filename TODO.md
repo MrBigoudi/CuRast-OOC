@@ -1,13 +1,15 @@
 # TODO list
 
+- create a CopyOctree kernel
+
+- use better sync strategies between kernels (maybe not need to wait entirely, sync arrays, ...)
+
 - Use nsight systems to find the bottlenecks
-- Use cuda graphs to combine repetitive kernel launches
 
 
 ## Next steps (in priority order)
 
-- Pack nodes to avoid useless launches (repack nodes every frame, after cache update + keep a list of indices to redirect packed nodes with their real place)
-- Find better launch settings for kernels + use cuda graphs to reduce overhead costs
+- Use cuda graphs to combine repetitive kernel launches
 - Check all globalVariables and their initial values (rename some, destroy some, ...)
 
 - Delay load / store of nodes as waiting for loading and storing won't be possible on GPU side

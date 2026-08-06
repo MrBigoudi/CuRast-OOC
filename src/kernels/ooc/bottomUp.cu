@@ -19,6 +19,9 @@ void kernel_bottom_up_update_part_1_counting(){
     for(uint32_t batch = 0; batch < globalVariables.maxNbBatches; batch++){
         if(globalVariables.batchesAddedMask[batch]){continue;}
 
+        // Flag to signal that new batches have arrived
+        globalVariables.isUpdating = true;
+
         CPoint* new_points = globalVariables.batchesToAddPoints[batch];
         uint32_t nb_new_points = globalVariables.batchesToAddCounts[batch];
 
@@ -120,8 +123,9 @@ void kernel_bottom_up_update_part_2_instancing(){
         globalVariables.nbGridsToInit++;
         globalVariables.gridsToInit[grid_index] = new_parent;
 
-        globalVariables.setFlag(new_parent->aabb_index, CFlagIsUpdated);
-        globalVariables.setFlag(cur_child->aabb_index, CFlagIsUpdated);
+        globalVariables.setFlagSync(new_parent->aabb_index, CFlagIsUpdated);
+        globalVariables.setFlagSync(new_parent->aabb_index, CFlagIsNew);
+        globalVariables.setFlagSync(cur_child->aabb_index, CFlagIsUpdated);
 		new_parent->children[node_position] = cur_child;
 
 		// Sample voxels to fill new occupancy grid

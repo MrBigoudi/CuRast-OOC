@@ -251,6 +251,7 @@ ChunkSerializable::ChunkSerializable(const std::vector<CPoint>& root_points){
         std::array<Point, OocSimLodSettings::NB_POINTS_PER_CHUNK> new_points = {};
         sizes.push_back(OocSimLodSettings::NB_POINTS_PER_CHUNK);
         for(uint32_t j=0; j<OocSimLodSettings::NB_POINTS_PER_CHUNK; j++){
+            if(cur_index >= root_points.size()){break;}
             new_points[j] = {};
             new_points[j].position = root_points[cur_index].position;
             new_points[j].color[0] = uint8_t((root_points[cur_index].color << 24) >> 24);

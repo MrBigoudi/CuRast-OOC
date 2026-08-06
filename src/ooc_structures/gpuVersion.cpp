@@ -20,6 +20,9 @@ void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
     hostStaging.packedNodes = alloc<COctreeNode*>(hostStaging.maxNbConcurrentNodes);
     hostStaging.nodesFlags = alloc<uint32_t>(hostStaging.maxNbConcurrentNodes);
 
+    hostStaging.renderingPackedNodes = alloc<COctreeNode*>(hostStaging.maxNbConcurrentNodes);
+
+
 
     // Exchangeable data
     hostStaging.maxNbNodesExchanged = OocSimLodSettings::MAX_NB_NODES_TO_EXCHANGE;
@@ -161,27 +164,14 @@ void GpuVersion::init(CuRast* editor, CUcontext* context) {
     size_t heap_size = 1024 * 1024 * 1024; // 1Gb for now
     CURuntime::assertCudaSuccess(cuCtxSetLimit(CU_LIMIT_MALLOC_HEAP_SIZE, heap_size));
 
-    uint32_t grid_size = max(OocSimLodSettings::NB_ALLOCABLE_CHUNKS,
-        max(
-            OocSimLodSettings::NB_ALLOCABLE_GRIDS,
-            OocSimLodSettings::NB_ALLOCABLE_NODES
-        )
-    );
+    uint32_t grid_size = OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM 
+        * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM
+    ;
     OptionalLaunchSettings launch_settings = {
         .gridsize = grid_size,
         .blocksize = 1
     };
     prog->launch("kernel_init_global_allocators", {}, launch_settings);
-
-    grid_size = max(hostStaging.maxNbConcurrentNodes,
-            max(hostStaging.maxNbBatches,
-                max(hostStaging.updatesCacheSize, hostStaging.visibilityCacheSize)
-            )
-    );
-    launch_settings = {
-        .gridsize = grid_size,
-        .blocksize = 1
-    };
     prog->launch("kernel_init_global_buffers", {}, launch_settings);
     LoaderGpuVersion::init();
 }
@@ -305,7 +295,7 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
 	));
     uint32_t nb_nodes_to_load = *(uint32_t*)(nbExchangedNodes);
     if(nb_nodes_to_load == 0){return;}
-    println("\n\nNb nodes to load: {}\n\n\n", nb_nodes_to_load);
+    // println("\n\nNb nodes to load: {}\n\n\n", nb_nodes_to_load);
 
     // Get the ids of the nodes to load
     std::vector<CIdAABB> ids(nb_nodes_to_load, CINVALID_ID);
@@ -572,7 +562,7 @@ void GpuVersion::octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context){
 	));
     uint32_t nb_nodes_to_store = *(uint32_t*)(nbExchangedNodes);
     if(nb_nodes_to_store == 0){return;}
-    println("\n\nNb nodes to store: {}\n\n\n", nb_nodes_to_store);
+    // println("\n\nNb nodes to store: {}\n\n\n", nb_nodes_to_store);
 
     std::vector<CIdAABB> ids(nb_nodes_to_store, CINVALID_ID);
     std::vector<uint32_t> children_ids(nb_nodes_to_store, 0);
@@ -661,6 +651,15 @@ void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
     
     octreeUpdateCacheUpdate(editor, context);
 
+    // Prepare the octree to be rendered
+    {
+        OptionalLaunchSettings launch_settings = {
+            .gridsize = 0, // Not used with launchCoopertative
+            .blocksize = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK
+        };
+        prog->launchCooperative("kernel_create_rendereable_octree", {}, launch_settings);
+    }
+
     // TODO: to remove, just to flag the batches and display stuff
     {
         OptionalLaunchSettings launch_settings = {
@@ -689,15 +688,14 @@ void GpuVersion::renderOctree(RenderTarget& target){
     real_settings.min_pixel_span = CuRastSettings::minPixelSpan;
     real_settings.voxels_nb_points_per_axis = uint32_t(CuRastSettings::voxelsPointsPerAxis);
 
-    // Prepare the octree to be rendered
+    // To wait for the semaphore
     {
         OptionalLaunchSettings launch_settings = {
             .gridsize = 1,
             .blocksize = 1
         };
-        prog->launch("kernel_prepare_rendereable_octree", {}, launch_settings);
+        prog->launch("kernel_pre_render", {}, launch_settings);
     }
-
 
     // Render bounding boxes
     {
@@ -733,4 +731,12 @@ void GpuVersion::renderOctree(RenderTarget& target){
         prog->launch("kernel_drawOctreeSmall", {&real_target, &real_settings}, launch_settings);
     }
 
+    // To release the semaphore
+    {
+        OptionalLaunchSettings launch_settings = {
+            .gridsize = 1,
+            .blocksize = 1
+        };
+        prog->launch("kernel_post_render", {}, launch_settings);
+    }
 }

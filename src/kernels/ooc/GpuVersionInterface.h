@@ -305,24 +305,28 @@ struct CChunk{
 
 enum CNodeFlagType {
 	CFlagIsUpdated,
-	CFlagIsLarge,
-	CFlagIsVisible,
-	CFlagIsCut,
-
 	CFlagToLoad,
 	CFlagToStore,
 	CFlagIsSpilling,
-
 	CFlagIsOnUpdatesCache,
+	CFlagIsStored,
+
+	CFlagIsFirstVisitedInStack,
+	CFlagIsSecondlyVisitedInStack,
+
+	// For rendering recreation
+	CFlagHasNewPoints,
+	CFlagHasNewVoxels,
+	CFlagIsNew,
+	CFlagHasSpilled,
+
+	// Must be last of existing flags for flags reset without modifying rendering pipeline
+	CFlagIsVisible,
+	CFlagIsLarge,
+	CFlagIsCut,
+
 
 	// Pads to be replaced on need
-	CFlagPad8,
-	CFlagPad9,
-	CFlagPad10,
-	CFlagPad11,
-	CFlagPad12,
-	CFlagPad13,
-	CFlagPad14,
 	CFlagPad15,
 	CFlagPad16,
 	CFlagPad17,
@@ -528,6 +532,39 @@ struct CLRUCache {
 	}
 };
 
+struct CSemaphore {
+#ifdef __CUDACC__
+	enum State {
+		IN_USE = 0,
+		FREE = 1,
+	};
+	uint32_t flag = State::FREE;
+	
+	__device__ __forceinline__ CSemaphore(const State& state = State::FREE){
+		flag = state;
+	}
+
+	// Try to acquire the semaphore but do not block
+	// Return true is the semaphore was successfully acquired
+	__device__ __forceinline__ bool tryAcquire(){
+		uint32_t old_flag = __nv_atomic_fetch_and(&flag, 0, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+		// If old semaphore was free
+		return (old_flag == State::FREE);
+	}
+
+	// Block until the semaphore can be acquired
+	__device__ __forceinline__ void acquire(){
+		while(tryAcquire()){}
+	}
+
+	// Release the semaphore
+	// It's the user responsability to only free a semaphore it already has acquired
+	__device__ __forceinline__ void release(){
+		__nv_atomic_or(&flag, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+	}
+#endif // __CUDACC__
+};
+
 struct CGlobalVariables {
     ///////////////////////////////////////////////////////////////////////
     /////////////////////////// UNBOUNDED DATA ////////////////////////////
@@ -553,12 +590,21 @@ struct CGlobalVariables {
 
 	/// The main octree
 	bool isInitialised = false;
+	bool isUpdating = false;
 	COctreeNode* mainOctree = nullptr;
-	uint32_t mainOctreeMaxLevel = 0;
 
-	/// The buffer of nodes for rendering and looping over
+	/// The buffer of nodes for updates
 	uint32_t curNbNodes = 0;
 	COctreeNode** packedNodes = nullptr;
+
+	/// The buffer of nodes for rendering
+	CSemaphore* renderingOctreeCopySempahore = nullptr;
+	uint32_t renderingOctreeDepth = 0;
+	uint32_t renderingNbNodes = 0;
+	COctreeNode** renderingPackedNodes = nullptr;
+
+
+
 
 
 
@@ -656,7 +702,36 @@ struct CGlobalVariables {
 	__device__ __forceinline__ bool isOnUpdatesCache(const CIdAABB& aabb_index) const {
 		return nodesFlags[aabb_index] & (0x01 << CFlagIsOnUpdatesCache);
 	}
+	__device__ __forceinline__ bool isStored(const CIdAABB& aabb_index) const {
+		return nodesFlags[aabb_index] & (0x01 << CFlagIsStored);
+	}
+	__device__ __forceinline__ bool isFirstVisitedInStack(const CIdAABB& aabb_index) const {
+		return nodesFlags[aabb_index] & (0x01 << CFlagIsFirstVisitedInStack);
+	}
+	__device__ __forceinline__ bool isSecondlyVisitedInStack(const CIdAABB& aabb_index) const {
+		return nodesFlags[aabb_index] & (0x01 << CFlagIsSecondlyVisitedInStack);
+	}
 
+
+
+	__device__ __forceinline__ bool hasNewPoints(const CIdAABB& aabb_index) const {
+		return nodesFlags[aabb_index] & (0x01 << CFlagHasNewPoints);
+	}
+	__device__ __forceinline__ bool hasNewVoxels(const CIdAABB& aabb_index) const {
+		return nodesFlags[aabb_index] & (0x01 << CFlagHasNewVoxels);
+	}
+	__device__ __forceinline__ bool isNew(const CIdAABB& aabb_index) const {
+		return nodesFlags[aabb_index] & (0x01 << CFlagIsNew);
+	}
+	__device__ __forceinline__ bool hasSpilled(const CIdAABB& aabb_index) const {
+		return nodesFlags[aabb_index] & (0x01 << CFlagHasSpilled);
+	}
+
+
+
+	__device__ __forceinline__ void resetFlags(const CIdAABB& aabb_index){
+		nodesFlags[aabb_index] = 0;
+	}
 	__device__ __forceinline__ void setFlag(const CIdAABB& aabb_index, const CNodeFlagType& flag){
 		nodesFlags[aabb_index] |= (0x01 << flag);
 	}

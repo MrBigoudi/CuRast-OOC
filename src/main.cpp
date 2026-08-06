@@ -496,6 +496,7 @@ void update(){
 }
 
 int main(int argc, char** argv){
+	std::thread* thread_octree_update = nullptr;
 	try {
 		Benchmarking::datasetPath = "./";
 
@@ -602,7 +603,6 @@ int main(int argc, char** argv){
 
 
 		
-
 		if(OocSimLodSettings::IS_USING_GPU_VERSION){
 			GpuVersion::init(CuRast::instance, &context);
 
@@ -612,6 +612,12 @@ int main(int argc, char** argv){
 			Runtime::controls->pitch  = -0.294;
 			Runtime::controls->radius = 5.584;
 			Runtime::controls->target = { 0.679, -0.714, 5.163};
+
+			thread_octree_update = new std::thread([&](CuRast* editor, CUcontext* context){
+				while(!GlobalVariables::mainLoopIsTerminating){
+					GpuVersion::updateOctree(editor, context);
+				}
+			}, CuRast::instance, &context);
 		}
 
 
@@ -721,20 +727,6 @@ int main(int argc, char** argv){
 
 
 
-
-
-
-				if(OocSimLodSettings::IS_USING_GPU_VERSION){
-					GpuVersion::updateOctree(CuRast::instance, &context);
-				}
-
-
-
-
-
-
-
-
 			},
 			[&]() {CuRast::instance->render();},
 			[&]() {CuRast::instance->postFrame();}
@@ -749,6 +741,10 @@ int main(int argc, char** argv){
 				std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
 				GlobalVariables::mainLoopIsTerminating = true;
 				cudaDeviceSynchronize();
+				if(thread_octree_update){
+					thread_octree_update->join();
+					delete(thread_octree_update);
+				}
 			}
 			println("GPU Memory Usage:\n{}", GlobalVariables::getGpuMemoryUsage());
 			OocSimLodSettings::display();
@@ -769,6 +765,10 @@ int main(int argc, char** argv){
 				std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
 				GlobalVariables::mainLoopIsTerminating = true;
 				cudaDeviceSynchronize();
+				if(thread_octree_update){
+					thread_octree_update->join();
+					delete(thread_octree_update);
+				}
 			}
 			println("GPU Memory Usage:\n{}", GlobalVariables::getGpuMemoryUsage());
 			OocSimLodSettings::display();
