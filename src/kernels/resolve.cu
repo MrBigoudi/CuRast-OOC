@@ -1263,6 +1263,7 @@ void kernel_resolve_colorbuffer_to_opengl_2D(
 
 extern "C" __global__
 void kernel_resolve_colorbuffer_to_screenshot(
+	RenderTarget source,
 	uint32_t* screenshot,
 	float* ssaoShadeBuffer,
 	bool enableEDL,
@@ -1274,7 +1275,7 @@ void kernel_resolve_colorbuffer_to_screenshot(
 	auto grid = cg::this_grid();
 	auto block = cg::this_thread_block();
 
-	RenderTarget& source = c_target;
+	// RenderTarget& source = c_target;
 
 	int x = grid.thread_index().x;
 	int y = grid.thread_index().y;
@@ -1306,10 +1307,10 @@ void kernel_resolve_colorbuffer_to_screenshot(
 	rgba[0] = shade * float(rgba[0]);
 	rgba[1] = shade * float(rgba[1]);
 	rgba[2] = shade * float(rgba[2]);
+	rgba[3] = 255;
 
 	// surf2Dwrite(color, gl_desktop, x * 4, y);
-	screenshot[pixelID] = color;
-	
+	screenshot[pixelID] = color;	
 }
 
 

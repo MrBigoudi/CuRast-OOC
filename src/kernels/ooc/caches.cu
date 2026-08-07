@@ -268,44 +268,45 @@ void kernel_create_rendereable_octree(){
 
     // TODO: fix that
 
-    for(uint32_t i=0; i<2; i++){
-    // while(true){
-        // Update all child levels
-        for(uint32_t node_index = first_point; node_index < globalVariables.curNbNodes; node_index += step){
-            COctreeNode* node = globalVariables.packedNodes[node_index];
-            uint32_t new_child_level = globalVariables.getCounterFlag(node->aabb_index) + 1;
-            // Update max depth
-            __nv_atomic_max(&globalVariables.renderingOctreeDepth, new_child_level, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+    // for(uint32_t i=0; i<2; i++){
+    // // while(true){
+    //     // Update all child levels
+    //     for(uint32_t node_index = first_point; node_index < globalVariables.curNbNodes; node_index += step){
+    //         COctreeNode* node = globalVariables.packedNodes[node_index];
+    //         uint32_t new_child_level = globalVariables.getCounterFlag(node->aabb_index) + 1;
+    //         // Update max depth
+    //         __nv_atomic_max(&globalVariables.renderingOctreeDepth, new_child_level, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
 
-            for(uint32_t child_id = 0; child_id < 8; child_id++){
-                COctreeNode* child = node->children[child_id];
-                if(child){
-                    printf("Old: %d, new: %d\n", child->level, new_child_level);
-                    child->level = new_child_level;
-                }
-            }
-        }
-        grid.sync();
+    //         for(uint32_t child_id = 0; child_id < 8; child_id++){
+    //             COctreeNode* child = node->children[child_id];
+    //             if(child){
+    //                 printf("Old: %d, new: %d\n", child->level, new_child_level);
+    //                 child->level = new_child_level;
+    //             }
+    //         }
+    //     }
+    //     grid.sync();
 
-        // Fetch new node level
-        bool is_updated = false;
-        for(uint32_t node_index = first_point; node_index < globalVariables.curNbNodes; node_index += step){
-            COctreeNode* node = globalVariables.packedNodes[node_index];
-            uint32_t saved_level = globalVariables.getCounterFlag(node->aabb_index); 
-            if(saved_level < node->level){
-                uint32_t old_mask = globalVariables.nodesFlags[node->aabb_index];
-                uint32_t old_level = globalVariables.increaseCounterFlag(node->aabb_index);
-                printf("old mask: %d, new mask: %d, old level: %d, new level: %d\n",
-                    old_mask,
-                    globalVariables.nodesFlags[node->aabb_index],
-                    old_level,
-                    globalVariables.getCounterFlag(node->aabb_index)
-                );
-                is_updated = true;
-            }
-        }
-        if(!is_updated){break;}
-    }
+    //     // Fetch new node level
+    //     bool is_updated = false;
+    //     for(uint32_t node_index = first_point; node_index < globalVariables.curNbNodes; node_index += step){
+    //         COctreeNode* node = globalVariables.packedNodes[node_index];
+    //         uint32_t saved_level = globalVariables.getCounterFlag(node->aabb_index); 
+    //         if(saved_level < node->level){
+    //             uint32_t old_mask = globalVariables.nodesFlags[node->aabb_index];
+    //             uint32_t old_level = globalVariables.increaseCounterFlag(node->aabb_index);
+    //             printf("old mask: %d, new mask: %d, old level: %d, new level: %d\n",
+    //                 old_mask,
+    //                 globalVariables.nodesFlags[node->aabb_index],
+    //                 old_level,
+    //                 globalVariables.getCounterFlag(node->aabb_index)
+    //             );
+    //             is_updated = true;
+    //         }
+    //     }
+    //     grid.sync(); // Does this fix the issue ? Nope
+    //     if(!is_updated){break;}
+    // }
 
 
 

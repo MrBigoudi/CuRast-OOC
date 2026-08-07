@@ -25,6 +25,9 @@ struct GpuVersion {
     static void updateOctree(CuRast* editor, CUcontext* context);
     static void renderOctree(RenderTarget& target);
 
+    /// For another project
+    static void takeRandomScreenShots();
+
     private:
         static void octreeUpdateInit(CuRast* editor, CUcontext* context);
         static void octreeUpdateBottomUp(CuRast* editor, CUcontext* context);

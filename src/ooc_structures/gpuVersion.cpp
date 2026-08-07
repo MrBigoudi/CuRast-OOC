@@ -763,3 +763,103 @@ void GpuVersion::renderOctree(RenderTarget& target){
         }
     }
 }
+
+
+
+
+
+
+
+
+
+/// For another project
+void GpuVersion::takeRandomScreenShots(){
+    const uint32_t NB_SCREENSHOTS = 1024;
+
+    static bool oldSettingsIsLeftDown = false;
+    static double oldSettingsScroll = 0;
+    static double oldSettingsPosX = 0;
+    static double oldSettingsPosY = 0;
+    static uint32_t oldSettingsNbPointsPerAxis = 0;
+    static vec4 oldSettingsBackgroundColor = {};
+
+    static uint32_t screenshotCounter = NB_SCREENSHOTS;
+    static bool buttonWasPressed = false;
+
+    static vec4 lastBg = {};
+    static double lastScroll = 0;
+    static double lastPosX = 0;
+    static double lastPosY = 0;
+
+    // Begin screenshots
+    if(CuRastSettings::bruteForceRendering && !buttonWasPressed){
+        // Start screenshots
+        buttonWasPressed = true;
+        screenshotCounter = 0;
+        // Save old settings
+        oldSettingsBackgroundColor = CuRastSettings::background;
+        oldSettingsIsLeftDown = Runtime::controls->isLeftDown;
+        oldSettingsScroll = Runtime::mouseEvents.wheel_y;
+        oldSettingsPosX = Runtime::mouseEvents.pos_x;
+        oldSettingsPosY = Runtime::mouseEvents.pos_y;
+        oldSettingsNbPointsPerAxis = uint32_t(CuRastSettings::voxelsPointsPerAxis);
+    }
+
+    // Reset screenshots
+    if(buttonWasPressed && screenshotCounter == NB_SCREENSHOTS){
+        Runtime::controls->isLeftDown = oldSettingsIsLeftDown;
+        Runtime::mouseEvents.wheel_y = oldSettingsScroll;
+        Runtime::mouseEvents.pos_x = oldSettingsPosX;
+        Runtime::mouseEvents.pos_y = oldSettingsPosY;
+        CuRastSettings::background = oldSettingsBackgroundColor;
+        CuRastSettings::voxelsPointsPerAxis = int32_t(oldSettingsNbPointsPerAxis);
+        buttonWasPressed = false;
+        CuRastSettings::bruteForceRendering = false;
+    }
+
+    // If screenshots
+    if(screenshotCounter < NB_SCREENSHOTS){
+        fs::create_directories("./screenshots");
+        Runtime::controls->isLeftDown = true;
+
+        // Half of the screenshots are for the ground truth
+        if(screenshotCounter % 2 == 1){
+            CuRastSettings::requestScreenshot = std::make_shared<string>(
+                format(
+                    "./screenshots/id_{}_target.png", 
+                    uint32_t(screenshotCounter / 2)
+                )
+            );
+            CuRastSettings::voxelsPointsPerAxis = 1;
+            // Runtime::mouseEvents.wheel_y = lastScroll;
+            // Runtime::mouseEvents.pos_x = lastPosX;
+            // Runtime::mouseEvents.pos_y = lastPosY;
+            CuRastSettings::background = lastBg;
+        } else {
+            Runtime::mouseEvents.wheel_y = pow(-1, rand()%2) * (rand() % 100);
+            lastScroll = Runtime::mouseEvents.wheel_y;
+
+            double max = 8192.0;
+            Runtime::mouseEvents.pos_x = (double(rand()) / double(RAND_MAX)) * max;
+            Runtime::mouseEvents.pos_y = (double(rand()) / double(RAND_MAX)) * max;
+            lastPosX = Runtime::mouseEvents.pos_x;
+            lastPosY = Runtime::mouseEvents.pos_y;
+
+            CuRastSettings::background.r = (double(rand()) / double(RAND_MAX));
+            CuRastSettings::background.g = (double(rand()) / double(RAND_MAX));
+            CuRastSettings::background.b = (double(rand()) / double(RAND_MAX));
+            lastBg = CuRastSettings::background;
+
+            CuRastSettings::voxelsPointsPerAxis = rand() % 128 + 1; 
+
+            CuRastSettings::requestScreenshot = std::make_shared<string>(
+                format("./screenshots/id_{}_perturbed_{}.png", 
+                    uint32_t(screenshotCounter / 2),
+                    CuRastSettings::voxelsPointsPerAxis
+                )
+            );
+        }
+
+        screenshotCounter++;
+    }
+}

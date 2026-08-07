@@ -684,6 +684,18 @@ int main(int argc, char** argv){
 
 		VKRenderer::loop(
 			[&]() {
+
+				if(OocSimLodSettings::IS_USING_GPU_VERSION){
+					if(!OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+						GpuVersion::updateOctree(CuRast::instance, &context);
+					}
+					GpuVersion::takeRandomScreenShots();
+				}
+
+
+
+				
+
 				update();
 				CuRast::instance->update();
 				
@@ -725,11 +737,6 @@ int main(int argc, char** argv){
 					}
 
 					GlobalVariables::elapsedFrames++;
-				}
-
-
-				if(OocSimLodSettings::IS_USING_GPU_VERSION && !OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-					GpuVersion::updateOctree(CuRast::instance, &context);
 				}
 
 

@@ -64,6 +64,7 @@ void saveScreenshot(RenderTarget target, View view, CUdeviceptr cptr_ssaoShadebu
 	bgRgba[3] = 255;
 
 	void* args[] = {
+		&target,
 		&cptr_screenshot,
 		&cptr_ssaoShadebuffer,
 		&CuRastSettings::enableEDL,
@@ -89,6 +90,7 @@ void saveScreenshot(RenderTarget target, View view, CUdeviceptr cptr_ssaoShadebu
 	}else{
 		path = *CuRastSettings::requestScreenshot;
 	}
+	println("Screenshot path: {}", path);
 
 	int stride_in_bytes = target.width * 4;
 	stbi_flip_vertically_on_write(1);
