@@ -613,11 +613,13 @@ int main(int argc, char** argv){
 			Runtime::controls->radius = 5.584;
 			Runtime::controls->target = { 0.679, -0.714, 5.163};
 
-			thread_octree_update = new std::thread([&](CuRast* editor, CUcontext* context){
-				while(!GlobalVariables::mainLoopIsTerminating){
-					GpuVersion::updateOctree(editor, context);
-				}
-			}, CuRast::instance, &context);
+			if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+				thread_octree_update = new std::thread([&](CuRast* editor, CUcontext* context){
+					while(!GlobalVariables::mainLoopIsTerminating){
+						GpuVersion::updateOctree(editor, context);
+					}
+				}, CuRast::instance, &context);
+			}
 		}
 
 
@@ -726,6 +728,10 @@ int main(int argc, char** argv){
 				}
 
 
+				if(OocSimLodSettings::IS_USING_GPU_VERSION && !OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+					GpuVersion::updateOctree(CuRast::instance, &context);
+				}
+
 
 			},
 			[&]() {CuRast::instance->render();},
@@ -740,12 +746,12 @@ int main(int argc, char** argv){
 			{
 				std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
 				GlobalVariables::mainLoopIsTerminating = true;
-				cudaDeviceSynchronize();
 				if(thread_octree_update){
 					thread_octree_update->join();
 					delete(thread_octree_update);
 				}
 			}
+			cudaDeviceSynchronize();
 			println("GPU Memory Usage:\n{}", GlobalVariables::getGpuMemoryUsage());
 			OocSimLodSettings::display();
 			GpuVersion::destroy(CuRast::instance, &context);
@@ -764,12 +770,12 @@ int main(int argc, char** argv){
 			{
 				std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
 				GlobalVariables::mainLoopIsTerminating = true;
-				cudaDeviceSynchronize();
 				if(thread_octree_update){
 					thread_octree_update->join();
 					delete(thread_octree_update);
 				}
 			}
+			cudaDeviceSynchronize();
 			println("GPU Memory Usage:\n{}", GlobalVariables::getGpuMemoryUsage());
 			OocSimLodSettings::display();
 			GpuVersion::destroy(CuRast::instance, &context);

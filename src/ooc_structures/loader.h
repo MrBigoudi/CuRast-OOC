@@ -51,9 +51,9 @@ struct LoaderGpuVersion {
     static inline std::vector<uint32_t> batchesOnGpuStatus = {};
 
     static void createNewBatches(string file);
-    static void run(CuRast* editor, CUcontext* context);
+    static void run(CUstream* stream, CuRast* editor, CUcontext* context);
 
     static void init();
-    static void fetchFromDevice();
-    static void sendToDevice();
+    static void fetchFromDevice(CUstream* stream);
+    static void sendToDevice(CUstream* stream);
 };

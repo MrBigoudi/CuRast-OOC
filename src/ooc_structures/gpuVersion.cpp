@@ -208,13 +208,15 @@ void GpuVersion::destroy(CuRast *editor, CUcontext *context){
 void GpuVersion::octreeUpdateInit(CuRast* editor, CUcontext* context){
     OptionalLaunchSettings launch_settings = {
         .gridsize = OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM,
-        .blocksize = 1
+        .blocksize = 1,
+        .stream = OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0
     };
     prog->launch("kernel_init_octree_part_1_aabb_measuring", {}, launch_settings);
 
     launch_settings = {
         .gridsize = 1,
-        .blocksize = 1
+        .blocksize = 1,
+        .stream = OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0
     };
     prog->launch("kernel_init_octree_part_2_refining", {}, launch_settings);
 }
@@ -235,13 +237,15 @@ void GpuVersion::octreeUpdateInit(CuRast* editor, CUcontext* context){
 void GpuVersion::octreeUpdateBottomUp(CuRast* editor, CUcontext* context){
     OptionalLaunchSettings launch_settings = {
         .gridsize = OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM,
-        .blocksize = 1
+        .blocksize = 1,
+        .stream = OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0
     };
     prog->launch("kernel_bottom_up_update_part_1_counting", {}, launch_settings);
 
     launch_settings = {
         .gridsize = 1,
-        .blocksize = 1
+        .blocksize = 1,
+        .stream = OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0
     };
     prog->launch("kernel_bottom_up_update_part_2_instancing", {}, launch_settings);
 }
@@ -265,7 +269,8 @@ void GpuVersion::octreeUpdateFillNewGrids(CuRast* editor, CUcontext* context){
     );
     OptionalLaunchSettings launch_settings = {
         .gridsize = OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM,
-        .blocksize = block_size
+        .blocksize = block_size,
+        .stream = OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0
     };
     prog->launch("kernel_fill_new_grids", {}, launch_settings);
 }
@@ -279,7 +284,8 @@ void GpuVersion::octreeUpdateFillNewGrids(CuRast* editor, CUcontext* context){
 void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
     OptionalLaunchSettings launch_settings = {
         .gridsize = OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM,
-        .blocksize = 1
+        .blocksize = 1,
+        .stream = OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0
     };
     prog->launch("kernel_simlod_load_part_1_flagging", {}, launch_settings);
 
@@ -288,22 +294,29 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
     CUdeviceptr src_device = deviceStaging + pad;
 
     // Get the number of nodes to load
-    CURuntime::assertCudaSuccess(cuMemcpyDtoH(
+    CURuntime::assertCudaSuccess(cuMemcpyDtoHAsync(
 		nbExchangedNodes, 
 		src_device,
-		sizeof(uint32_t)
+		sizeof(uint32_t),
+        OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0
 	));
+
+    cudaStreamSynchronize(OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0);
+
     uint32_t nb_nodes_to_load = *(uint32_t*)(nbExchangedNodes);
     if(nb_nodes_to_load == 0){return;}
     // println("\n\nNb nodes to load: {}\n\n\n", nb_nodes_to_load);
 
     // Get the ids of the nodes to load
     std::vector<CIdAABB> ids(nb_nodes_to_load, CINVALID_ID);
-    CURuntime::assertCudaSuccess(cuMemcpyDtoH(
+    CURuntime::assertCudaSuccess(cuMemcpyDtoHAsync(
 		ids.data(), 
 		(CUdeviceptr)hostStaging.exchangedAABBIndices,
-		nb_nodes_to_load * sizeof(CIdAABB)
+		nb_nodes_to_load * sizeof(CIdAABB),
+        OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0
 	));
+
+    cudaStreamSynchronize(OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0);
 
     // Load the nodes from disk
     std::vector<CPUFallbackCache::Entry> loaded(nb_nodes_to_load);
@@ -376,48 +389,51 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
         }
 
         if(nbs_points[i]){
-            CURuntime::assertCudaSuccess(cuMemcpyHtoD( 
+            CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync( 
                 ((CUdeviceptr*)(exchangedPointsPointers))[i],
-                points.data(), nbs_points[i]*sizeof(CPoint)
+                points.data(), nbs_points[i]*sizeof(CPoint), 
+                OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0
             ));
         }
         if(nbs_voxels[i]){
-            CURuntime::assertCudaSuccess(cuMemcpyHtoD( 
+            CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync( 
                 ((CUdeviceptr*)(exchangedVoxelsPointers))[i],
-                voxels.data(), nbs_voxels[i]*sizeof(CPoint)
+                voxels.data(), nbs_voxels[i]*sizeof(CPoint),
+                OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0
             ));
         }
     }
 
-    CURuntime::assertCudaSuccess(cuMemcpyHtoD(
+    CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync(
 		(CUdeviceptr)hostStaging.exchangedAABBIndices,
 		ids.data(),
-		nb_nodes_to_load * sizeof(CIdAABB)
+		nb_nodes_to_load * sizeof(CIdAABB), OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0
 	));
-    CURuntime::assertCudaSuccess(cuMemcpyHtoD(
+    CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync(
 		(CUdeviceptr)hostStaging.exchangedAABBs,
 		aabbs.data(),
-		nb_nodes_to_load * sizeof(CAABB)
+		nb_nodes_to_load * sizeof(CAABB), OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0
 	));
-    CURuntime::assertCudaSuccess(cuMemcpyHtoD(
+    CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync(
 		(CUdeviceptr)hostStaging.exchangedChildrenIds,
 		children_ids.data(),
-		nb_nodes_to_load * sizeof(uint32_t)
+		nb_nodes_to_load * sizeof(uint32_t), OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0
 	));
-    CURuntime::assertCudaSuccess(cuMemcpyHtoD(
+    CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync(
 		(CUdeviceptr)hostStaging.exchangedPointsCounters,
 		nbs_points.data(),
-		nb_nodes_to_load * sizeof(uint32_t)
+		nb_nodes_to_load * sizeof(uint32_t), OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0
 	));
-    CURuntime::assertCudaSuccess(cuMemcpyHtoD(
+    CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync(
 		(CUdeviceptr)hostStaging.exchangedVoxelsCounters,
 		nbs_voxels.data(),
-		nb_nodes_to_load * sizeof(uint32_t)
+		nb_nodes_to_load * sizeof(uint32_t), OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0
 	));
 
     launch_settings = {
         .gridsize = OocSimLodSettings::MAX_NB_NODES_TO_EXCHANGE,
-        .blocksize = 1
+        .blocksize = 1,
+        .stream = OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0
     };
     prog->launch("kernel_simlod_load_part_2_rebuilding_nodes", {}, launch_settings);
 
@@ -442,7 +458,8 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
 void GpuVersion::octreeUpdateSimLODCountSplit(CuRast* editor, CUcontext* context){
     OptionalLaunchSettings launch_settings = {
         .gridsize = 0, // Not used with launchCoopertative
-        .blocksize = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK
+        .blocksize = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK,
+        .stream = OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0
     };
     prog->launchCooperative("kernel_simlod_count_split", {}, launch_settings);
 }
@@ -465,7 +482,8 @@ void GpuVersion::octreeUpdateSimLODVoxelSampling(CuRast* editor, CUcontext* cont
 
     OptionalLaunchSettings launch_settings = {
         .gridsize = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM,
-        .blocksize = OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM
+        .blocksize = OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM,
+        .stream = OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0
     };
     prog->launch("kernel_simlod_voxel_sampling", {}, launch_settings);
 }
@@ -487,7 +505,8 @@ void GpuVersion::octreeUpdateSimLODInsertion(CuRast* editor, CUcontext* context)
     ;
     OptionalLaunchSettings launch_settings = {
         .gridsize = grid_size,
-        .blocksize = 1
+        .blocksize = 1,
+        .stream = OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0
     };
 
     prog->launch("kernel_simlod_insertion_part_1_chunks_allocations", {}, launch_settings);
@@ -535,7 +554,8 @@ void GpuVersion::octreeUpdateSimLOD(CuRast* editor, CUcontext* context){
 void GpuVersion::octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context){
     OptionalLaunchSettings launch_settings = {
         .gridsize = 1,
-        .blocksize = 1
+        .blocksize = 1,
+        .stream = OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0
     };
     prog->launch("kernel_update_updates_cache", {}, launch_settings);
 
@@ -544,7 +564,8 @@ void GpuVersion::octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context){
     ;
     launch_settings = {
         .gridsize = grid_size,
-        .blocksize = 1
+        .blocksize = 1,
+        .stream = OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0
     };
     prog->launch("kernel_prepare_store_part_1_filling_buffers", {}, launch_settings);
     prog->launch("kernel_prepare_store_part_2_resetting_children", {}, launch_settings);
@@ -555,11 +576,15 @@ void GpuVersion::octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context){
     CUdeviceptr src_device = deviceStaging + pad;
 
     // Get the number of nodes to store
-    CURuntime::assertCudaSuccess(cuMemcpyDtoH(
+    CURuntime::assertCudaSuccess(cuMemcpyDtoHAsync(
 		nbExchangedNodes, 
 		src_device,
-		sizeof(uint32_t)
+		sizeof(uint32_t),
+        OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0
 	));
+
+    cudaStreamSynchronize(OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0);
+    
     uint32_t nb_nodes_to_store = *(uint32_t*)(nbExchangedNodes);
     if(nb_nodes_to_store == 0){return;}
     // println("\n\nNb nodes to store: {}\n\n\n", nb_nodes_to_store);
@@ -570,51 +595,53 @@ void GpuVersion::octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context){
     std::vector<uint32_t> nbs_points(nb_nodes_to_store, 0);
     std::vector<uint32_t> nbs_voxels(nb_nodes_to_store, 0);
 
-    CURuntime::assertCudaSuccess(cuMemcpyDtoH(
+    CURuntime::assertCudaSuccess(cuMemcpyDtoHAsync(
 		ids.data(),
 		(CUdeviceptr)hostStaging.exchangedAABBIndices, 
-		nb_nodes_to_store * sizeof(CIdAABB)
+		nb_nodes_to_store * sizeof(CIdAABB), OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0
 	));
-    CURuntime::assertCudaSuccess(cuMemcpyDtoH(
+    CURuntime::assertCudaSuccess(cuMemcpyDtoHAsync(
 		children_ids.data(),
 		(CUdeviceptr)hostStaging.exchangedChildrenIds, 
-		nb_nodes_to_store * sizeof(uint32_t)
+		nb_nodes_to_store * sizeof(uint32_t), OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0
 	));
-    CURuntime::assertCudaSuccess(cuMemcpyDtoH(
+    CURuntime::assertCudaSuccess(cuMemcpyDtoHAsync(
 		aabbs.data(),
 		(CUdeviceptr)hostStaging.exchangedAABBs, 
-		nb_nodes_to_store * sizeof(CAABB)
+		nb_nodes_to_store * sizeof(CAABB), OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0
 	));
-    CURuntime::assertCudaSuccess(cuMemcpyDtoH(
+    CURuntime::assertCudaSuccess(cuMemcpyDtoHAsync(
 		nbs_points.data(),
 		(CUdeviceptr)hostStaging.exchangedPointsCounters, 
-		nb_nodes_to_store * sizeof(uint32_t)
+		nb_nodes_to_store * sizeof(uint32_t), OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0
 	));
-    CURuntime::assertCudaSuccess(cuMemcpyDtoH(
+    CURuntime::assertCudaSuccess(cuMemcpyDtoHAsync(
 		nbs_voxels.data(),
 		(CUdeviceptr)hostStaging.exchangedVoxelsCounters, 
-		nb_nodes_to_store * sizeof(uint32_t)
+		nb_nodes_to_store * sizeof(uint32_t), OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0
 	));
     for(uint32_t i=0; i<nb_nodes_to_store; i++){
         uint32_t cur_nb_points = nbs_points[i];
         std::vector<CPoint> points(cur_nb_points);
         if(cur_nb_points > 0){
-            CURuntime::assertCudaSuccess(cuMemcpyDtoH(
+            CURuntime::assertCudaSuccess(cuMemcpyDtoHAsync(
                 points.data(),
                 ((CUdeviceptr*)(exchangedPointsPointers))[i],
-                cur_nb_points * sizeof(CPoint)
+                cur_nb_points * sizeof(CPoint), OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0
             ));
         }
 
         uint32_t cur_nb_voxels = nbs_voxels[i];
         std::vector<CPoint> voxels(cur_nb_voxels);
         if(cur_nb_voxels > 0){
-            CURuntime::assertCudaSuccess(cuMemcpyDtoH(
+            CURuntime::assertCudaSuccess(cuMemcpyDtoHAsync(
                 voxels.data(),
                 ((CUdeviceptr*)(exchangedVoxelsPointers))[i],
-                cur_nb_voxels * sizeof(CPoint)
+                cur_nb_voxels * sizeof(CPoint), OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0
             ));
         }
+
+        cudaStreamSynchronize(OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0);
 
         // Store the node on disk
         COctreeNode node = {};
@@ -632,43 +659,52 @@ void GpuVersion::octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context){
 
 
 void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
-    LoaderGpuVersion::run(editor, context);
+	cuCtxSetCurrent(*context);
+
+    LoaderGpuVersion::run(&stream, editor, context);
     octreeUpdateInit(editor, context);
-    // // TODO: to remove, just to flag the batches and display stuff
-    // {
-    //     OptionalLaunchSettings launch_settings = {
-    //         .gridsize = 1,
-    //         .blocksize = 1
-    //     };
-    //     PipelineLevel level = PipelineLevel::LevelInit;
-    //     bool display_octree = true;
-    //     prog->launch("kernel_test_display", {&level, &display_octree}, launch_settings);
-    // }
-
     octreeUpdateBottomUp(editor, context);
-
     octreeUpdateSimLOD(editor, context);
-    
     octreeUpdateCacheUpdate(editor, context);
+    // Record completion of the update kernels on the UPDATE stream (no host block needed)
+    CUevent event_update_completed;
+    CURuntime::assertCudaSuccess(cuEventCreate(&event_update_completed, CU_EVENT_DISABLE_TIMING));
+    CURuntime::assertCudaSuccess(cuEventRecord(event_update_completed, stream));
 
-    // Prepare the octree to be rendered
+    CUevent event_swap_completed;
+    CURuntime::assertCudaSuccess(cuEventCreate(&event_swap_completed, CU_EVENT_DISABLE_TIMING));
+
     {
+        // Wait if the scene is being rendered
+        std::lock_guard<std::mutex> lock(renderSubmissionMutex);
+        // Make stream 0 (GPU-side) wait for the update kernels, without blocking this thread
+        CURuntime::assertCudaSuccess(cuStreamWaitEvent(0, event_update_completed, 0));
+
         OptionalLaunchSettings launch_settings = {
-            .gridsize = 0, // Not used with launchCoopertative
-            .blocksize = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK
+            .gridsize = 0,
+            .blocksize = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK,
+            .stream = 0 // Push into stream 0
         };
         prog->launchCooperative("kernel_create_rendereable_octree", {}, launch_settings);
+
+        CURuntime::assertCudaSuccess(cuEventRecord(event_swap_completed, 0));
     }
+
+    // Don't start a new update loop until the swap is actually done on the GPU
+    CURuntime::assertCudaSuccess(cuEventSynchronize(event_swap_completed));
+    cuEventDestroy(event_swap_completed);
+    cuEventDestroy(event_update_completed);
+
 
     // TODO: to remove, just to flag the batches and display stuff
     {
         OptionalLaunchSettings launch_settings = {
             .gridsize = 1,
-            .blocksize = 1
+            .blocksize = 1,
+            .stream = OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0
         };
         prog->launch("kernel_test", {}, launch_settings);
     }
-
 
 }
 
@@ -688,14 +724,8 @@ void GpuVersion::renderOctree(RenderTarget& target){
     real_settings.min_pixel_span = CuRastSettings::minPixelSpan;
     real_settings.voxels_nb_points_per_axis = uint32_t(CuRastSettings::voxelsPointsPerAxis);
 
-    // To wait for the semaphore
-    {
-        OptionalLaunchSettings launch_settings = {
-            .gridsize = 1,
-            .blocksize = 1
-        };
-        prog->launch("kernel_pre_render", {}, launch_settings);
-    }
+    // Wait if the update kernel is being added to stream 0
+    std::lock_guard<std::mutex> lock(renderSubmissionMutex);
 
     // Render bounding boxes
     {
@@ -723,20 +753,13 @@ void GpuVersion::renderOctree(RenderTarget& target){
             .blocksize = block_size
         };
 
-        // // TODO: to remove
-        // prog->launch("kernel_render_all_nodes", {&real_target, &real_settings}, launch_settings);
-
-        prog->launch("kernel_visibilityPass", {&real_target, &real_settings}, launch_settings);
-        prog->launch("kernel_drawOctreeLarge", {&real_target, &real_settings}, launch_settings);
-        prog->launch("kernel_drawOctreeSmall", {&real_target, &real_settings}, launch_settings);
-    }
-
-    // To release the semaphore
-    {
-        OptionalLaunchSettings launch_settings = {
-            .gridsize = 1,
-            .blocksize = 1
-        };
-        prog->launch("kernel_post_render", {}, launch_settings);
+        if(CuRastSettings::bruteForceRendering){
+            // TODO: to remove
+            prog->launch("kernel_test_multi_resolution", {&real_target, &real_settings}, launch_settings);
+        } else {
+            prog->launch("kernel_visibilityPass", {&real_target, &real_settings}, launch_settings);
+            prog->launch("kernel_drawOctreeLarge", {&real_target, &real_settings}, launch_settings);
+            prog->launch("kernel_drawOctreeSmall", {&real_target, &real_settings}, launch_settings);
+        }
     }
 }

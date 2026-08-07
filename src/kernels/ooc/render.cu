@@ -577,3 +577,39 @@ void kernel_drawOctreeSmall(
         }
     }
 }
+
+
+
+
+
+
+/// Run on "NB SMs" blocks of size min("Max threads per SM", "Max block dim")
+extern "C" __global__
+void kernel_test_multi_resolution(
+	CRenderTarget target,
+    CRenderingSettings settings
+){
+    auto grid = cg::this_grid();
+    auto block = cg::this_thread_block();
+    uint32_t nb_blocks = grid.num_blocks();
+
+    uint32_t block_id = grid.block_rank();
+    uint32_t thread_id = block.thread_rank();
+    uint32_t nb_threads_per_block = block.num_threads();
+
+    for(uint32_t node_index = 0; node_index < globalVariables.renderingNbNodes; node_index++){
+
+        COctreeNode* node = globalVariables.renderingPackedNodes[node_index];
+        CChunk* cur_points = node->points;
+
+        while(cur_points){
+            for(uint32_t i = thread_id; i < cur_points->size; i += nb_threads_per_block){
+                if(i % settings.voxels_nb_points_per_axis != 0){continue;}
+
+                const CPoint& point = cur_points->points[i];
+                drawPoint(target, point.position, point.color);
+            }
+            cur_points = cur_points->next;
+        }
+    }
+}

@@ -554,7 +554,7 @@ struct CSemaphore {
 
 	// Block until the semaphore can be acquired
 	__device__ __forceinline__ void acquire(){
-		while(tryAcquire()){}
+		while(!tryAcquire()){}
 	}
 
 	// Release the semaphore

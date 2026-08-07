@@ -12,7 +12,7 @@ struct GpuVersion {
 
     static inline std::unordered_set<CIdAABB> storedNodes = {}; 
 
-
+    static inline std::mutex renderSubmissionMutex;
 	static inline void* exchangedPointsPointers = nullptr;
 	static inline void* exchangedVoxelsPointers = nullptr;
 	static inline void* batchesToAddPointsPointers = nullptr;

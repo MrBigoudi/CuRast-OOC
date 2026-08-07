@@ -220,15 +220,11 @@ void kernel_create_rendereable_octree(){
     uint32_t step = nb_blocks * nb_threads_per_block;
 
     bool is_first = (block_id == 0 && thread_id == 0);
+    uint32_t max_depth = 0;
 
     // Compute the correct node levels
     if(is_first){
-        // Block for the semaphore
-        globalVariables.renderingOctreeCopySempahore->acquire();
-
         // Compute the nodes levels
-        globalVariables.renderingOctreeDepth = 0;
-
         CDoubleLinkedList<COctreeNode*> stack = {};
         stack.init();
         stack.pushBack(globalVariables.mainOctree);
@@ -238,7 +234,7 @@ void kernel_create_rendereable_octree(){
             COctreeNode* cur_node = *stack.front();
             stack.popFront();
             uint32_t cur_level = cur_node->level;
-            globalVariables.renderingOctreeDepth = max(globalVariables.renderingOctreeDepth, cur_level);
+            max_depth = max(max_depth, cur_level);
 
             for(uint32_t i=0; i<8; i++){
                 COctreeNode* child = cur_node->children[i];
@@ -248,6 +244,9 @@ void kernel_create_rendereable_octree(){
                 }
             }
         }
+
+        // // Block for the semaphore
+        // globalVariables.renderingOctreeCopySempahore->acquire();
     }
     grid.sync();
 
@@ -323,9 +322,10 @@ void kernel_create_rendereable_octree(){
         }
 
         globalVariables.curNbNodes = globalVariables.renderingNbNodes;
-        globalVariables.batchesToAddBottomUpCount = 0;        
-
-        // Release the semaphore
-        globalVariables.renderingOctreeCopySempahore->release();
+        globalVariables.renderingOctreeDepth = max_depth;
+        globalVariables.batchesToAddBottomUpCount = 0;   
+        
+        // // Release the semaphore
+        // globalVariables.renderingOctreeCopySempahore->release();
     }
 }

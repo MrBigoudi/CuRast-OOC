@@ -399,12 +399,16 @@ void LoaderGpuVersion::createNewBatches(string file){
 	initLoadPointBatches(file, batchesQueue, batchesQueueMutexes);
 }
 
-void LoaderGpuVersion::fetchFromDevice(){
-	CURuntime::assertCudaSuccess(cuMemcpyDtoH(
+void LoaderGpuVersion::fetchFromDevice(CUstream* stream){
+	CURuntime::assertCudaSuccess(cuMemcpyDtoHAsync(
 		batchesOnGpuStatus.data(), 
 		(CUdeviceptr)GpuVersion::hostStaging.batchesAddedMask,
-		OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE * sizeof(uint32_t)
+		OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE * sizeof(uint32_t),
+		OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? *stream : 0
 	));
+
+	cudaStreamSynchronize(*stream);
+
 	for(uint32_t i=0; i<OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE; i++){
 		if(batchesOnGpuStatus[i]){
 			uint32_t real_index = batchesOnGpu[i];
@@ -417,7 +421,7 @@ void LoaderGpuVersion::fetchFromDevice(){
 	}
 }
 
-void LoaderGpuVersion::sendToDevice(){
+void LoaderGpuVersion::sendToDevice(CUstream* stream){
 	uint32_t last_index = 0;
 	for(uint32_t i=0; i<OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE; i++){
 		// Check if the batch is still being used on device side
@@ -445,9 +449,15 @@ void LoaderGpuVersion::sendToDevice(){
 				uint32_t    src_flag = false;
 				size_t     size_flag = sizeof(uint32_t);
 
-				CURuntime::assertCudaSuccess(cuMemcpyHtoD(dst_points, src_points, size_points));
-				CURuntime::assertCudaSuccess(cuMemcpyHtoD(dst_count, src_count, size_count));
-				CURuntime::assertCudaSuccess(cuMemcpyHtoD(dst_flag, &src_flag, size_flag));
+				CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync(dst_points, src_points, size_points,
+					OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? *stream : 0
+				));
+				CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync(dst_count, src_count, size_count,
+					OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? *stream : 0
+				));
+				CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync(dst_flag, &src_flag, size_flag,
+					OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? *stream : 0
+				));
 				
 				break;
 			}
@@ -455,11 +465,9 @@ void LoaderGpuVersion::sendToDevice(){
 	}	
 }
 
-void LoaderGpuVersion::run(CuRast* editor, CUcontext* context){
-	cuCtxSetCurrent(*context);
-
+void LoaderGpuVersion::run(CUstream* stream, CuRast* editor, CUcontext* context){
 	// Check if batches are done on GPU side
-	fetchFromDevice();
+	fetchFromDevice(stream);
 
 	// Clear completed batches
 	clearUnusedBatches(batchesQueue, batchesQueueMutexes);
@@ -468,5 +476,5 @@ void LoaderGpuVersion::run(CuRast* editor, CUcontext* context){
 	loadPointsInBatches(batchesQueue, batchesQueueMutexes);
 
 	// Get the batches to send to device side
-	sendToDevice();
+	sendToDevice(stream);
 }
