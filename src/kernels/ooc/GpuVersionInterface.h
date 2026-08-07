@@ -304,6 +304,21 @@ struct CChunk{
 };
 
 enum CNodeFlagType {
+	// Counter for a node
+	CFlagCounter0,
+	CFlagCounter1,
+	CFlagCounter2,
+	CFlagCounter3,
+	CFlagCounter4,
+	CFlagCounter5,
+	CFlagCounter6,
+	CFlagCounter7,
+
+	// If node is used in a stack
+	CFlagIsFirstVisitedInStack,
+	CFlagIsSecondlyVisitedInStack,
+
+	// Node properties
 	CFlagIsUpdated,
 	CFlagToLoad,
 	CFlagToStore,
@@ -311,30 +326,13 @@ enum CNodeFlagType {
 	CFlagIsOnUpdatesCache,
 	CFlagIsStored,
 
-	CFlagIsFirstVisitedInStack,
-	CFlagIsSecondlyVisitedInStack,
-
 	// For rendering recreation
 	CFlagHasNewPoints,
 	CFlagHasNewVoxels,
 	CFlagIsNew,
 	CFlagHasSpilled,
 
-	// Must be last of existing flags for flags reset without modifying rendering pipeline
-	CFlagIsVisible,
-	CFlagIsLarge,
-	CFlagIsCut,
-
-
 	// Pads to be replaced on need
-	CFlagPad15,
-	CFlagPad16,
-	CFlagPad17,
-	CFlagPad18,
-	CFlagPad19,
-	CFlagPad20,
-	CFlagPad21,
-	CFlagPad22,
 	CFlagPad23,
 	CFlagPad24,
 	CFlagPad25,
@@ -344,6 +342,11 @@ enum CNodeFlagType {
 	CFlagPad29,
 	CFlagPad30,
 	CFlagPad31,
+
+	// Must be last of existing flags for flags reset without modifying rendering pipeline
+	CFlagIsVisible,
+	CFlagIsLarge,
+	CFlagIsCut,
 };
 
 struct COctreeNode {
@@ -598,7 +601,6 @@ struct CGlobalVariables {
 	COctreeNode** packedNodes = nullptr;
 
 	/// The buffer of nodes for rendering
-	CSemaphore* renderingOctreeCopySempahore = nullptr;
 	uint32_t renderingOctreeDepth = 0;
 	uint32_t renderingNbNodes = 0;
 	COctreeNode** renderingPackedNodes = nullptr;
@@ -678,6 +680,59 @@ struct CGlobalVariables {
 
 
 #ifdef __CUDACC__
+	__device__ __forceinline__ uint32_t getCounterFlagMask() const {
+		uint32_t mask = (0x01 << CFlagCounter0)
+			| (0x01 << CFlagCounter1)
+			| (0x01 << CFlagCounter2)
+			| (0x01 << CFlagCounter3)
+			| (0x01 << CFlagCounter4)
+			| (0x01 << CFlagCounter5)
+			| (0x01 << CFlagCounter6)
+			| (0x01 << CFlagCounter7)
+		;
+		return mask;
+	}
+	__device__ __forceinline__ uint32_t resetCounterFlag(const CIdAABB& aabb_index) const {
+		uint32_t mask = getCounterFlagMask();
+		nodesFlags[aabb_index] &= ~mask;
+	}
+
+	__device__ __forceinline__ uint32_t getCounterFlag(const CIdAABB& aabb_index) const {
+		uint32_t mask = getCounterFlagMask();
+		return (nodesFlags[aabb_index] & mask) >> CFlagCounter0;
+	}
+
+	// Return the old counter
+	__device__ __forceinline__ uint32_t increaseCounterFlag(const CIdAABB& aabb_index) const {
+		uint32_t old_counter = getCounterFlag(aabb_index);
+		if(old_counter == UINT8_MAX){
+			printf("ERROR: Reached max of counter flag\n");
+			return old_counter;
+		}
+		uint32_t new_counter = (old_counter + 1) << CFlagCounter0;
+		// reset old counter
+		resetCounterFlag(aabb_index);
+		// set new counter
+		nodesFlags[aabb_index] |= new_counter;
+		return old_counter;
+	}
+
+	// Return the old counter
+	__device__ __forceinline__ uint32_t decreaseCounterFlag(const CIdAABB& aabb_index) const {
+		uint32_t old_counter = getCounterFlag(aabb_index);
+		if(old_counter == 0){
+			printf("ERROR: Can't decrease a 0 counter flag\n");
+			return old_counter;
+		}
+		uint32_t new_counter = (old_counter - 1) << CFlagCounter0;
+		// reset old counter
+		resetCounterFlag(aabb_index);
+		// set new counter
+		nodesFlags[aabb_index] |= new_counter;
+		return old_counter;
+	}
+
+
 	__device__ __forceinline__ bool isUpdated(const CIdAABB& aabb_index) const {
 		return nodesFlags[aabb_index] & (0x01 << CFlagIsUpdated);
 	}

@@ -383,20 +383,6 @@ bool isLargerThanMinSpanning(
 
 
 
-/// Run on a single thread
-extern "C" __global__
-void kernel_pre_render(){
-    // Block for the semaphore
-    globalVariables.renderingOctreeCopySempahore->acquire();
-}
-
-/// Run on a single thread
-extern "C" __global__
-void kernel_post_render(){
-    // Release the semaphore
-    globalVariables.renderingOctreeCopySempahore->release();
-}
-
 
 
 /// Run on "NB SMs" * "Max threads per SM" blocks of size 1

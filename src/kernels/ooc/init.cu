@@ -79,8 +79,6 @@ void kernel_init_global_buffers(){
         globalVariables.updatesCache = new CLRUCache(globalVariables.updatesCacheSize);
         globalVariables.visibilityCache = new CLRUCache(globalVariables.visibilityCacheSize);
 
-        globalVariables.renderingOctreeCopySempahore = new CSemaphore(CSemaphore::State::FREE);
-        
         // Create the main octree
         CIdAABB id = createNewNodeId();
         globalVariables.mainOctree = globalAllocator.newOctreeNode(id, false);

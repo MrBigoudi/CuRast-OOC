@@ -677,7 +677,7 @@ void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
     {
         // Wait if the scene is being rendered
         std::lock_guard<std::mutex> lock(renderSubmissionMutex);
-        // Make stream 0 (GPU-side) wait for the update kernels, without blocking this thread
+        // Make stream 0 wait for the update kernels, without blocking this thread
         CURuntime::assertCudaSuccess(cuStreamWaitEvent(0, event_update_completed, 0));
 
         OptionalLaunchSettings launch_settings = {
