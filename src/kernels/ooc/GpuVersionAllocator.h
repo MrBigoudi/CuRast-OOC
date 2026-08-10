@@ -306,7 +306,7 @@ struct CMemoryAllocator {
 
         node->level = cpy->level;
         node->children_visibility = cpy->children_visibility;
-        node->aabb = cpy->aabb;
+        node->aabb = CAABB(cpy->aabb);
 
         for(uint32_t i=0; i<8; i++){
             node->children[i] = nullptr;

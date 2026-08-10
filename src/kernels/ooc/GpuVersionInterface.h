@@ -324,13 +324,6 @@ enum CNodeFlagType {
 	CFlagToStore,
 	CFlagIsSpilling,
 	CFlagIsOnUpdatesCache,
-	CFlagIsStored,
-
-	// For rendering recreation
-	CFlagHasNewPoints,
-	CFlagHasNewVoxels,
-	CFlagIsNew,
-	CFlagHasSpilled,
 
 	// Pads to be replaced on need
 	CFlagPad23,
@@ -347,6 +340,13 @@ enum CNodeFlagType {
 	CFlagIsVisible,
 	CFlagIsLarge,
 	CFlagIsCut,
+
+	// For rendering recreation
+	CFlagHasNewPoints,
+	CFlagHasNewVoxels,
+	CFlagIsNew,
+	CFlagHasSpilled,
+	CFlagIsStored,
 };
 
 struct COctreeNode {
@@ -594,6 +594,7 @@ struct CGlobalVariables {
 	/// The main octree
 	bool isInitialised = false;
 	bool isUpdating = false;
+	bool isTemporarySwitching = false;
 	COctreeNode* mainOctree = nullptr;
 
 	/// The buffer of nodes for updates
@@ -601,11 +602,11 @@ struct CGlobalVariables {
 	COctreeNode** packedNodes = nullptr;
 
 	/// The buffer of nodes for rendering
+	uint32_t octreeDepth = 0;
 	uint32_t renderingOctreeDepth = 0;
 	uint32_t renderingNbNodes = 0;
 	COctreeNode** renderingPackedNodes = nullptr;
-
-
+	COctreeNode** renderingPackedNodesTmp = nullptr;
 
 
 
@@ -784,20 +785,11 @@ struct CGlobalVariables {
 
 
 
-	__device__ __forceinline__ void resetFlags(const CIdAABB& aabb_index){
-		nodesFlags[aabb_index] = 0;
-	}
-	__device__ __forceinline__ void setFlag(const CIdAABB& aabb_index, const CNodeFlagType& flag){
-		nodesFlags[aabb_index] |= (0x01 << flag);
-	}
 	__device__ __forceinline__ void setFlagSync(const CIdAABB& aabb_index, const CNodeFlagType& flag){
 		__nv_atomic_or(&nodesFlags[aabb_index], (0x01 << flag), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
 	}
 	__device__ __forceinline__ uint32_t fetchSetFlagSync(const CIdAABB& aabb_index, const CNodeFlagType& flag){
 		return __nv_atomic_fetch_or(&nodesFlags[aabb_index], (0x01 << flag), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-	}
-	__device__ __forceinline__ void unsetFlag(const CIdAABB& aabb_index, const CNodeFlagType& flag){
-		nodesFlags[aabb_index] &= ~(1u << flag);
 	}
 	__device__ __forceinline__ void unsetFlagSync(const CIdAABB& aabb_index, const CNodeFlagType& flag){
 		__nv_atomic_and(&nodesFlags[aabb_index], ~(1u << flag), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);

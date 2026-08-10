@@ -19,7 +19,7 @@ struct CuRastSettings{
 	static inline bool showVisibleNodes = false;
 	static inline bool freezeVisibleNodes = false;
 
-	static inline bool enableEDL = false;
+	static inline bool enableEDL = true;
 	static inline bool enableFrustumCulling = true;
 	static inline bool hideGUI = false;
 

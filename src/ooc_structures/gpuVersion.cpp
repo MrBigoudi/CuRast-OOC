@@ -21,6 +21,7 @@ void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
     hostStaging.nodesFlags = alloc<uint32_t>(hostStaging.maxNbConcurrentNodes);
 
     hostStaging.renderingPackedNodes = alloc<COctreeNode*>(hostStaging.maxNbConcurrentNodes);
+    hostStaging.renderingPackedNodesTmp = alloc<COctreeNode*>(hostStaging.maxNbConcurrentNodes);
 
 
 

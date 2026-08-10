@@ -17,6 +17,7 @@ struct GpuVersion {
 	static inline void* exchangedVoxelsPointers = nullptr;
 	static inline void* batchesToAddPointsPointers = nullptr;
     static inline void* nbExchangedNodes = nullptr;
+    static inline void* isTemporarySwitching = nullptr;
     static inline uint32_t curNbNodes = 0;
 
     /// Initialises everything needed on device memory
