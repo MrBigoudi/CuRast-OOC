@@ -53,6 +53,10 @@ struct CAABB {
 	__device__ __forceinline__  CAABB(){}
 	__device__ __forceinline__  CAABB(const CAABB& cpy) : mins(cpy.mins), maxs(cpy.maxs){}
 
+	__device__ __forceinline__  bool operator==(const CAABB& rhs) const{
+		return rhs.mins == mins && rhs.maxs == maxs;
+	}
+
 	__device__ __forceinline__  glm::vec3 getSize() const {return maxs - mins;}
 	__device__ __forceinline__  bool contains(const glm::vec3& position) const {
 		return position.x > mins.x && position.x < maxs.x
@@ -165,6 +169,26 @@ struct CAABB {
 		bool is_front = normalized_coordinates.z >= 0.5f;
 		bool is_top = normalized_coordinates.y >= 0.5f;
 		bool is_right = normalized_coordinates.x >= 0.5f;
+
+		// if(normalized_coordinates.x < 0.f || normalized_coordinates.x > 1.f){
+		// 	printf("WTF x\n");
+		// 	#ifdef __CUDACC__
+		// 		customAssert();
+		// 	#endif
+		// }
+		// if(normalized_coordinates.y < 0.f || normalized_coordinates.y > 1.f){
+		// 	printf("WTF x\n");
+		// 	#ifdef __CUDACC__
+		// 		customAssert();
+		// 	#endif
+		// }
+		// if(normalized_coordinates.z < 0.f || normalized_coordinates.z > 1.f){
+		// 	printf("WTF x\n");
+		// 	#ifdef __CUDACC__
+		// 		customAssert();
+		// 	#endif
+		// }
+
 		if(is_right){
 			if(is_top){
 				if(is_front){
@@ -203,6 +227,10 @@ struct CPoint {
 
 	__device__ __forceinline__ CPoint():position(glm::vec3(0,0,0)), color(0) {}
 	__device__ __forceinline__ CPoint(const CPoint& cpy):position(cpy.position), color(cpy.color) {}
+
+	__device__ __forceinline__  bool operator==(const CPoint& rhs) const{
+		return rhs.position == position && rhs.color == color;
+	}
 
 	inline void setColor(uint8_t r, uint8_t g, uint8_t b, uint8_t a = 0xFFu){
 		color = (uint32_t)r
@@ -326,6 +354,7 @@ enum CNodeFlagType {
 	CFlagIsOnUpdatesCache,
 
 	// Pads to be replaced on need
+	CFlagPad22,
 	CFlagPad23,
 	CFlagPad24,
 	CFlagPad25,
@@ -346,7 +375,6 @@ enum CNodeFlagType {
 	CFlagHasNewVoxels,
 	CFlagIsNew,
 	CFlagHasSpilled,
-	CFlagIsStored,
 };
 
 struct COctreeNode {
@@ -579,11 +607,7 @@ struct CGlobalVariables {
             CINVALID_ID, CINVALID_ID, CINVALID_ID, CINVALID_ID,
             CINVALID_ID, CINVALID_ID, CINVALID_ID, CINVALID_ID
         };
-        CIdAABB& operator[](uint32_t child_index){return children[child_index];}
-        const CIdAABB operator[](uint32_t child_index) const {
-            if(child_index >= 8){return CINVALID_ID;}
-            return children[child_index];
-        }
+		CIdAABB parent = CINVALID_ID;
     };
     /// The list of all AABBs created during runtime
 	uint32_t totalNbNodes = 0;
@@ -681,6 +705,30 @@ struct CGlobalVariables {
 
 
 #ifdef __CUDACC__
+	__device__ __forceinline__ uint32_t getFlagsSync(const CIdAABB& aabb_index) const {
+		return __nv_atomic_load_n(&nodesFlags[aabb_index], __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+	}
+	__device__ __forceinline__ bool getFlagSync(const CIdAABB& aabb_index, const CNodeFlagType& flag) const {
+		uint32_t flags = getFlagsSync(aabb_index);
+		return flags & (0x01 << flag);
+	}
+	__device__ __forceinline__ void setFlagSync(const CIdAABB& aabb_index, const CNodeFlagType& flag){
+		__nv_atomic_or(&nodesFlags[aabb_index], (0x01 << flag), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+	}
+	__device__ __forceinline__ uint32_t fetchSetFlagSync(const CIdAABB& aabb_index, const CNodeFlagType& flag){
+		return __nv_atomic_fetch_or(&nodesFlags[aabb_index], (0x01 << flag), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+	}
+	__device__ __forceinline__ void resetFlagsSync(const CIdAABB& aabb_index){
+		__nv_atomic_and(&nodesFlags[aabb_index], 0, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+	}
+	__device__ __forceinline__ void unsetFlagSync(const CIdAABB& aabb_index, const CNodeFlagType& flag){
+		__nv_atomic_and(&nodesFlags[aabb_index], ~(1u << flag), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+	}
+	__device__ __forceinline__ uint32_t fetchUnsetFlagSync(const CIdAABB& aabb_index, const CNodeFlagType& flag){
+		return __nv_atomic_fetch_and(&nodesFlags[aabb_index], ~(1u << flag), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+	}
+
+
 	__device__ __forceinline__ uint32_t getCounterFlagMask() const {
 		uint32_t mask = (0x01 << CFlagCounter0)
 			| (0x01 << CFlagCounter1)
@@ -693,109 +741,93 @@ struct CGlobalVariables {
 		;
 		return mask;
 	}
-	__device__ __forceinline__ uint32_t resetCounterFlag(const CIdAABB& aabb_index) const {
+	__device__ __forceinline__ uint32_t resetCounterFlagSync(const CIdAABB& aabb_index) const {
 		uint32_t mask = getCounterFlagMask();
-		nodesFlags[aabb_index] &= ~mask;
+		__nv_atomic_and(&nodesFlags[aabb_index], ~mask, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
 	}
 
-	__device__ __forceinline__ uint32_t getCounterFlag(const CIdAABB& aabb_index) const {
+	__device__ __forceinline__ uint32_t getCounterFlagSync(const CIdAABB& aabb_index) const {
 		uint32_t mask = getCounterFlagMask();
-		return (nodesFlags[aabb_index] & mask) >> CFlagCounter0;
+		uint32_t flags = getFlagsSync(aabb_index);
+		return (flags & mask) >> CFlagCounter0;
 	}
 
 	// Return the old counter
-	__device__ __forceinline__ uint32_t increaseCounterFlag(const CIdAABB& aabb_index) const {
-		uint32_t old_counter = getCounterFlag(aabb_index);
+	__device__ __forceinline__ uint32_t increaseCounterFlagSync(const CIdAABB& aabb_index) const {
+		uint32_t old_counter = getCounterFlagSync(aabb_index);
 		if(old_counter == UINT8_MAX){
 			printf("ERROR: Reached max of counter flag\n");
 			return old_counter;
 		}
 		uint32_t new_counter = (old_counter + 1) << CFlagCounter0;
 		// reset old counter
-		resetCounterFlag(aabb_index);
+		resetCounterFlagSync(aabb_index);
 		// set new counter
-		nodesFlags[aabb_index] |= new_counter;
+		__nv_atomic_or(&nodesFlags[aabb_index], new_counter, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
 		return old_counter;
 	}
 
 	// Return the old counter
-	__device__ __forceinline__ uint32_t decreaseCounterFlag(const CIdAABB& aabb_index) const {
-		uint32_t old_counter = getCounterFlag(aabb_index);
+	__device__ __forceinline__ uint32_t decreaseCounterFlagSync(const CIdAABB& aabb_index) const {
+		uint32_t old_counter = getCounterFlagSync(aabb_index);
 		if(old_counter == 0){
 			printf("ERROR: Can't decrease a 0 counter flag\n");
 			return old_counter;
 		}
 		uint32_t new_counter = (old_counter - 1) << CFlagCounter0;
 		// reset old counter
-		resetCounterFlag(aabb_index);
+		resetCounterFlagSync(aabb_index);
 		// set new counter
-		nodesFlags[aabb_index] |= new_counter;
+		__nv_atomic_or(&nodesFlags[aabb_index], new_counter, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
 		return old_counter;
 	}
 
 
+	
 	__device__ __forceinline__ bool isUpdated(const CIdAABB& aabb_index) const {
-		return nodesFlags[aabb_index] & (0x01 << CFlagIsUpdated);
+		return getFlagSync(aabb_index, CFlagIsUpdated);
 	}
 	__device__ __forceinline__ bool isLarge(const CIdAABB& aabb_index) const {
-		return nodesFlags[aabb_index] & (0x01 << CFlagIsLarge);
+		return getFlagSync(aabb_index, CFlagIsLarge);
 	}
 	__device__ __forceinline__ bool isVisible(const CIdAABB& aabb_index) const {
-		return nodesFlags[aabb_index] & (0x01 << CFlagIsVisible);
+		return getFlagSync(aabb_index, CFlagIsVisible);
 	}
 	__device__ __forceinline__ bool isCut(const CIdAABB& aabb_index) const {
-		return nodesFlags[aabb_index] & (0x01 << CFlagIsCut);
+		return getFlagSync(aabb_index, CFlagIsCut);
 	}
 	__device__ __forceinline__ bool isToLoad(const CIdAABB& aabb_index) const {
-		return nodesFlags[aabb_index] & (0x01 << CFlagToLoad);
+		return getFlagSync(aabb_index, CFlagToLoad);
 	}
 	__device__ __forceinline__ bool isToStore(const CIdAABB& aabb_index) const {
-		return nodesFlags[aabb_index] & (0x01 << CFlagToStore);
+		return getFlagSync(aabb_index, CFlagToStore);
 	}
 	__device__ __forceinline__ bool isSpilling(const CIdAABB& aabb_index) const {
-		return nodesFlags[aabb_index] & (0x01 << CFlagIsSpilling);
+		return getFlagSync(aabb_index, CFlagIsSpilling);
 	}
 	__device__ __forceinline__ bool isOnUpdatesCache(const CIdAABB& aabb_index) const {
-		return nodesFlags[aabb_index] & (0x01 << CFlagIsOnUpdatesCache);
-	}
-	__device__ __forceinline__ bool isStored(const CIdAABB& aabb_index) const {
-		return nodesFlags[aabb_index] & (0x01 << CFlagIsStored);
+		return getFlagSync(aabb_index, CFlagIsOnUpdatesCache);
 	}
 	__device__ __forceinline__ bool isFirstVisitedInStack(const CIdAABB& aabb_index) const {
-		return nodesFlags[aabb_index] & (0x01 << CFlagIsFirstVisitedInStack);
+		return getFlagSync(aabb_index, CFlagIsFirstVisitedInStack);
 	}
 	__device__ __forceinline__ bool isSecondlyVisitedInStack(const CIdAABB& aabb_index) const {
-		return nodesFlags[aabb_index] & (0x01 << CFlagIsSecondlyVisitedInStack);
+		return getFlagSync(aabb_index, CFlagIsSecondlyVisitedInStack);
 	}
 
 
 
 	__device__ __forceinline__ bool hasNewPoints(const CIdAABB& aabb_index) const {
-		return nodesFlags[aabb_index] & (0x01 << CFlagHasNewPoints);
+		return getFlagSync(aabb_index, CFlagHasNewPoints);
 	}
 	__device__ __forceinline__ bool hasNewVoxels(const CIdAABB& aabb_index) const {
-		return nodesFlags[aabb_index] & (0x01 << CFlagHasNewVoxels);
+		return getFlagSync(aabb_index, CFlagHasNewVoxels);
 	}
 	__device__ __forceinline__ bool isNew(const CIdAABB& aabb_index) const {
-		return nodesFlags[aabb_index] & (0x01 << CFlagIsNew);
+		return getFlagSync(aabb_index, CFlagIsNew);
 	}
 	__device__ __forceinline__ bool hasSpilled(const CIdAABB& aabb_index) const {
-		return nodesFlags[aabb_index] & (0x01 << CFlagHasSpilled);
-	}
-
-
-
-	__device__ __forceinline__ void setFlagSync(const CIdAABB& aabb_index, const CNodeFlagType& flag){
-		__nv_atomic_or(&nodesFlags[aabb_index], (0x01 << flag), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-	}
-	__device__ __forceinline__ uint32_t fetchSetFlagSync(const CIdAABB& aabb_index, const CNodeFlagType& flag){
-		return __nv_atomic_fetch_or(&nodesFlags[aabb_index], (0x01 << flag), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-	}
-	__device__ __forceinline__ void unsetFlagSync(const CIdAABB& aabb_index, const CNodeFlagType& flag){
-		__nv_atomic_and(&nodesFlags[aabb_index], ~(1u << flag), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-	}
-	__device__ __forceinline__ uint32_t fetchUnsetFlagSync(const CIdAABB& aabb_index, const CNodeFlagType& flag){
-		return __nv_atomic_fetch_and(&nodesFlags[aabb_index], ~(1u << flag), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+		return getFlagSync(aabb_index, CFlagHasSpilled);
 	}
 #endif // __CUDACC__
 };

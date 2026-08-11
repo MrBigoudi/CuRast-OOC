@@ -407,7 +407,7 @@ void kernel_render_bounding_boxes(
         ;
 
         const CAABB& aabb = node->aabb;
-        if(settings.debug_lod_to_render != -1){
+        if(settings.debug_lod_to_render != -1 && settings.debug_lod_to_render != node->level){
             return;
         }
 
@@ -451,31 +451,18 @@ void kernel_visibilityPass(
         ;
 
         // TODO: Frustum culling
-        // if(!node->is_visible){return;}
-        globalVariables.setFlagSync(node->aabb_index, CFlagIsVisible);
+        if(thread_id == 0){
+            globalVariables.setFlagSync(node->aabb_index, CFlagIsVisible);
+        }
 
         if(settings.debug_lod_to_render != -1){
             continue;
         }
 
-        uint32_t max_bound = 8;
-        uint32_t nb_points_per_axis = min(8, depth + 1 - node->level);
-
-        // Draw voxels of not visible children
-        drawAllVoxels(
-            target, settings, node, nb_points_per_axis,
-            node->children_visibility ^ 0b11111111, 
-            true
-            // false
-        );
-        
         if(thread_id == 0){
             if(isLargerThanMinSpanning(target, settings, node)){
                 globalVariables.setFlagSync(node->aabb_index, CFlagIsLarge);
-            } else {
-                globalVariables.unsetFlagSync(node->aabb_index, CFlagIsLarge);
             }
-            globalVariables.unsetFlagSync(node->aabb_index, CFlagIsCut);
         }
     }
 }
@@ -510,21 +497,40 @@ void kernel_drawOctreeLarge(
             : globalVariables.renderingPackedNodes[node_index]
         ;
 
-        if(!globalVariables.isVisible(node->aabb_index)){continue;}
-        if(!globalVariables.isLarge(node->aabb_index)){continue;}
+        // Render stored nodes
+        {
+            uint32_t flags = 0b00000000;
+            for(uint32_t i=0; i<8; i++){
+                CIdAABB child_index = globalVariables.relationshipMap[node->aabb_index].children[i];
+                if(child_index == CINVALID_ID){continue;}
+                // if(globalVariables.isOnUpdatesCache(child_index)){
+                if(globalVariables.isVisible(child_index)){
+                    flags |= ((0x01) << i);
+                }
+            }
 
-        bool has_points = node->points_counter > 0;
-        if(has_points && globalVariables.isVisible(node->aabb_index)){
-            drawAllPoints(target, node);
+            uint32_t nb_points_per_axis = min(8, depth + 1 - node->level);
+            drawAllVoxels(
+                target, settings, node, nb_points_per_axis,
+                flags ^ 0b11111111, 
+                // true
+                false
+            );
         }
 
+        if(!globalVariables.isLarge(node->aabb_index)){continue;}
+
+        drawAllPoints(target, node);
+
         // Update flags
-        for(uint32_t i=0; i<8; i++){
-            if(!(node->children_visibility & ((0x01) << i))){continue;}
-            CIdAABB child_index = globalVariables.relationshipMap[node->aabb_index].children[i];
-            if(globalVariables.isLarge(child_index)){continue;}
-            if(!globalVariables.isVisible(child_index)){continue;}
-            globalVariables.setFlagSync(child_index, CFlagIsCut);
+        if(thread_id == 0){
+            for(uint32_t i=0; i<8; i++){
+                CIdAABB child_index = globalVariables.relationshipMap[node->aabb_index].children[i];
+                if(child_index == CINVALID_ID){continue;}
+                if(globalVariables.isLarge(child_index)){continue;}
+                if(!globalVariables.isVisible(child_index)){continue;}
+                globalVariables.setFlagSync(child_index, CFlagIsCut);
+            }
         }
     }
 }
@@ -557,7 +563,9 @@ void kernel_drawOctreeSmall(
             : globalVariables.renderingPackedNodes[node_index]
         ;
 
-        if(!globalVariables.isVisible(node->aabb_index)){continue;}
+        if(!globalVariables.isVisible(node->aabb_index)){
+            continue;
+        }
 
         if(settings.debug_lod_to_render != -1){
             if(node->level == settings.debug_lod_to_render){
@@ -578,6 +586,13 @@ void kernel_drawOctreeSmall(
                     0b11111111, false
                 );
             }
+        }
+
+        __syncthreads();
+        if(thread_id == 0){
+            globalVariables.unsetFlagSync(node->aabb_index, CFlagIsVisible);
+            globalVariables.unsetFlagSync(node->aabb_index, CFlagIsLarge);
+            globalVariables.unsetFlagSync(node->aabb_index, CFlagIsCut);
         }
     }
 }
@@ -619,6 +634,10 @@ void kernel_test_multi_resolution(
                 drawPoint(target, point.position, point.color);
             }
             cur_points = cur_points->next;
+        }
+
+        if(thread_id == 0){
+            globalVariables.unsetFlagSync(node->aabb_index, CFlagIsVisible);
         }
     }
 }

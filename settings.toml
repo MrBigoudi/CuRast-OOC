@@ -7,8 +7,8 @@
 #########################################################################
 
 ### Tells if the program should be entirely sequential or as parallelised as possible
-# IS_RUNNING_IN_PARALLEL = true
-IS_RUNNING_IN_PARALLEL = false
+IS_RUNNING_IN_PARALLEL = true
+# IS_RUNNING_IN_PARALLEL = false
 
 ### The number of frames between each GPU data transfer and visibility update
 NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE = 200
@@ -32,8 +32,8 @@ BATCHES_LIST_SIZE = 1_024
 
 ### The maximum number of points per batches
 # MAX_POINTS_PER_BATCHES = 10_000
-# MAX_POINTS_PER_BATCHES = 100_000
-MAX_POINTS_PER_BATCHES = 1_000_000
+MAX_POINTS_PER_BATCHES = 100_000
+# MAX_POINTS_PER_BATCHES = 1_000_000
 # MAX_POINTS_PER_BATCHES = 4_000_000
 # MAX_POINTS_PER_BATCHES = 10_000_000
 
@@ -100,8 +100,8 @@ LRU_CPU_CACHE_SIZE = 16_384
 # NB_ALLOCABLE_CHUNKS = 16
 # NB_ALLOCABLE_CHUNKS = 4_096
 # NB_ALLOCABLE_CHUNKS = 8_192
-NB_ALLOCABLE_CHUNKS = 16_384
-# NB_ALLOCABLE_CHUNKS = 32_768
+# NB_ALLOCABLE_CHUNKS = 16_384
+NB_ALLOCABLE_CHUNKS = 32_768
 # NB_ALLOCABLE_CHUNKS = 65_536
 # NB_ALLOCABLE_CHUNKS = 131_072
 # NB_ALLOCABLE_CHUNKS = 524_288

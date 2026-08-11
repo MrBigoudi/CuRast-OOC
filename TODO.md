@@ -1,10 +1,11 @@
 # TODO list
 
-- create a CopyOctree kernel
+- Display number of points + flow rate
+- Implement visibility cache
+- Implement CPU cache
 
-- use better sync strategies between kernels (maybe not need to wait entirely, sync arrays, ...)
-
-- Use nsight systems to find the bottlenecks
+- Automatically fetch CPU / GPU capacities to set the constants + measure size of each structs + each buffers on GPU side
+- Use nsight systems to find the bottlenecks and fix them
 
 
 ## Next steps (in priority order)
@@ -21,7 +22,6 @@
 
 - Modify caches to avoid unecessary new / delete in the double linked list (see hashmap version)
 - Clean the code + improve comments
-- Automatically fetch CPU / GPU capacities to set the constants
 - Fix Vulkan segfault on quit
 - supress warnings
 - Replace list with fixed size array to prepare for GPU side

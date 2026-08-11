@@ -134,6 +134,7 @@ void kernel_bottom_up_update_part_2_instancing(){
 
 		// Update the AABB maps
 		globalVariables.relationshipMap[parent_aabb_index].children[node_position] = cur_child->aabb_index;
+        globalVariables.relationshipMap[cur_child->aabb_index].parent = parent_aabb_index;
 
 		cur_child = new_parent;
 		updateNodePosition(node_position);

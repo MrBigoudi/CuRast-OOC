@@ -20,6 +20,10 @@ struct GpuVersion {
     static inline void* isTemporarySwitching = nullptr;
     static inline uint32_t curNbNodes = 0;
 
+    static inline CUevent eventUpdateCompleted;
+    static inline CUevent eventSwapCompleted;
+    static inline CUevent eventRenderingStreamInformed;
+
     /// Initialises everything needed on device memory
     static void init(CuRast* editor, CUcontext* context);
     static void destroy(CuRast* editor, CUcontext* context);

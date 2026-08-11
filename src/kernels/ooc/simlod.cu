@@ -47,6 +47,9 @@ void kernel_simlod_load_part_1_flagging(){
                     if(!(old_flags & (0x01 << CFlagToLoad))){
                         uint32_t exchanged_index = __nv_atomic_fetch_add(&globalVariables.nbNodesExchanged, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
                         globalVariables.exchangedAABBIndices[exchanged_index] = child_aabb_index;
+
+                        // Store the original parent in the buffer
+                        globalVariables.renderingPackedNodesTmp[exchanged_index] = leaf;
                     }
                     
                     cur_aabb_index = child_aabb_index;
@@ -109,6 +112,7 @@ void kernel_simlod_load_part_2_rebuilding_nodes(){
         loaded_node->voxels_counter = nb_voxels;
         loaded_node->points_stored = nb_points;
         loaded_node->voxels_stored = nb_voxels;
+        globalVariables.setFlagSync(aabb_index, CFlagIsUpdated);
 
         // Rebuild points
         if(nb_points > 0){
@@ -132,6 +136,28 @@ void kernel_simlod_load_part_2_rebuilding_nodes(){
             for(uint32_t i=0; i<nb_voxels; i++){
                 const CPoint& cur_point = voxels[i];
                 cur_chunk = addPointToChunk(cur_chunk, cur_point);
+            }
+        }
+
+        // Find parent if needed
+        COctreeNode* potential_parent = globalVariables.renderingPackedNodesTmp[exchanged_index];
+        if(potential_parent->aabb_index == globalVariables.relationshipMap[aabb_index].parent){
+            globalVariables.setFlagSync(potential_parent->aabb_index, CFlagIsUpdated);
+            bool found = false;
+            for(uint32_t i=0; i<8; i++){
+                if(globalVariables.relationshipMap[potential_parent->aabb_index].children[i] == aabb_index){
+                    if(potential_parent->children[i] != nullptr){
+                        printf("At this point, the children should not exist\n");
+                        customAssert();
+                    }
+                    potential_parent->children[i] = loaded_node;
+                    found = true;
+                    break;
+                }
+            }
+            if(!found){
+                printf("The parent doesn't contain the wanted child\n");
+                customAssert();
             }
         }
     }
@@ -190,6 +216,24 @@ void kernel_simlod_load_part_3_rebuilding_children(){
     if(thread_id==0){
         // Because "newChunk" was called in part 3
         globalAllocator.chunksAllocator->reset_temporary_allocations();
+
+        // // Sanity check
+        // for(uint32_t i = first_node; i < globalVariables.curNbNodes; i++){
+        //     CIdAABB child_id = globalVariables.packedNodes[i]->aabb_index;
+        //     CIdAABB parent_id = globalVariables.relationshipMap[child_id].parent;
+        //     bool found = false;
+        //     for(uint32_t j=0; j<globalVariables.curNbNodes; j++){
+        //         CIdAABB tmp = globalVariables.packedNodes[j]->aabb_index;
+        //         if(tmp == parent_id){
+        //             found = true;
+        //             break;
+        //         }
+        //     }
+        //     if(!found){
+        //         printf("Can't find parent %d of child %d\n", parent_id, child_id);
+        //         customAssert();
+        //     }
+        // }
     } 
     
     // try to avoid being on the same warp
@@ -320,6 +364,7 @@ void simlodSplit(uint32_t first_point, uint32_t step){
 
                 spilling_node->children[j] = new_child;
                 globalVariables.relationshipMap[spilling_node_id].children[j] = new_child_id;
+                globalVariables.relationshipMap[new_child_id].parent = spilling_node_id;
 
                 // Create the new AABB
                 new_child->aabb = spilling_node->aabb;

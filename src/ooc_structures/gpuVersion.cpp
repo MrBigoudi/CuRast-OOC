@@ -9,7 +9,13 @@ void GpuVersion::initHostSide(CuRast* editor, CUcontext* context) {
     exchangedVoxelsPointers = malloc(OocSimLodSettings::MAX_NB_NODES_TO_EXCHANGE * sizeof(CUdeviceptr));
     batchesToAddPointsPointers = malloc(OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE * sizeof(CUdeviceptr));
     CURuntime::assertCudaSuccess(cuMemAllocHost(&nbExchangedNodes, sizeof(uint32_t)));
+    CURuntime::assertCudaSuccess(cuMemAllocHost(&isTemporarySwitching, sizeof(bool)));
     *(uint32_t*)nbExchangedNodes = 0;
+    *(bool*)isTemporarySwitching = false;
+
+    CURuntime::assertCudaSuccess(cuEventCreate(&eventUpdateCompleted, CU_EVENT_DISABLE_TIMING));
+    CURuntime::assertCudaSuccess(cuEventCreate(&eventSwapCompleted, CU_EVENT_DISABLE_TIMING));
+    CURuntime::assertCudaSuccess(cuEventCreate(&eventRenderingStreamInformed, CU_EVENT_DISABLE_TIMING));
 }
 
 void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
@@ -189,6 +195,11 @@ void GpuVersion::destroy(CuRast *editor, CUcontext *context){
     free(exchangedVoxelsPointers);
     free(batchesToAddPointsPointers);
     CURuntime::assertCudaSuccess(cuMemFreeHost(nbExchangedNodes));
+    CURuntime::assertCudaSuccess(cuMemFreeHost(isTemporarySwitching));
+
+    cuEventDestroy(eventUpdateCompleted);
+    cuEventDestroy(eventSwapCompleted);
+    cuEventDestroy(eventRenderingStreamInformed);
 
     cudaDeviceSynchronize();
     CURuntime::assertCudaSuccess(cuStreamDestroy(stream));
@@ -344,6 +355,11 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
         children_ids[i] = uint32_t(loaded[i].serializable_node.children_ids);
         aabbs[i].maxs = loaded[i].serializable_node.aabb.maxs;
         aabbs[i].mins = loaded[i].serializable_node.aabb.mins;
+
+        // printf("loaded: %d: .mins = (%f, %f, %f), .maxs = (%f, %f, %f)\n", i,
+        //     aabbs[i].mins.x, aabbs[i].mins.y, aabbs[i].mins.z,
+        //     aabbs[i].maxs.x, aabbs[i].maxs.y, aabbs[i].maxs.z
+        // );
 
         std::vector<CPoint> points = {};
         if(loaded[i].serializable_points.has_value()){
@@ -571,6 +587,13 @@ void GpuVersion::octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context){
     prog->launch("kernel_prepare_store_part_1_filling_buffers", {}, launch_settings);
     prog->launch("kernel_prepare_store_part_2_resetting_children", {}, launch_settings);
 
+    launch_settings = {
+        .gridsize = 0,
+        .blocksize = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK,
+        .stream = OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0,
+    };
+    prog->launchCooperative("kernel_prepare_store_part_3_updating_levels", {}, launch_settings);
+
     // Readback the nodes and store them
     // Pointers arithmetic shenanigans to get the correct device address
     uint64_t pad = uint64_t(&(hostStaging.nbNodesExchanged)) - uint64_t(&hostStaging);
@@ -652,6 +675,11 @@ void GpuVersion::octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context){
         node.points_counter = cur_nb_points;
         node.voxels_counter = cur_nb_voxels;
 
+        // printf("stored: %d: .mins = (%f, %f, %f), .maxs = (%f, %f, %f)\n", i,
+        //     aabbs[i].mins.x, aabbs[i].mins.y, aabbs[i].mins.z,
+        //     aabbs[i].maxs.x, aabbs[i].maxs.y, aabbs[i].maxs.z
+        // );
+
         OctreeNodeSerializable::serializeV2(&node, points, voxels);
     }
 }
@@ -666,35 +694,56 @@ void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
     octreeUpdateInit(editor, context);
     octreeUpdateBottomUp(editor, context);
     octreeUpdateSimLOD(editor, context);
+
     octreeUpdateCacheUpdate(editor, context);
     // Record completion of the update kernels on the UPDATE stream (no host block needed)
-    CUevent event_update_completed;
-    CURuntime::assertCudaSuccess(cuEventCreate(&event_update_completed, CU_EVENT_DISABLE_TIMING));
-    CURuntime::assertCudaSuccess(cuEventRecord(event_update_completed, stream));
-
-    CUevent event_swap_completed;
-    CURuntime::assertCudaSuccess(cuEventCreate(&event_swap_completed, CU_EVENT_DISABLE_TIMING));
+    CURuntime::assertCudaSuccess(cuEventRecord(eventUpdateCompleted, stream));
 
     {
         // Wait if the scene is being rendered
         std::lock_guard<std::mutex> lock(renderSubmissionMutex);
-        // Make stream 0 wait for the update kernels, without blocking this thread
-        CURuntime::assertCudaSuccess(cuStreamWaitEvent(0, event_update_completed, 0));
-
-        OptionalLaunchSettings launch_settings = {
-            .gridsize = 0,
-            .blocksize = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK,
-            .stream = 0 // Push into stream 0
-        };
-        prog->launchCooperative("kernel_create_rendereable_octree", {}, launch_settings);
-
-        CURuntime::assertCudaSuccess(cuEventRecord(event_swap_completed, 0));
+        
+        // Tell the rendering to switch to the packed nodes
+        uint64_t pad = uint64_t(&(hostStaging.isTemporarySwitching)) - uint64_t(&hostStaging);
+        CUdeviceptr dst_device = deviceStaging + pad;
+        *(bool*)isTemporarySwitching = true;
+        
+        CURuntime::assertCudaSuccess(cuStreamWaitEvent(0, eventUpdateCompleted, 0));
+        CURuntime::assertCudaSuccess(cuMemcpyHtoD(
+            dst_device, isTemporarySwitching, sizeof(bool)
+        ));
+        CURuntime::assertCudaSuccess(cuEventRecord(eventRenderingStreamInformed, 0));
     }
 
-    // Don't start a new update loop until the swap is actually done on the GPU
-    CURuntime::assertCudaSuccess(cuEventSynchronize(event_swap_completed));
-    cuEventDestroy(event_swap_completed);
-    cuEventDestroy(event_update_completed);
+    // Don't start the swap before the rendering stream is being informed
+    CURuntime::assertCudaSuccess(cuStreamWaitEvent(stream, eventRenderingStreamInformed, 0));
+    // Run the real swap on this stream
+    OptionalLaunchSettings launch_settings = {
+        .gridsize = 0,
+        .blocksize = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK,
+        .stream = OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0,
+    };
+    prog->launchCooperative("kernel_create_rendereable_octree", {}, launch_settings);
+    CURuntime::assertCudaSuccess(cuEventRecord(eventSwapCompleted, stream));
+
+
+    {
+        // Tell the rendering to switch back to the rendering packed nodes
+        std::lock_guard<std::mutex> lock(renderSubmissionMutex);
+        
+        uint64_t pad = uint64_t(&(hostStaging.isTemporarySwitching)) - uint64_t(&hostStaging);
+        CUdeviceptr dst_device = deviceStaging + pad;
+        *(bool*)isTemporarySwitching = false;
+        
+        CURuntime::assertCudaSuccess(cuStreamWaitEvent(0, eventSwapCompleted, 0));
+        CURuntime::assertCudaSuccess(cuMemcpyHtoD(
+            dst_device, isTemporarySwitching, sizeof(bool)
+        ));
+        CURuntime::assertCudaSuccess(cuEventRecord(eventRenderingStreamInformed, 0));
+    }
+
+    // Don't start a new update before the rendering stream is being informed
+    CURuntime::assertCudaSuccess(cuStreamWaitEvent(stream, eventRenderingStreamInformed, 0));
 
 
     // TODO: to remove, just to flag the batches and display stuff
@@ -728,21 +777,6 @@ void GpuVersion::renderOctree(RenderTarget& target){
     // Wait if the update kernel is being added to stream 0
     std::lock_guard<std::mutex> lock(renderSubmissionMutex);
 
-    // Render bounding boxes
-    {
-        uint32_t grid_size = OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM 
-            * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM
-        ;
-
-        if(CuRastSettings::showBoundingBoxes){
-            OptionalLaunchSettings launch_settings = {
-                .gridsize = grid_size,
-                .blocksize = 1
-            };
-            prog->launch("kernel_render_bounding_boxes", {&real_target, &real_settings}, launch_settings);
-        }
-    }
-
     // Render nodes
     {
         uint32_t block_size = min(
@@ -761,6 +795,21 @@ void GpuVersion::renderOctree(RenderTarget& target){
             prog->launch("kernel_visibilityPass", {&real_target, &real_settings}, launch_settings);
             prog->launch("kernel_drawOctreeLarge", {&real_target, &real_settings}, launch_settings);
             prog->launch("kernel_drawOctreeSmall", {&real_target, &real_settings}, launch_settings);
+        }
+    }
+
+    // Render bounding boxes
+    {
+        uint32_t grid_size = OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM 
+            * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM
+        ;
+
+        if(CuRastSettings::showBoundingBoxes){
+            OptionalLaunchSettings launch_settings = {
+                .gridsize = grid_size,
+                .blocksize = 1
+            };
+            prog->launch("kernel_render_bounding_boxes", {&real_target, &real_settings}, launch_settings);
         }
     }
 }
