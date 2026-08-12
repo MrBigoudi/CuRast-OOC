@@ -355,10 +355,9 @@ enum CNodeFlagType {
 	CFlagToLoad,
 	CFlagToStore,
 	CFlagIsSpilling,
-	CFlagIsOnUpdatesCache,
+	CFlagIsInUpdatesCache,
 
 	// Pads to be replaced on need
-	CFlagPad22,
 	CFlagPad23,
 	CFlagPad24,
 	CFlagPad25,
@@ -373,6 +372,7 @@ enum CNodeFlagType {
 	CFlagIsVisible,
 	CFlagIsLarge,
 	CFlagIsCut,
+	CFlagIsInVisibilityCache,
 
 	// For rendering recreation
 	CFlagHasNewPoints,
@@ -679,6 +679,8 @@ struct CGlobalVariables {
 	uint32_t maxNbRenderedVoxels = 0;
 	CPoint* renderedVoxels = nullptr;
 	glm::vec3* renderedVoxelsSizes = nullptr;
+	CNodePosition* renderedVoxelsNextChildIndex = nullptr;
+	CIdAABB* renderedVoxelsNodes = nullptr;
 
 
 
@@ -815,8 +817,11 @@ struct CGlobalVariables {
 	__device__ __forceinline__ bool isSpilling(const CIdAABB& aabb_index) const {
 		return getFlagSync(aabb_index, CFlagIsSpilling);
 	}
-	__device__ __forceinline__ bool isOnUpdatesCache(const CIdAABB& aabb_index) const {
-		return getFlagSync(aabb_index, CFlagIsOnUpdatesCache);
+	__device__ __forceinline__ bool isInUpdatesCache(const CIdAABB& aabb_index) const {
+		return getFlagSync(aabb_index, CFlagIsInUpdatesCache);
+	}
+	__device__ __forceinline__ bool isInVisibilityCache(const CIdAABB& aabb_index) const {
+		return getFlagSync(aabb_index, CFlagIsInVisibilityCache);
 	}
 	__device__ __forceinline__ bool isFirstVisitedInStack(const CIdAABB& aabb_index) const {
 		return getFlagSync(aabb_index, CFlagIsFirstVisitedInStack);

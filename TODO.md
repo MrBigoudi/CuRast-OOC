@@ -1,8 +1,6 @@
 # TODO list
 
 - Display number of points + flow rate
-- Implement visibility cache
-- Implement CPU cache
 
 - Automatically fetch CPU / GPU capacities to set the constants + measure size of each structs + each buffers on GPU side
 - Use nsight systems to find the bottlenecks and fix them

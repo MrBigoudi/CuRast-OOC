@@ -475,12 +475,57 @@ void kernel_visibilityPass(
     for(uint32_t node_index = block_id; node_index < globalVariables.visibilityCacheCurrentSize; node_index += nb_blocks){
         const CIdAABB& id = globalVariables.visibilityCache[node_index];
         if(thread_id == 1){
-            globalVariables.setFlagSync(id, CFlagIsVisible);
+            globalVariables.setFlagSync(id, CFlagIsInVisibilityCache);
         }
     }
 }
 
 
+/// Run on "NB SMs" blocks of size min("Max threads per SM", "Max block dim")
+extern "C" __global__
+void kernel_drawVisibilityCache(
+	CRenderTarget target,
+    CRenderingSettings settings
+){
+    auto grid = cg::this_grid();
+    auto block = cg::this_thread_block();
+    uint32_t nb_blocks = grid.num_blocks();
+
+    uint32_t block_id = grid.block_rank();
+    uint32_t thread_id = block.thread_rank();
+    uint32_t nb_threads_per_block = block.num_threads();
+
+    uint32_t first_point = block_id * nb_threads_per_block + thread_id;
+    uint32_t step = nb_blocks * nb_threads_per_block;
+
+    // Render points
+    for(uint32_t point_id = first_point; point_id < globalVariables.nbRenderedPoints; point_id += step){
+        const CPoint& point = globalVariables.renderedPoints[point_id];
+        drawPoint(target, point.position, point.color);
+    }
+
+    // Render voxels
+    for(uint32_t voxel_id = first_point; voxel_id < globalVariables.nbRenderedVoxels; voxel_id += step){
+        const CPoint& voxel = globalVariables.renderedVoxels[voxel_id];
+        const glm::vec3& voxel_size = globalVariables.renderedVoxelsSizes[voxel_id];
+        const CNodePosition& next_child_pos = globalVariables.renderedVoxelsNextChildIndex[voxel_id];
+        const CIdAABB& node_id = globalVariables.renderedVoxelsNodes[voxel_id];
+        const CIdAABB& child_index = globalVariables.relationshipMap[node_id].children[next_child_pos];
+
+        // Only render the voxel if the corresponding child is not present
+        bool child_is_visible = (child_index != CINVALID_ID) && globalVariables.isVisible(child_index);
+        bool child_is_in_vis_cache = (child_index != CINVALID_ID) && globalVariables.isInVisibilityCache(child_index);
+        if(!child_is_visible && !child_is_in_vis_cache){
+            drawVoxel(
+                target, 
+                voxel.position, 
+                voxel.color, 
+                voxel_size, 
+                settings.voxels_nb_points_per_axis
+            );
+        }
+    }
+}
 
 
 
@@ -510,14 +555,17 @@ void kernel_drawOctreeLarge(
             : globalVariables.renderingPackedNodes[node_index]
         ;
 
+
         // Render stored nodes
         {
             uint32_t flags = 0b00000000;
             for(uint32_t i=0; i<8; i++){
                 CIdAABB child_index = globalVariables.relationshipMap[node->aabb_index].children[i];
                 if(child_index == CINVALID_ID){continue;}
-                // if(globalVariables.isOnUpdatesCache(child_index)){
-                if(globalVariables.isVisible(child_index)){
+                
+                bool child_is_visible = globalVariables.isVisible(child_index);
+                bool child_is_in_vis_cache = globalVariables.isInVisibilityCache(child_index);
+                if(child_is_visible || child_is_in_vis_cache){
                     flags |= ((0x01) << i);
                 }
             }
@@ -613,51 +661,12 @@ void kernel_drawOctreeSmall(
     for(uint32_t node_index = block_id; node_index < globalVariables.visibilityCacheCurrentSize; node_index += nb_blocks){
         const CIdAABB& id = globalVariables.visibilityCache[node_index];
         if(thread_id == 1){
-            globalVariables.unsetFlagSync(id, CFlagIsVisible);
+            globalVariables.unsetFlagSync(id, CFlagIsInVisibilityCache);
         }
     }
 }
 
 
-
-
-
-/// Run on "NB SMs" blocks of size min("Max threads per SM", "Max block dim")
-extern "C" __global__
-void kernel_drawVisibleNodes(
-	CRenderTarget target,
-    CRenderingSettings settings
-){
-    auto grid = cg::this_grid();
-    auto block = cg::this_thread_block();
-    uint32_t nb_blocks = grid.num_blocks();
-
-    uint32_t block_id = grid.block_rank();
-    uint32_t thread_id = block.thread_rank();
-    uint32_t nb_threads_per_block = block.num_threads();
-
-    uint32_t first_point = block_id * nb_threads_per_block + thread_id;
-    uint32_t step = nb_blocks * nb_threads_per_block;
-
-    // Render points
-    for(uint32_t point_id = first_point; point_id < globalVariables.nbRenderedPoints; point_id += step){
-        const CPoint& point = globalVariables.renderedPoints[point_id];
-        drawPoint(target, point.position, 0xff00ffff);
-    }
-
-    // Render voxels
-    for(uint32_t voxel_id = first_point; voxel_id < globalVariables.nbRenderedVoxels; voxel_id += step){
-        const CPoint& voxel = globalVariables.renderedVoxels[voxel_id];
-        const glm::vec3& voxel_size = globalVariables.renderedVoxelsSizes[voxel_id];
-        drawVoxel(
-            target, 
-            voxel.position, 
-            0xffff00ff, 
-            voxel_size, 
-            settings.voxels_nb_points_per_axis
-        );
-    }
-}
 
 
 

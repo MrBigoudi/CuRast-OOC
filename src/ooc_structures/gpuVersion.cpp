@@ -110,6 +110,8 @@ void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
     hostStaging.renderedPoints = alloc<CPoint>(hostStaging.maxNbRenderedPoints);
     hostStaging.renderedVoxels = alloc<CPoint>(hostStaging.maxNbRenderedVoxels);
     hostStaging.renderedVoxelsSizes = alloc<glm::vec3>(hostStaging.maxNbRenderedVoxels);
+    hostStaging.renderedVoxelsNextChildIndex = alloc<CNodePosition>(hostStaging.maxNbRenderedVoxels);
+    hostStaging.renderedVoxelsNodes = alloc<CIdAABB>(hostStaging.maxNbRenderedVoxels);
     
 
     // Lru caches
@@ -800,6 +802,7 @@ void GpuVersion::renderOctree(RenderTarget& target){
             prog->launch("kernel_test_multi_resolution", {&real_target, &real_settings}, launch_settings);
         } else {
             prog->launch("kernel_visibilityPass", {&real_target, &real_settings}, launch_settings);
+            prog->launch("kernel_drawVisibilityCache", {&real_target, &real_settings}, launch_settings);
             prog->launch("kernel_drawOctreeLarge", {&real_target, &real_settings}, launch_settings);
             prog->launch("kernel_drawOctreeSmall", {&real_target, &real_settings}, launch_settings);
         }
@@ -818,19 +821,6 @@ void GpuVersion::renderOctree(RenderTarget& target){
             };
             prog->launch("kernel_render_bounding_boxes", {&real_target, &real_settings}, launch_settings);
         }
-    }
-
-    // Render the visible nodes
-    {
-        uint32_t block_size = min(
-            OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM,
-            OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X
-        );
-        OptionalLaunchSettings launch_settings = {
-            .gridsize = OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM,
-            .blocksize = block_size
-        };
-        prog->launch("kernel_drawVisibleNodes", {&real_target, &real_settings}, launch_settings);
     }
 }
 
@@ -996,16 +986,18 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
     // Order the nodes with respect to the camera
     std::sort(visible_nodes.begin(), visible_nodes.end(), 
         [](const std::pair<CIdAABB, float>& lhs, const std::pair<CIdAABB, float>& rhs){
-            return lhs.second > rhs.second;    
+            return lhs.second < rhs.second;    
         }
     );
 
 
     // Gather the correct number of nodes to send to the device
+    std::unordered_set<CIdAABB> visibility_cache_set(hostStaging.visibilityCacheSize);
     std::vector<CPoint> points_to_send(hostStaging.maxNbRenderedPoints, CPoint());
     std::vector<CPoint> voxels_to_send(hostStaging.maxNbRenderedVoxels, CPoint());
     std::vector<glm::vec3> voxels_sizes_to_send(hostStaging.maxNbRenderedVoxels, glm::vec3());
-    std::unordered_set<CIdAABB> visibility_cache_set(hostStaging.visibilityCacheSize);
+    std::vector<CNodePosition> voxels_next_child_indices_to_send(hostStaging.maxNbRenderedVoxels);
+    std::vector<CIdAABB> voxels_nodes_to_send(hostStaging.maxNbRenderedVoxels, CINVALID_ID);
     uint32_t cpt = 0;
     uint32_t point_cpt = 0;
     uint32_t voxel_cpt = 0;
@@ -1054,6 +1046,8 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
                     }
                     vec3 voxel_size = (voxel_aabb.maxs - voxel_aabb.mins) / float(OocSimLodSettings::GRID_SIZE_PER_DIMENSION);
                     voxels_sizes_to_send[voxel_cpt] = voxel_size;
+                    voxels_next_child_indices_to_send[voxel_cpt] = voxel_aabb.getNextChildIndex(voxel.position);
+                    voxels_nodes_to_send[voxel_cpt] = cur_node->node.aabb_index;
                     voxels_to_send[voxel_cpt] = voxel;
 
                     voxel_cpt++;
@@ -1104,6 +1098,16 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
             (CUdeviceptr)hostStaging.renderedVoxelsSizes,
             voxels_sizes_to_send.data(),
             voxel_cpt * sizeof(glm::vec3)
+        ));
+        CURuntime::assertCudaSuccess(cuMemcpyHtoD(
+            (CUdeviceptr)hostStaging.renderedVoxelsNextChildIndex,
+            voxels_next_child_indices_to_send.data(),
+            voxel_cpt * sizeof(CNodePosition)
+        ));
+        CURuntime::assertCudaSuccess(cuMemcpyHtoD(
+            (CUdeviceptr)hostStaging.renderedVoxelsNodes,
+            voxels_nodes_to_send.data(),
+            voxel_cpt * sizeof(CIdAABB)
         ));
 
         // Sending nodes ids

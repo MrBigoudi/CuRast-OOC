@@ -146,7 +146,7 @@ void kernel_prepare_store_part_1_filling_buffers(){
             globalAllocator.delOctreeNode(node, true, true);
             globalVariables.packedNodes[node_index] = nullptr;
         } else {
-            globalVariables.setFlagSync(node->aabb_index, CFlagIsOnUpdatesCache);
+            globalVariables.setFlagSync(node->aabb_index, CFlagIsInUpdatesCache);
         }
     }
 }
@@ -175,7 +175,7 @@ void kernel_prepare_store_part_2_resetting_children(){
                 continue;
             }
             // if(globalVariables.isToStore(child_index)){
-            if(!globalVariables.isOnUpdatesCache(child_index)){
+            if(!globalVariables.isInUpdatesCache(child_index)){
                 node->children[i] = nullptr;
                 continue;
             }
@@ -348,7 +348,7 @@ void deallocateOldNodes(uint32_t first_point, uint32_t step){
         if(!node_to_remove){continue;}
 
         // Node should be deleted
-        if(!globalVariables.isOnUpdatesCache(node_to_remove->aabb_index)){
+        if(!globalVariables.isInUpdatesCache(node_to_remove->aabb_index)){
             globalAllocator.delOctreeNode(node_to_remove, true, true);
             globalVariables.renderingPackedNodes[node_index] = nullptr;
             continue;
