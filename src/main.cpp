@@ -497,6 +497,7 @@ void update(){
 
 int main(int argc, char** argv){
 	std::thread* thread_octree_update = nullptr;
+	std::thread* thread_octree_visibility = nullptr;
 	try {
 		Benchmarking::datasetPath = "./";
 
@@ -617,6 +618,11 @@ int main(int argc, char** argv){
 				thread_octree_update = new std::thread([&](CuRast* editor, CUcontext* context){
 					while(!GlobalVariables::mainLoopIsTerminating){
 						GpuVersion::updateOctree(editor, context);
+					}
+				}, CuRast::instance, &context);
+				thread_octree_visibility = new std::thread([&](CuRast* editor, CUcontext* context){
+					while(!GlobalVariables::mainLoopIsTerminating){
+						GpuVersion::visibilityUpdate(editor, context);
 					}
 				}, CuRast::instance, &context);
 			}
@@ -757,6 +763,10 @@ int main(int argc, char** argv){
 					thread_octree_update->join();
 					delete(thread_octree_update);
 				}
+				if(thread_octree_visibility){
+					thread_octree_visibility->join();
+					delete(thread_octree_visibility);
+				}
 			}
 			cudaDeviceSynchronize();
 			println("GPU Memory Usage:\n{}", GlobalVariables::getGpuMemoryUsage());
@@ -780,6 +790,10 @@ int main(int argc, char** argv){
 				if(thread_octree_update){
 					thread_octree_update->join();
 					delete(thread_octree_update);
+				}
+				if(thread_octree_visibility){
+					thread_octree_visibility->join();
+					delete(thread_octree_visibility);
 				}
 			}
 			cudaDeviceSynchronize();

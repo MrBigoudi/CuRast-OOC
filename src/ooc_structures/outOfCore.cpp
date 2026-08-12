@@ -86,26 +86,23 @@ CPUFallbackCache::Entry::Entry(const OctreeNode* node){
 }
 
 /// A constructor from an existing node
-CPUFallbackCache::Entry::Entry(const COctreeNode* node, 
-    const std::vector<CPoint>& points, 
-    const std::vector<CPoint>& voxels
-){
+CPUFallbackCache::Entry::Entry(const HostStorageNode* node){
     serializable_node = {};
-    serializable_node.points_counter = node->points_counter;
-    serializable_node.voxels_counter = node->voxels_counter;
-    serializable_node.children_ids = node->children_ids;
-    serializable_node.aabb_index = node->aabb_index;
+    serializable_node.points_counter = node->node.points_counter;
+    serializable_node.voxels_counter = node->node.voxels_counter;
+    serializable_node.children_ids = node->node.children_ids;
+    serializable_node.aabb_index = node->node.aabb_index;
     serializable_node.aabb = AABB();
-    serializable_node.aabb.maxs = node->aabb.maxs;
-    serializable_node.aabb.mins = node->aabb.mins;
+    serializable_node.aabb.maxs = node->node.aabb.maxs;
+    serializable_node.aabb.mins = node->node.aabb.mins;
 
-    if(!points.empty()){
+    if(!node->points.empty()){
         serializable_node.points = getChunkFilePathV2(serializable_node.aabb_index, false);
-        serializable_points = ChunkSerializable(points);
+        serializable_points = ChunkSerializable(node->points);
     }
-    if(!voxels.empty()){
+    if(!node->voxels.empty()){
         serializable_node.voxels = getChunkFilePathV2(serializable_node.aabb_index, true);
-        serializable_voxels = ChunkSerializable(voxels);
+        serializable_voxels = ChunkSerializable(node->voxels);
     }
 }
 
@@ -132,24 +129,54 @@ CPUFallbackCache::Entry CPUFallbackCache::Entry::deserialize(const IdAABB& aabb_
 }
 
 /// A constructor which is deserialized from an aabb
-CPUFallbackCache::Entry CPUFallbackCache::Entry::deserializeV2(const CIdAABB& aabb_index){
-    Entry new_entry = {};
-    new_entry.serializable_node = OctreeNodeSerializable::deserialize(getNodeFilePathV2(aabb_index));
-    if(new_entry.serializable_node.points != ""){
-        ChunkSerializable points_deserialized = ChunkSerializable::deserialize(
+HostStorageNode* OctreeNodeSerializable::deserializeV2(const CIdAABB& aabb_index, const std::string& msg){
+    HostStorageNode* new_node = new HostStorageNode();
+    OctreeNodeSerializable serializable_node = OctreeNodeSerializable::deserialize(getNodeFilePathV2(aabb_index), msg);
+
+    new_node->node.points_counter = serializable_node.points_counter;
+    if(new_node->node.points_counter > 0){
+        ChunkSerializable loaded_points = ChunkSerializable::deserialize(
             getChunkFilePathV2(aabb_index, false)
         );
-        new_entry.serializable_points = std::optional<ChunkSerializable>(points_deserialized);
+        new_node->points.reserve(new_node->node.points_counter);
+        for(uint32_t j=0; j<loaded_points.points.size(); j++){
+            for(uint32_t k=0; k<loaded_points.sizes[j]; k++){
+                CPoint cur_point = {};
+                cur_point.position = loaded_points.points[j][k].position;
+                cur_point.setColor(
+                    loaded_points.points[j][k].color[0],
+                    loaded_points.points[j][k].color[1],
+                    loaded_points.points[j][k].color[2],
+                    loaded_points.points[j][k].color[3]
+                );
+                new_node->points.push_back(cur_point);
+            }
+        }
     }
 
-    if(new_entry.serializable_node.voxels != ""){
-        ChunkSerializable voxels_deserialized = ChunkSerializable::deserialize(
+
+    new_node->node.voxels_counter = serializable_node.voxels_counter;
+    if(new_node->node.voxels_counter > 0){
+        ChunkSerializable loaded_voxels = ChunkSerializable::deserialize(
             getChunkFilePathV2(aabb_index, true)
         );
-        new_entry.serializable_voxels = std::optional<ChunkSerializable>(voxels_deserialized);
+        new_node->voxels.reserve(new_node->node.voxels_counter);
+        for(uint32_t j=0; j<loaded_voxels.points.size(); j++){
+            for(uint32_t k=0; k<loaded_voxels.sizes[j]; k++){
+                CPoint cur_point = {};
+                cur_point.position = loaded_voxels.points[j][k].position;
+                cur_point.setColor(
+                    loaded_voxels.points[j][k].color[0],
+                    loaded_voxels.points[j][k].color[1],
+                    loaded_voxels.points[j][k].color[2],
+                    loaded_voxels.points[j][k].color[3]
+                );
+                new_node->voxels.push_back(cur_point);
+            }
+        }
     }
 
-    return new_entry;
+    return new_node;
 }
 
 /// Builds an octree node from an entry
@@ -398,11 +425,8 @@ void OctreeNodeSerializable::serialize(const OctreeNode* node){
     stored_node.serialize(getNodeFilePath(aabb));
 }
 
-void OctreeNodeSerializable::serializeV2(const COctreeNode* node, 
-    const std::vector<CPoint>& points, 
-    const std::vector<CPoint>& voxels
-){
-    const CPUFallbackCache::Entry to_store = CPUFallbackCache::Entry(node, points, voxels);
+void OctreeNodeSerializable::serializeV2(const HostStorageNode* node){
+    const CPUFallbackCache::Entry to_store = CPUFallbackCache::Entry(node);
     const OctreeNodeSerializable& stored_node = to_store.serializable_node;
     if(to_store.serializable_points.has_value()){
         const ChunkSerializable& serializable = to_store.serializable_points.value();
@@ -412,7 +436,7 @@ void OctreeNodeSerializable::serializeV2(const COctreeNode* node,
         const ChunkSerializable& serializable = to_store.serializable_voxels.value();
         serializable.serialize(stored_node.voxels);
     }
-    stored_node.serialize(getNodeFilePathV2(node->aabb_index));
+    stored_node.serialize(getNodeFilePathV2(node->node.aabb_index));
 }
 
 void OctreeNodeSerializable::serialize(const std::string& filepath) const {
@@ -454,7 +478,7 @@ void OctreeNodeSerializable::serialize(const std::string& filepath) const {
     file.close();
 }
 
-OctreeNodeSerializable OctreeNodeSerializable::deserialize(const std::string& filepath) {
+OctreeNodeSerializable OctreeNodeSerializable::deserialize(const std::string& filepath, const std::string& msg) {
     OctreeNodeSerializable new_node = {};
 
     std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
@@ -462,7 +486,7 @@ OctreeNodeSerializable OctreeNodeSerializable::deserialize(const std::string& fi
     std::ifstream file(filepath, std::ios::binary);
 
     if (!file.is_open()) {
-        println("Failed to open the file {} to deserialize an octree node", filepath);
+        println("Failed to open the file {} to deserialize an octree node: {}", filepath, msg);
         if(!GlobalVariables::mainLoopIsTerminating){
             throw(EXIT_FAILURE);
         }

@@ -4,13 +4,33 @@
 #include "../kernels/ooc/GpuVersionInterface.h"
 #include "../kernels/ooc/GpuVersionAllocator.h"
 
+
 struct GpuVersion {
 	static inline CudaModularProgram* prog = nullptr;
     static inline CGlobalVariables hostStaging = {};
     static inline CUdeviceptr deviceStaging = 0;
     static inline CUstream stream;
 
-    static inline std::unordered_set<CIdAABB> storedNodes = {}; 
+    
+    // CPU cache
+    static inline std::unordered_map<CIdAABB, CAABB> storedNodes = {}; 
+    static inline CLRUCache* hostCache = nullptr;
+    static inline std::unordered_set<CIdAABB> recentlyUsedNodesFromUpdates = {};
+    static inline std::unordered_set<CIdAABB> removedNodes = {};
+    static inline std::unordered_map<CIdAABB, HostStorageNode*> persistentStoredNodes = {};
+    static inline std::mutex syncAABBStorageAccessMtx;
+    static inline std::mutex syncHostStorageNodesAccessMtx;
+    static inline std::mutex syncVisibilityUpdateMtx;
+
+    static inline std::vector<CIdAABB> previouslyVisible = {};
+    static inline std::vector<HostStorageNode*> newlyVisible = {};
+
+    static void updateHostCache();
+    static void visibilityUpdate(CuRast* editor, CUcontext* context);
+
+
+
+
 
     static inline std::mutex renderSubmissionMutex;
 	static inline void* exchangedPointsPointers = nullptr;

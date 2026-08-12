@@ -83,9 +83,7 @@ void kernel_prepare_store_part_1_filling_buffers(){
             globalVariables.unsetFlagSync(node->aabb_index, (CNodeFlagType)i);
         }
 
-        if(!globalVariables.updatesCache->contains(node->aabb_index)
-            && !globalVariables.visibilityCache->contains(node->aabb_index)    
-        ){
+        if(!globalVariables.updatesCache->contains(node->aabb_index)){
             uint32_t exchanged_index = __nv_atomic_fetch_add(&globalVariables.nbNodesExchanged, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
 
             if(exchanged_index >= globalVariables.maxNbNodesExchanged){

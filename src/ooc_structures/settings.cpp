@@ -78,6 +78,11 @@ void OocSimLodSettings::init(){
     MAX_NB_SPILLING_POINTS = init_field<uint32_t>("MAX_NB_SPILLING_POINTS", 1'000'000);
     MAX_NB_BACKLOG_VOXELS = init_field<uint32_t>("MAX_NB_BACKLOG_VOXELS", 1'000'000);
 
+    MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE = init_field<uint32_t>("MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE", 256);
+    MAX_NB_RENDERED_POINTS = init_field<uint32_t>("MAX_NB_RENDERED_POINTS", 1'000'000);
+    MAX_NB_RENDERED_VOXELS = init_field<uint32_t>("MAX_NB_RENDERED_VOXELS", 1'000'000);
+
+
     /// Ui initial parameters
     SHOW_BOUNDING_BOXES_AT_STARTUP = init_field<bool>("SHOW_BOUNDING_BOXES_AT_STARTUP", false);
     CuRastSettings::showBoundingBoxes = SHOW_BOUNDING_BOXES_AT_STARTUP;
@@ -159,6 +164,9 @@ void OocSimLodSettings::display(){
     println("    - MAX_NB_NODES_TO_EXCHANGE: {}", MAX_NB_NODES_TO_EXCHANGE);
     println("    - MAX_NB_SPILLING_POINTS: {}", MAX_NB_SPILLING_POINTS);
     println("    - MAX_NB_BACKLOG_VOXELS: {}", MAX_NB_BACKLOG_VOXELS);
+    println("    - MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE: {}", MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE);
+    println("    - MAX_NB_RENDERED_POINTS: {}", MAX_NB_RENDERED_POINTS);
+    println("    - MAX_NB_RENDERED_VOXELS: {}", MAX_NB_RENDERED_VOXELS);
 
     println("");
     println("UI initial settings:");

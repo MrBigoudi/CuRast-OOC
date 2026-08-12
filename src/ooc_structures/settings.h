@@ -134,6 +134,13 @@ struct OocSimLodSettings {
     static inline uint32_t MAX_NB_SPILLING_POINTS;
     /// The maximum number of backlog voxels
     static inline uint32_t MAX_NB_BACKLOG_VOXELS;
+    /// The maximum number of voxels chunk that can be exchanged at once
+    static inline uint32_t MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE;
+    /// The points rendering budget for the visibility cache
+    static inline uint32_t MAX_NB_RENDERED_POINTS;
+    /// The voxels rendering budget for the visibility cache
+    static inline uint32_t MAX_NB_RENDERED_VOXELS;
+
 
 
 

@@ -54,6 +54,21 @@ bool Frustum::doesIntersect(const AABB& aabb) const {
 	return true;
 }
 
+bool Frustum::doesIntersect(const CAABB& aabb) const {
+    for(uint32_t i = 0; i < 6; i++){
+		vec3 vector = {
+		    planes[i].normal.x > 0.0 ? aabb.maxs.x : aabb.mins.x,
+		    planes[i].normal.y > 0.0 ? aabb.maxs.y : aabb.mins.y,
+		    planes[i].normal.z > 0.0 ? aabb.maxs.z : aabb.mins.z
+        };
+
+		float d = glm::dot(planes[i].normal, vector) + planes[i].constant;
+		if(d < 0){return false;}
+	}
+
+	return true;
+}
+
 void Frustum::display() const {
     println("Frustum:");
     for(uint32_t i=0; i<6; i++){
@@ -342,8 +357,8 @@ bool Visibility::updateVisibilityCache(
 
     std::unordered_set<IdAABB> visible_nodes = getVisibleNodes(frustum, relationship_map_ref);
 
-    vec3 cameraPos = vec3(glm::inverse(view) * vec4(0.0f, 0.0f, 0.0f, 1.0f));
-    std::vector<IdAABB> ordered_nodes = orderNodes(octree_ref->aabb_index, visible_nodes, cameraPos, relationship_map_ref);
+    vec3 camera_pos = vec3(glm::inverse(view) * vec4(0.0f, 0.0f, 0.0f, 1.0f));
+    std::vector<IdAABB> ordered_nodes = orderNodes(octree_ref->aabb_index, visible_nodes, camera_pos, relationship_map_ref);
 
     static std::vector<IdAABB> oldOrderedNodes = {};
     if(ordered_nodes != oldOrderedNodes){

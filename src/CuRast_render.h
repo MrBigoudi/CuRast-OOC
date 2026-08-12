@@ -100,6 +100,82 @@ void saveScreenshot(RenderTarget target, View view, CUdeviceptr cptr_ssaoShadebu
 	cuMemFreeHost(screenshot_host);
 }
 
+void saveScreenshotDepth(RenderTarget target, CudaModularProgram* prog_resolve){
+
+	uint64_t numPixels = target.width * target.height;
+	CUdeviceptr cptr_screenshot = MemoryManager::alloc(numPixels * 4, "screenshot");
+
+	void* args[] = {
+		&target,
+		&cptr_screenshot
+	};
+	prog_resolve->launch2D("kernel_resolve_depthbuffer_to_screenshot", args, target.width, target.height);
+
+	void* screenshot_host = nullptr;
+	cuMemAllocHost(&screenshot_host, 4 * numPixels);
+	cuMemcpyDtoH(screenshot_host, cptr_screenshot, 4 * numPixels);
+
+	string path = "";
+	if(*CuRastSettings::requestScreenshot == ""){
+		for(int i = 0; i <= 10'000'000; i++){
+			fs::create_directories("./screenshots");
+			path = format("./screenshots/depth_screenshot_{}.png", i);
+
+			if(!fs::exists(path)) break;
+		}
+	} else {
+		size_t lastindex = (*CuRastSettings::requestScreenshot).find_last_of("."); 
+		string rawname = (*CuRastSettings::requestScreenshot).substr(0, lastindex);
+		path = format("{}_depth.png", rawname);
+	}
+	println("Screenshot path: {}", path);
+
+	int stride_in_bytes = target.width * 4;
+	stbi_flip_vertically_on_write(1);
+	stbi_write_png(path.c_str(), target.width, target.height, 4, screenshot_host, stride_in_bytes);
+
+	MemoryManager::free(cptr_screenshot);
+	cuMemFreeHost(screenshot_host);
+}
+
+void saveScreenshotLod(RenderTarget target, CudaModularProgram* prog_resolve){
+
+	uint64_t numPixels = target.width * target.height;
+	CUdeviceptr cptr_screenshot = MemoryManager::alloc(numPixels * 4, "screenshot");
+
+	void* args[] = {
+		&target,
+		&cptr_screenshot
+	};
+	prog_resolve->launch2D("kernel_resolve_lod_to_screenshot", args, target.width, target.height);
+
+	void* screenshot_host = nullptr;
+	cuMemAllocHost(&screenshot_host, 4 * numPixels);
+	cuMemcpyDtoH(screenshot_host, cptr_screenshot, 4 * numPixels);
+
+	string path = "";
+	if(*CuRastSettings::requestScreenshot == ""){
+		for(int i = 0; i <= 10'000'000; i++){
+			fs::create_directories("./screenshots");
+			path = format("./screenshots/lod_screenshot_{}.png", i);
+
+			if(!fs::exists(path)) break;
+		}
+	} else {
+		size_t lastindex = (*CuRastSettings::requestScreenshot).find_last_of("."); 
+		string rawname = (*CuRastSettings::requestScreenshot).substr(0, lastindex);
+		path = format("{}_lod.png", rawname);
+	}
+	println("Screenshot path: {}", path);
+
+	int stride_in_bytes = target.width * 4;
+	stbi_flip_vertically_on_write(1);
+	stbi_write_png(path.c_str(), target.width, target.height, 4, screenshot_host, stride_in_bytes);
+
+	MemoryManager::free(cptr_screenshot);
+	cuMemFreeHost(screenshot_host);
+}
+
 
 void drawPoints(Scene* scene, View view, RenderTarget& target){
 
@@ -826,6 +902,8 @@ void CuRast::draw(Scene* scene, vector<View> views){
 
 		if(CuRastSettings::requestScreenshot){
 			saveScreenshot(target, view, cvm_ssaoShadebuffer->cptr, prog);
+			saveScreenshotDepth(target, prog);
+			saveScreenshotLod(target, prog);
 		}
 
 		unmapCudaVk(mappings);

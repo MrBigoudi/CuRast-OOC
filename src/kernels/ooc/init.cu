@@ -77,7 +77,6 @@ void kernel_init_global_buffers(){
 
     if(thread_id == 0){
         globalVariables.updatesCache = new CLRUCache(globalVariables.updatesCacheSize);
-        globalVariables.visibilityCache = new CLRUCache(globalVariables.visibilityCacheSize);
 
         // Create the main octree
         CIdAABB id = createNewNodeId();

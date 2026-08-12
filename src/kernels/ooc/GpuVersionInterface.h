@@ -57,6 +57,10 @@ struct CAABB {
 		return rhs.mins == mins && rhs.maxs == maxs;
 	}
 
+	inline glm::vec3 getCentroid() const {
+		return 0.5f * (mins + maxs);
+	}
+
 	__device__ __forceinline__  glm::vec3 getSize() const {return maxs - mins;}
 	__device__ __forceinline__  bool contains(const glm::vec3& position) const {
 		return position.x > mins.x && position.x < maxs.x
@@ -501,6 +505,7 @@ struct COctreeNodeUnified {
 
 
 struct CRenderTarget{
+	uint64_t* framebuffer;
 	uint64_t* colorbuffer;
 	int width;
 	int height;
@@ -519,13 +524,13 @@ struct CLRUCache {
 	CDoubleLinkedList<CIdAABB> cache = {};
 	CHashMap<CIdAABB, CDoubleLinkedList<CIdAABB>::Iterator*> cache_map = {};
 
-	__device__ __forceinline__ CLRUCache(uint32_t cache_size) : CACHE_SIZE(cache_size){
+	__host__ __device__ __forceinline__ CLRUCache(uint32_t cache_size) : CACHE_SIZE(cache_size){
 		cache.init();
 		cache_map.init(cache_size);
 	}
 
 	/// Add a node to the cache and return the id of a node if it has been removed from the cache
-	__device__ __forceinline__ CIdAABB add(const CIdAABB& aabb_index){
+	__host__ __device__ __forceinline__ CIdAABB add(const CIdAABB& aabb_index){
 		CDoubleLinkedList<CIdAABB>::Iterator** it = cache_map.find(aabb_index);
 
 		// If the AABB was already in cache, remove its old version from the list
@@ -553,12 +558,12 @@ struct CLRUCache {
 	}
 
 	/// Check if a node is already in cache
-	__device__ __forceinline__ bool contains(const CIdAABB& aabb_index) {
+	__host__ __device__ __forceinline__ bool contains(const CIdAABB& aabb_index) {
 		return cache_map.contains(aabb_index);
 	}
 
 	/// Returns the number of occupied cell in the cache
-	__device__ __forceinline__ uint32_t getSize() const {
+	__host__ __device__ __forceinline__ uint32_t getSize() const {
 		return cache_map.size;
 	}
 };
@@ -644,7 +649,7 @@ struct CGlobalVariables {
 	uint32_t nbNodesExchanged = 0;
 	uint32_t maxNbNodesExchanged = 0;
 	uint32_t maxNbPointsChunksPerExchangedNode = 0;
-	uint32_t maxNbVoxelsChunksPerExchangedNode = 256; // TODO: find a better value
+	uint32_t maxNbVoxelsChunksPerExchangedNode = 0;
 	CIdAABB* exchangedAABBIndices = nullptr;
 	CAABB* exchangedAABBs = nullptr;
 	uint32_t* exchangedChildrenIds = nullptr;
@@ -664,10 +669,16 @@ struct CGlobalVariables {
 	uint32_t* batchesToAddCounts = nullptr;
 	uint32_t batchesToAddBottomUpCount = 0;
 
-	/// The points that couldn't be handled yet
-	uint32_t nbResidualPoints = 0;
-	uint32_t maxNbResidualPoints =  1'000'000; // TODO: find a better value
-	CPoint* residualPoints = nullptr;
+
+
+	/// The rendering budget
+	uint32_t nbRenderedPoints = 0;
+	uint32_t maxNbRenderedPoints = 0;
+	CPoint* renderedPoints = nullptr;
+	uint32_t nbRenderedVoxels = 0;
+	uint32_t maxNbRenderedVoxels = 0;
+	CPoint* renderedVoxels = nullptr;
+	glm::vec3* renderedVoxelsSizes = nullptr;
 
 
 
@@ -675,12 +686,11 @@ struct CGlobalVariables {
     ///////////////////////////// LRU CACHES //////////////////////////////
     ///////////////////////////////////////////////////////////////////////
     uint32_t updatesCacheSize = 0;
-    uint32_t nbEntryInUpdatesCache = 0;
     CLRUCache* updatesCache = nullptr;
-    uint32_t visibilityCacheSize = 0;
-    uint32_t nbEntryInVisibilityCache = 0;
-    CLRUCache* visibilityCache = nullptr;
-    
+	uint32_t visibilityCacheSize = 0;
+	uint32_t visibilityCacheCurrentSize = 0;
+	CIdAABB* visibilityCache = nullptr;
+	
 
 
     ///////////////////////////////////////////////////////////////////////

@@ -19,6 +19,7 @@ struct Frustum {
 
     /// Checks if a node intersects a frustum
     bool doesIntersect(const AABB& aabb) const;
+    bool doesIntersect(const CAABB& aabb) const;
 
     void display() const;
 };

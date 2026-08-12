@@ -135,7 +135,8 @@ __device__
 void drawPoint(
 	CRenderTarget target,
 	vec3 position,
-    uint32_t color
+    uint32_t color,
+    uint32_t lod = 0
 ){
 	vec4 projected = target.proj * target.view * vec4(position, 1.0f);
 	float depth = projected.w;
@@ -151,8 +152,11 @@ void drawPoint(
 	uint64_t udepth = __float_as_uint(depth);
 	uint64_t fragment = (udepth << 32) | color;
 
+	uint64_t lod_fragment = (udepth << 32) | lod;
+
 	if(fragment < target.colorbuffer[pixelID]){
 		atomicMin(&target.colorbuffer[pixelID], fragment);
+		atomicMin(&target.framebuffer[pixelID], lod_fragment);
 	}
 }
 
@@ -162,7 +166,8 @@ void drawVoxel(
 	vec3 voxel_position,
     uint32_t voxel_color,
     vec3 voxel_size,
-    uint32_t nb_points_per_axis
+    uint32_t nb_points_per_axis,
+    uint32_t node_level = 0
 ){
     // Draw the middle point
     // Usually 1 point is enough to represent a voxel from far away
@@ -179,25 +184,25 @@ void drawVoxel(
     for(float cy = -0.5; cy <= 0.5; cy+=step)
     for(float cz = -0.5; cz <= 0.5; cz+=step){
         vec3 position = voxel_position + vec3(-0.5, cy, cz)*voxel_size;
-        drawPoint(target, position, voxel_color);
+        drawPoint(target, position, voxel_color, node_level);
         position = voxel_position + vec3(0.5, cy, cz)*voxel_size;
-        drawPoint(target, position, voxel_color);
+        drawPoint(target, position, voxel_color, node_level);
     }
     // Top-Down
     for(float cx = -0.5+step; cx <= 0.5-step; cx+=step)
     for(float cz = -0.5; cz <= 0.5; cz+=step){
         vec3 position = voxel_position + vec3(cx, -0.5, cz)*voxel_size;
-        drawPoint(target, position, voxel_color);
+        drawPoint(target, position, voxel_color, node_level);
         position = voxel_position + vec3(cx, 0.5, cz)*voxel_size;
-        drawPoint(target, position, voxel_color);
+        drawPoint(target, position, voxel_color, node_level);
     }
     // Front-Back
     for(float cx = -0.5+step; cx <= 0.5-step; cx+=step)
     for(float cy = -0.5+step; cy <= 0.5-step; cy+=step){
         vec3 position = voxel_position + vec3(cx, cy, -0.5)*voxel_size;
-        drawPoint(target, position, voxel_color);
+        drawPoint(target, position, voxel_color, node_level);
         position = voxel_position + vec3(cx, cy, 0.5)*voxel_size;
-        drawPoint(target, position, voxel_color);
+        drawPoint(target, position, voxel_color, node_level);
     }
 }
 
@@ -234,7 +239,7 @@ void drawAllVoxels(
                 uint32_t voxel_color = settings.use_voxels_debug_color ? color : voxel.color;
                 voxel_color = from_missing_nodes ? 0xff0000ff : voxel_color;
                 drawVoxel(target, voxel.position, voxel_color,
-                    voxel_size, nb_points_per_axis
+                    voxel_size, nb_points_per_axis, node->level + 1
                 );
             }
         }
@@ -465,6 +470,14 @@ void kernel_visibilityPass(
             }
         }
     }
+
+    // Also flag the nodes from the cache
+    for(uint32_t node_index = block_id; node_index < globalVariables.visibilityCacheCurrentSize; node_index += nb_blocks){
+        const CIdAABB& id = globalVariables.visibilityCache[node_index];
+        if(thread_id == 1){
+            globalVariables.setFlagSync(id, CFlagIsVisible);
+        }
+    }
 }
 
 
@@ -595,7 +608,58 @@ void kernel_drawOctreeSmall(
             globalVariables.unsetFlagSync(node->aabb_index, CFlagIsCut);
         }
     }
+
+    // Also unflag the nodes from the cache
+    for(uint32_t node_index = block_id; node_index < globalVariables.visibilityCacheCurrentSize; node_index += nb_blocks){
+        const CIdAABB& id = globalVariables.visibilityCache[node_index];
+        if(thread_id == 1){
+            globalVariables.unsetFlagSync(id, CFlagIsVisible);
+        }
+    }
 }
+
+
+
+
+
+/// Run on "NB SMs" blocks of size min("Max threads per SM", "Max block dim")
+extern "C" __global__
+void kernel_drawVisibleNodes(
+	CRenderTarget target,
+    CRenderingSettings settings
+){
+    auto grid = cg::this_grid();
+    auto block = cg::this_thread_block();
+    uint32_t nb_blocks = grid.num_blocks();
+
+    uint32_t block_id = grid.block_rank();
+    uint32_t thread_id = block.thread_rank();
+    uint32_t nb_threads_per_block = block.num_threads();
+
+    uint32_t first_point = block_id * nb_threads_per_block + thread_id;
+    uint32_t step = nb_blocks * nb_threads_per_block;
+
+    // Render points
+    for(uint32_t point_id = first_point; point_id < globalVariables.nbRenderedPoints; point_id += step){
+        const CPoint& point = globalVariables.renderedPoints[point_id];
+        drawPoint(target, point.position, 0xff00ffff);
+    }
+
+    // Render voxels
+    for(uint32_t voxel_id = first_point; voxel_id < globalVariables.nbRenderedVoxels; voxel_id += step){
+        const CPoint& voxel = globalVariables.renderedVoxels[voxel_id];
+        const glm::vec3& voxel_size = globalVariables.renderedVoxelsSizes[voxel_id];
+        drawVoxel(
+            target, 
+            voxel.position, 
+            0xffff00ff, 
+            voxel_size, 
+            settings.voxels_nb_points_per_axis
+        );
+    }
+}
+
+
 
 
 

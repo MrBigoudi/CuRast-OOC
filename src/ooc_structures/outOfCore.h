@@ -47,13 +47,15 @@ struct OctreeNodeSerializable {
 
     /// Serializes all nodes, points, and voxels
     static void serialize(const OctreeNode* node);
-    static void serializeV2(const COctreeNode* node, const std::vector<CPoint>& points, const std::vector<CPoint>& voxels);
     static OctreeNode* toOctreeNode(const IdAABB& node_aabb_index);
+    
+    static void serializeV2(const HostStorageNode* node);
+    static HostStorageNode* deserializeV2(const CIdAABB& aabb_index, const std::string& msg = "");
 
     private:
         // helpers
         void serialize(const std::string& filepath) const;
-        static OctreeNodeSerializable deserialize(const std::string& filepath);
+        static OctreeNodeSerializable deserialize(const std::string& filepath, const std::string& msg = "");
 };
 
 
@@ -71,10 +73,9 @@ struct CPUFallbackCache {
         Entry(){}
 		/// A constructor from an existing node
 		Entry(const OctreeNode* node);
-		Entry(const COctreeNode* node, const std::vector<CPoint>& points, const std::vector<CPoint>& voxels);
+		Entry(const HostStorageNode* node);
         /// A constructor which is deserialized from an aabb
         static Entry deserialize(const IdAABB& aabb_index);
-        static Entry deserializeV2(const CIdAABB& aabb_index);
 
 		/// Builds an octree node from an entry
 		OctreeNode* toLeafNode() const;
@@ -137,3 +138,19 @@ OctreeNode* loadOctree(const IdAABB& root_aabb_index);
 
 /// Add nodes to the updates cache after octree update
 void updateUpdatesCache(OctreeNode* root_octree);
+
+
+
+
+
+///////////////////////////////////////////////////////////////////////////////
+////////////////////////////// HELPER FUNCTIONS ///////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+
+std::string getFileName(const AABB& aabb);
+std::string getNodeFilePath(const AABB& aabb);
+std::string getOccupancyFilePath(const AABB& aabb);
+std::string getChunkFilePath(const AABB& aabb, bool is_voxel);
+std::string getNodeFilePathV2(const CIdAABB& aabb_index);
+std::string getOccupancyFilePathV2(const CIdAABB& aabb_index);
+std::string getChunkFilePathV2(const CIdAABB& aabb_index, bool is_voxel);

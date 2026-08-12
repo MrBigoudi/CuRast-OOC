@@ -1313,6 +1313,68 @@ void kernel_resolve_colorbuffer_to_screenshot(
 	screenshot[pixelID] = color;	
 }
 
+extern "C" __global__
+void kernel_resolve_depthbuffer_to_screenshot(
+	RenderTarget source,
+	uint32_t* screenshot
+) {
+	auto grid = cg::this_grid();
+	auto block = cg::this_thread_block();
+
+	// RenderTarget& source = c_target;
+
+	int x = grid.thread_index().x;
+	int y = grid.thread_index().y;
+	int pixelID = toFramebufferIndex(x, y, source.width);
+
+	if(x >= source.width) return;
+	if(y >= source.height) return;
+
+	uint64_t pixel = c_target.colorbuffer[pixelID];
+	float depth = __uint_as_float(pixel >> 32);
+	uint8_t depth_b = pixel >> 32;
+	uint32_t depth_rgb = 0;
+
+	uint8_t* rgba = (uint8_t*)&depth_rgb;
+	rgba[0] = isinf(depth)? 0 : depth_b;
+	rgba[1] = isinf(depth)? 0 : depth_b;
+	rgba[2] = isinf(depth)? 0 : depth_b;
+	rgba[3] = 255;
+
+	screenshot[pixelID] = depth_rgb;	
+}
+
+
+extern "C" __global__
+void kernel_resolve_lod_to_screenshot(
+	RenderTarget source,
+	uint32_t* screenshot
+) {
+	auto grid = cg::this_grid();
+	auto block = cg::this_thread_block();
+
+	// RenderTarget& source = c_target;
+
+	int x = grid.thread_index().x;
+	int y = grid.thread_index().y;
+	int pixelID = toFramebufferIndex(x, y, source.width);
+
+	if(x >= source.width) return;
+	if(y >= source.height) return;
+
+	uint64_t pixel = c_target.framebuffer[pixelID];
+	uint8_t level = pixel & 0xff;
+	uint32_t level_rgb = 0;
+
+	uint8_t* rgba = (uint8_t*)&level_rgb;
+	rgba[0] = level;
+	rgba[1] = level;
+	rgba[2] = level;
+	rgba[3] = 255;
+
+	screenshot[pixelID] = level_rgb;	
+}
+
 
 uint32_t sampleJpeg_nearest(
 	uint32_t texID,
