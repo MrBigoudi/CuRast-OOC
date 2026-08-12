@@ -46,6 +46,12 @@ void kernel_simlod_load_part_1_flagging(){
                     uint32_t old_flags = globalVariables.fetchSetFlagSync(child_aabb_index, CFlagToLoad);
                     if(!(old_flags & (0x01 << CFlagToLoad))){
                         uint32_t exchanged_index = __nv_atomic_fetch_add(&globalVariables.nbNodesExchanged, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+                        
+                        if(exchanged_index >= globalVariables.maxNbNodesExchanged){
+                            printf("ERROR: Too many nodes are being loaded\n");
+                            customAssert();
+                        }
+                        
                         globalVariables.exchangedAABBIndices[exchanged_index] = child_aabb_index;
 
                         // Store the original parent in the buffer
