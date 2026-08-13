@@ -227,6 +227,11 @@ void kernel_init_octree_part_2_refining(){
 
 
     globalVariables.isInitialised = true;
+
+
+    // UI values
+    globalVariables.nbNewNodesThisUpdate = 1;
+    globalVariables.nbTotalNewNodes = 1;
 }
 
 

@@ -2,6 +2,7 @@
 
 #include "./GpuVersionInterface.h"
 #include "./GpuVersionStructs.h"
+#include "./GpuVersionGlobals.h"
 
 enum AllocatorId {
     ChunkAllocator,
@@ -221,12 +222,19 @@ struct CMemoryAllocator {
 #ifdef __CUDACC__
 
     /// Allocate a new chunk
-    __device__ CChunk* newChunk(bool will_run_in_parallel){
+    __device__ CChunk* newChunk(bool will_run_in_parallel, bool will_update_metrics = true){
+        // UI values
+        if(will_update_metrics){
+            __nv_atomic_add(&globalVariables.nbNewChunksThisUpdate, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            __nv_atomic_add(&globalVariables.nbTotalNewChunks, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            __nv_atomic_add(&globalVariables.currentNbChunks, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+        }
+
         return chunksAllocator->allocate(will_run_in_parallel);
     }
 
     /// Deallocate a chunk and all it's children
-    __device__ void delChunk(CChunk* chunk, bool will_run_in_parallel){
+    __device__ void delChunk(CChunk* chunk, bool will_run_in_parallel, bool will_update_metrics = true){
         if(!chunk){return;}
 
         // Get the chunks to deallocate
@@ -236,14 +244,21 @@ struct CMemoryAllocator {
             cur_chunk->next = nullptr;
             chunksAllocator->deallocate(cur_chunk, will_run_in_parallel);
             cur_chunk = next;
+
+            // UI values
+            if(will_update_metrics){
+                __nv_atomic_add(&globalVariables.nbDeletedChunksThisUpdate, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+                __nv_atomic_add(&globalVariables.nbTotalDeletedChunks, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+                __nv_atomic_sub(&globalVariables.currentNbChunks, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            }
         }
     }
 
     /// Copy an existing chunk
-    __device__ CChunk* newChunkPartialCpy(CChunk* cpy, bool will_run_in_parallel){
+    __device__ CChunk* newChunkPartialCpy(CChunk* cpy, bool will_run_in_parallel, bool will_update_metrics = true){
         if(!cpy){return nullptr;}
 
-        CChunk* first_chunk = newChunk(will_run_in_parallel);
+        CChunk* first_chunk = newChunk(will_run_in_parallel, will_update_metrics);
         CChunk* cpy_chunk = cpy;
         CChunk* cur_chunk = first_chunk;
 
@@ -253,7 +268,7 @@ struct CMemoryAllocator {
                 cur_chunk->points[i] = cpy_chunk->points[i];
             }
             if(cpy_chunk->next){
-                CChunk* next_chunk = newChunk(will_run_in_parallel);
+                CChunk* next_chunk = newChunk(will_run_in_parallel, will_update_metrics);
                 cur_chunk->next = next_chunk;
                 cur_chunk = next_chunk;
             }
@@ -269,13 +284,26 @@ struct CMemoryAllocator {
     ////////////////////////////////////////////////////////////
     
     /// Allocate a new occupancy grid
-    __device__ COccupancyGrid* newOccupancyGrid(bool will_run_in_parallel){
+    __device__ COccupancyGrid* newOccupancyGrid(bool will_run_in_parallel, bool will_update_metrics = true){
+        // UI values
+        if(will_update_metrics){
+            __nv_atomic_add(&globalVariables.nbNewGridsThisUpdate, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            __nv_atomic_add(&globalVariables.nbTotalNewGrids, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            __nv_atomic_add(&globalVariables.currentNbGrids, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+        }
         return gridsAllocator->allocate(will_run_in_parallel);
     }
 
     /// Deallocate an occupancy grid
-    __device__ void delOccupancyGrid(COccupancyGrid* grid, bool will_run_in_parallel){
+    __device__ void delOccupancyGrid(COccupancyGrid* grid, bool will_run_in_parallel, bool will_update_metrics = true){
         if(!grid){return;}
+
+        // UI values
+        if(will_update_metrics){
+            __nv_atomic_add(&globalVariables.nbDeletedGridsThisUpdate, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            __nv_atomic_add(&globalVariables.nbTotalDeletedGrids, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            __nv_atomic_sub(&globalVariables.currentNbGrids, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+        }
         gridsAllocator->deallocate(grid, will_run_in_parallel);
     }
 
@@ -286,23 +314,28 @@ struct CMemoryAllocator {
     ////////////////////////////////////////////////////////////
     
     /// Allocate a new node
-    __device__ COctreeNode* newOctreeNode(CIdAABB aabb_index, bool will_run_in_parallel){
+    __device__ COctreeNode* newOctreeNode(CIdAABB aabb_index, bool will_run_in_parallel, bool will_update_metrics = true){
+        // UI values
+        if(will_update_metrics){
+            __nv_atomic_add(&globalVariables.nbNewNodesThisUpdate, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            __nv_atomic_add(&globalVariables.nbTotalNewNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+        }
         COctreeNode* node = nodesAllocator->allocate(will_run_in_parallel);
         node->aabb_index = aabb_index;
         return node;
     }
 
     /// Copy an existing node
-    __device__ COctreeNode* newOctreeNodePartialCpy(COctreeNode* cpy, bool will_run_in_parallel){
+    __device__ COctreeNode* newOctreeNodePartialCpy(COctreeNode* cpy, bool will_run_in_parallel, bool will_update_metrics = true){
         if(!cpy){return nullptr;}
-        COctreeNode* node = newOctreeNode(cpy->aabb_index, will_run_in_parallel);
+        COctreeNode* node = newOctreeNode(cpy->aabb_index, will_run_in_parallel, will_update_metrics);
 
         node->children_ids = cpy->children_ids;
         node->points_counter = cpy->points_counter;
         node->voxels_counter = cpy->voxels_counter;
 
-        node->points = cpy->points ? newChunkPartialCpy(cpy->points, will_run_in_parallel) : nullptr;
-        node->voxels = cpy->voxels ? newChunkPartialCpy(cpy->voxels, will_run_in_parallel) : nullptr;
+        node->points = cpy->points ? newChunkPartialCpy(cpy->points, will_run_in_parallel, will_update_metrics) : nullptr;
+        node->voxels = cpy->voxels ? newChunkPartialCpy(cpy->voxels, will_run_in_parallel, will_update_metrics) : nullptr;
 
         node->level = cpy->level;
         node->children_visibility = cpy->children_visibility;
@@ -317,18 +350,26 @@ struct CMemoryAllocator {
 
 
     /// Deallocate a node
-    __device__ void delOctreeNode(COctreeNode* node, bool node_only, bool will_run_in_parallel){
+    __device__ void delOctreeNode(COctreeNode* node, bool node_only, bool will_run_in_parallel, bool will_update_metrics = true){
         if(!node){return;}
 
-        delChunk(node->points, will_run_in_parallel);
+        // UI values
+        if(will_update_metrics){
+            __nv_atomic_add(&globalVariables.nbDeletedNodesThisUpdate, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            __nv_atomic_add(&globalVariables.nbTotalDeletedNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+        }
+
+        delChunk(node->points, will_run_in_parallel, will_update_metrics);
         node->points = nullptr;
-        delChunk(node->voxels, will_run_in_parallel);
+        delChunk(node->voxels, will_run_in_parallel, will_update_metrics);
         node->voxels = nullptr;
-        delOccupancyGrid(node->occupancy, will_run_in_parallel);
+        delOccupancyGrid(node->occupancy, will_run_in_parallel, will_update_metrics);
         node->occupancy = nullptr;
 
         for(uint32_t i=0; i<8; i++){
-            if(!node_only){delOctreeNode(node->children[i], false, will_run_in_parallel);}
+            if(!node_only){
+                delOctreeNode(node->children[i], false, will_run_in_parallel, will_update_metrics);
+            }
             node->children[i] = nullptr;
         }
 

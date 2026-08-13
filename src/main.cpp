@@ -509,8 +509,11 @@ int main(int argc, char** argv){
 
 		std::locale::global(getSaneLocale());
 
+		println("GPU Memory Usage Before Cuda Init:\n{}", GlobalVariables::getGpuMemoryUsage());
 		initCuda();
+		println("GPU Memory Usage Before Renderer Init:\n{}", GlobalVariables::getGpuMemoryUsage());
 		VKRenderer::init();
+		println("GPU Memory Usage Before CuRast setup:\n{}", GlobalVariables::getGpuMemoryUsage());
 		CuRast::setup();
 
 		// temporary function
@@ -584,6 +587,7 @@ int main(int argc, char** argv){
 		});
 
 
+		println("GPU Memory Usage Before scene setup:\n{}", GlobalVariables::getGpuMemoryUsage());
 		// Create Global things
 		OocSimLodSettings::init();
 		std::filesystem::remove_all(OocSimLodSettings::TEMPORARY_NODE_STORAGE_DIRECTORY);
@@ -592,21 +596,13 @@ int main(int argc, char** argv){
 			GlobalVariables::init(CuRast::instance, &context);
 			initScene();
 		}
-
-
-
-
-
-
-
-
-
-
-
 		
 		if(OocSimLodSettings::IS_USING_GPU_VERSION){
 			GpuVersion::init(CuRast::instance, &context);
+		}
+		println("GPU Memory Usage Before update:\n{}", GlobalVariables::getGpuMemoryUsage());
 
+		if(OocSimLodSettings::IS_USING_GPU_VERSION){
 			LoaderGpuVersion::createNewBatches("./lion.laz");
 			// LoaderGpuVersion::createNewBatches("./banyo.las");
 			Runtime::controls->yaw    = -5.582;
@@ -733,7 +729,7 @@ int main(int argc, char** argv){
 					// Free unused memory
 					freeOctreesOnGPU(CuRast::instance);
 
-					// Display some information bout memory usage
+					// Display some information about memory usage
 					if(CuRastSettings::getGpuMemoryUsage){
 						std::lock_guard<std::mutex> lock(GlobalVariables::isUpdatingMtx);
 						println("GPU Memory Usage:\n{}", GlobalVariables::getGpuMemoryUsage());
@@ -769,14 +765,14 @@ int main(int argc, char** argv){
 				}
 			}
 			cudaDeviceSynchronize();
-			println("GPU Memory Usage:\n{}", GlobalVariables::getGpuMemoryUsage());
+			println("GPU Memory Usage before destroy:\n{}", GlobalVariables::getGpuMemoryUsage());
 			OocSimLodSettings::display();
 			GpuVersion::destroy(CuRast::instance, &context);
 			cudaDeviceSynchronize();
 		}
 		std::filesystem::remove_all(OocSimLodSettings::TEMPORARY_NODE_STORAGE_DIRECTORY);
 		VKRenderer::destroy();
-
+		println("GPU Memory Usage final:\n{}", GlobalVariables::getGpuMemoryUsage());
 	} catch(int) {
 
 		// Destruction procedure
@@ -797,13 +793,13 @@ int main(int argc, char** argv){
 				}
 			}
 			cudaDeviceSynchronize();
-			println("GPU Memory Usage:\n{}", GlobalVariables::getGpuMemoryUsage());
+			println("GPU Memory Usage before destroy:\n{}", GlobalVariables::getGpuMemoryUsage());
 			OocSimLodSettings::display();
 			GpuVersion::destroy(CuRast::instance, &context);
 			cudaDeviceSynchronize();
 		}
 		std::filesystem::remove_all(OocSimLodSettings::TEMPORARY_NODE_STORAGE_DIRECTORY);
 		VKRenderer::destroy();
-		
+		println("GPU Memory Usage final:\n{}", GlobalVariables::getGpuMemoryUsage());
 	}
 }

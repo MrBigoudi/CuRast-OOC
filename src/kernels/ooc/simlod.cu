@@ -56,6 +56,11 @@ void kernel_simlod_load_part_1_flagging(){
 
                         // Store the original parent in the buffer
                         globalVariables.renderingPackedNodesTmp[exchanged_index] = leaf;
+
+                        
+                        // UI values
+                        __nv_atomic_add(&globalVariables.nbLoadedNodesThisUpdate, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+                        __nv_atomic_add(&globalVariables.nbTotalLoadedNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
                     }
                     
                     cur_aabb_index = child_aabb_index;
@@ -107,6 +112,10 @@ void kernel_simlod_load_part_2_rebuilding_nodes(){
         uint32_t nb_voxels = globalVariables.exchangedVoxelsCounters[exchanged_index];
         CPoint* points = globalVariables.exchangedPoints[exchanged_index];
         CPoint* voxels = globalVariables.exchangedVoxels[exchanged_index];
+
+        // UI values
+        __nv_atomic_add(&globalVariables.currentNbPoints, nb_points, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+        __nv_atomic_add(&globalVariables.currentNbVoxels, nb_voxels, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
 
         COctreeNode* loaded_node = globalAllocator.newOctreeNode(aabb_index, true);
         uint32_t node_index = __nv_atomic_fetch_add(&globalVariables.curNbNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
@@ -351,6 +360,12 @@ void simlodSplit(uint32_t first_point, uint32_t step){
 
         spilling_node->children_ids = 0;
         globalVariables.setFlagSync(spilling_node_id, CFlagHasSpilled);
+
+
+        // UI values
+        __nv_atomic_add(&globalVariables.nbSplitNodesThisUpdate, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+        __nv_atomic_add(&globalVariables.nbTotalSplitNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+        
 
         if(!spilling_node->occupancy){
             spilling_node->occupancy = globalAllocator.newOccupancyGrid(true);
@@ -709,6 +724,11 @@ void kernel_simlod_insertion_part_2_filling(){
         for(uint32_t i=thread_id; i<nb_new_points; i+=nb_threads){
             CPoint& point = new_points[i];
             insertPoint(point);
+
+            // UI values
+            __nv_atomic_add(&globalVariables.nbNewPointsThisUpdate, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            __nv_atomic_add(&globalVariables.nbTotalPoints, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            __nv_atomic_add(&globalVariables.currentNbPoints, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
         }
     }
 
@@ -723,6 +743,11 @@ void kernel_simlod_insertion_part_2_filling(){
         CPoint& voxel = globalVariables.backlogVoxels[i];
         COctreeNode* node = globalVariables.backlogVoxelsNodes[i];
         insertVoxel(voxel, node);
+
+        // UI values
+        __nv_atomic_add(&globalVariables.nbNewVoxelsThisUpdate, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+        __nv_atomic_add(&globalVariables.nbTotalVoxels, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+        __nv_atomic_add(&globalVariables.currentNbVoxels, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
     }
 
 

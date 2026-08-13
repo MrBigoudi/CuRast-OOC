@@ -44,6 +44,21 @@ void kernel_bottom_up_update_part_1_counting(){
         __NV_THREAD_SCOPE_DEVICE
     );
 
+
+    // Reset UI values
+    if(globalVariables.isUpdating){
+        globalVariables.nbNewPointsThisUpdate = 0;
+        globalVariables.nbNewVoxelsThisUpdate = 0;
+        globalVariables.nbNewNodesThisUpdate = 0;
+        globalVariables.nbLoadedNodesThisUpdate = 0;
+        globalVariables.nbStoredNodesThisUpdate = 0;
+        globalVariables.nbSplitNodesThisUpdate = 0;
+        globalVariables.nbDeletedNodesThisUpdate = 0;
+        globalVariables.nbDeletedChunksThisUpdate = 0;
+        globalVariables.nbDeletedGridsThisUpdate = 0;
+        globalVariables.nbNewChunksThisUpdate = 0;
+        globalVariables.nbNewGridsThisUpdate = 0;
+    }
 }
 
 

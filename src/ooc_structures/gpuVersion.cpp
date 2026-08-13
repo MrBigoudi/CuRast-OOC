@@ -55,23 +55,21 @@ void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
     hostStaging.maxNbRenderedVoxels = OocSimLodSettings::MAX_NB_RENDERED_VOXELS;
     
     for(uint32_t i=0; i<hostStaging.maxNbNodesExchanged; i++){
+        uint64_t real_size = 0;
+    
         CUdeviceptr new_ptr = 0;
-        CURuntime::assertCudaSuccess(
-            cuMemAlloc(
-                &new_ptr, 
-                OocSimLodSettings::NB_POINTS_PER_CHUNK * hostStaging.maxNbPointsChunksPerExchangedNode * sizeof(CPoint)
-            )
-        );
+        real_size = OocSimLodSettings::NB_POINTS_PER_CHUNK * hostStaging.maxNbPointsChunksPerExchangedNode * sizeof(CPoint);
+        totalAllocatedMemory += real_size;
+        CURuntime::assertCudaSuccess(cuMemAlloc(&new_ptr, real_size));
         ((CUdeviceptr*)(exchangedPointsPointers))[i] = new_ptr;
         pointers.push_back(new_ptr);
-        CURuntime::assertCudaSuccess(
-            cuMemAlloc(
-                &new_ptr, 
-                OocSimLodSettings::NB_POINTS_PER_CHUNK * hostStaging.maxNbVoxelsChunksPerExchangedNode * sizeof(CPoint)
-            )
-        );
+
+        real_size = OocSimLodSettings::NB_POINTS_PER_CHUNK * hostStaging.maxNbVoxelsChunksPerExchangedNode * sizeof(CPoint);
+        totalAllocatedMemory += real_size;
+        CURuntime::assertCudaSuccess(cuMemAlloc(&new_ptr, real_size));
         ((CUdeviceptr*)(exchangedVoxelsPointers))[i] = new_ptr;
         pointers.push_back(new_ptr);
+
         CURuntime::assertCudaSuccess(cuMemcpyHtoD(
             (CUdeviceptr)hostStaging.exchangedPoints,
             exchangedPointsPointers,
@@ -90,11 +88,11 @@ void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
     hostStaging.batchesAddedMask = alloc<uint32_t>(hostStaging.maxNbBatches);
     hostStaging.batchesToAddCounts = alloc<uint32_t>(hostStaging.maxNbBatches);
     hostStaging.batchesToAddPoints = alloc<CPoint*>(hostStaging.maxNbBatches);
+    uint64_t real_size = OocSimLodSettings::MAX_POINTS_PER_BATCHES * sizeof(CPoint);
     for(uint32_t i=0; i<hostStaging.maxNbBatches; i++){
+        totalAllocatedMemory += real_size;
         CUdeviceptr new_ptr = 0;
-        CURuntime::assertCudaSuccess(
-            cuMemAlloc(&new_ptr, OocSimLodSettings::MAX_POINTS_PER_BATCHES * sizeof(CPoint))
-        );
+        CURuntime::assertCudaSuccess(cuMemAlloc(&new_ptr, real_size));
         ((CUdeviceptr*)(batchesToAddPointsPointers))[i] = new_ptr;
         pointers.push_back(new_ptr);
     }
@@ -183,8 +181,8 @@ void GpuVersion::init(CuRast* editor, CUcontext* context) {
     initAllocators(editor, context, &stream);
     cudaDeviceSynchronize(); // Needed because of the batch copies in the init functions
 
-    size_t heap_size = 1024 * 1024 * 1024; // 1Gb for now
-    CURuntime::assertCudaSuccess(cuCtxSetLimit(CU_LIMIT_MALLOC_HEAP_SIZE, heap_size));
+    // size_t heap_size = 1024 * 1024 * 1024; // 1Gb for now
+    // CURuntime::assertCudaSuccess(cuCtxSetLimit(CU_LIMIT_MALLOC_HEAP_SIZE, heap_size));
 
     uint32_t grid_size = OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM 
         * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM
@@ -694,6 +692,8 @@ void GpuVersion::octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context){
 void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
 	cuCtxSetCurrent(*context);
 
+    GpuVersionUI::lastUpdateStart = high_resolution_clock::now();
+
     LoaderGpuVersion::run(&stream, editor, context);
     octreeUpdateInit(editor, context);
     octreeUpdateBottomUp(editor, context);
@@ -760,9 +760,8 @@ void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
         prog->launch("kernel_test", {}, launch_settings);
     }
 
-
+    GpuVersionUI::update();
     updateHostCache();
-
 }
 
 
@@ -1123,6 +1122,91 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
             visibility_cache.data(),
             nb_rendered_nodes * sizeof(CIdAABB)
         ));
+    }
+
+}
+
+
+
+
+
+
+void GpuVersionUI::update() {
+    uint64_t duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+        high_resolution_clock::now() - lastUpdateStart
+    ).count();
+
+#ifndef COPY_FROM_GPU
+#define COPY_FROM_GPU(member, value)                                           \
+    {                                                                          \
+        const uint64_t pad =                                                   \
+            reinterpret_cast<uintptr_t>(&(GpuVersion::hostStaging.member)) -   \
+            reinterpret_cast<uintptr_t>(&GpuVersion::hostStaging);             \
+        const CUdeviceptr src_device = GpuVersion::deviceStaging + pad;        \
+        CURuntime::assertCudaSuccess(                                          \
+            cuMemcpyDtoH(&(value), src_device, sizeof(value))                  \
+        );                                                                     \
+    }
+#endif
+    COPY_FROM_GPU(nbTotalUpdates, nbTotalUpdates);
+    if(lastNbTotalUpdates == nbTotalUpdates){return;}
+    lastNbTotalUpdates = nbTotalUpdates;
+
+    COPY_FROM_GPU(curNbNodes, currentNbNodes);
+    COPY_FROM_GPU(currentNbChunks, currentNbChunks);
+    COPY_FROM_GPU(currentNbGrids, currentNbGrids);
+    COPY_FROM_GPU(currentNbPoints, currentNbPoints);
+    COPY_FROM_GPU(currentNbVoxels, currentNbVoxels);
+
+    COPY_FROM_GPU(nbTotalPoints, nbTotalPoints);
+    COPY_FROM_GPU(nbTotalVoxels, nbTotalVoxels);
+    COPY_FROM_GPU(nbTotalNewNodes, nbTotalNewNodes);
+    COPY_FROM_GPU(nbTotalNewGrids, nbTotalNewGrids);
+    COPY_FROM_GPU(nbTotalNewChunks, nbTotalNewChunks);
+    COPY_FROM_GPU(nbTotalDeletedNodes, nbTotalDeletedNodes);
+    COPY_FROM_GPU(nbTotalDeletedGrids, nbTotalDeletedGrids);
+    COPY_FROM_GPU(nbTotalDeletedChunks, nbTotalDeletedChunks);
+    COPY_FROM_GPU(nbTotalLoadedNodes, nbTotalLoadedNodes);
+    COPY_FROM_GPU(nbTotalSplitNodes, nbTotalSplitNodes);
+    COPY_FROM_GPU(nbTotalStoredNodes, nbTotalStoredNodes);
+    
+    COPY_FROM_GPU(nbNewPointsThisUpdate, nbNewPointsThisUpdate);
+    COPY_FROM_GPU(nbNewVoxelsThisUpdate, nbNewVoxelsThisUpdate);
+    COPY_FROM_GPU(nbNewNodesThisUpdate, nbNewNodesThisUpdate);
+    COPY_FROM_GPU(nbLoadedNodesThisUpdate, nbLoadedNodesThisUpdate);
+    COPY_FROM_GPU(nbStoredNodesThisUpdate, nbStoredNodesThisUpdate);
+    COPY_FROM_GPU(nbSplitNodesThisUpdate, nbSplitNodesThisUpdate);
+    COPY_FROM_GPU(nbDeletedNodesThisUpdate, nbDeletedNodesThisUpdate);
+    COPY_FROM_GPU(nbDeletedChunksThisUpdate, nbDeletedChunksThisUpdate);
+    COPY_FROM_GPU(nbDeletedGridsThisUpdate, nbDeletedGridsThisUpdate);
+    COPY_FROM_GPU(nbNewChunksThisUpdate, nbNewChunksThisUpdate);
+    COPY_FROM_GPU(nbNewGridsThisUpdate, nbNewGridsThisUpdate);
+
+    auto updateStats = [](uint32_t value, uint32_t& minValue, uint32_t& maxValue, uint32_t& avgValue) {
+        if (nbTotalUpdates == 1) {
+            minValue = value; maxValue = value; avgValue = value;
+        } else {
+            minValue = std::min(minValue, value);
+            maxValue = std::max(maxValue, value);
+            avgValue = static_cast<uint32_t>((static_cast<uint64_t>(avgValue) * (nbTotalUpdates - 1) + value) / nbTotalUpdates);
+        }
+    };
+
+    updateStats(nbNewPointsThisUpdate, minNbNewPointsPerUpdate, maxNbNewPointsPerUpdate, avgNbNewPointsPerUpdate);
+    updateStats(nbNewVoxelsThisUpdate, minNbNewVoxelsPerUpdate, maxNbNewVoxelsPerUpdate,avgNbNewVoxelsPerUpdate);
+    updateStats(nbNewNodesThisUpdate, minNbNewNodesPerUpdate, maxNbNewNodesPerUpdate, avgNbNewNodesPerUpdate);
+    updateStats(nbLoadedNodesThisUpdate, minNbLoadedNodesPerUpdate, maxNbLoadedNodesPerUpdate, avgNbLoadedNodesPerUpdate);
+    updateStats(nbStoredNodesThisUpdate, minNbStoredNodesPerUpdate, maxNbStoredNodesPerUpdate, avgNbStoredNodesPerUpdate);
+    updateStats(nbSplitNodesThisUpdate, minNbSplitNodesPerUpdate, maxNbSplitNodesPerUpdate, avgNbSplitNodesPerUpdate);
+    updateStats(nbDeletedNodesThisUpdate, minNbDeletedNodesPerUpdate, maxNbDeletedNodesPerUpdate, avgNbDeletedNodesPerUpdate);
+    updateStats(nbDeletedChunksThisUpdate, minNbDeletedChunksPerUpdate, maxNbDeletedChunksPerUpdate, avgNbDeletedChunksPerUpdate);
+    updateStats(nbDeletedGridsThisUpdate, minNbDeletedGridsPerUpdate, maxNbDeletedGridsPerUpdate, avgNbDeletedGridsPerUpdate);
+    updateStats(nbNewChunksThisUpdate, minNbNewChunksPerUpdate, maxNbNewChunksPerUpdate, avgNbNewChunksPerUpdate);
+    updateStats(nbNewGridsThisUpdate, minNbNewGridsPerUpdate, maxNbNewGridsPerUpdate, avgNbNewGridsPerUpdate);
+
+    if (duration > 0) {
+        const uint64_t updatesPerSecond = static_cast<uint64_t>(1000.0 / static_cast<double>(duration));
+        updateStats(updatesPerSecond, minNbUpdatesPerSecond, maxNbUpdatesPerSecond, avgNbUpdatesPerSecond);
     }
 
 }

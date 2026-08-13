@@ -5,11 +5,110 @@
 #include "../kernels/ooc/GpuVersionAllocator.h"
 
 
+
+struct GpuVersionUI {
+    static inline uint32_t lastNbTotalUpdates = 0;
+    static inline uint32_t nbTotalUpdates = 0;
+
+    // Current update values
+    static inline uint32_t nbNewPointsThisUpdate = 0;
+	static inline uint32_t nbNewVoxelsThisUpdate = 0;
+	static inline uint32_t nbNewNodesThisUpdate = 0;
+	static inline uint32_t nbLoadedNodesThisUpdate = 0;
+	static inline uint32_t nbStoredNodesThisUpdate = 0;
+	static inline uint32_t nbSplitNodesThisUpdate = 0;
+	static inline uint32_t nbDeletedNodesThisUpdate = 0;
+	static inline uint32_t nbDeletedChunksThisUpdate = 0;
+	static inline uint32_t nbDeletedGridsThisUpdate = 0;
+	static inline uint32_t nbNewChunksThisUpdate = 0;
+	static inline uint32_t nbNewGridsThisUpdate = 0;
+
+    // Values
+    static inline uint32_t currentNbNodes = 0;
+	static inline uint32_t currentNbChunks = 0;
+	static inline uint32_t currentNbGrids = 0;
+    static inline uint32_t currentNbPoints = 0;
+    static inline uint32_t currentNbVoxels = 0;
+
+    static inline uint32_t nbTotalPoints = 0;
+    static inline uint32_t nbTotalVoxels = 0;
+    static inline uint32_t nbTotalNewNodes = 0;
+    static inline uint32_t nbTotalNewGrids = 0;
+    static inline uint32_t nbTotalNewChunks = 0;
+    static inline uint32_t nbTotalDeletedNodes = 0;
+    static inline uint32_t nbTotalDeletedGrids = 0;
+    static inline uint32_t nbTotalDeletedChunks = 0;
+    static inline uint32_t nbTotalLoadedNodes = 0;
+    static inline uint32_t nbTotalSplitNodes = 0;
+    static inline uint32_t nbTotalStoredNodes = 0;
+
+    // Flow rates
+    static inline uint32_t maxNbNewPointsPerUpdate = 0;
+    static inline uint32_t minNbNewPointsPerUpdate = 0;
+    static inline uint32_t avgNbNewPointsPerUpdate = 0;
+
+    static inline uint32_t maxNbNewVoxelsPerUpdate = 0;
+    static inline uint32_t minNbNewVoxelsPerUpdate = 0;
+    static inline uint32_t avgNbNewVoxelsPerUpdate = 0;
+
+    static inline uint32_t maxNbNewNodesPerUpdate = 0;
+    static inline uint32_t minNbNewNodesPerUpdate = 0;
+    static inline uint32_t avgNbNewNodesPerUpdate = 0;
+
+    static inline uint32_t maxNbNewGridsPerUpdate = 0;
+    static inline uint32_t minNbNewGridsPerUpdate = 0;
+    static inline uint32_t avgNbNewGridsPerUpdate = 0;
+
+    static inline uint32_t maxNbNewChunksPerUpdate = 0;
+    static inline uint32_t minNbNewChunksPerUpdate = 0;
+    static inline uint32_t avgNbNewChunksPerUpdate = 0;
+
+    static inline uint32_t maxNbLoadedNodesPerUpdate = 0;
+    static inline uint32_t minNbLoadedNodesPerUpdate = 0;
+    static inline uint32_t avgNbLoadedNodesPerUpdate = 0;
+
+    static inline uint32_t maxNbStoredNodesPerUpdate = 0;
+    static inline uint32_t minNbStoredNodesPerUpdate = 0;
+    static inline uint32_t avgNbStoredNodesPerUpdate = 0;
+
+    static inline uint32_t maxNbSplitNodesPerUpdate = 0;
+    static inline uint32_t minNbSplitNodesPerUpdate = 0;
+    static inline uint32_t avgNbSplitNodesPerUpdate = 0;
+
+    static inline uint32_t maxNbDeletedNodesPerUpdate = 0;
+    static inline uint32_t minNbDeletedNodesPerUpdate = 0;
+    static inline uint32_t avgNbDeletedNodesPerUpdate = 0;
+
+    static inline uint32_t maxNbDeletedGridsPerUpdate = 0;
+    static inline uint32_t minNbDeletedGridsPerUpdate = 0;
+    static inline uint32_t avgNbDeletedGridsPerUpdate = 0;
+
+    static inline uint32_t maxNbDeletedChunksPerUpdate = 0;
+    static inline uint32_t minNbDeletedChunksPerUpdate = 0;
+    static inline uint32_t avgNbDeletedChunksPerUpdate = 0;
+
+    static inline uint32_t maxNbUpdatesPerSecond = 0;
+    static inline uint32_t minNbUpdatesPerSecond = 0;
+    static inline uint32_t avgNbUpdatesPerSecond = 0;
+
+
+    // Timers
+    static inline std::chrono::time_point<std::chrono::high_resolution_clock> lastUpdateStart;
+
+    static void update();
+};
+
+
+
+
+
+
 struct GpuVersion {
 	static inline CudaModularProgram* prog = nullptr;
     static inline CGlobalVariables hostStaging = {};
     static inline CUdeviceptr deviceStaging = 0;
     static inline CUstream stream;
+    static inline uint64_t totalAllocatedMemory = 0;
 
     
     // CPU cache
@@ -73,26 +172,31 @@ struct GpuVersion {
         template<typename T>
         static T* alloc(uint32_t size){
             CUdeviceptr new_ptr = 0;
-            CURuntime::assertCudaSuccess(cuMemAlloc(&new_ptr, size * sizeof(T)));
+            uint64_t real_size = size * sizeof(T);
+            totalAllocatedMemory += real_size;
+            CURuntime::assertCudaSuccess(cuMemAlloc(&new_ptr, real_size));
             pointers.push_back(new_ptr);
             return reinterpret_cast<T*>(new_ptr);
         }
 
         template<typename T>
         static CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>* allocAllocatorElements(uint32_t size, CUstream* stream){
+            uint64_t real_size = 0;
+
             // Allocate main elements
             CUdeviceptr elements_ptr = 0;
-            CURuntime::assertCudaSuccess(cuMemAlloc(&elements_ptr, 
-                sizeof(CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>)
-            ));
+            real_size = sizeof(CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>);
+            totalAllocatedMemory += real_size;
+            CURuntime::assertCudaSuccess(cuMemAlloc(&elements_ptr, real_size));
+            
             CUdeviceptr elements_first_ptr = 0;
             CUdeviceptr elements_last_ptr = 0;
-            CURuntime::assertCudaSuccess(cuMemAlloc(&elements_first_ptr, 
-                sizeof(typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::FirstEntry)
-            ));
-            CURuntime::assertCudaSuccess(cuMemAlloc(&elements_last_ptr, 
-                sizeof(typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::LastEntry)
-            ));
+            real_size = sizeof(typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::FirstEntry);
+            totalAllocatedMemory += real_size;
+            CURuntime::assertCudaSuccess(cuMemAlloc(&elements_first_ptr, real_size));
+            real_size = sizeof(typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::LastEntry);
+            totalAllocatedMemory += real_size;
+            CURuntime::assertCudaSuccess(cuMemAlloc(&elements_last_ptr, real_size));
 
             // Allocate list entries
             std::vector<CUdeviceptr> entries_ptr = {};
@@ -102,12 +206,12 @@ struct GpuVersion {
             for(uint32_t i=0; i<size; i++){
                 CUdeviceptr new_entry_ptr = 0;
                 CUdeviceptr new_entry_it_ptr = 0;
-                CURuntime::assertCudaSuccess(cuMemAlloc(&new_entry_ptr, 
-                    sizeof(typename CAllocatorPool<T>::Entry)
-                ));
-                CURuntime::assertCudaSuccess(cuMemAlloc(&new_entry_it_ptr, 
-                    sizeof(typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::Iterator)
-                ));
+                real_size = sizeof(typename CAllocatorPool<T>::Entry);
+                totalAllocatedMemory += real_size;
+                CURuntime::assertCudaSuccess(cuMemAlloc(&new_entry_ptr, real_size));
+                real_size = sizeof(typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::Iterator);
+                totalAllocatedMemory += real_size;
+                CURuntime::assertCudaSuccess(cuMemAlloc(&new_entry_it_ptr, real_size));
                 typename CAllocatorPool<T>::Entry new_entry_host = {};
                 typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::Iterator new_entry_it_host = {};
                 new_entry_it_host.value = reinterpret_cast<typename CAllocatorPool<T>::Entry*>(new_entry_ptr);
@@ -206,15 +310,17 @@ struct GpuVersion {
 
         template<typename T>
         static CHashMap<T*, typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::Iterator*>* allocAllocatorElementsMap(uint32_t size, CUstream* stream){
+            uint64_t real_size = 0;
+
             // Allocate main elements
             CUdeviceptr elements_map_ptr = 0;
-            CURuntime::assertCudaSuccess(cuMemAlloc(&elements_map_ptr, 
-                sizeof(CHashMap<T*, typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::Iterator*>)
-            ));
+            real_size = sizeof(CHashMap<T*, typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::Iterator*>);
+            totalAllocatedMemory += real_size;
+            CURuntime::assertCudaSuccess(cuMemAlloc(&elements_map_ptr, real_size));
             CUdeviceptr elements_ptr = 0;
-            CURuntime::assertCudaSuccess(cuMemAlloc(&elements_ptr, 
-                size * sizeof(CDoubleLinkedList<typename CHashMap<T*, typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::Iterator*>::Entry>)
-            ));
+            real_size = size * sizeof(CDoubleLinkedList<typename CHashMap<T*, typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::Iterator*>::Entry>);
+            totalAllocatedMemory += real_size;
+            CURuntime::assertCudaSuccess(cuMemAlloc(&elements_ptr, real_size));
 
             // Fill up host side elements
             CHashMap<T*, typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::Iterator*>
@@ -252,11 +358,13 @@ struct GpuVersion {
 
         template<typename T>
         static CAllocatorPool<T>* allocAllocator(uint32_t size, AllocatorId type, CUstream* stream){
-            // TODO: check if copies to GPU are correct and that pointers are correct
+            uint64_t real_size = 0;
             
             // Allocate the allocator
             CUdeviceptr allocator_ptr = 0;
-            CURuntime::assertCudaSuccess(cuMemAlloc(&allocator_ptr, sizeof(CAllocatorPool<T>)));
+            real_size = sizeof(CAllocatorPool<T>);
+            totalAllocatedMemory += real_size;
+            CURuntime::assertCudaSuccess(cuMemAlloc(&allocator_ptr, real_size));
             CAllocatorPool<T> tmp = CAllocatorPool<T>(size, type);
 
             // Allocate the list of elements
@@ -269,15 +377,16 @@ struct GpuVersion {
             CUdeviceptr allocation_pool_ptr = 0;
             uint64_t alignment = alignof(T);
             uint64_t aligned_size = sizeof(T) + ((alignment - (sizeof(T) % alignment)) % alignment);
-            CURuntime::assertCudaSuccess(cuMemAlloc(&allocation_pool_ptr, size * aligned_size));
+            real_size = size * aligned_size;
+            totalAllocatedMemory += real_size;
+            CURuntime::assertCudaSuccess(cuMemAlloc(&allocation_pool_ptr, real_size));
             tmp.allocated_memory = reinterpret_cast<T*>(allocation_pool_ptr);
 
             // Allocate the deallocation array
             CUdeviceptr deallocation_pool_ptr = 0;
-            CURuntime::assertCudaSuccess(cuMemAlloc(
-                &deallocation_pool_ptr, 
-                size * sizeof(typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::Iterator*)
-            ));
+            real_size = size * sizeof(typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::Iterator*);
+            totalAllocatedMemory += real_size;
+            CURuntime::assertCudaSuccess(cuMemAlloc(&deallocation_pool_ptr, real_size));
             tmp.deallocated_memory = reinterpret_cast<typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::Iterator**>(deallocation_pool_ptr);
 
             CURuntime::assertCudaSuccess(cuMemcpyHtoD(allocator_ptr, &tmp, sizeof(CAllocatorPool<T>)));

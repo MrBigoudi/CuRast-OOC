@@ -97,6 +97,12 @@ void kernel_prepare_store_part_1_filling_buffers(){
             globalVariables.exchangedChildrenIds[exchanged_index] = node->children_ids;
             globalVariables.exchangedPointsCounters[exchanged_index] = node->points_counter;
             globalVariables.exchangedVoxelsCounters[exchanged_index] = node->voxels_counter;
+
+            // UI values
+            __nv_atomic_add(&globalVariables.nbStoredNodesThisUpdate, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            __nv_atomic_add(&globalVariables.nbTotalStoredNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            __nv_atomic_sub(&globalVariables.currentNbPoints, node->points_counter, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            __nv_atomic_sub(&globalVariables.currentNbVoxels, node->voxels_counter, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
             
             const uint32_t MAX_NB_POINTS = globalVariables.maxNbPointsChunksPerExchangedNode * OocSimLodSettings::NB_POINTS_PER_CHUNK;
             const uint32_t MAX_NB_VOXELS = globalVariables.maxNbVoxelsChunksPerExchangedNode * OocSimLodSettings::NB_POINTS_PER_CHUNK;
@@ -145,6 +151,7 @@ void kernel_prepare_store_part_1_filling_buffers(){
             // Deleting the node
             globalAllocator.delOctreeNode(node, true, true);
             globalVariables.packedNodes[node_index] = nullptr;
+
         } else {
             globalVariables.setFlagSync(node->aabb_index, CFlagIsInUpdatesCache);
         }
@@ -318,7 +325,7 @@ __device__
 void deallocateOldNodesV2(uint32_t first_point, uint32_t step){
     for(uint32_t node_index = first_point; node_index < globalVariables.renderingNbNodes; node_index += step){
         COctreeNode* node_to_remove = globalVariables.renderingPackedNodes[node_index];
-        globalAllocator.delOctreeNode(node_to_remove, true, true);
+        globalAllocator.delOctreeNode(node_to_remove, true, true, false);
     }
 }
 
@@ -326,7 +333,7 @@ __device__
 void createNewNodesV2(uint32_t first_point, uint32_t step){
     for(uint32_t node_index = first_point; node_index < globalVariables.curNbNodes; node_index += step){
         COctreeNode* real_node = globalVariables.packedNodes[node_index];
-        globalVariables.renderingPackedNodes[node_index] = globalAllocator.newOctreeNodePartialCpy(real_node, true);
+        globalVariables.renderingPackedNodes[node_index] = globalAllocator.newOctreeNodePartialCpy(real_node, true, false);
         COctreeNode* node = globalVariables.renderingPackedNodes[node_index];
         node->level = real_node->level;
         node->points_counter = real_node->points_counter;
@@ -349,14 +356,14 @@ void deallocateOldNodes(uint32_t first_point, uint32_t step){
 
         // Node should be deleted
         if(!globalVariables.isInUpdatesCache(node_to_remove->aabb_index)){
-            globalAllocator.delOctreeNode(node_to_remove, true, true);
+            globalAllocator.delOctreeNode(node_to_remove, true, true, false);
             globalVariables.renderingPackedNodes[node_index] = nullptr;
             continue;
         }
 
         // Node points should be deleted
         if(globalVariables.hasSpilled(node_to_remove->aabb_index)){
-            globalAllocator.delChunk(node_to_remove->points, true);
+            globalAllocator.delChunk(node_to_remove->points, true, false);
         }
     }
 }
@@ -371,7 +378,7 @@ void createNewNodes(uint32_t first_point, uint32_t step){
         COctreeNode* node = globalVariables.packedNodes[node_index];
         if(globalVariables.isNew(node->aabb_index)){
             uint32_t index = __nv_atomic_fetch_add(&globalVariables.renderingNbNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-            globalVariables.renderingPackedNodes[index] = globalAllocator.newOctreeNodePartialCpy(node, true);
+            globalVariables.renderingPackedNodes[index] = globalAllocator.newOctreeNodePartialCpy(node, true, false);
         }
     }
 }
@@ -413,10 +420,10 @@ void updateRenderingNodes(uint32_t first_point, uint32_t step){
 
         // Copy the points if necessary
         if(globalVariables.hasSpilled(node->aabb_index)){
-            node->points = globalAllocator.newChunkPartialCpy(real_node->points, true);
+            node->points = globalAllocator.newChunkPartialCpy(real_node->points, true, false);
         } else if(globalVariables.hasNewPoints(node->aabb_index)){
             if(!node->points){
-                node->points = globalAllocator.newChunk(true);
+                node->points = globalAllocator.newChunk(true, false);
             }
             CChunk* real_node_points = real_node->points;
             CChunk* cur_node_points = node->points;
@@ -426,7 +433,7 @@ void updateRenderingNodes(uint32_t first_point, uint32_t step){
                 }
                 cur_node_points->size = real_node_points->size;
                 if(real_node_points->next && !cur_node_points->next){
-                    cur_node_points->next = globalAllocator.newChunk(true);
+                    cur_node_points->next = globalAllocator.newChunk(true, false);
                 }
                 real_node_points = real_node_points->next;
                 cur_node_points = cur_node_points->next;
@@ -435,7 +442,7 @@ void updateRenderingNodes(uint32_t first_point, uint32_t step){
         // Copy the voxels if necessary
         if(globalVariables.hasNewVoxels(node->aabb_index)){
             if(!node->voxels){
-                node->voxels = globalAllocator.newChunk(true);
+                node->voxels = globalAllocator.newChunk(true, false);
             }
             CChunk* real_node_voxels = real_node->voxels;
             CChunk* cur_node_voxels = node->voxels;
@@ -445,7 +452,7 @@ void updateRenderingNodes(uint32_t first_point, uint32_t step){
                 }
                 cur_node_voxels->size = real_node_voxels->size;
                 if(real_node_voxels->next && !cur_node_voxels->next){
-                    cur_node_voxels->next = globalAllocator.newChunk(true);
+                    cur_node_voxels->next = globalAllocator.newChunk(true, false);
                 }
                 real_node_voxels = real_node_voxels->next;
                 cur_node_voxels = cur_node_voxels->next;
@@ -518,6 +525,9 @@ void kernel_create_rendereable_octree(){
         // No grids should be allocated
 
         globalVariables.renderingOctreeDepth = globalVariables.octreeDepth;       
+
+        // UI values
+        __nv_atomic_add(&globalVariables.nbTotalUpdates, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
     }
 
     // // Sanity check

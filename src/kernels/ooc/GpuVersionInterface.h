@@ -716,6 +716,44 @@ struct CGlobalVariables {
 
 
 
+
+    ///////////////////////////////////////////////////////////////////////
+    ///////////////////////// UI DISPLAYED VALUES /////////////////////////
+    ///////////////////////////////////////////////////////////////////////
+
+	uint32_t nbTotalUpdates = 0;
+
+	uint32_t currentNbChunks = 0;
+	uint32_t currentNbGrids = 0;
+    uint32_t currentNbPoints = 0;
+    uint32_t currentNbVoxels = 0;
+
+    uint32_t nbTotalPoints = 0;
+    uint32_t nbTotalVoxels = 0;
+    uint32_t nbTotalNewNodes = 0;
+    uint32_t nbTotalNewGrids = 0;
+    uint32_t nbTotalNewChunks = 0;
+	uint32_t nbTotalDeletedNodes = 0;
+    uint32_t nbTotalDeletedGrids = 0;
+    uint32_t nbTotalDeletedChunks = 0;
+	uint32_t nbTotalLoadedNodes = 0;
+    uint32_t nbTotalSplitNodes = 0;
+    uint32_t nbTotalStoredNodes = 0;
+
+	uint32_t nbNewPointsThisUpdate = 0;
+	uint32_t nbNewVoxelsThisUpdate = 0;
+	uint32_t nbNewNodesThisUpdate = 0;
+	uint32_t nbLoadedNodesThisUpdate = 0;
+	uint32_t nbStoredNodesThisUpdate = 0;
+	uint32_t nbSplitNodesThisUpdate = 0;
+	uint32_t nbDeletedNodesThisUpdate = 0;
+	uint32_t nbDeletedChunksThisUpdate = 0;
+	uint32_t nbDeletedGridsThisUpdate = 0;
+	uint32_t nbNewChunksThisUpdate = 0;
+	uint32_t nbNewGridsThisUpdate = 0;
+
+
+
 #ifdef __CUDACC__
 	__device__ __forceinline__ uint32_t getFlagsSync(const CIdAABB& aabb_index) const {
 		return __nv_atomic_load_n(&nodesFlags[aabb_index], __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);

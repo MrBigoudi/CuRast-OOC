@@ -74,7 +74,7 @@ void OocSimLodSettings::init(){
 
     /// GPU Version buffers
     MAX_NB_NODES = init_field<uint32_t>("MAX_NB_NODES", 1'000'000);
-    MAX_NB_NODES_TO_EXCHANGE = init_field<uint32_t>("MAX_NB_NODES_TO_LOAD", 128);
+    MAX_NB_NODES_TO_EXCHANGE = init_field<uint32_t>("MAX_NB_NODES_TO_EXCHANGE", 128);
     MAX_NB_SPILLING_POINTS = init_field<uint32_t>("MAX_NB_SPILLING_POINTS", 1'000'000);
     MAX_NB_BACKLOG_VOXELS = init_field<uint32_t>("MAX_NB_BACKLOG_VOXELS", 1'000'000);
 
