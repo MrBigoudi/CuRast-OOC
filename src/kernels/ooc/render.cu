@@ -223,7 +223,9 @@ void drawAllVoxels(
     const CAABB& aabb = node->aabb;
     vec3 voxel_size = (aabb.maxs - aabb.mins) / float(OocSimLodSettings::GRID_SIZE_PER_DIMENSION);
 
-    uint32_t depth = globalVariables.isTemporarySwitching ? globalVariables.octreeDepth : globalVariables.renderingOctreeDepth;
+    // uint32_t depth = globalVariables.isTemporarySwitching ? globalVariables.octreeDepth : globalVariables.renderingOctreeDepth;
+    uint32_t depth = globalVariables.octreeDepth;
+
     float color_factor = float(node->level) / float(max(depth, 1));
     color_factor = clamp(color_factor, 0.0f, 1.0f);
     uint32_t min_level_color = 0xffffff00; // cyan
@@ -410,15 +412,18 @@ void kernel_render_bounding_boxes(
     uint32_t thread_id = grid.thread_rank();
     uint32_t nb_threads = grid.num_threads();
 
-    uint32_t nb_nodes = globalVariables.isTemporarySwitching ? globalVariables.curNbNodes : globalVariables.renderingNbNodes;
-    uint32_t depth = globalVariables.isTemporarySwitching ? globalVariables.octreeDepth : globalVariables.renderingOctreeDepth;
+    // uint32_t nb_nodes = globalVariables.isTemporarySwitching ? globalVariables.curNbNodes : globalVariables.renderingNbNodes;
+    // uint32_t depth = globalVariables.isTemporarySwitching ? globalVariables.octreeDepth : globalVariables.renderingOctreeDepth;
+    uint32_t nb_nodes = globalVariables.curNbNodes;
+    uint32_t depth = globalVariables.octreeDepth;
 
     for(uint32_t node_index = thread_id; node_index < nb_nodes; node_index += nb_threads){
 
-        COctreeNode* node = globalVariables.isTemporarySwitching 
-            ? globalVariables.packedNodes[node_index]
-            : globalVariables.renderingPackedNodes[node_index]
-        ;
+        // COctreeNode* node = globalVariables.isTemporarySwitching 
+        //     ? globalVariables.packedNodes[node_index]
+        //     : globalVariables.renderingPackedNodes[node_index]
+        // ;
+        COctreeNode* node = globalVariables.packedNodes[node_index];
 
         const CAABB& aabb = node->aabb;
         if(settings.debug_lod_to_render != -1 && settings.debug_lod_to_render != node->level){
@@ -457,14 +462,17 @@ void kernel_visibilityPass(
     uint32_t first_point = block_id * nb_threads_per_block + thread_id;
     uint32_t step = nb_blocks * nb_threads_per_block;
 
-    uint32_t nb_nodes = globalVariables.isTemporarySwitching ? globalVariables.curNbNodes : globalVariables.renderingNbNodes;
-    uint32_t depth = globalVariables.isTemporarySwitching ? globalVariables.octreeDepth : globalVariables.renderingOctreeDepth;
+    // uint32_t nb_nodes = globalVariables.isTemporarySwitching ? globalVariables.curNbNodes : globalVariables.renderingNbNodes;
+    // uint32_t depth = globalVariables.isTemporarySwitching ? globalVariables.octreeDepth : globalVariables.renderingOctreeDepth;
+    uint32_t nb_nodes = globalVariables.curNbNodes;
+    uint32_t depth = globalVariables.octreeDepth;
 
     for(uint32_t node_index = first_point; node_index < nb_nodes; node_index += step){
-        COctreeNode* node = globalVariables.isTemporarySwitching 
-            ? globalVariables.packedNodes[node_index]
-            : globalVariables.renderingPackedNodes[node_index]
-        ;
+        // COctreeNode* node = globalVariables.isTemporarySwitching 
+        //     ? globalVariables.packedNodes[node_index]
+        //     : globalVariables.renderingPackedNodes[node_index]
+        // ;
+        COctreeNode* node = globalVariables.packedNodes[node_index];
 
         // TODO: Frustum culling
         globalVariables.setFlagSync(node->aabb_index, CFlagIsVisible);
@@ -563,15 +571,18 @@ void kernel_drawOctreeLarge(
     uint32_t thread_id = block.thread_rank();
     uint32_t nb_threads_per_block = block.num_threads();
 
-    uint32_t nb_nodes = globalVariables.isTemporarySwitching ? globalVariables.curNbNodes : globalVariables.renderingNbNodes;
-    uint32_t depth = globalVariables.isTemporarySwitching ? globalVariables.octreeDepth : globalVariables.renderingOctreeDepth;
+    // uint32_t nb_nodes = globalVariables.isTemporarySwitching ? globalVariables.curNbNodes : globalVariables.renderingNbNodes;
+    // uint32_t depth = globalVariables.isTemporarySwitching ? globalVariables.octreeDepth : globalVariables.renderingOctreeDepth;
+    uint32_t nb_nodes = globalVariables.curNbNodes;
+    uint32_t depth = globalVariables.octreeDepth;
 
     // Assign each node to one thread block
     for(uint32_t node_index = block_id; node_index < nb_nodes; node_index += nb_blocks){
-        COctreeNode* node = globalVariables.isTemporarySwitching 
-            ? globalVariables.packedNodes[node_index]
-            : globalVariables.renderingPackedNodes[node_index]
-        ;
+        // COctreeNode* node = globalVariables.isTemporarySwitching 
+        //     ? globalVariables.packedNodes[node_index]
+        //     : globalVariables.renderingPackedNodes[node_index]
+        // ;
+        COctreeNode* node = globalVariables.packedNodes[node_index];
 
 
         // Render stored nodes
@@ -633,14 +644,16 @@ void kernel_drawOctreeSmall(
     uint32_t thread_id = block.thread_rank();
     uint32_t nb_threads_per_block = block.num_threads();
 
-    uint32_t nb_nodes = globalVariables.isTemporarySwitching ? globalVariables.curNbNodes : globalVariables.renderingNbNodes;
+    // uint32_t nb_nodes = globalVariables.isTemporarySwitching ? globalVariables.curNbNodes : globalVariables.renderingNbNodes;
+    uint32_t nb_nodes = globalVariables.curNbNodes;
 
     // Assign each node to one thread block
     for(uint32_t node_index = block_id; node_index < nb_nodes; node_index += nb_blocks){
-        COctreeNode* node = globalVariables.isTemporarySwitching 
-            ? globalVariables.packedNodes[node_index]
-            : globalVariables.renderingPackedNodes[node_index]
-        ;
+        // COctreeNode* node = globalVariables.isTemporarySwitching 
+        //     ? globalVariables.packedNodes[node_index]
+        //     : globalVariables.renderingPackedNodes[node_index]
+        // ;
+        COctreeNode* node = globalVariables.packedNodes[node_index];
 
         if(!globalVariables.isVisible(node->aabb_index)){
             continue;
@@ -711,13 +724,15 @@ void kernel_test_multi_resolution(
     uint32_t thread_id = block.thread_rank();
     uint32_t nb_threads_per_block = block.num_threads();
 
-    uint32_t nb_nodes = globalVariables.isTemporarySwitching ? globalVariables.curNbNodes : globalVariables.renderingNbNodes;
+    // uint32_t nb_nodes = globalVariables.isTemporarySwitching ? globalVariables.curNbNodes : globalVariables.renderingNbNodes;
+    uint32_t nb_nodes = globalVariables.curNbNodes;
 
-    for(uint32_t node_index = 0; node_index < globalVariables.renderingNbNodes; node_index++){
-        COctreeNode* node = globalVariables.isTemporarySwitching 
-            ? globalVariables.packedNodes[node_index]
-            : globalVariables.renderingPackedNodes[node_index]
-        ;
+    for(uint32_t node_index = 0; node_index < nb_nodes; node_index++){
+        // COctreeNode* node = globalVariables.isTemporarySwitching 
+        //     ? globalVariables.packedNodes[node_index]
+        //     : globalVariables.renderingPackedNodes[node_index]
+        // ;
+        COctreeNode* node = globalVariables.packedNodes[node_index];
 
         CChunk* cur_points = node->points;
 

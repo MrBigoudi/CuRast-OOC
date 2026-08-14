@@ -55,7 +55,7 @@ void kernel_init_global_buffers(){
     for(uint32_t i = thread_id; i < globalVariables.maxNbConcurrentNodes; i += nb_threads){
         globalVariables.relationshipMap[thread_id] = CGlobalVariables::Relationship();
         globalVariables.packedNodes[thread_id] = nullptr;
-        globalVariables.renderingPackedNodes[thread_id] = nullptr;
+        // globalVariables.renderingPackedNodes[thread_id] = nullptr;
         globalVariables.nodesFlags[thread_id] = 0;
     }
 
@@ -231,7 +231,6 @@ void kernel_init_octree_part_2_refining(){
 /// Each thread in a block is filling it's assigned coordinates in the current grid
 extern "C" __global__
 void kernel_fill_new_grids(){
-
     auto grid = cg::this_grid();
     auto block = cg::this_thread_block();
     uint32_t nb_blocks = grid.num_blocks();

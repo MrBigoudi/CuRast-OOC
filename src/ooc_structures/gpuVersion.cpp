@@ -3,7 +3,7 @@
 #include "loader.h"
 #include "outOfCore.h"
 
-#include <list>
+// #include <list>
 
 void GpuVersion::initHostSide(CuRast* editor, CUcontext* context) {
     // Host side data
@@ -11,13 +11,13 @@ void GpuVersion::initHostSide(CuRast* editor, CUcontext* context) {
     exchangedVoxelsPointers = malloc(OocSimLodSettings::MAX_NB_NODES_TO_EXCHANGE * sizeof(CUdeviceptr));
     batchesToAddPointsPointers = malloc(OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE * sizeof(CUdeviceptr));
     CURuntime::assertCudaSuccess(cuMemAllocHost(&nbExchangedNodes, sizeof(uint32_t)));
-    CURuntime::assertCudaSuccess(cuMemAllocHost(&isTemporarySwitching, sizeof(bool)));
+    // CURuntime::assertCudaSuccess(cuMemAllocHost(&isTemporarySwitching, sizeof(bool)));
     *(uint32_t*)nbExchangedNodes = 0;
-    *(bool*)isTemporarySwitching = false;
+    // *(bool*)isTemporarySwitching = false;
 
-    CURuntime::assertCudaSuccess(cuEventCreate(&eventUpdateCompleted, CU_EVENT_DISABLE_TIMING));
-    CURuntime::assertCudaSuccess(cuEventCreate(&eventSwapCompleted, CU_EVENT_DISABLE_TIMING));
-    CURuntime::assertCudaSuccess(cuEventCreate(&eventRenderingStreamInformed, CU_EVENT_DISABLE_TIMING));
+    // CURuntime::assertCudaSuccess(cuEventCreate(&eventUpdateCompleted, CU_EVENT_DISABLE_TIMING));
+    // CURuntime::assertCudaSuccess(cuEventCreate(&eventSwapCompleted, CU_EVENT_DISABLE_TIMING));
+    // CURuntime::assertCudaSuccess(cuEventCreate(&eventRenderingStreamInformed, CU_EVENT_DISABLE_TIMING));
 
 
     // hostCache = new CLRUCache(OocSimLodSettings::LRU_CPU_CACHE_SIZE);
@@ -36,8 +36,8 @@ void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
     hostStaging.packedNodes = alloc<COctreeNode*>(hostStaging.maxNbConcurrentNodes);
     hostStaging.nodesFlags = alloc<uint32_t>(hostStaging.maxNbConcurrentNodes);
 
-    hostStaging.renderingPackedNodes = alloc<COctreeNode*>(hostStaging.maxNbConcurrentNodes);
-    hostStaging.renderingPackedNodesTmp = alloc<COctreeNode*>(hostStaging.maxNbConcurrentNodes);
+    // hostStaging.renderingPackedNodes = alloc<COctreeNode*>(hostStaging.maxNbConcurrentNodes);
+    // hostStaging.renderingPackedNodesTmp = alloc<COctreeNode*>(hostStaging.maxNbConcurrentNodes);
 
 
 
@@ -212,11 +212,11 @@ void GpuVersion::destroy(CuRast *editor, CUcontext *context){
     free(exchangedVoxelsPointers);
     free(batchesToAddPointsPointers);
     CURuntime::assertCudaSuccess(cuMemFreeHost(nbExchangedNodes));
-    CURuntime::assertCudaSuccess(cuMemFreeHost(isTemporarySwitching));
+    // CURuntime::assertCudaSuccess(cuMemFreeHost(isTemporarySwitching));
 
-    cuEventDestroy(eventUpdateCompleted);
-    cuEventDestroy(eventSwapCompleted);
-    cuEventDestroy(eventRenderingStreamInformed);
+    // cuEventDestroy(eventUpdateCompleted);
+    // cuEventDestroy(eventSwapCompleted);
+    // cuEventDestroy(eventRenderingStreamInformed);
 
     cudaDeviceSynchronize();
     CURuntime::assertCudaSuccess(cuStreamDestroy(stream));
@@ -722,54 +722,54 @@ void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
     octreeUpdateSimLOD(editor, context);
 
     octreeUpdateCacheUpdate(editor, context);
-    // Record completion of the update kernels on the UPDATE stream (no host block needed)
-    CURuntime::assertCudaSuccess(cuEventRecord(eventUpdateCompleted, stream));
+    // // Record completion of the update kernels on the UPDATE stream (no host block needed)
+    // CURuntime::assertCudaSuccess(cuEventRecord(eventUpdateCompleted, stream));
 
-    {
-        // Wait if the scene is being rendered
-        std::lock_guard<std::mutex> lock(renderSubmissionMutex);
+    // {
+    //     // Wait if the scene is being rendered
+    //     std::lock_guard<std::mutex> lock(renderSubmissionMutex);
         
-        // Tell the rendering to switch to the packed nodes
-        uint64_t pad = uint64_t(&(hostStaging.isTemporarySwitching)) - uint64_t(&hostStaging);
-        CUdeviceptr dst_device = deviceStaging + pad;
-        *(bool*)isTemporarySwitching = true;
+    //     // Tell the rendering to switch to the packed nodes
+    //     uint64_t pad = uint64_t(&(hostStaging.isTemporarySwitching)) - uint64_t(&hostStaging);
+    //     CUdeviceptr dst_device = deviceStaging + pad;
+    //     *(bool*)isTemporarySwitching = true;
         
-        CURuntime::assertCudaSuccess(cuStreamWaitEvent(0, eventUpdateCompleted, 0));
-        CURuntime::assertCudaSuccess(cuMemcpyHtoD(
-            dst_device, isTemporarySwitching, sizeof(bool)
-        ));
-        CURuntime::assertCudaSuccess(cuEventRecord(eventRenderingStreamInformed, 0));
-    }
+    //     CURuntime::assertCudaSuccess(cuStreamWaitEvent(0, eventUpdateCompleted, 0));
+    //     CURuntime::assertCudaSuccess(cuMemcpyHtoD(
+    //         dst_device, isTemporarySwitching, sizeof(bool)
+    //     ));
+    //     CURuntime::assertCudaSuccess(cuEventRecord(eventRenderingStreamInformed, 0));
+    // }
 
-    // Don't start the swap before the rendering stream is being informed
-    CURuntime::assertCudaSuccess(cuStreamWaitEvent(stream, eventRenderingStreamInformed, 0));
-    // Run the real swap on this stream
-    OptionalLaunchSettings launch_settings = {
-        .gridsize = 0,
-        .blocksize = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK,
-        .stream = OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0,
-    };
-    prog->launchCooperative("kernel_create_rendereable_octree", {}, launch_settings);
-    CURuntime::assertCudaSuccess(cuEventRecord(eventSwapCompleted, stream));
+    // // Don't start the swap before the rendering stream is being informed
+    // CURuntime::assertCudaSuccess(cuStreamWaitEvent(stream, eventRenderingStreamInformed, 0));
+    // // Run the real swap on this stream
+    // OptionalLaunchSettings launch_settings = {
+    //     .gridsize = 0,
+    //     .blocksize = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK,
+    //     .stream = OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0,
+    // };
+    // prog->launchCooperative("kernel_create_rendereable_octree", {}, launch_settings);
+    // CURuntime::assertCudaSuccess(cuEventRecord(eventSwapCompleted, stream));
 
 
-    {
-        // Tell the rendering to switch back to the rendering packed nodes
-        std::lock_guard<std::mutex> lock(renderSubmissionMutex);
+    // {
+    //     // Tell the rendering to switch back to the rendering packed nodes
+    //     std::lock_guard<std::mutex> lock(renderSubmissionMutex);
         
-        uint64_t pad = uint64_t(&(hostStaging.isTemporarySwitching)) - uint64_t(&hostStaging);
-        CUdeviceptr dst_device = deviceStaging + pad;
-        *(bool*)isTemporarySwitching = false;
+    //     uint64_t pad = uint64_t(&(hostStaging.isTemporarySwitching)) - uint64_t(&hostStaging);
+    //     CUdeviceptr dst_device = deviceStaging + pad;
+    //     *(bool*)isTemporarySwitching = false;
         
-        CURuntime::assertCudaSuccess(cuStreamWaitEvent(0, eventSwapCompleted, 0));
-        CURuntime::assertCudaSuccess(cuMemcpyHtoD(
-            dst_device, isTemporarySwitching, sizeof(bool)
-        ));
-        CURuntime::assertCudaSuccess(cuEventRecord(eventRenderingStreamInformed, 0));
-    }
+    //     CURuntime::assertCudaSuccess(cuStreamWaitEvent(0, eventSwapCompleted, 0));
+    //     CURuntime::assertCudaSuccess(cuMemcpyHtoD(
+    //         dst_device, isTemporarySwitching, sizeof(bool)
+    //     ));
+    //     CURuntime::assertCudaSuccess(cuEventRecord(eventRenderingStreamInformed, 0));
+    // }
 
-    // Don't start a new update before the rendering stream is being informed
-    CURuntime::assertCudaSuccess(cuStreamWaitEvent(stream, eventRenderingStreamInformed, 0));
+    // // Don't start a new update before the rendering stream is being informed
+    // CURuntime::assertCudaSuccess(cuStreamWaitEvent(stream, eventRenderingStreamInformed, 0));
 
 
     // TODO: to remove, just to flag the batches and display stuff
@@ -803,8 +803,8 @@ void GpuVersion::renderOctree(RenderTarget& target){
     real_settings.min_pixel_span = CuRastSettings::minPixelSpan;
     real_settings.voxels_nb_points_per_axis = uint32_t(CuRastSettings::voxelsPointsPerAxis);
 
-    // Wait if the update kernel is being added to stream 0
-    std::lock_guard<std::mutex> lock_update(renderSubmissionMutex);
+    // // Wait if the update kernel is being added to stream 0
+    // std::lock_guard<std::mutex> lock_update(renderSubmissionMutex);
     // std::lock_guard<std::mutex> lock_visibility(syncVisibilityUpdateMtx);
 
     // Render nodes
@@ -1201,7 +1201,9 @@ void GpuVersionUI::update() {
     }
 #endif
     COPY_FROM_GPU(nbTotalUpdates, nbTotalUpdates);
-    if(lastNbTotalUpdates == nbTotalUpdates){return;}
+    if(lastNbTotalUpdates == nbTotalUpdates){
+        return;
+    }
     lastNbTotalUpdates = nbTotalUpdates;
 
     COPY_FROM_GPU(curNbNodes, currentNbNodes);

@@ -632,10 +632,10 @@ struct CGlobalVariables {
 
 	/// The buffer of nodes for rendering
 	uint32_t octreeDepth = 0;
-	uint32_t renderingOctreeDepth = 0;
-	uint32_t renderingNbNodes = 0;
-	COctreeNode** renderingPackedNodes = nullptr;
-	COctreeNode** renderingPackedNodesTmp = nullptr;
+	// uint32_t renderingOctreeDepth = 0;
+	// uint32_t renderingNbNodes = 0;
+	// COctreeNode** renderingPackedNodes = nullptr;
+	// COctreeNode** renderingPackedNodesTmp = nullptr;
 
 
 
@@ -658,6 +658,8 @@ struct CGlobalVariables {
 	uint32_t* exchangedVoxelsCounters = nullptr;
 	CPoint** exchangedPoints = nullptr;
 	CPoint** exchangedVoxels = nullptr;
+	bool isDoneLoading = true;
+	bool isDoneStoring = true;
 
 	uint32_t nbGridsToInit = 0;
 	COctreeNode** gridsToInit = nullptr;

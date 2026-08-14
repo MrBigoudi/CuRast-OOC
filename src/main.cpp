@@ -496,7 +496,7 @@ void update(){
 }
 
 int main(int argc, char** argv){
-	std::thread* thread_octree_update = nullptr;
+	// std::thread* thread_octree_update = nullptr;
 	std::thread* thread_octree_visibility = nullptr;
 	try {
 		Benchmarking::datasetPath = "./";
@@ -611,11 +611,11 @@ int main(int argc, char** argv){
 			Runtime::controls->target = { 0.679, -0.714, 5.163};
 
 			if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-				thread_octree_update = new std::thread([&](CuRast* editor, CUcontext* context){
-					while(!GlobalVariables::mainLoopIsTerminating){
-						GpuVersion::updateOctree(editor, context);
-					}
-				}, CuRast::instance, &context);
+				// thread_octree_update = new std::thread([&](CuRast* editor, CUcontext* context){
+				// 	while(!GlobalVariables::mainLoopIsTerminating){
+				// 		GpuVersion::updateOctree(editor, context);
+				// 	}
+				// }, CuRast::instance, &context);
 				// thread_octree_visibility = new std::thread([&](CuRast* editor, CUcontext* context){
 				// 	while(!GlobalVariables::mainLoopIsTerminating){
 				// 		GpuVersion::visibilityUpdate(editor, context);
@@ -688,8 +688,9 @@ int main(int argc, char** argv){
 			[&]() {
 
 				if(OocSimLodSettings::IS_USING_GPU_VERSION){
+					GpuVersion::updateOctree(CuRast::instance, &context);
 					if(!OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-						GpuVersion::updateOctree(CuRast::instance, &context);
+						// GpuVersion::updateOctree(CuRast::instance, &context);
 						// GpuVersion::visibilityUpdate(CuRast::instance, &context);
 					}
 					GpuVersion::takeRandomScreenShots();
@@ -756,10 +757,10 @@ int main(int argc, char** argv){
 			{
 				std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
 				GlobalVariables::mainLoopIsTerminating = true;
-				if(thread_octree_update){
-					thread_octree_update->join();
-					delete(thread_octree_update);
-				}
+				// if(thread_octree_update){
+				// 	thread_octree_update->join();
+				// 	delete(thread_octree_update);
+				// }
 				if(thread_octree_visibility){
 					thread_octree_visibility->join();
 					delete(thread_octree_visibility);
@@ -784,10 +785,10 @@ int main(int argc, char** argv){
 			{
 				std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
 				GlobalVariables::mainLoopIsTerminating = true;
-				if(thread_octree_update){
-					thread_octree_update->join();
-					delete(thread_octree_update);
-				}
+				// if(thread_octree_update){
+				// 	thread_octree_update->join();
+				// 	delete(thread_octree_update);
+				// }
 				if(thread_octree_visibility){
 					thread_octree_visibility->join();
 					delete(thread_octree_visibility);

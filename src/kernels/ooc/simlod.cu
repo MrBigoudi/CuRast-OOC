@@ -8,6 +8,7 @@
 extern "C" __global__
 void kernel_simlod_load_part_1_flagging(){
     if(!globalVariables.isInitialised){return;}
+    if(!globalVariables.isDoneStoring){return;}
 
     auto grid = cg::this_grid();
     uint32_t thread_id = grid.thread_rank();
@@ -48,15 +49,19 @@ void kernel_simlod_load_part_1_flagging(){
                         uint32_t exchanged_index = __nv_atomic_fetch_add(&globalVariables.nbNodesExchanged, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
                         
                         if(exchanged_index >= globalVariables.maxNbNodesExchanged){
-                            printf("ERROR: Too many nodes are being loaded\n");
-                            customAssert();
+                            printf("WARN: Too many nodes are being loaded\n");
+                            // customAssert();
+
+                            // Instead of panicking, warn everyone that you're not done
+                            globalVariables.isDoneLoading = false;
+                            break;
                         }
                         
                         globalVariables.exchangedAABBIndices[exchanged_index] = child_aabb_index;
 
                         // Store the original parent in the buffer
-                        globalVariables.renderingPackedNodesTmp[exchanged_index] = leaf;
-
+                        // Use spillingNodes as a temporary buffer 
+                        globalVariables.spillingNodes[exchanged_index] = leaf;
                         
                         // UI values
                         __nv_atomic_add(&globalVariables.nbLoadedNodesThisUpdate, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
@@ -109,6 +114,7 @@ void reallocateChunks(CChunk* root_chunk, uint32_t required_chunks, uint32_t tot
 extern "C" __global__
 void kernel_simlod_load_part_2_rebuilding_nodes(){
     if(!globalVariables.isInitialised){return;}
+    if(!globalVariables.isDoneStoring){return;}
 
     auto grid = cg::this_grid();
     auto block = cg::this_thread_block();
@@ -173,7 +179,9 @@ void kernel_simlod_load_part_2_rebuilding_nodes(){
             }
 
             // Find parent if needed
-            COctreeNode* potential_parent = globalVariables.renderingPackedNodesTmp[exchanged_index];
+            // Use spillingNodes as a temporary buffer 
+            COctreeNode* potential_parent = globalVariables.spillingNodes[exchanged_index];
+            
             if(potential_parent->aabb_index == globalVariables.relationshipMap[aabb_index].parent){
                 globalVariables.setFlagSync(potential_parent->aabb_index, CFlagIsUpdated);
                 bool found = false;
@@ -204,6 +212,7 @@ void kernel_simlod_load_part_2_rebuilding_nodes(){
 extern "C" __global__
 void kernel_simlod_load_part_3_rebuilding_children(){
     if(!globalVariables.isInitialised){return;}
+    if(!globalVariables.isDoneStoring){return;}
 
     // Because "kernel_fill_new_grids" should be launched just before
     globalVariables.nbGridsToInit = 0;
@@ -356,7 +365,6 @@ void updateLeafCounter(CPoint* point){
 
 __device__
 void simlodCount(uint32_t first_point, uint32_t step){
-
     // Count new points
     for(uint32_t batch = 0; batch < globalVariables.maxNbBatches; batch++){
         if(globalVariables.batchesAddedMask[batch]){continue;}
@@ -456,6 +464,9 @@ void simlodSplit(uint32_t first_point, uint32_t step){
 extern "C" __global__
 void kernel_simlod_count_split(){
     if(!globalVariables.isInitialised){return;}
+    if(!globalVariables.isDoneLoading || !globalVariables.isDoneStoring){
+        return;
+    }
 
     auto grid = cg::this_grid();
     auto block = cg::this_thread_block();
@@ -572,6 +583,9 @@ void sampleVoxel(const CPoint& point){
 extern "C" __global__
 void kernel_simlod_voxel_sampling(){
     if(!globalVariables.isInitialised){return;}
+    if(!globalVariables.isDoneLoading || !globalVariables.isDoneStoring){
+        return;
+    }
 
     // Because "kernel_fill_new_grids" should be launched just before
     globalVariables.nbGridsToInit = 0;
@@ -649,6 +663,9 @@ void allocateChunks(CChunk* root_chunk, uint32_t required_chunks, uint32_t total
 extern "C" __global__
 void kernel_simlod_insertion_part_1_chunks_allocations(){
     if(!globalVariables.isInitialised){return;}
+    if(!globalVariables.isDoneLoading || !globalVariables.isDoneStoring){
+        return;
+    }
 
     auto grid = cg::this_grid();
     uint32_t thread_id = grid.thread_rank();
@@ -743,6 +760,9 @@ void insertVoxel(const CPoint& voxel, COctreeNode* cur_node){
 extern "C" __global__
 void kernel_simlod_insertion_part_2_filling(){
     if(!globalVariables.isInitialised){return;}
+    if(!globalVariables.isDoneLoading || !globalVariables.isDoneStoring){
+        return;
+    }
 
     auto grid = cg::this_grid();
     uint32_t thread_id = grid.thread_rank();

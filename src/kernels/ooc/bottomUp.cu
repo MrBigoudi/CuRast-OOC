@@ -6,6 +6,9 @@
 extern "C" __global__
 void kernel_bottom_up_update_part_1_counting(){
     if(!globalVariables.isInitialised){return;}
+    if(!globalVariables.isDoneLoading || !globalVariables.isDoneStoring){
+        return;
+    }
 
 
     auto grid = cg::this_grid();
@@ -108,6 +111,14 @@ __device__ void addNewVoxels(
 extern "C" __global__
 void kernel_bottom_up_update_part_2_instancing(){
     if(!globalVariables.isInitialised){return;}
+    // Need to be reset before simlod loading phase
+    globalVariables.nbNodesExchanged = 0;
+
+    if(!globalVariables.isDoneLoading || !globalVariables.isDoneStoring){
+        globalVariables.isDoneLoading = true; // To reset the flag before the simlod load
+        globalVariables.isDoneStoring = true; // To reset the flag before the cache update
+        return;
+    }
 
     // TODO: store a single value instead of full array
     uint32_t nb_new_levels = globalVariables.batchesToAddBottomUpCount;
@@ -156,7 +167,4 @@ void kernel_bottom_up_update_part_2_instancing(){
 	}
 
     globalVariables.mainOctree = cur_child;
-
-    // Need to be reset before simlod loading phase
-    globalVariables.nbNodesExchanged = 0;
 }

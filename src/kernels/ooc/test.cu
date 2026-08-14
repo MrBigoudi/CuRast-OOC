@@ -2,6 +2,9 @@
 
 extern "C" __global__
 void kernel_test(){
+    if(!globalVariables.isDoneLoading || !globalVariables.isDoneLoading){
+        return;
+    }
     for(uint32_t i=0; i<globalVariables.maxNbBatches; i++){
         globalVariables.batchesAddedMask[i] = true;
     }

@@ -136,20 +136,17 @@ struct GpuVersion {
     // static void visibilityUpdate(CuRast* editor, CUcontext* context);
 
 
-
-
-
-    static inline std::mutex renderSubmissionMutex;
 	static inline void* exchangedPointsPointers = nullptr;
 	static inline void* exchangedVoxelsPointers = nullptr;
 	static inline void* batchesToAddPointsPointers = nullptr;
     static inline void* nbExchangedNodes = nullptr;
-    static inline void* isTemporarySwitching = nullptr;
     static inline uint32_t curNbNodes = 0;
 
-    static inline CUevent eventUpdateCompleted;
-    static inline CUevent eventSwapCompleted;
-    static inline CUevent eventRenderingStreamInformed;
+    // static inline std::mutex renderSubmissionMutex;
+    // static inline void* isTemporarySwitching = nullptr;
+    // static inline CUevent eventUpdateCompleted;
+    // static inline CUevent eventSwapCompleted;
+    // static inline CUevent eventRenderingStreamInformed;
 
     /// Initialises everything needed on device memory
     static void init(CuRast* editor, CUcontext* context);

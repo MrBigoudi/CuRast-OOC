@@ -60,6 +60,10 @@ void kernel_update_updates_cache(){
     if(!globalVariables.isUpdating){return;}
     globalVariables.nbNodesExchanged = 0;
 
+    if(!globalVariables.isDoneLoading || !globalVariables.isDoneStoring){
+        return;
+    }
+
     // fillUpdatesCacheRecursive(globalVariables.mainOctree);
     fillUpdatesCacheIterative(globalVariables.mainOctree);
 
@@ -71,6 +75,9 @@ extern "C" __global__
 void kernel_prepare_store_part_1_filling_buffers(){
     if(!globalVariables.isInitialised){return;}
     if(!globalVariables.isUpdating){return;}
+    if(!globalVariables.isDoneLoading){
+        return;
+    }
 
     auto grid = cg::this_grid();
     uint32_t thread_id = grid.thread_rank();
@@ -87,8 +94,12 @@ void kernel_prepare_store_part_1_filling_buffers(){
             uint32_t exchanged_index = __nv_atomic_fetch_add(&globalVariables.nbNodesExchanged, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
 
             if(exchanged_index >= globalVariables.maxNbNodesExchanged){
-                printf("ERROR: Too many nodes are being stored\n");
-                customAssert();
+                printf("WARN: Too many nodes are being stored\n");
+                // customAssert();
+
+                // Instead of panicking, warn everyone that you're not done
+                globalVariables.isDoneStoring = false;
+                break;
             }
 
             // Storing node properties
@@ -143,10 +154,13 @@ void kernel_prepare_store_part_1_filling_buffers(){
             }
 
             // Resetting flags
-            globalVariables.unsetFlagSync(node->aabb_index, CFlagHasNewPoints);
-            globalVariables.unsetFlagSync(node->aabb_index, CFlagHasNewVoxels);
-            globalVariables.unsetFlagSync(node->aabb_index, CFlagIsNew);
-            globalVariables.unsetFlagSync(node->aabb_index, CFlagHasSpilled);
+            uint32_t clear_store_mask = 0
+                | CFlagHasNewPoints
+                | CFlagHasNewVoxels
+                | CFlagIsNew
+                | CFlagHasSpilled
+            ;
+            __nv_atomic_and(&globalVariables.nodesFlags[node->aabb_index], ~clear_store_mask, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
             globalVariables.setFlagSync(node->aabb_index, CFlagToStore);
 
             // Deleting the node
@@ -166,6 +180,7 @@ extern "C" __global__
 void kernel_prepare_store_part_2_resetting_children(){
     if(!globalVariables.isInitialised){return;}
     if(!globalVariables.isUpdating){return;}
+    if(!globalVariables.isDoneLoading){return;}
 
     auto grid = cg::this_grid();
     uint32_t thread_id = grid.thread_rank();
@@ -242,6 +257,7 @@ extern "C" __global__
 void kernel_prepare_store_part_3_updating_levels(){
     if(!globalVariables.isInitialised){return;}
     if(!globalVariables.isUpdating){return;}
+    if(!globalVariables.isDoneLoading){return;}
 
     auto grid = cg::this_grid();
     auto block = cg::this_thread_block();
@@ -309,227 +325,236 @@ void kernel_prepare_store_part_3_updating_levels(){
             globalVariables.batchesToAddBottomUpCount = false;
         }
     }
+
     globalVariables.batchesToAddBottomUpCount = false;
-}
 
-
-
-
-
-
-
-
-
-
-
-__device__
-void deallocateOldNodesV2(uint32_t first_point, uint32_t step){
-    for(uint32_t node_index = first_point; node_index < globalVariables.renderingNbNodes; node_index += step){
-        COctreeNode* node_to_remove = globalVariables.renderingPackedNodes[node_index];
-        globalAllocator.delOctreeNode(node_to_remove, true, true, false);
-    }
-}
-
-__device__
-void createNewNodesV2(uint32_t first_point, uint32_t step){
-    for(uint32_t node_index = first_point; node_index < globalVariables.curNbNodes; node_index += step){
-        COctreeNode* real_node = globalVariables.packedNodes[node_index];
-        globalVariables.renderingPackedNodes[node_index] = globalAllocator.newOctreeNodePartialCpy(real_node, true, false);
-        COctreeNode* node = globalVariables.renderingPackedNodes[node_index];
-        node->level = real_node->level;
-        node->points_counter = real_node->points_counter;
-        node->voxels_counter = real_node->voxels_counter;
-        node->children_visibility = real_node->children_visibility;
-
-        globalVariables.unsetFlagSync(node->aabb_index, CFlagHasNewPoints);
-        globalVariables.unsetFlagSync(node->aabb_index, CFlagHasNewVoxels);
-        globalVariables.unsetFlagSync(node->aabb_index, CFlagIsNew);
-        globalVariables.unsetFlagSync(node->aabb_index, CFlagHasSpilled);
-    }
-}
-
-
-__device__
-void deallocateOldNodes(uint32_t first_point, uint32_t step){
-    for(uint32_t node_index = first_point; node_index < globalVariables.renderingNbNodes; node_index += step){
-        COctreeNode* node_to_remove = globalVariables.renderingPackedNodes[node_index];
-        if(!node_to_remove){continue;}
-
-        // Node should be deleted
-        if(!globalVariables.isInUpdatesCache(node_to_remove->aabb_index)){
-            globalAllocator.delOctreeNode(node_to_remove, true, true, false);
-            globalVariables.renderingPackedNodes[node_index] = nullptr;
-            continue;
-        }
-
-        // Node points should be deleted
-        if(globalVariables.hasSpilled(node_to_remove->aabb_index)){
-            globalAllocator.delChunk(node_to_remove->points, true, false);
-        }
-    }
-}
-
-
-
-
-
-__device__
-void createNewNodes(uint32_t first_point, uint32_t step){
-    for(uint32_t node_index = first_point; node_index < globalVariables.curNbNodes; node_index += step){
-        COctreeNode* node = globalVariables.packedNodes[node_index];
-        if(globalVariables.isNew(node->aabb_index)){
-            uint32_t index = __nv_atomic_fetch_add(&globalVariables.renderingNbNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-            globalVariables.renderingPackedNodes[index] = globalAllocator.newOctreeNodePartialCpy(node, true, false);
-        }
-    }
-}
-
-__device__
-void packRenderingNodes(uint32_t first_point, uint32_t step){
-    for(uint32_t rendering_node_index = first_point; rendering_node_index < globalVariables.renderingNbNodes; rendering_node_index += step){
-        COctreeNode* rendering_node = globalVariables.renderingPackedNodes[rendering_node_index];
-        globalVariables.renderingPackedNodes[rendering_node_index] = nullptr;
-        if(!rendering_node){continue;}
-        const CIdAABB& current_node = rendering_node->aabb_index;
-        bool found = false;
-        for(uint32_t node_index = 0; node_index < globalVariables.curNbNodes; node_index++){
-            const CIdAABB& target = globalVariables.packedNodes[node_index]->aabb_index;
-            if(current_node != target){continue;}
-            globalVariables.renderingPackedNodesTmp[node_index] = rendering_node;
-            found = true;
-            break;
-        }
-        if(!found){
-            printf("Failed to find a corresponding rendering node on packing\n");
-            customAssert();
-        }
-    }
-}
-
-
-__device__
-void updateRenderingNodes(uint32_t first_point, uint32_t step){
-    for(uint32_t node_index = first_point; node_index < globalVariables.renderingNbNodes; node_index += step){
-        globalVariables.renderingPackedNodes[node_index] = globalVariables.renderingPackedNodesTmp[node_index];   
-
-        COctreeNode* node = globalVariables.renderingPackedNodes[node_index];
-        COctreeNode* real_node = globalVariables.packedNodes[node_index];
-        node->level = real_node->level;
-        node->points_counter = real_node->points_counter;
-        node->voxels_counter = real_node->voxels_counter;
-        node->children_visibility = real_node->children_visibility;
-
-        // Copy the points if necessary
-        if(globalVariables.hasSpilled(node->aabb_index)){
-            node->points = globalAllocator.newChunkPartialCpy(real_node->points, true, false);
-        } else if(globalVariables.hasNewPoints(node->aabb_index)){
-            if(!node->points){
-                node->points = globalAllocator.newChunk(true, false);
-            }
-            CChunk* real_node_points = real_node->points;
-            CChunk* cur_node_points = node->points;
-            while(real_node_points){
-                for(uint32_t i=cur_node_points->size; i<real_node_points->size; i++){
-                    cur_node_points->points[i] = real_node_points->points[i];
-                }
-                cur_node_points->size = real_node_points->size;
-                if(real_node_points->next && !cur_node_points->next){
-                    cur_node_points->next = globalAllocator.newChunk(true, false);
-                }
-                real_node_points = real_node_points->next;
-                cur_node_points = cur_node_points->next;
-            }
-        }
-        // Copy the voxels if necessary
-        if(globalVariables.hasNewVoxels(node->aabb_index)){
-            if(!node->voxels){
-                node->voxels = globalAllocator.newChunk(true, false);
-            }
-            CChunk* real_node_voxels = real_node->voxels;
-            CChunk* cur_node_voxels = node->voxels;
-            while(real_node_voxels){
-                for(uint32_t i=cur_node_voxels->size; i<real_node_voxels->size; i++){
-                    cur_node_voxels->points[i] = real_node_voxels->points[i];
-                }
-                cur_node_voxels->size = real_node_voxels->size;
-                if(real_node_voxels->next && !cur_node_voxels->next){
-                    cur_node_voxels->next = globalAllocator.newChunk(true, false);
-                }
-                real_node_voxels = real_node_voxels->next;
-                cur_node_voxels = cur_node_voxels->next;
-            }
-        }
-
-        globalVariables.unsetFlagSync(node->aabb_index, CFlagHasNewPoints);
-        globalVariables.unsetFlagSync(node->aabb_index, CFlagHasNewVoxels);
-        globalVariables.unsetFlagSync(node->aabb_index, CFlagIsNew);
-        globalVariables.unsetFlagSync(node->aabb_index, CFlagHasSpilled);
-    }
-}
-
-
-/// Run on "MaxActiveBlocksPerMultiprocessor" cooperative blocks of size "Max block size"
-extern "C" __global__
-void kernel_create_rendereable_octree(){
-    if(!globalVariables.isInitialised){return;}
-    if(!globalVariables.isUpdating){return;}
-
-    auto grid = cg::this_grid();
-    auto block = cg::this_thread_block();
-    uint32_t nb_blocks = grid.num_blocks();
-
-    uint32_t block_id = grid.block_rank();
-    uint32_t thread_id = block.thread_rank();
-    uint32_t nb_threads_per_block = block.num_threads();
-
-    uint32_t first_point = block_id * nb_threads_per_block + thread_id;
-    uint32_t step = nb_blocks * nb_threads_per_block;
-
-    bool is_first = (block_id == 0 && thread_id == 0);
-
-    // Deallocate old rendering nodes and old chunks
-    deallocateOldNodes(first_point, step);
-    // deallocateOldNodesV2(first_point, step);
-    grid.sync();
-
-
-    if(is_first){
-        // Reset allocator
-        globalAllocator.chunksAllocator->reset_temporary_deallocations();
-        globalAllocator.nodesAllocator->reset_temporary_deallocations();
-    }
-    grid.sync();
-    
-
-    // Create new nodes
-    createNewNodes(first_point, step);
-    // createNewNodesV2(first_point, step);
-    grid.sync();
-
-
-    // Make nodes match the real nodes order
-    packRenderingNodes(first_point, step);
-    grid.sync();
-
-
-    // Finish building new nodes
-    globalVariables.renderingNbNodes = globalVariables.curNbNodes;
-    updateRenderingNodes(first_point, step);
-    grid.sync();
-
-
-    if(is_first){
-        // Reset the allocator
-        // Because "newOctreeNodePartialCpy" was called
-        globalAllocator.chunksAllocator->reset_temporary_allocations();
-        globalAllocator.nodesAllocator->reset_temporary_allocations();
-        // No grids should be allocated
-
-        globalVariables.renderingOctreeDepth = globalVariables.octreeDepth;       
-
+    if(globalVariables.isDoneLoading
+        && globalVariables.isDoneStoring // To run only on complete updates
+        && block_id == 0 && thread_id == 0 // To run only once
+    ){
         // UI values
         __nv_atomic_add(&globalVariables.nbTotalUpdates, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
     }
+}
+
+
+
+
+
+
+
+
+
+
+
+// __device__
+// void deallocateOldNodesV2(uint32_t first_point, uint32_t step){
+//     for(uint32_t node_index = first_point; node_index < globalVariables.renderingNbNodes; node_index += step){
+//         COctreeNode* node_to_remove = globalVariables.renderingPackedNodes[node_index];
+//         globalAllocator.delOctreeNode(node_to_remove, true, true, false);
+//     }
+// }
+
+// __device__
+// void createNewNodesV2(uint32_t first_point, uint32_t step){
+//     for(uint32_t node_index = first_point; node_index < globalVariables.curNbNodes; node_index += step){
+//         COctreeNode* real_node = globalVariables.packedNodes[node_index];
+//         globalVariables.renderingPackedNodes[node_index] = globalAllocator.newOctreeNodePartialCpy(real_node, true, false);
+//         COctreeNode* node = globalVariables.renderingPackedNodes[node_index];
+//         node->level = real_node->level;
+//         node->points_counter = real_node->points_counter;
+//         node->voxels_counter = real_node->voxels_counter;
+//         node->children_visibility = real_node->children_visibility;
+
+//         globalVariables.unsetFlagSync(node->aabb_index, CFlagHasNewPoints);
+//         globalVariables.unsetFlagSync(node->aabb_index, CFlagHasNewVoxels);
+//         globalVariables.unsetFlagSync(node->aabb_index, CFlagIsNew);
+//         globalVariables.unsetFlagSync(node->aabb_index, CFlagHasSpilled);
+//     }
+// }
+
+
+// __device__
+// void deallocateOldNodes(uint32_t first_point, uint32_t step){
+//     for(uint32_t node_index = first_point; node_index < globalVariables.renderingNbNodes; node_index += step){
+//         COctreeNode* node_to_remove = globalVariables.renderingPackedNodes[node_index];
+//         if(!node_to_remove){continue;}
+
+//         // Node should be deleted
+//         if(!globalVariables.isInUpdatesCache(node_to_remove->aabb_index)){
+//             globalAllocator.delOctreeNode(node_to_remove, true, true, false);
+//             globalVariables.renderingPackedNodes[node_index] = nullptr;
+//             continue;
+//         }
+
+//         // Node points should be deleted
+//         if(globalVariables.hasSpilled(node_to_remove->aabb_index)){
+//             globalAllocator.delChunk(node_to_remove->points, true, false);
+//         }
+//     }
+// }
+
+
+
+
+
+// __device__
+// void createNewNodes(uint32_t first_point, uint32_t step){
+//     for(uint32_t node_index = first_point; node_index < globalVariables.curNbNodes; node_index += step){
+//         COctreeNode* node = globalVariables.packedNodes[node_index];
+//         if(globalVariables.isNew(node->aabb_index)){
+//             uint32_t index = __nv_atomic_fetch_add(&globalVariables.renderingNbNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+//             globalVariables.renderingPackedNodes[index] = globalAllocator.newOctreeNodePartialCpy(node, true, false);
+//         }
+//     }
+// }
+
+// __device__
+// void packRenderingNodes(uint32_t first_point, uint32_t step){
+//     for(uint32_t rendering_node_index = first_point; rendering_node_index < globalVariables.renderingNbNodes; rendering_node_index += step){
+//         COctreeNode* rendering_node = globalVariables.renderingPackedNodes[rendering_node_index];
+//         globalVariables.renderingPackedNodes[rendering_node_index] = nullptr;
+//         if(!rendering_node){continue;}
+//         const CIdAABB& current_node = rendering_node->aabb_index;
+//         bool found = false;
+//         for(uint32_t node_index = 0; node_index < globalVariables.curNbNodes; node_index++){
+//             const CIdAABB& target = globalVariables.packedNodes[node_index]->aabb_index;
+//             if(current_node != target){continue;}
+//             globalVariables.renderingPackedNodesTmp[node_index] = rendering_node;
+//             found = true;
+//             break;
+//         }
+//         if(!found){
+//             printf("Failed to find a corresponding rendering node on packing\n");
+//             customAssert();
+//         }
+//     }
+// }
+
+
+// __device__
+// void updateRenderingNodes(uint32_t first_point, uint32_t step){
+//     for(uint32_t node_index = first_point; node_index < globalVariables.renderingNbNodes; node_index += step){
+//         globalVariables.renderingPackedNodes[node_index] = globalVariables.renderingPackedNodesTmp[node_index];   
+
+//         COctreeNode* node = globalVariables.renderingPackedNodes[node_index];
+//         COctreeNode* real_node = globalVariables.packedNodes[node_index];
+//         node->level = real_node->level;
+//         node->points_counter = real_node->points_counter;
+//         node->voxels_counter = real_node->voxels_counter;
+//         node->children_visibility = real_node->children_visibility;
+
+//         // Copy the points if necessary
+//         if(globalVariables.hasSpilled(node->aabb_index)){
+//             node->points = globalAllocator.newChunkPartialCpy(real_node->points, true, false);
+//         } else if(globalVariables.hasNewPoints(node->aabb_index)){
+//             if(!node->points){
+//                 node->points = globalAllocator.newChunk(true, false);
+//             }
+//             CChunk* real_node_points = real_node->points;
+//             CChunk* cur_node_points = node->points;
+//             while(real_node_points){
+//                 for(uint32_t i=cur_node_points->size; i<real_node_points->size; i++){
+//                     cur_node_points->points[i] = real_node_points->points[i];
+//                 }
+//                 cur_node_points->size = real_node_points->size;
+//                 if(real_node_points->next && !cur_node_points->next){
+//                     cur_node_points->next = globalAllocator.newChunk(true, false);
+//                 }
+//                 real_node_points = real_node_points->next;
+//                 cur_node_points = cur_node_points->next;
+//             }
+//         }
+//         // Copy the voxels if necessary
+//         if(globalVariables.hasNewVoxels(node->aabb_index)){
+//             if(!node->voxels){
+//                 node->voxels = globalAllocator.newChunk(true, false);
+//             }
+//             CChunk* real_node_voxels = real_node->voxels;
+//             CChunk* cur_node_voxels = node->voxels;
+//             while(real_node_voxels){
+//                 for(uint32_t i=cur_node_voxels->size; i<real_node_voxels->size; i++){
+//                     cur_node_voxels->points[i] = real_node_voxels->points[i];
+//                 }
+//                 cur_node_voxels->size = real_node_voxels->size;
+//                 if(real_node_voxels->next && !cur_node_voxels->next){
+//                     cur_node_voxels->next = globalAllocator.newChunk(true, false);
+//                 }
+//                 real_node_voxels = real_node_voxels->next;
+//                 cur_node_voxels = cur_node_voxels->next;
+//             }
+//         }
+
+//         globalVariables.unsetFlagSync(node->aabb_index, CFlagHasNewPoints);
+//         globalVariables.unsetFlagSync(node->aabb_index, CFlagHasNewVoxels);
+//         globalVariables.unsetFlagSync(node->aabb_index, CFlagIsNew);
+//         globalVariables.unsetFlagSync(node->aabb_index, CFlagHasSpilled);
+//     }
+// }
+
+
+// /// Run on "MaxActiveBlocksPerMultiprocessor" cooperative blocks of size "Max block size"
+// extern "C" __global__
+// void kernel_create_rendereable_octree(){
+//     if(!globalVariables.isInitialised){return;}
+//     if(!globalVariables.isUpdating){return;}
+
+//     auto grid = cg::this_grid();
+//     auto block = cg::this_thread_block();
+//     uint32_t nb_blocks = grid.num_blocks();
+
+//     uint32_t block_id = grid.block_rank();
+//     uint32_t thread_id = block.thread_rank();
+//     uint32_t nb_threads_per_block = block.num_threads();
+
+//     uint32_t first_point = block_id * nb_threads_per_block + thread_id;
+//     uint32_t step = nb_blocks * nb_threads_per_block;
+
+//     bool is_first = (block_id == 0 && thread_id == 0);
+
+//     // Deallocate old rendering nodes and old chunks
+//     deallocateOldNodes(first_point, step);
+//     // deallocateOldNodesV2(first_point, step);
+//     grid.sync();
+
+
+//     if(is_first){
+//         // Reset allocator
+//         globalAllocator.chunksAllocator->reset_temporary_deallocations();
+//         globalAllocator.nodesAllocator->reset_temporary_deallocations();
+//     }
+//     grid.sync();
+    
+
+//     // Create new nodes
+//     createNewNodes(first_point, step);
+//     // createNewNodesV2(first_point, step);
+//     grid.sync();
+
+
+//     // Make nodes match the real nodes order
+//     packRenderingNodes(first_point, step);
+//     grid.sync();
+
+
+//     // Finish building new nodes
+//     globalVariables.renderingNbNodes = globalVariables.curNbNodes;
+//     updateRenderingNodes(first_point, step);
+//     grid.sync();
+
+
+//     if(is_first){
+//         // Reset the allocator
+//         // Because "newOctreeNodePartialCpy" was called
+//         globalAllocator.chunksAllocator->reset_temporary_allocations();
+//         globalAllocator.nodesAllocator->reset_temporary_allocations();
+//         // No grids should be allocated
+
+//         globalVariables.renderingOctreeDepth = globalVariables.octreeDepth;       
+
+//         // UI values
+//         __nv_atomic_add(&globalVariables.nbTotalUpdates, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+//     }
 
     // // Sanity check
     // grid.sync();
@@ -588,4 +613,4 @@ void kernel_create_rendereable_octree(){
     //         customAssert();
     //     }
     // }
-}
+// }
