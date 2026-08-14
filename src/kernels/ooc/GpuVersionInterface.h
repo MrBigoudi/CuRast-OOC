@@ -358,7 +358,6 @@ enum CNodeFlagType {
 	CFlagIsInUpdatesCache,
 
 	// Pads to be replaced on need
-	CFlagPad23,
 	CFlagPad24,
 	CFlagPad25,
 	CFlagPad26,
@@ -373,6 +372,7 @@ enum CNodeFlagType {
 	CFlagIsLarge,
 	CFlagIsCut,
 	CFlagIsInVisibilityCache,
+	CFlagIsFromVoxelInVisibilityCache,
 
 	// For rendering recreation
 	CFlagHasNewPoints,
@@ -651,6 +651,7 @@ struct CGlobalVariables {
 	uint32_t maxNbPointsChunksPerExchangedNode = 0;
 	uint32_t maxNbVoxelsChunksPerExchangedNode = 0;
 	CIdAABB* exchangedAABBIndices = nullptr;
+	CIdAABB* exchangedAABBParentsIndices = nullptr;
 	CAABB* exchangedAABBs = nullptr;
 	uint32_t* exchangedChildrenIds = nullptr;
 	uint32_t* exchangedPointsCounters = nullptr;
@@ -860,6 +861,9 @@ struct CGlobalVariables {
 	}
 	__device__ __forceinline__ bool isInVisibilityCache(const CIdAABB& aabb_index) const {
 		return getFlagSync(aabb_index, CFlagIsInVisibilityCache);
+	}
+	__device__ __forceinline__ bool isFromVoxelInVisibilityCache(const CIdAABB& aabb_index) const {
+		return getFlagSync(aabb_index, CFlagIsFromVoxelInVisibilityCache);
 	}
 	__device__ __forceinline__ bool isFirstVisitedInStack(const CIdAABB& aabb_index) const {
 		return getFlagSync(aabb_index, CFlagIsFirstVisitedInStack);

@@ -50,6 +50,7 @@ struct OocSimLodSettings {
     static inline uint32_t DEVICE_ATTRIBUTE_MAX_GRID_DIM_X;
     static inline uint32_t DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y;
     static inline uint32_t DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z;
+    static inline uint32_t DEVICE_ATTRIBUTE_MAX_GRID_SIZE_FOR_MAX_BLOCK_SIZE;
 
 
 

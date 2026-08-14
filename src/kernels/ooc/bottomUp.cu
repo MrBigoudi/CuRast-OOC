@@ -1,7 +1,7 @@
 #include "utils.cuh"
 
 
-/// Run on "NB SMs" * "Max threads per SM" blocks of size 1
+/// Run on floor("NB SMs" * "Max threads per SM" / "Max threads per block") blocks of size "Max threads per block"
 /// Each thread is filling independently it's own counter before combining all of them
 extern "C" __global__
 void kernel_bottom_up_update_part_1_counting(){

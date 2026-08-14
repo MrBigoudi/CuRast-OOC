@@ -73,6 +73,7 @@ size = 12b
 | Buffer | Formula | Default | Size |
 |---|---|---|---|
 | `exchangedAABBIndices` | `MAX_NB_NODES_TO_EXCHANGE * 4b` | 256 | 1 kb |
+| `exchangedAABBParentsIndices` | `MAX_NB_NODES_TO_EXCHANGE * 4b` | 256 | 1 kb |
 | `exchangedAABBs` | `MAX_NB_NODES_TO_EXCHANGE * 24b` | 256 | 6 kb |
 | `exchangedChildrenIds` | `MAX_NB_NODES_TO_EXCHANGE * 4b` | 256 | 1 kb |
 | `exchangedPointsCounters` | `MAX_NB_NODES_TO_EXCHANGE * 4b` | 256 | 1 kb |
@@ -123,7 +124,7 @@ size = 12b
 
 | Buffer | Formula | Default | Size |
 |---|---|---|---|
-| `chunksAllocator` | `NB_ALLOCABLE_CHUNKS * (80b + 16400b + 8b) + 48b` | 32,768 * 16,488b + 48b | 540 Mb |
+| `chunksAllocator` | `NB_ALLOCABLE_CHUNKS * (80b + 16400b + 8b) + 48b` | 65,536 * 16,488b + 48b | 1.08 Gb |
 | `gridsAllocator` | `NB_ALLOCABLE_GRIDS * (80b + 262kb + 4b) + 48b` | 1,024 * 262,228b + 48b | 268 Mb |
 | `nodesAllocator` | `NB_ALLOCABLE_NODES * (80b + 144b + 8b) + 48b` | 8,192 * 232b + 48b | 1.9 Mb |
 
@@ -132,10 +133,10 @@ size = 12b
 ## Total
 
 ```
-36Mb + 4Mb + 8Mb + 8Mb + 8Mb + 8Mb + 1kb + 6kb + 1kb + 1kb + 1kb + 268Mb + 1.073Gb
+36Mb + 4Mb + 8Mb + 8Mb + 8Mb + 8Mb + 1kb + 1kb + 6kb + 1kb + 1kb + 1kb + 268Mb + 1.073Gb
 + 16b + 16b + 4Mb + 80Mb + 80Mb + 80Mb + 20Mb + 20Mb + 52kb + 4kb + 16Mb + 8Mb
-+ 80Mb + 40Mb + 540Mb + 268Mb + 1.9
-= 2.65 Gb
++ 80Mb + 40Mb + 1.08Gb + 268Mb + 1.9
+= 3.19 Gb
 ```
 
 | | |

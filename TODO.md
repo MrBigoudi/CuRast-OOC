@@ -1,10 +1,14 @@
 # TODO list
 
-- Display number of points + flow rate
-
-- Automatically fetch CPU / GPU capacities to set the constants + measure size of each structs + each buffers on GPU side
 - Use nsight systems to find the bottlenecks and fix them
 
+- Fix the "too many nodes store / load" issue by looping multiple times through the load / store kernels
+- Make the "exchangedVoxels / Points" unrelated to the number of nodes that can be exchanged; instead just have a fixed number of exchangeable chunks (this might reduce the sizes of the structures, allowing for more nbExchangeable nodes)
+- On load, is it necessary to send all points / voxels ? Can we instead just send the counters (for the points)? and maybe an octree (for the voxels)?
+
+
+- Automatically fetch CPU / GPU capacities to set the constants + measure size of each structs + each buffers on GPU side
+- Figure out why visibility cache rendering is wrong
 
 ## Next steps (in priority order)
 

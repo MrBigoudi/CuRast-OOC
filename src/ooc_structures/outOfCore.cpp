@@ -86,7 +86,7 @@ CPUFallbackCache::Entry::Entry(const OctreeNode* node){
 }
 
 /// A constructor from an existing node
-CPUFallbackCache::Entry::Entry(const HostStorageNode* node){
+CPUFallbackCache::Entry::Entry(const std::shared_ptr<HostStorageNode> node){
     serializable_node = {};
     serializable_node.points_counter = node->node.points_counter;
     serializable_node.voxels_counter = node->node.voxels_counter;
@@ -129,11 +129,19 @@ CPUFallbackCache::Entry CPUFallbackCache::Entry::deserialize(const IdAABB& aabb_
 }
 
 /// A constructor which is deserialized from an aabb
-HostStorageNode* OctreeNodeSerializable::deserializeV2(const CIdAABB& aabb_index, const std::string& msg){
-    HostStorageNode* new_node = new HostStorageNode();
+std::shared_ptr<HostStorageNode> OctreeNodeSerializable::deserializeV2(const CIdAABB& aabb_index, const std::string& msg){
+    std::shared_ptr<HostStorageNode> new_node = std::make_shared<HostStorageNode>();
     OctreeNodeSerializable serializable_node = OctreeNodeSerializable::deserialize(getNodeFilePathV2(aabb_index), msg);
 
+    new_node->node.aabb_index = serializable_node.aabb_index;
+    new_node->node.children_ids = serializable_node.children_ids;
+    new_node->node.aabb.mins = serializable_node.aabb.mins;
+    new_node->node.aabb.maxs = serializable_node.aabb.maxs;
+
+    new_node->node.voxels_counter = serializable_node.voxels_counter;
     new_node->node.points_counter = serializable_node.points_counter;
+
+
     if(new_node->node.points_counter > 0){
         ChunkSerializable loaded_points = ChunkSerializable::deserialize(
             getChunkFilePathV2(aabb_index, false)
@@ -175,7 +183,7 @@ HostStorageNode* OctreeNodeSerializable::deserializeV2(const CIdAABB& aabb_index
             }
         }
     }
-
+    
     return new_node;
 }
 
@@ -425,7 +433,7 @@ void OctreeNodeSerializable::serialize(const OctreeNode* node){
     stored_node.serialize(getNodeFilePath(aabb));
 }
 
-void OctreeNodeSerializable::serializeV2(const HostStorageNode* node){
+void OctreeNodeSerializable::serializeV2(const std::shared_ptr<HostStorageNode> node){
     const CPUFallbackCache::Entry to_store = CPUFallbackCache::Entry(node);
     const OctreeNodeSerializable& stored_node = to_store.serializable_node;
     if(to_store.serializable_points.has_value()){

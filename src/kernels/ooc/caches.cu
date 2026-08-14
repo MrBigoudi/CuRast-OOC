@@ -66,7 +66,7 @@ void kernel_update_updates_cache(){
 }
 
 
-/// Run on "NB SMs" * "Max threads per SM" blocks of size 1
+/// Run on floor("NB SMs" * "Max threads per SM" / "Max threads per block") blocks of size "Max threads per block"
 extern "C" __global__
 void kernel_prepare_store_part_1_filling_buffers(){
     if(!globalVariables.isInitialised){return;}
@@ -79,9 +79,9 @@ void kernel_prepare_store_part_1_filling_buffers(){
     for(uint32_t node_index = thread_id; node_index < globalVariables.curNbNodes; node_index += nb_threads){
 
         COctreeNode* node = globalVariables.packedNodes[node_index];
-        for(uint32_t i=0; i<CFlagIsVisible; i++){
-            globalVariables.unsetFlagSync(node->aabb_index, (CNodeFlagType)i);
-        }
+        // Unset falgs
+        constexpr uint32_t clear_mask = (1u << CFlagIsVisible) - 1u;
+        __nv_atomic_and(&globalVariables.nodesFlags[node->aabb_index], ~clear_mask, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
 
         if(!globalVariables.updatesCache->contains(node->aabb_index)){
             uint32_t exchanged_index = __nv_atomic_fetch_add(&globalVariables.nbNodesExchanged, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
@@ -93,6 +93,7 @@ void kernel_prepare_store_part_1_filling_buffers(){
 
             // Storing node properties
             globalVariables.exchangedAABBIndices[exchanged_index] = node->aabb_index;
+            globalVariables.exchangedAABBParentsIndices[exchanged_index] = globalVariables.relationshipMap[node->aabb_index].parent;
             globalVariables.exchangedAABBs[exchanged_index] = node->aabb;
             globalVariables.exchangedChildrenIds[exchanged_index] = node->children_ids;
             globalVariables.exchangedPointsCounters[exchanged_index] = node->points_counter;
@@ -160,7 +161,7 @@ void kernel_prepare_store_part_1_filling_buffers(){
 
 
 
-/// Run on "NB SMs" * "Max threads per SM" blocks of size 1
+/// Run on floor("NB SMs" * "Max threads per SM" / "Max threads per block") blocks of size "Max threads per block"
 extern "C" __global__
 void kernel_prepare_store_part_2_resetting_children(){
     if(!globalVariables.isInitialised){return;}

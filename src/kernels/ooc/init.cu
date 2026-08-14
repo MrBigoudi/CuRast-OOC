@@ -6,60 +6,51 @@ __device__ CMemoryAllocator globalAllocator;
 
 
 template<typename T>
-__device__ void initAllocatorPool(uint32_t thread_id, void* pool){
+__device__ void initAllocatorPoolObjects(uint32_t thread_id, uint32_t nb_threads, void* pool){
     CAllocatorPool<T>* allocator = reinterpret_cast<CAllocatorPool<T>*>(pool);
-
     uint64_t alignment = alignof(T);
     uint64_t aligned_size = sizeof(T) + ((alignment - (sizeof(T) % alignment)) % alignment);
     char* base = reinterpret_cast<char*>(allocator->allocated_memory);
 
-    // Init empty entries
-    auto it = allocator->elements->begin();
-    uint64_t i = 0;
-    while(it){
-        T* tmp_key = (T*)(base + i*aligned_size);
-        uint32_t key = (uint32_t)((allocator->elements_map->hashMurmur(tmp_key)) % allocator->CAPACITY);
-        if(key == thread_id){
-            typename CAllocatorPool<T>::Entry* entry = it->value;
-            entry->value = new (base + i*aligned_size) T();
-            allocator->elements_map->insertOrReplace(entry->value, it);
-        }
-        allocator->deallocated_memory[i] = nullptr;
-        i++;
-        it = it->next;
+    // Everything (Entry <-> pool-slot links, elements_map buckets) was already
+    // wired up on the host before this kernel launched. All that's left is
+    // running T's constructor over each slot — a plain grid-stride loop,
+    // no `new`, no hashing, no list walking, no device heap traffic at all.
+    for(uint32_t i = thread_id; i < allocator->CAPACITY; i += nb_threads){
+        new (base + (uint64_t)i * aligned_size) T();
     }
 }
 
-__device__ void initChunksAllocator(uint32_t thread_id) {
-    initAllocatorPool<CChunk>(thread_id, globalAllocator.chunksAllocator);
+__device__ void initChunksAllocator(uint32_t thread_id, uint32_t nb_threads) {
+    initAllocatorPoolObjects<CChunk>(thread_id, nb_threads, globalAllocator.chunksAllocator);
+}
+__device__ void initGridsAllocator(uint32_t thread_id, uint32_t nb_threads) {
+    initAllocatorPoolObjects<COccupancyGrid>(thread_id, nb_threads, globalAllocator.gridsAllocator);
+}
+__device__ void initNodesAllocator(uint32_t thread_id, uint32_t nb_threads) {
+    initAllocatorPoolObjects<COctreeNode>(thread_id, nb_threads, globalAllocator.nodesAllocator);
 }
 
-__device__ void initGridsAllocator(uint32_t thread_id) {
-    initAllocatorPool<COccupancyGrid>(thread_id, globalAllocator.gridsAllocator);
-}
 
-__device__ void initNodesAllocator(uint32_t thread_id) {
-    initAllocatorPool<COctreeNode>(thread_id, globalAllocator.nodesAllocator);
-}
-
-
-/// Run on "NB SMs" * "Max threads per SM" blocks of size 1
+/// Run on floor("NB SMs" * "Max threads per SM" / "Max threads per block") blocks of size "Max threads per block"
 extern "C" __global__
 void kernel_init_global_allocators(){
     auto grid = cg::this_grid();
     uint32_t thread_id = grid.thread_rank();
+    uint32_t nb_threads = grid.num_threads();
 
-    initChunksAllocator(thread_id);
-    initGridsAllocator(thread_id);
-    initNodesAllocator(thread_id);
+    initChunksAllocator(thread_id, nb_threads);
+    initGridsAllocator(thread_id, nb_threads);
+    initNodesAllocator(thread_id, nb_threads);
 }
 
-/// Run on "NB SMs" * "Max threads per SM" blocks of size 1
+/// Run on floor("NB SMs" * "Max threads per SM" / "Max threads per block") blocks of size "Max threads per block"
 extern "C" __global__
 void kernel_init_global_buffers(){
     auto grid = cg::this_grid();
     uint32_t thread_id = grid.thread_rank();
     uint32_t nb_threads = grid.num_threads();
+
 
     for(uint32_t i = thread_id; i < globalVariables.maxNbConcurrentNodes; i += nb_threads){
         globalVariables.relationshipMap[thread_id] = CGlobalVariables::Relationship();
@@ -111,7 +102,7 @@ void kernel_init_global_buffers(){
 
 
 
-/// Run on "NB SMs" * "Max threads per SM" blocks of size 1
+/// Run on floor("NB SMs" * "Max threads per SM" / "Max threads per block") blocks of size "Max threads per block"
 /// Each thread is filling independently it's own bounding box before combining all of them
 extern "C" __global__
 void kernel_init_octree_part_1_aabb_measuring(){

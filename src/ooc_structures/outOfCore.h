@@ -49,8 +49,8 @@ struct OctreeNodeSerializable {
     static void serialize(const OctreeNode* node);
     static OctreeNode* toOctreeNode(const IdAABB& node_aabb_index);
     
-    static void serializeV2(const HostStorageNode* node);
-    static HostStorageNode* deserializeV2(const CIdAABB& aabb_index, const std::string& msg = "");
+    static void serializeV2(const std::shared_ptr<HostStorageNode> node);
+    static std::shared_ptr<HostStorageNode> deserializeV2(const CIdAABB& aabb_index, const std::string& msg = "");
 
     private:
         // helpers
@@ -73,7 +73,7 @@ struct CPUFallbackCache {
         Entry(){}
 		/// A constructor from an existing node
 		Entry(const OctreeNode* node);
-		Entry(const HostStorageNode* node);
+		Entry(const std::shared_ptr<HostStorageNode> node);
         /// A constructor which is deserialized from an aabb
         static Entry deserialize(const IdAABB& aabb_index);
 

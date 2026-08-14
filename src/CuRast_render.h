@@ -791,6 +791,9 @@ void CuRast::draw(Scene* scene, vector<View> views){
 			dvlist.push_back({"    # current grids      ", format("{:40L}  ", GpuVersionUI::currentNbGrids)});
 			dvlist.push_back({"    # current points     ", format("{:40L}  ", GpuVersionUI::currentNbPoints)});
 			dvlist.push_back({"    # current voxels     ", format("{:40L}  ", GpuVersionUI::currentNbVoxels)});
+			dvlist.push_back({"    # current vis nodes  ", format("{:40L}  ", GpuVersionUI::visNbNodes)});
+			dvlist.push_back({"    # current vis points ", format("{:40L}  ", GpuVersionUI::visNbPoints)});
+			dvlist.push_back({"    # current vis voxels ", format("{:40L}  ", GpuVersionUI::visNbVoxels)});
 			dvlist.push_back({"Current update:          ", format("{:40L}  ", GpuVersionUI::nbTotalUpdates)});
 			dvlist.push_back({"    # new points         ", format("{:40L}  ", GpuVersionUI::nbNewPointsThisUpdate)});
 			dvlist.push_back({"    # new voxels         ", format("{:40L}  ", GpuVersionUI::nbNewVoxelsThisUpdate)});

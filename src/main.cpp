@@ -616,11 +616,11 @@ int main(int argc, char** argv){
 						GpuVersion::updateOctree(editor, context);
 					}
 				}, CuRast::instance, &context);
-				thread_octree_visibility = new std::thread([&](CuRast* editor, CUcontext* context){
-					while(!GlobalVariables::mainLoopIsTerminating){
-						GpuVersion::visibilityUpdate(editor, context);
-					}
-				}, CuRast::instance, &context);
+				// thread_octree_visibility = new std::thread([&](CuRast* editor, CUcontext* context){
+				// 	while(!GlobalVariables::mainLoopIsTerminating){
+				// 		GpuVersion::visibilityUpdate(editor, context);
+				// 	}
+				// }, CuRast::instance, &context);
 			}
 		}
 
@@ -690,6 +690,7 @@ int main(int argc, char** argv){
 				if(OocSimLodSettings::IS_USING_GPU_VERSION){
 					if(!OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 						GpuVersion::updateOctree(CuRast::instance, &context);
+						// GpuVersion::visibilityUpdate(CuRast::instance, &context);
 					}
 					GpuVersion::takeRandomScreenShots();
 				}

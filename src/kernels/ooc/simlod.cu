@@ -1,7 +1,7 @@
 #include "utils.cuh"
 
 /// Prepare the nodes that need to be loaded
-/// Run on "NB SMs" * "Max threads per SM" blocks of size 1
+/// Run on floor("NB SMs" * "Max threads per SM" / "Max threads per block") blocks of size "Max threads per block"
 /// TODO:
 /// Later, if a point is contained in a leaf that was previously stored, put the point aside
 /// For now, load them directly after this kernel launch
@@ -92,18 +92,33 @@ __device__ __forceinline__ CChunk* addPointToChunk(CChunk* initial_chunk, const 
     return cur_chunk;
 }
 
+__device__
+void reallocateChunks(CChunk* root_chunk, uint32_t required_chunks, uint32_t total_counter){
+    CChunk* cur_chunk = root_chunk;
+    for(uint32_t i=1; i<required_chunks; i++){
+        if(!cur_chunk->next){cur_chunk->next = globalAllocator.newChunk(true);}
+        cur_chunk->size = OocSimLodSettings::NB_POINTS_PER_CHUNK;
+        cur_chunk = cur_chunk->next;
+    }
+    if(cur_chunk){cur_chunk->size = total_counter % OocSimLodSettings::NB_POINTS_PER_CHUNK;}
+};
 
-/// Run on "maxNbNodesExchanged" threads
+
+/// Run on "maxNbNodesExchanged" blocks of size "Max threads per block"
 /// Load the newly exchanged nodes
 extern "C" __global__
 void kernel_simlod_load_part_2_rebuilding_nodes(){
     if(!globalVariables.isInitialised){return;}
 
     auto grid = cg::this_grid();
-    uint32_t thread_id = grid.thread_rank();
-    uint32_t nb_threads = grid.num_threads();
+    auto block = cg::this_thread_block();
+    uint32_t nb_blocks = grid.num_blocks();
 
-    for(uint32_t exchanged_index = thread_id; exchanged_index < globalVariables.nbNodesExchanged; exchanged_index += nb_threads){
+    uint32_t block_id = grid.block_rank();
+    uint32_t thread_id = block.thread_rank();
+    uint32_t nb_threads_per_block = block.num_threads();
+
+    for(uint32_t exchanged_index = block_id; exchanged_index < globalVariables.nbNodesExchanged; exchanged_index += nb_blocks){
 
         CIdAABB aabb_index = globalVariables.exchangedAABBIndices[exchanged_index];
         CAABB aabb = globalVariables.exchangedAABBs[exchanged_index];
@@ -113,66 +128,70 @@ void kernel_simlod_load_part_2_rebuilding_nodes(){
         CPoint* points = globalVariables.exchangedPoints[exchanged_index];
         CPoint* voxels = globalVariables.exchangedVoxels[exchanged_index];
 
-        // UI values
-        __nv_atomic_add(&globalVariables.currentNbPoints, nb_points, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-        __nv_atomic_add(&globalVariables.currentNbVoxels, nb_voxels, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+        // Allocate the chunks
+        if(thread_id == 0){ // If first thread of block
+            // UI values
+            __nv_atomic_add(&globalVariables.currentNbPoints, nb_points, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            __nv_atomic_add(&globalVariables.currentNbVoxels, nb_voxels, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            
+            // TODO: parallelise
+            COctreeNode* loaded_node = globalAllocator.newOctreeNode(aabb_index, true);
+            uint32_t node_index = __nv_atomic_fetch_add(&globalVariables.curNbNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            globalVariables.packedNodes[node_index] = loaded_node;
 
-        COctreeNode* loaded_node = globalAllocator.newOctreeNode(aabb_index, true);
-        uint32_t node_index = __nv_atomic_fetch_add(&globalVariables.curNbNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-        globalVariables.packedNodes[node_index] = loaded_node;
+            loaded_node->aabb = aabb;
+            loaded_node->children_ids = children_ids;
+            loaded_node->points_counter = nb_points;
+            loaded_node->voxels_counter = nb_voxels;
+            loaded_node->points_stored = nb_points;
+            loaded_node->voxels_stored = nb_voxels;
+            globalVariables.setFlagSync(aabb_index, CFlagIsUpdated);
 
-        loaded_node->aabb = aabb;
-        loaded_node->children_ids = children_ids;
-        loaded_node->points_counter = nb_points;
-        loaded_node->voxels_counter = nb_voxels;
-        loaded_node->points_stored = nb_points;
-        loaded_node->voxels_stored = nb_voxels;
-        globalVariables.setFlagSync(aabb_index, CFlagIsUpdated);
-
-        // Rebuild points
-        if(nb_points > 0){
-            loaded_node->points = globalAllocator.newChunk(true);
-            CChunk* cur_chunk = loaded_node->points;
-            for(uint32_t i=0; i<nb_points; i++){
-                const CPoint& cur_point = points[i];
-                cur_chunk = addPointToChunk(cur_chunk, cur_point);
-            }
-        }
-
-        // Rebuild voxels
-        if(nb_voxels > 0){
-            // Rebuild occupancy
-            loaded_node->occupancy = globalAllocator.newOccupancyGrid(true);
-            uint32_t grid_index = __nv_atomic_fetch_add(&globalVariables.nbGridsToInit, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-            globalVariables.gridsToInit[grid_index] = loaded_node;
-
-            loaded_node->voxels = globalAllocator.newChunk(true);
-            CChunk* cur_chunk = loaded_node->voxels;
-            for(uint32_t i=0; i<nb_voxels; i++){
-                const CPoint& cur_point = voxels[i];
-                cur_chunk = addPointToChunk(cur_chunk, cur_point);
-            }
-        }
-
-        // Find parent if needed
-        COctreeNode* potential_parent = globalVariables.renderingPackedNodesTmp[exchanged_index];
-        if(potential_parent->aabb_index == globalVariables.relationshipMap[aabb_index].parent){
-            globalVariables.setFlagSync(potential_parent->aabb_index, CFlagIsUpdated);
-            bool found = false;
-            for(uint32_t i=0; i<8; i++){
-                if(globalVariables.relationshipMap[potential_parent->aabb_index].children[i] == aabb_index){
-                    if(potential_parent->children[i] != nullptr){
-                        printf("At this point, the children should not exist\n");
-                        customAssert();
-                    }
-                    potential_parent->children[i] = loaded_node;
-                    found = true;
-                    break;
+            // Rebuild points
+            if(nb_points > 0){
+                loaded_node->points = globalAllocator.newChunk(true);
+                CChunk* cur_chunk = loaded_node->points;
+                for(uint32_t i=0; i<nb_points; i++){
+                    const CPoint& cur_point = points[i];
+                    cur_chunk = addPointToChunk(cur_chunk, cur_point);
                 }
             }
-            if(!found){
-                printf("The parent doesn't contain the wanted child\n");
-                customAssert();
+
+            // Rebuild voxels
+            if(nb_voxels > 0){
+                // Rebuild occupancy
+                loaded_node->occupancy = globalAllocator.newOccupancyGrid(true);
+                uint32_t grid_index = __nv_atomic_fetch_add(&globalVariables.nbGridsToInit, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+                globalVariables.gridsToInit[grid_index] = loaded_node;
+
+                loaded_node->voxels = globalAllocator.newChunk(true);
+                CChunk* cur_chunk = loaded_node->voxels;
+                for(uint32_t i=0; i<nb_voxels; i++){
+                    const CPoint& cur_point = voxels[i];
+                    cur_chunk = addPointToChunk(cur_chunk, cur_point);
+                }
+            }
+
+            // Find parent if needed
+            COctreeNode* potential_parent = globalVariables.renderingPackedNodesTmp[exchanged_index];
+            if(potential_parent->aabb_index == globalVariables.relationshipMap[aabb_index].parent){
+                globalVariables.setFlagSync(potential_parent->aabb_index, CFlagIsUpdated);
+                bool found = false;
+                for(uint32_t i=0; i<8; i++){
+                    if(globalVariables.relationshipMap[potential_parent->aabb_index].children[i] == aabb_index){
+                        if(potential_parent->children[i] != nullptr){
+                            printf("At this point, the children should not exist\n");
+                            customAssert();
+                        }
+                        potential_parent->children[i] = loaded_node;
+                        found = true;
+                        break;
+                    }
+                }
+                if(!found){
+                    printf("The parent doesn't contain the wanted child\n");
+                    customAssert();
+                }
             }
         }
     }
@@ -180,7 +199,7 @@ void kernel_simlod_load_part_2_rebuilding_nodes(){
 }
 
 
-/// Run on "maxNbNodesExchanged" threads
+/// Run on "maxNbNodesExchanged" blocks of size "Max threads per block"
 /// Rebuild the relationships of the loaded nodes
 extern "C" __global__
 void kernel_simlod_load_part_3_rebuilding_children(){
@@ -190,47 +209,67 @@ void kernel_simlod_load_part_3_rebuilding_children(){
     globalVariables.nbGridsToInit = 0;
 
     auto grid = cg::this_grid();
-    uint32_t thread_id = grid.thread_rank();
-    uint32_t nb_threads = grid.num_threads();
+    auto block = cg::this_thread_block();
+    uint32_t nb_blocks = grid.num_blocks();
+
+    uint32_t block_id = grid.block_rank();
+    uint32_t thread_id = block.thread_rank();
+    uint32_t nb_threads_per_block = block.num_threads();
 
     uint32_t first_node = globalVariables.curNbNodes - globalVariables.nbNodesExchanged;
-    for(uint32_t node_index = first_node + thread_id; node_index < globalVariables.curNbNodes; node_index += nb_threads){
-        COctreeNode* cur_node = globalVariables.packedNodes[node_index];
+    for(uint32_t node_index = first_node + block_id; node_index < globalVariables.curNbNodes; node_index += nb_blocks){
 
-        uint32_t child_aabbs[8] = {
-            CINVALID_ID, CINVALID_ID, CINVALID_ID, CINVALID_ID,
-            CINVALID_ID, CINVALID_ID, CINVALID_ID, CINVALID_ID
-        };
-        uint32_t to_find = 0;
-        for(uint32_t i=0; i<8; i++){
-            if(cur_node->children[i]){
-                printf("ERROR: a newly loaded node should not have children already initialised\n");
-                customAssert();
+        if(thread_id == 0){ // If first thread of block
+            // TODO: parallelise
+            COctreeNode* cur_node = globalVariables.packedNodes[node_index];
+
+            uint32_t child_aabbs[8] = {
+                CINVALID_ID, CINVALID_ID, CINVALID_ID, CINVALID_ID,
+                CINVALID_ID, CINVALID_ID, CINVALID_ID, CINVALID_ID
+            };
+            uint32_t to_find = 0;
+            for(uint32_t i=0; i<8; i++){
+                if(cur_node->children[i]){
+                    printf("ERROR: a newly loaded node should not have children already initialised\n");
+                    customAssert();
+                }
+                child_aabbs[i] = globalVariables.relationshipMap[cur_node->aabb_index].children[i];
+                if(child_aabbs[i] != CINVALID_ID){to_find++;}
             }
-            child_aabbs[i] = globalVariables.relationshipMap[cur_node->aabb_index].children[i];
-            if(child_aabbs[i] != CINVALID_ID){to_find++;}
-        }
-        uint32_t nb_found = 0;
-        for(uint32_t i=first_node; i<globalVariables.curNbNodes; i++){
-            if(nb_found == to_find){break;}
-            COctreeNode* potential_node = globalVariables.packedNodes[i];
-            for(uint32_t child=0; child<8; child++){
-                if(child_aabbs[child] == potential_node->aabb_index){
-                    cur_node->children[child] = potential_node;
-                    nb_found++;
-                    break;
+            uint32_t nb_found = 0;
+            for(uint32_t i=first_node; i<globalVariables.curNbNodes; i++){
+                if(nb_found == to_find){break;}
+                COctreeNode* potential_node = globalVariables.packedNodes[i];
+                for(uint32_t child=0; child<8; child++){
+                    if(child_aabbs[child] == potential_node->aabb_index){
+                        cur_node->children[child] = potential_node;
+                        nb_found++;
+                        break;
+                    }
                 }
             }
-        }
 
-        // Flag the node as not needing to be loaded anymore
-        globalVariables.unsetFlagSync(cur_node->aabb_index, CFlagToLoad);
-        globalVariables.setFlagSync(cur_node->aabb_index, CFlagIsNew);
+            // Flag the node as not needing to be loaded anymore
+            globalVariables.unsetFlagSync(cur_node->aabb_index, CFlagToLoad);
+            globalVariables.setFlagSync(cur_node->aabb_index, CFlagIsNew);
+        }
     }
 
-    if(thread_id==0){
-        // Because "newChunk" was called in part 3
-        globalAllocator.chunksAllocator->reset_temporary_allocations();
+    if(block_id == 0){
+        if(thread_id == 0){
+            // Because "newChunk" was called in part 3
+            globalAllocator.chunksAllocator->reset_temporary_allocations();
+        }
+        
+        if((nb_threads_per_block > 32 && thread_id == 32) || (thread_id == 0)){
+            // Because "newOctreeNode" was called in part 3
+            globalAllocator.nodesAllocator->reset_temporary_allocations();
+        }
+        
+        if((nb_threads_per_block > 64 && thread_id == 64) || (thread_id == 0)){
+            // Because "newOccupancyGrid" was called in part 3
+            globalAllocator.gridsAllocator->reset_temporary_allocations();
+        }
 
         // // Sanity check
         // for(uint32_t i = first_node; i < globalVariables.curNbNodes; i++){
@@ -249,18 +288,6 @@ void kernel_simlod_load_part_3_rebuilding_children(){
         //         customAssert();
         //     }
         // }
-    } 
-    
-    // try to avoid being on the same warp
-    if((nb_threads >= 32 && thread_id==32) || (nb_threads < 32 && thread_id==0)){
-        // Because "newOctreeNode" was called in part 3
-        globalAllocator.nodesAllocator->reset_temporary_allocations();
-    }
-
-    // try to avoid being on the same warp
-    if((nb_threads >= 64 && thread_id==64) || (nb_threads < 64 && thread_id==0)){
-        // Because "newOccupancyGrid" was called in part 3
-        globalAllocator.gridsAllocator->reset_temporary_allocations();
     }
 }
 
@@ -493,7 +520,8 @@ void kernel_simlod_count_split(){
 
 
 __device__
-void sampleVoxel(const CPoint& point, uint32_t thread_id, uint32_t nb_threads){
+// void sampleVoxel(const CPoint& point, uint32_t thread_id, uint32_t nb_threads){
+void sampleVoxel(const CPoint& point){
     COctreeNode* cur_node = globalVariables.mainOctree;
     
     uint32_t level = 0;
@@ -506,7 +534,7 @@ void sampleVoxel(const CPoint& point, uint32_t thread_id, uint32_t nb_threads){
         CNodePosition child_position = aabb.getNextChildIndex(point.position);
         if(!cur_node->children[child_position]){return;}
 
-        if(level % nb_threads == thread_id){
+        // if(level % nb_threads == thread_id){
             // Sample voxel occupancy grid at this location if the node is inner for this point
             COccupancyGrid::GridIndex grid_index = COccupancyGrid::getCellIndices(aabb, point);
             bool is_cell_occupied = cur_node->occupancy->markCellAsFilled(grid_index);
@@ -531,7 +559,7 @@ void sampleVoxel(const CPoint& point, uint32_t thread_id, uint32_t nb_threads){
                 globalVariables.backlogVoxels[backlog_index] = new_voxel;
                 globalVariables.backlogVoxelsNodes[backlog_index] = cur_node;
             }
-        }
+        // }
 
         cur_node = cur_node->children[child_position];
         level++;
@@ -540,8 +568,7 @@ void sampleVoxel(const CPoint& point, uint32_t thread_id, uint32_t nb_threads){
 
 
 
-/// Run on "Max threads per SM" blocks of size "NB SMs"
-/// Each thread in a block is responsible for its assigned levels in the tree
+/// Run on floor("NB SMs" * "Max threads per SM" / 32) blocks of size 32
 extern "C" __global__
 void kernel_simlod_voxel_sampling(){
     if(!globalVariables.isInitialised){return;}
@@ -550,12 +577,14 @@ void kernel_simlod_voxel_sampling(){
     globalVariables.nbGridsToInit = 0;
 
     auto grid = cg::this_grid();
-    auto block = cg::this_thread_block();
-    uint32_t nb_blocks = grid.num_blocks();
+    // auto block = cg::this_thread_block();
+    // uint32_t nb_blocks = grid.num_blocks();
 
-    uint32_t block_id = grid.block_rank();
-    uint32_t thread_id = block.thread_rank();
-    uint32_t nb_threads_per_block = block.num_threads();
+    // uint32_t block_id = grid.block_rank();
+    // uint32_t thread_id = block.thread_rank();
+    // uint32_t nb_threads_per_block = block.num_threads();
+    uint32_t thread_id = grid.thread_rank();
+    uint32_t nb_threads = grid.num_threads();
 
     
     // Sample voxels for new points
@@ -564,16 +593,20 @@ void kernel_simlod_voxel_sampling(){
         CPoint* new_points = globalVariables.batchesToAddPoints[batch];
         uint32_t nb_new_points = globalVariables.batchesToAddCounts[batch];
 
-        for(uint32_t i=block_id; i<nb_new_points; i+=nb_blocks){
+        // for(uint32_t i=block_id; i<nb_new_points; i+=nb_blocks){
+        for(uint32_t i=thread_id; i<nb_new_points; i+=nb_threads){
             CPoint& point = new_points[i];
-            sampleVoxel(point, thread_id, nb_threads_per_block);
+            // sampleVoxel(point, thread_id, nb_threads_per_block);
+            sampleVoxel(point);
         }
     }
 
     // Sample voxels for spilled points
-    for(uint32_t i=block_id; i<globalVariables.nbSpilledPoints; i+=nb_blocks){
+    // for(uint32_t i=block_id; i<globalVariables.nbSpilledPoints; i+=nb_blocks){
+    for(uint32_t i=thread_id; i<globalVariables.nbSpilledPoints; i+=nb_threads){
         CPoint& point = globalVariables.spilledPoints[i];
-        sampleVoxel(point, thread_id, nb_threads_per_block);
+        // sampleVoxel(point, thread_id, nb_threads_per_block);
+        sampleVoxel(point);
     }
 }
 
@@ -611,7 +644,7 @@ void allocateChunks(CChunk* root_chunk, uint32_t required_chunks, uint32_t total
 
 
 
-/// Run on "NB SMs" * "Max threads per SM" blocks of size 1
+/// Run on floor("NB SMs" * "Max threads per SM" / "Max threads per block") blocks of size "Max threads per block"
 /// Allocate the necessary new chunks
 extern "C" __global__
 void kernel_simlod_insertion_part_1_chunks_allocations(){
@@ -706,7 +739,7 @@ void insertVoxel(const CPoint& voxel, COctreeNode* cur_node){
 
 
 
-/// Run on "NB SMs" * "Max threads per SM" blocks of size 1
+/// Run on floor("NB SMs" * "Max threads per SM" / "Max threads per block") blocks of size "Max threads per block"
 extern "C" __global__
 void kernel_simlod_insertion_part_2_filling(){
     if(!globalVariables.isInitialised){return;}

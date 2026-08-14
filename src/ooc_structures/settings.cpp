@@ -45,6 +45,10 @@ void OocSimLodSettings::init(){
     DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y = (uint32_t)value;
     CURuntime::assertCudaSuccess(cuDeviceGetAttribute(&value, CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z, device));
     DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z = (uint32_t)value;
+    DEVICE_ATTRIBUTE_MAX_GRID_SIZE_FOR_MAX_BLOCK_SIZE = 
+        (DEVICE_ATTRIBUTE_NB_SM * DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM + DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK - 1) 
+        / DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK
+    ;
 
     /// Miscellaneous
     IS_RUNNING_IN_PARALLEL = init_field<bool>("IS_RUNNING_IN_PARALLEL", false);
@@ -128,6 +132,7 @@ void OocSimLodSettings::display(){
     println("    - DEVICE_ATTRIBUTE_MAX_GRID_DIM_X: {}", DEVICE_ATTRIBUTE_MAX_GRID_DIM_X);
     println("    - DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y: {}", DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y);
     println("    - DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z: {}", DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z);
+    println("    - DEVICE_ATTRIBUTE_MAX_GRID_SIZE_FOR_MAX_BLOCK_SIZE: {}", DEVICE_ATTRIBUTE_MAX_GRID_SIZE_FOR_MAX_BLOCK_SIZE);
 
     println("");
     println("Miscellaneous:");

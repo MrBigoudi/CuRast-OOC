@@ -21,7 +21,7 @@ vec2 ndcToScreen(vec3 ndc, float width, float height){
 }
 
 __device__
-void drawLine(CRenderTarget target, vec3 start, vec3 end, uint32_t color = 0xff0000ff){
+void drawLine(const CRenderTarget& target, vec3 start, vec3 end, uint32_t color = 0xff0000ff){
 
 	auto grid = cg::this_grid();
 	auto block = cg::this_thread_block();
@@ -63,7 +63,7 @@ void drawLine(CRenderTarget target, vec3 start, vec3 end, uint32_t color = 0xff0
 }
 
 __device__
-void drawBoundingBox(CRenderTarget target, const CAABB& aabb, uint32_t color = 0xff0000ff){
+void drawBoundingBox(const CRenderTarget& target, const CAABB& aabb, uint32_t color = 0xff0000ff){
     vec3 worldMin = {INFINITY, INFINITY, INFINITY};
     vec3 worldMax = {-INFINITY, -INFINITY, -INFINITY};
 
@@ -133,7 +133,7 @@ uint32_t linearGradient(float factor, uint32_t left_color, uint32_t right_color)
 
 __device__
 void drawPoint(
-	CRenderTarget target,
+	const CRenderTarget& target,
 	vec3 position,
     uint32_t color,
     uint32_t lod = 0
@@ -162,7 +162,7 @@ void drawPoint(
 
 __device__
 void drawVoxel(
-    CRenderTarget target,
+    const CRenderTarget& target,
 	vec3 voxel_position,
     uint32_t voxel_color,
     vec3 voxel_size,
@@ -208,7 +208,7 @@ void drawVoxel(
 
 __device__
 void drawAllVoxels(
-	CRenderTarget target,
+	const CRenderTarget& target,
 	CRenderingSettings settings,
     COctreeNode* node,
     uint32_t nb_points_per_axis,
@@ -250,7 +250,7 @@ void drawAllVoxels(
 
 __device__
 void drawAllPoints(
-	CRenderTarget target,
+	const CRenderTarget& target,
 	COctreeNode* node
 ){
     auto block = cg::this_thread_block();
@@ -271,7 +271,7 @@ void drawAllPoints(
 
 __device__
 void getScreenSpaceSquare(
-    CRenderTarget target, 
+    const CRenderTarget& target, 
     vec3 mins, vec3 maxs,
     float* smin_x, float* smax_x, float* smin_y, float* smax_y,
     float* depth
@@ -338,9 +338,27 @@ void getScreenSpaceSquare(
     *depth = min8(ndc000.w, ndc001.w, ndc010.w, ndc011.w, ndc100.w, ndc101.w, ndc110.w, ndc111.w);
 }
 
+
+__device__
+void getScreenSpaceSize(const CRenderTarget& target, const CAABB& aabb, float& dx, float& dy){
+    float smin_x = 0.;
+    float smax_x = 0.;
+    float smin_y = 0.;
+    float smax_y = 0.;
+    float depth = 0.;
+    getScreenSpaceSquare(target, aabb.mins, aabb.maxs, 
+        &smin_x, &smax_x, &smin_y, &smax_y, &depth
+    );
+
+    // screen-space size
+    dx = smax_x - smin_x;
+    dy = smax_y - smin_y;
+}
+
+
 __device__
 bool isLargerThanMinSpanning(
-    CRenderTarget target,
+    const CRenderTarget& target,
 	CRenderingSettings settings,
     COctreeNode* node
 ){
@@ -355,18 +373,9 @@ bool isLargerThanMinSpanning(
     ;
     if(cam_inside){return true;}
 
-    float smin_x = 0.;
-    float smax_x = 0.;
-    float smin_y = 0.;
-    float smax_y = 0.;
-    float depth = 0.;
-    getScreenSpaceSquare(target, aabb.mins, aabb.maxs, 
-        &smin_x, &smax_x, &smin_y, &smax_y, &depth
-    );
-
-    // screen-space size
-    float dx = smax_x - smin_x;
-    float dy = smax_y - smin_y;
+    float dx = 0.;
+    float dy = 0.;
+    getScreenSpaceSize(target, aabb, dx, dy);
 
     float threshold = 2. * settings.min_pixel_span;
     return dx > threshold || dy > threshold;
@@ -391,7 +400,7 @@ bool isLargerThanMinSpanning(
 
 
 
-/// Run on "NB SMs" * "Max threads per SM" blocks of size 1
+/// Run on "NB SMs" blocks of size min("Max threads per SM", "Max block dim")
 extern "C" __global__
 void kernel_render_bounding_boxes(
 	CRenderTarget target,
@@ -445,38 +454,38 @@ void kernel_visibilityPass(
     uint32_t thread_id = block.thread_rank();
     uint32_t nb_threads_per_block = block.num_threads();
 
+    uint32_t first_point = block_id * nb_threads_per_block + thread_id;
+    uint32_t step = nb_blocks * nb_threads_per_block;
+
     uint32_t nb_nodes = globalVariables.isTemporarySwitching ? globalVariables.curNbNodes : globalVariables.renderingNbNodes;
     uint32_t depth = globalVariables.isTemporarySwitching ? globalVariables.octreeDepth : globalVariables.renderingOctreeDepth;
 
-    // Assign each node to one thread block
-    for(uint32_t node_index = block_id; node_index < nb_nodes; node_index += nb_blocks){
+    for(uint32_t node_index = first_point; node_index < nb_nodes; node_index += step){
         COctreeNode* node = globalVariables.isTemporarySwitching 
             ? globalVariables.packedNodes[node_index]
             : globalVariables.renderingPackedNodes[node_index]
         ;
 
         // TODO: Frustum culling
-        if(thread_id == 0){
-            globalVariables.setFlagSync(node->aabb_index, CFlagIsVisible);
-        }
+        globalVariables.setFlagSync(node->aabb_index, CFlagIsVisible);
 
         if(settings.debug_lod_to_render != -1){
             continue;
         }
 
-        if(thread_id == 0){
-            if(isLargerThanMinSpanning(target, settings, node)){
-                globalVariables.setFlagSync(node->aabb_index, CFlagIsLarge);
-            }
+        if(isLargerThanMinSpanning(target, settings, node)){
+            globalVariables.setFlagSync(node->aabb_index, CFlagIsLarge);
         }
     }
 
     // Also flag the nodes from the cache
-    for(uint32_t node_index = block_id; node_index < globalVariables.visibilityCacheCurrentSize; node_index += nb_blocks){
+    for(uint32_t node_index = first_point; node_index < globalVariables.visibilityCacheCurrentSize; node_index += step){
         const CIdAABB& id = globalVariables.visibilityCache[node_index];
-        if(thread_id == 1){
-            globalVariables.setFlagSync(id, CFlagIsInVisibilityCache);
-        }
+        globalVariables.setFlagSync(id, CFlagIsInVisibilityCache);
+    }
+    for(uint32_t voxel_index = first_point; voxel_index < globalVariables.nbRenderedVoxels; voxel_index += step){
+        const CIdAABB& node_id = globalVariables.renderedVoxelsNodes[voxel_index];
+        globalVariables.setFlagSync(node_id, CFlagIsFromVoxelInVisibilityCache);
     }
 }
 
@@ -501,13 +510,14 @@ void kernel_drawVisibilityCache(
     // Render points
     for(uint32_t point_id = first_point; point_id < globalVariables.nbRenderedPoints; point_id += step){
         const CPoint& point = globalVariables.renderedPoints[point_id];
-        drawPoint(target, point.position, point.color);
+        // drawPoint(target, point.position, point.color);
+        drawPoint(target, point.position, 0xff00ffff);
     }
 
     // Render voxels
     for(uint32_t voxel_id = first_point; voxel_id < globalVariables.nbRenderedVoxels; voxel_id += step){
         const CPoint& voxel = globalVariables.renderedVoxels[voxel_id];
-        const glm::vec3& voxel_size = globalVariables.renderedVoxelsSizes[voxel_id];
+        const vec3& voxel_size = globalVariables.renderedVoxelsSizes[voxel_id];
         const CNodePosition& next_child_pos = globalVariables.renderedVoxelsNextChildIndex[voxel_id];
         const CIdAABB& node_id = globalVariables.renderedVoxelsNodes[voxel_id];
         const CIdAABB& child_index = globalVariables.relationshipMap[node_id].children[next_child_pos];
@@ -515,13 +525,21 @@ void kernel_drawVisibilityCache(
         // Only render the voxel if the corresponding child is not present
         bool child_is_visible = (child_index != CINVALID_ID) && globalVariables.isVisible(child_index);
         bool child_is_in_vis_cache = (child_index != CINVALID_ID) && globalVariables.isInVisibilityCache(child_index);
+        // bool child_is_in_vis_cache = false;
+
         if(!child_is_visible && !child_is_in_vis_cache){
+            const vec3 root_aabb_size = globalVariables.mainOctree->aabb.getSize();
+            float root_size = max(root_aabb_size.x, max(root_aabb_size.y, root_aabb_size.z));
+            float cur_size = max(voxel_size.x, max(voxel_size.y, voxel_size.z));
+            uint32_t nb_points_per_axis = clamp(uint32_t(root_size / cur_size), 1u, 8u);
+
             drawVoxel(
                 target, 
                 voxel.position, 
-                voxel.color, 
+                // voxel.color, 
+                0xffff00ff, 
                 voxel_size, 
-                settings.voxels_nb_points_per_axis
+                nb_points_per_axis
             );
         }
     }
@@ -658,11 +676,15 @@ void kernel_drawOctreeSmall(
     }
 
     // Also unflag the nodes from the cache
-    for(uint32_t node_index = block_id; node_index < globalVariables.visibilityCacheCurrentSize; node_index += nb_blocks){
+    uint32_t first_point = block_id * nb_threads_per_block + thread_id;
+    uint32_t step = nb_blocks * nb_threads_per_block;
+    for(uint32_t node_index = first_point; node_index < globalVariables.visibilityCacheCurrentSize; node_index += step){
         const CIdAABB& id = globalVariables.visibilityCache[node_index];
-        if(thread_id == 1){
-            globalVariables.unsetFlagSync(id, CFlagIsInVisibilityCache);
-        }
+        globalVariables.unsetFlagSync(id, CFlagIsInVisibilityCache);
+    }
+    for(uint32_t voxel_index = first_point; voxel_index < globalVariables.nbRenderedVoxels; voxel_index += step){
+        const CIdAABB& node_id = globalVariables.renderedVoxelsNodes[voxel_index];
+        globalVariables.unsetFlagSync(node_id, CFlagIsFromVoxelInVisibilityCache);
     }
 }
 

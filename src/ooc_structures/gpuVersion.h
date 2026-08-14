@@ -91,6 +91,11 @@ struct GpuVersionUI {
     static inline uint32_t minNbUpdatesPerSecond = 0;
     static inline uint32_t avgNbUpdatesPerSecond = 0;
 
+    // Rendering counters
+    static inline uint32_t visNbNodes = 0;
+    static inline uint32_t visNbPoints = 0;
+    static inline uint32_t visNbVoxels = 0;
+
 
     // Timers
     static inline std::chrono::time_point<std::chrono::high_resolution_clock> lastUpdateStart;
@@ -110,22 +115,25 @@ struct GpuVersion {
     static inline CUstream stream;
     static inline uint64_t totalAllocatedMemory = 0;
 
+    static inline std::vector<CIdAABB> relationshipMap = {};
+
     
     // CPU cache
-    static inline std::unordered_map<CIdAABB, CAABB> storedNodes = {}; 
-    static inline CLRUCache* hostCache = nullptr;
-    static inline std::unordered_set<CIdAABB> recentlyUsedNodesFromUpdates = {};
-    static inline std::unordered_set<CIdAABB> removedNodes = {};
-    static inline std::unordered_map<CIdAABB, HostStorageNode*> persistentStoredNodes = {};
-    static inline std::mutex syncAABBStorageAccessMtx;
-    static inline std::mutex syncHostStorageNodesAccessMtx;
-    static inline std::mutex syncVisibilityUpdateMtx;
+    // static inline std::unordered_map<CIdAABB, CAABB> storedNodes = {}; 
+    // static inline CLRUCache* hostCache = nullptr;
+    // static inline std::unordered_set<CIdAABB> recentlyUsedNodesFromUpdates = {};
+    // static inline std::unordered_set<CIdAABB> removedNodes = {};
+    // static inline std::unordered_map<CIdAABB, std::shared_ptr<HostStorageNode>> persistentStoredNodes = {};
+    // static inline std::mutex syncAABBStorageAccessMtx;
+    // static inline std::mutex syncHostStorageNodesAccessMtx;
+    // static inline std::mutex syncVisibilityUpdateMtx;
 
-    static inline std::vector<CIdAABB> previouslyVisible = {};
-    static inline std::vector<HostStorageNode*> newlyVisible = {};
+    // static inline std::vector<CIdAABB> previouslyVisible = {};
+    // static inline std::vector<std::shared_ptr<HostStorageNode>> newlyVisible = {};
+    // static inline std::vector<bool> newlyVisibleToDelete = {};
 
-    static void updateHostCache();
-    static void visibilityUpdate(CuRast* editor, CUcontext* context);
+    // static void updateHostCache();
+    // static void visibilityUpdate(CuRast* editor, CUcontext* context);
 
 
 
@@ -180,217 +188,232 @@ struct GpuVersion {
         }
 
         template<typename T>
-        static CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>* allocAllocatorElements(uint32_t size, CUstream* stream){
+        static CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>* allocAllocatorElements(
+            uint32_t size, CUdeviceptr allocated_memory_base, uint64_t aligned_size,
+            CUstream* stream, std::vector<CUdeviceptr>& out_entries_it_ptr
+        ){
+            using PoolEntry     = typename CAllocatorPool<T>::Entry;
+            using List          = CDoubleLinkedList<PoolEntry*>;
+            using ListIterator  = typename List::Iterator;
+
             uint64_t real_size = 0;
 
-            // Allocate main elements
             CUdeviceptr elements_ptr = 0;
-            real_size = sizeof(CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>);
+            real_size = sizeof(List);
             totalAllocatedMemory += real_size;
             CURuntime::assertCudaSuccess(cuMemAlloc(&elements_ptr, real_size));
-            
-            CUdeviceptr elements_first_ptr = 0;
-            CUdeviceptr elements_last_ptr = 0;
-            real_size = sizeof(typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::FirstEntry);
+
+            CUdeviceptr elements_first_ptr = 0, elements_last_ptr = 0;
+            real_size = sizeof(typename List::FirstEntry);
             totalAllocatedMemory += real_size;
             CURuntime::assertCudaSuccess(cuMemAlloc(&elements_first_ptr, real_size));
-            real_size = sizeof(typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::LastEntry);
+            real_size = sizeof(typename List::LastEntry);
             totalAllocatedMemory += real_size;
             CURuntime::assertCudaSuccess(cuMemAlloc(&elements_last_ptr, real_size));
 
-            // Allocate list entries
-            std::vector<CUdeviceptr> entries_ptr = {};
-            std::vector<CUdeviceptr> entries_it_ptr = {};
-            std::vector<typename CAllocatorPool<T>::Entry> entries_host = {};
-            std::vector<typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::Iterator> entries_it_host = {};
+            // One contiguous block for ALL entries/iterators instead of `size` separate cuMemAlloc calls
+            CUdeviceptr entries_base_ptr = 0, entries_it_base_ptr = 0;
+            if(size > 0){
+                real_size = (uint64_t)size * sizeof(PoolEntry);
+                totalAllocatedMemory += real_size;
+                CURuntime::assertCudaSuccess(cuMemAlloc(&entries_base_ptr, real_size));
+                real_size = (uint64_t)size * sizeof(ListIterator);
+                totalAllocatedMemory += real_size;
+                CURuntime::assertCudaSuccess(cuMemAlloc(&entries_it_base_ptr, real_size));
+            }
+
+            std::vector<PoolEntry> entries_host(size);
+            std::vector<ListIterator> entries_it_host(size);
+            out_entries_it_ptr.resize(size);
+
             for(uint32_t i=0; i<size; i++){
-                CUdeviceptr new_entry_ptr = 0;
-                CUdeviceptr new_entry_it_ptr = 0;
-                real_size = sizeof(typename CAllocatorPool<T>::Entry);
-                totalAllocatedMemory += real_size;
-                CURuntime::assertCudaSuccess(cuMemAlloc(&new_entry_ptr, real_size));
-                real_size = sizeof(typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::Iterator);
-                totalAllocatedMemory += real_size;
-                CURuntime::assertCudaSuccess(cuMemAlloc(&new_entry_it_ptr, real_size));
-                typename CAllocatorPool<T>::Entry new_entry_host = {};
-                typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::Iterator new_entry_it_host = {};
-                new_entry_it_host.value = reinterpret_cast<typename CAllocatorPool<T>::Entry*>(new_entry_ptr);
+                CUdeviceptr entry_ptr    = entries_base_ptr    + (uint64_t)i * sizeof(PoolEntry);
+                CUdeviceptr entry_it_ptr = entries_it_base_ptr + (uint64_t)i * sizeof(ListIterator);
 
-                if(!entries_it_host.empty()){
-                    entries_it_host.back().next = 
-                        reinterpret_cast<typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::Iterator*>(
-                            new_entry_it_ptr
-                        );
-                    new_entry_it_host.prev = 
-                        reinterpret_cast<typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::Iterator*>(
-                            entries_it_ptr.back()
-                        );
-                }
-                entries_ptr.push_back(new_entry_ptr);
-                entries_host.push_back(new_entry_host);
-                entries_it_ptr.push_back(new_entry_it_ptr);
-                entries_it_host.push_back(new_entry_it_host);
+                entries_host[i].is_free = true;
+                // Pre-link the slot to its address in the pool. `initAllocatorPool` no longer needs to set this itself.
+                entries_host[i].value = reinterpret_cast<T*>(allocated_memory_base + (uint64_t)i * aligned_size);
+
+                entries_it_host[i].value = reinterpret_cast<PoolEntry*>(entry_ptr);
+                entries_it_host[i].prev  = (i == 0)        ? nullptr : reinterpret_cast<ListIterator*>(entries_it_base_ptr + (uint64_t)(i-1) * sizeof(ListIterator));
+                entries_it_host[i].next  = (i+1 < size)    ? reinterpret_cast<ListIterator*>(entries_it_base_ptr + (uint64_t)(i+1) * sizeof(ListIterator)) : nullptr;
+
+                out_entries_it_ptr[i] = entry_it_ptr;
             }
 
-            // Fill up host side elements
-            typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::FirstEntry elements_first_host = {};
-            typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::LastEntry elements_last_host = {};
-            if(!entries_it_host.empty()){
-                elements_first_host.next = 
-                    reinterpret_cast<typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::Iterator*>(
-                        entries_it_ptr.front()
-                    );
-                elements_last_host.prev =
-                    reinterpret_cast<typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::Iterator*>(
-                        entries_it_ptr.back()
-                    );
+            typename List::FirstEntry elements_first_host = {};
+            typename List::LastEntry  elements_last_host  = {};
+            if(size > 0){
+                elements_first_host.next = reinterpret_cast<ListIterator*>(entries_it_base_ptr);
+                elements_last_host.prev  = reinterpret_cast<ListIterator*>(entries_it_base_ptr + (uint64_t)(size-1) * sizeof(ListIterator));
             }
-            CDoubleLinkedList<typename CAllocatorPool<T>::Entry*> elements_host = {};
-            elements_host.initialised = false;
+            List elements_host = {};
             elements_host.size = size;
-            elements_host.first = 
-                reinterpret_cast<typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::FirstEntry*>(
-                    elements_first_ptr);
-            elements_host.last = 
-                reinterpret_cast<typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::LastEntry*>(
-                    elements_last_ptr);            
+            elements_host.first = reinterpret_cast<typename List::FirstEntry*>(elements_first_ptr);
+            elements_host.last  = reinterpret_cast<typename List::LastEntry*>(elements_last_ptr);
 
-            
-            // Copy memory to GPU
-            std::vector<CUdeviceptr> srcs = {};
-            std::vector<CUdeviceptr> dsts = {};
-            std::vector<size_t> sizes = {};
-
-            for(uint32_t i=0; i<size; i++){
-                CUdeviceptr it_ptr = entries_it_ptr[i];
-                srcs.push_back((CUdeviceptr)&entries_it_host[i]);
-                dsts.push_back(it_ptr);
-                sizes.push_back(sizeof(typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::Iterator));
-
-                CUdeviceptr ptr = entries_ptr[i];
-                srcs.push_back((CUdeviceptr)&entries_host[i]);
-                dsts.push_back(ptr);
-                sizes.push_back(sizeof(typename CAllocatorPool<T>::Entry));
-
-                pointers.push_back(it_ptr);
-                pointers.push_back(ptr);
+            if(size > 0){
+                CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync(entries_base_ptr,    entries_host.data(),    size * sizeof(PoolEntry),   *stream));
+                CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync(entries_it_base_ptr, entries_it_host.data(), size * sizeof(ListIterator),*stream));
             }
+            CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync(elements_last_ptr,  &elements_last_host,  sizeof(elements_last_host),  *stream));
+            CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync(elements_first_ptr, &elements_first_host, sizeof(elements_first_host), *stream));
+            CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync(elements_ptr,      &elements_host,       sizeof(elements_host),       *stream));
 
-            srcs.push_back((CUdeviceptr)&elements_last_host);
-            dsts.push_back(elements_last_ptr);
-            sizes.push_back(sizeof(typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::LastEntry));
+            if(size > 0){
+                pointers.push_back(entries_it_base_ptr);
+                pointers.push_back(entries_base_ptr);
+            }
             pointers.push_back(elements_last_ptr);
-
-            srcs.push_back((CUdeviceptr)&elements_first_host);
-            dsts.push_back(elements_first_ptr);
-            sizes.push_back(sizeof(typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::FirstEntry));
             pointers.push_back(elements_first_ptr);
-
-            srcs.push_back((CUdeviceptr)&elements_host);
-            dsts.push_back(elements_ptr);
-            sizes.push_back(sizeof(CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>));
             pointers.push_back(elements_ptr);
 
-            CUmemcpyAttributes attributes = CUmemcpyAttributes();
-            attributes.srcAccessOrder = CU_MEMCPY_SRC_ACCESS_ORDER_STREAM;
-            attributes.srcLocHint.type = CU_MEM_LOCATION_TYPE_HOST;
-            attributes.dstLocHint.type = CU_MEM_LOCATION_TYPE_DEVICE;
-            size_t attributes_idxs = 0;
-            size_t nb_attributes = 1;
-
-            CURuntime::assertCudaSuccess(
-                cuMemcpyBatchAsync(
-                    (CUdeviceptr*)dsts.data(), (CUdeviceptr*)srcs.data(), (size_t*)sizes.data(), 
-                    srcs.size(), &attributes, &attributes_idxs, nb_attributes, *stream
-                )
-            );
-
-            return reinterpret_cast<CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>*>(elements_ptr);
+            return reinterpret_cast<List*>(elements_ptr);
         }
 
         template<typename T>
-        static CHashMap<T*, typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::Iterator*>* allocAllocatorElementsMap(uint32_t size, CUstream* stream){
+        static CHashMap<T*, typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::Iterator*>*
+        allocAllocatorElementsMap(
+            uint32_t size, CUdeviceptr allocated_memory_base, uint64_t aligned_size,
+            const std::vector<CUdeviceptr>& entries_it_ptr, CUstream* stream
+        ){
+            using ElemIterator  = typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::Iterator;
+            using Map           = CHashMap<T*, ElemIterator*>;
+            using MapEntry       = typename Map::Entry;
+            using MapList        = CDoubleLinkedList<MapEntry>;
+            using MapListIterator= typename MapList::Iterator;
+
+            uint64_t capacity = size; // matches original convention: map capacity == pool size
             uint64_t real_size = 0;
 
-            // Allocate main elements
-            CUdeviceptr elements_map_ptr = 0;
-            real_size = sizeof(CHashMap<T*, typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::Iterator*>);
+            CUdeviceptr map_ptr = 0;
+            real_size = sizeof(Map);
             totalAllocatedMemory += real_size;
-            CURuntime::assertCudaSuccess(cuMemAlloc(&elements_map_ptr, real_size));
-            CUdeviceptr elements_ptr = 0;
-            real_size = size * sizeof(CDoubleLinkedList<typename CHashMap<T*, typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::Iterator*>::Entry>);
+            CURuntime::assertCudaSuccess(cuMemAlloc(&map_ptr, real_size));
+
+            CUdeviceptr buckets_ptr = 0;
+            real_size = capacity * sizeof(MapList);
             totalAllocatedMemory += real_size;
-            CURuntime::assertCudaSuccess(cuMemAlloc(&elements_ptr, real_size));
+            CURuntime::assertCudaSuccess(cuMemAlloc(&buckets_ptr, real_size));
 
-            // Fill up host side elements
-            CHashMap<T*, typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::Iterator*>
-                elements_map_host = {};
-            elements_map_host.capacity = size;
-            elements_map_host.size = 0;
-            elements_map_host.initialised = false;
+            CUdeviceptr bucket_firsts_ptr = 0, bucket_lasts_ptr = 0;
+            real_size = capacity * sizeof(typename MapList::FirstEntry);
+            totalAllocatedMemory += real_size;
+            CURuntime::assertCudaSuccess(cuMemAlloc(&bucket_firsts_ptr, real_size));
+            real_size = capacity * sizeof(typename MapList::LastEntry);
+            totalAllocatedMemory += real_size;
+            CURuntime::assertCudaSuccess(cuMemAlloc(&bucket_lasts_ptr, real_size));
 
-            elements_map_host.elements = reinterpret_cast<
-                CDoubleLinkedList<typename CHashMap<T*, typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::Iterator*>::Entry>*
-            >(elements_ptr);
+            CUdeviceptr nodes_ptr = 0;
+            if(size > 0){
+                real_size = (uint64_t)size * sizeof(MapListIterator);
+                totalAllocatedMemory += real_size;
+                CURuntime::assertCudaSuccess(cuMemAlloc(&nodes_ptr, real_size));
+            }
 
-            std::vector<CDoubleLinkedList<typename CHashMap<T*, typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::Iterator*>::Entry>>
-                elements_host(size);
+            // Same hash the device would compute for each slot's T* key (pure arithmetic,
+            // no CUDA-only syntax, so it's callable from host code as-is)
+            std::vector<uint64_t> murmurs(size);
+            std::vector<std::vector<uint32_t>> bucket_members(capacity);
+            for(uint32_t i=0; i<size; i++){
+                T* key_ptr = reinterpret_cast<T*>(allocated_memory_base + (uint64_t)i * aligned_size);
+                uint64_t murmur = Map::hashMurmur(key_ptr);
+                murmurs[i] = murmur;
+                bucket_members[murmur % capacity].push_back(i);
+            }
 
+            std::vector<MapList> buckets_host(capacity);
+            std::vector<typename MapList::FirstEntry> firsts_host(capacity);
+            std::vector<typename MapList::LastEntry> lasts_host(capacity);
+            std::vector<MapListIterator> nodes_host(size);
 
-            // Copy memory to GPU
-            CURuntime::assertCudaSuccess(cuMemcpyHtoD(
-                elements_ptr, elements_host.data(), 
-                size * sizeof(CDoubleLinkedList<typename CHashMap<T*, typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::Iterator*>::Entry>)
-            ));
-            pointers.push_back(elements_ptr);
+            uint32_t cursor = 0;
+            for(uint64_t b=0; b<capacity; b++){
+                auto* first_dev = reinterpret_cast<typename MapList::FirstEntry*>(bucket_firsts_ptr) + b;
+                auto* last_dev  = reinterpret_cast<typename MapList::LastEntry*>(bucket_lasts_ptr) + b;
 
-            CURuntime::assertCudaSuccess(cuMemcpyHtoD(
-                elements_map_ptr, &elements_map_host, 
-                sizeof(CHashMap<T*, typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::Iterator*>)
-            ));
-            pointers.push_back(elements_map_ptr);
+                buckets_host[b].first = first_dev;
+                buckets_host[b].last  = last_dev;
+                buckets_host[b].size  = (uint32_t)bucket_members[b].size();
+                firsts_host[b].next = nullptr;
+                lasts_host[b].prev  = nullptr;
 
+                MapListIterator* prev_dev = nullptr;
+                for(uint32_t pool_index : bucket_members[b]){
+                    MapListIterator* node_dev = reinterpret_cast<MapListIterator*>(nodes_ptr) + cursor;
+                    MapListIterator& node_host = nodes_host[cursor];
 
-            return reinterpret_cast<
-                CHashMap<T*, typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::Iterator*>*  
-            >(elements_map_ptr);
+                    node_host.value.element  = reinterpret_cast<ElemIterator*>(entries_it_ptr[pool_index]);
+                    node_host.value.real_key = reinterpret_cast<T*>(allocated_memory_base + (uint64_t)pool_index * aligned_size);
+                    node_host.value.key      = murmurs[pool_index];
+                    node_host.prev = prev_dev;
+                    node_host.next = nullptr;
+
+                    if(prev_dev){ nodes_host[cursor-1].next = node_dev; }
+                    else        { firsts_host[b].next = node_dev; }
+
+                    prev_dev = node_dev;
+                    cursor++;
+                }
+                lasts_host[b].prev = prev_dev;
+            }
+
+            Map map_host = {};
+            map_host.capacity = capacity;
+            map_host.size = size;          // every slot is inserted exactly once, up front
+            map_host.elements = reinterpret_cast<MapList*>(buckets_ptr);
+
+            if(size > 0){
+                CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync(nodes_ptr, nodes_host.data(), size * sizeof(MapListIterator), *stream));
+            }
+            CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync(bucket_firsts_ptr, firsts_host.data(), capacity * sizeof(typename MapList::FirstEntry), *stream));
+            CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync(bucket_lasts_ptr,  lasts_host.data(),  capacity * sizeof(typename MapList::LastEntry),  *stream));
+            CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync(buckets_ptr, buckets_host.data(), capacity * sizeof(MapList), *stream));
+            CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync(map_ptr, &map_host, sizeof(Map), *stream));
+
+            if(size > 0){ pointers.push_back(nodes_ptr); }
+            pointers.push_back(bucket_lasts_ptr);
+            pointers.push_back(bucket_firsts_ptr);
+            pointers.push_back(buckets_ptr);
+            pointers.push_back(map_ptr);
+
+            return reinterpret_cast<Map*>(map_ptr);
         }
 
         template<typename T>
         static CAllocatorPool<T>* allocAllocator(uint32_t size, AllocatorId type, CUstream* stream){
             uint64_t real_size = 0;
-            
-            // Allocate the allocator
+
             CUdeviceptr allocator_ptr = 0;
             real_size = sizeof(CAllocatorPool<T>);
             totalAllocatedMemory += real_size;
             CURuntime::assertCudaSuccess(cuMemAlloc(&allocator_ptr, real_size));
             CAllocatorPool<T> tmp = CAllocatorPool<T>(size, type);
 
-            // Allocate the list of elements
-            tmp.elements = allocAllocatorElements<T>(size, stream);
-
-            // Allocate the map of iterators
-            tmp.elements_map = allocAllocatorElementsMap<T>(size, stream);
-
-            // Allocate the memory pool
-            CUdeviceptr allocation_pool_ptr = 0;
+            // Allocate the memory pool FIRST so every slot's address is known up front
             uint64_t alignment = alignof(T);
             uint64_t aligned_size = sizeof(T) + ((alignment - (sizeof(T) % alignment)) % alignment);
-            real_size = size * aligned_size;
+            CUdeviceptr allocation_pool_ptr = 0;
+            real_size = (uint64_t)size * aligned_size;
             totalAllocatedMemory += real_size;
             CURuntime::assertCudaSuccess(cuMemAlloc(&allocation_pool_ptr, real_size));
             tmp.allocated_memory = reinterpret_cast<T*>(allocation_pool_ptr);
 
-            // Allocate the deallocation array
+            std::vector<CUdeviceptr> entries_it_ptr;
+            tmp.elements = allocAllocatorElements<T>(size, allocation_pool_ptr, aligned_size, stream, entries_it_ptr);
+
+            // Fully pre-built map — no device malloc/hashing needed at init anymore
+            tmp.elements_map = allocAllocatorElementsMap<T>(size, allocation_pool_ptr, aligned_size, entries_it_ptr, stream);
+
             CUdeviceptr deallocation_pool_ptr = 0;
             real_size = size * sizeof(typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::Iterator*);
             totalAllocatedMemory += real_size;
             CURuntime::assertCudaSuccess(cuMemAlloc(&deallocation_pool_ptr, real_size));
+            CURuntime::assertCudaSuccess(cuMemsetD8Async(deallocation_pool_ptr, 0, real_size, *stream));
             tmp.deallocated_memory = reinterpret_cast<typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::Iterator**>(deallocation_pool_ptr);
 
             CURuntime::assertCudaSuccess(cuMemcpyHtoD(allocator_ptr, &tmp, sizeof(CAllocatorPool<T>)));
-            
+
             pointers.push_back(deallocation_pool_ptr);
             pointers.push_back(allocation_pool_ptr);
             pointers.push_back(allocator_ptr);
