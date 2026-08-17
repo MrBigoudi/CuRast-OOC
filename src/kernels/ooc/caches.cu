@@ -85,93 +85,106 @@ void kernel_prepare_store_part_1_filling_buffers(){
     if(!globalVariables.isDoneLoading){return;}
 
     auto grid = cg::this_grid();
-    uint32_t thread_id = grid.thread_rank();
-    uint32_t nb_threads = grid.num_threads();
+    auto block = cg::this_thread_block();
+    uint32_t nb_blocks = grid.num_blocks();
 
-    for(uint32_t node_index = thread_id; node_index < globalVariables.curNbNodes; node_index += nb_threads){
+    uint32_t block_id = grid.block_rank();
+    uint32_t thread_id = block.thread_rank();
+    uint32_t nb_threads_per_block = block.num_threads();
+
+    __shared__ uint32_t shExchangedIndex;
+
+    for(uint32_t node_index = block_id; node_index < globalVariables.curNbNodes; node_index += nb_blocks){
 
         COctreeNode* node = globalVariables.packedNodes[node_index];
         if(globalVariables.isToStore(node->aabb_index)){continue;}
 
         // Unset flags
-        // constexpr uint32_t clear_mask = (1u << CFlagIsVisible) - 1u;
-        // __nv_atomic_and(&globalVariables.nodesFlags[node->aabb_index], ~clear_mask, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-        globalVariables.resetFlagsSync(node->aabb_index);
+        if(thread_id == 0){ // Only one thread per block
+            globalVariables.resetFlagsSync(node->aabb_index);
+        }
 
         if(!globalVariables.updatesCache->contains(node->aabb_index)){
-            uint32_t exchanged_index = __nv_atomic_fetch_add(&globalVariables.nbNodesExchanged, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            __syncthreads(); // Needed to sync after break
+            if(thread_id == 0){
+                shExchangedIndex = __nv_atomic_fetch_add(&globalVariables.nbNodesExchanged, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            
+                if(shExchangedIndex >= globalVariables.maxNbNodesExchanged){
+                    // printf("WARN: Too many nodes are being stored\n");
+                    globalVariables.isDoneStoring = false;
+                }
 
-            if(exchanged_index >= globalVariables.maxNbNodesExchanged){
-                // printf("WARN: Too many nodes are being stored\n");
-                // Instead of panicking, warn everyone that you're not done
-                globalVariables.isDoneStoring = false;
-                // // To avoid being deleted
-                // globalVariables.setFlagSync(node->aabb_index, CFlagIsInUpdatesCache);
+            }
+            __syncthreads(); // Needed to sync before break condition
+
+            if(shExchangedIndex >= globalVariables.maxNbNodesExchanged){
                 break;
             }
 
+
             // Storing node properties
-            globalVariables.exchangedAABBIndices[exchanged_index] = node->aabb_index;
-            globalVariables.exchangedAABBParentsIndices[exchanged_index] = globalVariables.relationshipMap[node->aabb_index].parent;
-            globalVariables.exchangedAABBs[exchanged_index] = node->aabb;
-            globalVariables.exchangedChildrenIds[exchanged_index] = node->children_ids;
-            globalVariables.exchangedPointsCounters[exchanged_index] = node->points_counter;
-            globalVariables.exchangedVoxelsCounters[exchanged_index] = node->voxels_counter;
+            globalVariables.exchangedAABBIndices[shExchangedIndex] = node->aabb_index;
+            globalVariables.exchangedAABBParentsIndices[shExchangedIndex] = globalVariables.relationshipMap[node->aabb_index].parent;
+            globalVariables.exchangedAABBs[shExchangedIndex] = node->aabb;
+            globalVariables.exchangedChildrenIds[shExchangedIndex] = node->children_ids;
+            globalVariables.exchangedPointsCounters[shExchangedIndex] = node->points_counter;
+            globalVariables.exchangedVoxelsCounters[shExchangedIndex] = node->voxels_counter;
 
             // UI values
-            __nv_atomic_add(&globalVariables.nbStoredNodesThisUpdate, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-            __nv_atomic_add(&globalVariables.nbTotalStoredNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-            __nv_atomic_sub(&globalVariables.currentNbPoints, node->points_counter, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-            __nv_atomic_sub(&globalVariables.currentNbVoxels, node->voxels_counter, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            if(thread_id == 0){
+                __nv_atomic_add(&globalVariables.nbStoredNodesThisUpdate, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+                __nv_atomic_add(&globalVariables.nbTotalStoredNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+                __nv_atomic_sub(&globalVariables.currentNbPoints, node->points_counter, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+                __nv_atomic_sub(&globalVariables.currentNbVoxels, node->voxels_counter, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+
+                globalVariables.setFlagSync(node->aabb_index, CFlagToStore);
+            }
             
             const uint32_t MAX_NB_POINTS = globalVariables.maxNbPointsChunksPerExchangedNode * OocSimLodSettings::NB_POINTS_PER_CHUNK;
             const uint32_t MAX_NB_VOXELS = globalVariables.maxNbVoxelsChunksPerExchangedNode * OocSimLodSettings::NB_POINTS_PER_CHUNK;
             
             // Storing node points
             CChunk* cur_chunk = node->points;
-            uint32_t cur_point_index = 0;
+            uint32_t cur_point_index = thread_id;
             while(cur_chunk){
-                for(uint32_t i=0; i<cur_chunk->size; i++){
+                for(uint32_t i = thread_id; i < cur_chunk->size; i += nb_threads_per_block){
                     if(cur_point_index >= MAX_NB_POINTS){
                         printf("ERROR: Too many points in the node, some will be skipped to store it: index %d / %d\n",
                             cur_point_index, MAX_NB_POINTS
                         );
                         customAssert();
                     }
-                    globalVariables.exchangedPoints[exchanged_index][cur_point_index] = cur_chunk->points[i];
-                    cur_point_index++;
+                    const CPoint& cur_point = cur_chunk->points[i];
+                    CPoint* exchangedPoints = globalVariables.exchangedPoints[shExchangedIndex];
+                    exchangedPoints[cur_point_index] = cur_point;
+                    cur_point_index += nb_threads_per_block;
                 }
                 cur_chunk = cur_chunk->next;
             }
 
             // Storing node voxels
             cur_chunk = node->voxels;
-            cur_point_index = 0;
+            cur_point_index = thread_id;
             while(cur_chunk){
-                for(uint32_t i=0; i<cur_chunk->size; i++){
+                for(uint32_t i = thread_id; i < cur_chunk->size; i += nb_threads_per_block){
                     if(cur_point_index >= MAX_NB_VOXELS){
                         printf("ERROR: Too many voxels in the node, some will be skipped to store it: index %d / %d\n",
                             cur_point_index, MAX_NB_VOXELS
                         );
                         customAssert();
                     }
-                    globalVariables.exchangedVoxels[exchanged_index][cur_point_index] = cur_chunk->points[i];
-                    cur_point_index++;
+                    const CPoint& cur_voxel = cur_chunk->points[i];
+                    CPoint* exchangedVoxels = globalVariables.exchangedVoxels[shExchangedIndex];
+                    exchangedVoxels[cur_point_index] = cur_voxel;
+                    cur_point_index += nb_threads_per_block;
                 }
                 cur_chunk = cur_chunk->next;
             }
 
-            // // Resetting flags
-            // uint32_t clear_store_mask = 0
-            //     | CFlagHasNewPoints
-            //     | CFlagHasNewVoxels
-            //     | CFlagIsNew
-            //     | CFlagHasSpilled
-            // ;
-            // __nv_atomic_and(&globalVariables.nodesFlags[node->aabb_index], ~clear_store_mask, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-            globalVariables.setFlagSync(node->aabb_index, CFlagToStore);
         } else {
-            globalVariables.setFlagSync(node->aabb_index, CFlagIsInUpdatesCache);
+            if(thread_id == 0){
+                globalVariables.setFlagSync(node->aabb_index, CFlagIsInUpdatesCache);
+            }
         }
     }
 }
