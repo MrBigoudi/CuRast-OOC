@@ -173,7 +173,9 @@ void kernel_init_octree_part_1_aabb_measuring(){
 /// Run on a single thread
 extern "C" __global__
 void kernel_init_octree_part_2_refining(){
-    globalVariables.isUpdating = false; // To reset the flag
+    if(globalVariables.isDoneLoading && globalVariables.isDoneStoring){
+        globalVariables.isUpdating = false; // To reset the flag
+    }
 
     // To only run it once
     if(globalVariables.isInitialised){return;}

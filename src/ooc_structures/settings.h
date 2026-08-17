@@ -141,6 +141,8 @@ struct OocSimLodSettings {
     static inline uint32_t MAX_NB_RENDERED_POINTS;
     /// The voxels rendering budget for the visibility cache
     static inline uint32_t MAX_NB_RENDERED_VOXELS;
+    /// The maximum number of Count/Split operations per update
+    static inline uint32_t MAX_NB_COUNT_SPLIT_ITERATION;
 
 
 

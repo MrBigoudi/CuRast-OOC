@@ -2,7 +2,7 @@
 
 extern "C" __global__
 void kernel_test(){
-    if(!globalVariables.isDoneLoading || !globalVariables.isDoneLoading){
+    if(!globalVariables.isDoneLoading || !globalVariables.isDoneStoring){
         return;
     }
     for(uint32_t i=0; i<globalVariables.maxNbBatches; i++){

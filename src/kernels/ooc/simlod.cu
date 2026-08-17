@@ -1,5 +1,14 @@
 #include "utils.cuh"
 
+/// Run on a single thread
+extern "C" __global__
+void kernel_simlod_load_part_0_reset(){
+    if(!globalVariables.isInitialised){return;}
+    if(!globalVariables.isDoneStoring){return;}
+
+    globalVariables.isDoneLoading = true;
+}
+
 /// Prepare the nodes that need to be loaded
 /// Run on floor("NB SMs" * "Max threads per SM" / "Max threads per block") blocks of size "Max threads per block"
 /// TODO:
@@ -54,14 +63,16 @@ void kernel_simlod_load_part_1_flagging(){
 
                             // Instead of panicking, warn everyone that you're not done
                             globalVariables.isDoneLoading = false;
+                            // Reset the flag to avoid being stuck in the above check
+                            globalVariables.unsetFlagSync(child_aabb_index, CFlagToLoad);
                             break;
                         }
                         
                         globalVariables.exchangedAABBIndices[exchanged_index] = child_aabb_index;
 
                         // Store the original parent in the buffer
-                        // Use spillingNodes as a temporary buffer 
-                        globalVariables.spillingNodes[exchanged_index] = leaf;
+                        // Use temporaryNodeBuffer as a temporary buffer 
+                        globalVariables.temporaryNodeBuffer[exchanged_index] = leaf;
                         
                         // UI values
                         __nv_atomic_add(&globalVariables.nbLoadedNodesThisUpdate, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
@@ -124,6 +135,11 @@ void kernel_simlod_load_part_2_rebuilding_nodes(){
     uint32_t thread_id = block.thread_rank();
     uint32_t nb_threads_per_block = block.num_threads();
 
+    globalVariables.nbNodesExchanged = min(globalVariables.maxNbNodesExchanged, globalVariables.nbNodesExchanged); // To avoid overflow
+    if(block_id == 0 && thread_id == 0 && !globalVariables.isDoneLoading){
+        globalVariables.nbNodesExchangedBeforeLoadComplete += globalVariables.nbNodesExchanged;
+    }
+
     for(uint32_t exchanged_index = block_id; exchanged_index < globalVariables.nbNodesExchanged; exchanged_index += nb_blocks){
 
         CIdAABB aabb_index = globalVariables.exchangedAABBIndices[exchanged_index];
@@ -179,8 +195,8 @@ void kernel_simlod_load_part_2_rebuilding_nodes(){
             }
 
             // Find parent if needed
-            // Use spillingNodes as a temporary buffer 
-            COctreeNode* potential_parent = globalVariables.spillingNodes[exchanged_index];
+            // Use temporaryNodeBuffer as a temporary buffer 
+            COctreeNode* potential_parent = globalVariables.temporaryNodeBuffer[exchanged_index];
             
             if(potential_parent->aabb_index == globalVariables.relationshipMap[aabb_index].parent){
                 globalVariables.setFlagSync(potential_parent->aabb_index, CFlagIsUpdated);
@@ -188,7 +204,7 @@ void kernel_simlod_load_part_2_rebuilding_nodes(){
                 for(uint32_t i=0; i<8; i++){
                     if(globalVariables.relationshipMap[potential_parent->aabb_index].children[i] == aabb_index){
                         if(potential_parent->children[i] != nullptr){
-                            printf("At this point, the children should not exist\n");
+                            printf("ERROR: At this point, the children should not exist\n");
                             customAssert();
                         }
                         potential_parent->children[i] = loaded_node;
@@ -197,7 +213,7 @@ void kernel_simlod_load_part_2_rebuilding_nodes(){
                     }
                 }
                 if(!found){
-                    printf("The parent doesn't contain the wanted child\n");
+                    printf("ERROR: The parent doesn't contain the wanted child\n");
                     customAssert();
                 }
             }
@@ -213,6 +229,7 @@ extern "C" __global__
 void kernel_simlod_load_part_3_rebuilding_children(){
     if(!globalVariables.isInitialised){return;}
     if(!globalVariables.isDoneStoring){return;}
+    if(!globalVariables.isDoneLoading){return;}
 
     // Because "kernel_fill_new_grids" should be launched just before
     globalVariables.nbGridsToInit = 0;
@@ -225,7 +242,7 @@ void kernel_simlod_load_part_3_rebuilding_children(){
     uint32_t thread_id = block.thread_rank();
     uint32_t nb_threads_per_block = block.num_threads();
 
-    uint32_t first_node = globalVariables.curNbNodes - globalVariables.nbNodesExchanged;
+    uint32_t first_node = globalVariables.curNbNodes - globalVariables.nbNodesExchangedBeforeLoadComplete;
     for(uint32_t node_index = first_node + block_id; node_index < globalVariables.curNbNodes; node_index += nb_blocks){
 
         if(thread_id == 0){ // If first thread of block
@@ -280,23 +297,23 @@ void kernel_simlod_load_part_3_rebuilding_children(){
             globalAllocator.gridsAllocator->reset_temporary_allocations();
         }
 
-        // // Sanity check
-        // for(uint32_t i = first_node; i < globalVariables.curNbNodes; i++){
-        //     CIdAABB child_id = globalVariables.packedNodes[i]->aabb_index;
-        //     CIdAABB parent_id = globalVariables.relationshipMap[child_id].parent;
-        //     bool found = false;
-        //     for(uint32_t j=0; j<globalVariables.curNbNodes; j++){
-        //         CIdAABB tmp = globalVariables.packedNodes[j]->aabb_index;
-        //         if(tmp == parent_id){
-        //             found = true;
-        //             break;
-        //         }
-        //     }
-        //     if(!found){
-        //         printf("Can't find parent %d of child %d\n", parent_id, child_id);
-        //         customAssert();
-        //     }
-        // }
+        // Sanity check
+        for(uint32_t i = first_node; i < globalVariables.curNbNodes; i++){
+            CIdAABB child_id = globalVariables.packedNodes[i]->aabb_index;
+            CIdAABB parent_id = globalVariables.relationshipMap[child_id].parent;
+            bool found = false;
+            for(uint32_t j=0; j<globalVariables.curNbNodes; j++){
+                CIdAABB tmp = globalVariables.packedNodes[j]->aabb_index;
+                if(tmp == parent_id){
+                    found = true;
+                    break;
+                }
+            }
+            if(!found){
+                printf("ERROR: Can't find parent %d of child %d\n", parent_id, child_id);
+                customAssert();
+            }
+        }
     }
 }
 

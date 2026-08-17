@@ -38,7 +38,12 @@ void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
 
     // hostStaging.renderingPackedNodes = alloc<COctreeNode*>(hostStaging.maxNbConcurrentNodes);
     // hostStaging.renderingPackedNodesTmp = alloc<COctreeNode*>(hostStaging.maxNbConcurrentNodes);
+    hostStaging.temporaryBufferSize = hostStaging.maxNbConcurrentNodes;
+    hostStaging.temporaryIdBuffer = alloc<CIdAABB>(hostStaging.temporaryBufferSize);
+    hostStaging.temporaryNodeBuffer = alloc<COctreeNode*>(hostStaging.temporaryBufferSize);
 
+
+    hostStaging.maxCountSplitIterations = OocSimLodSettings::MAX_NB_COUNT_SPLIT_ITERATION;
 
 
     // Exchangeable data
@@ -312,6 +317,13 @@ void GpuVersion::octreeUpdateFillNewGrids(CuRast* editor, CUcontext* context){
 
 void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
     OptionalLaunchSettings launch_settings = {
+        .gridsize  = 1,
+        .blocksize = 1,
+        .stream = OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0
+    };
+    prog->launch("kernel_simlod_load_part_0_reset", {}, launch_settings);
+
+    launch_settings = {
         .gridsize  = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_GRID_SIZE_FOR_MAX_BLOCK_SIZE,
         .blocksize = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK,
         .stream = OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0
@@ -332,7 +344,7 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
 
     cudaStreamSynchronize(OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0);
 
-    uint32_t nb_nodes_to_load = *(uint32_t*)(nbExchangedNodes);
+    uint32_t nb_nodes_to_load = min(*(uint32_t*)(nbExchangedNodes), hostStaging.maxNbNodesExchanged);
     if(nb_nodes_to_load == 0){return;}
     // println("\n\nNb nodes to load: {}\n\n\n", nb_nodes_to_load);
 
@@ -606,7 +618,7 @@ void GpuVersion::octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context){
 
     cudaStreamSynchronize(OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0);
     
-    uint32_t nb_nodes_to_store = *(uint32_t*)(nbExchangedNodes);
+    uint32_t nb_nodes_to_store = min(*(uint32_t*)(nbExchangedNodes), hostStaging.maxNbNodesExchanged);
     if(nb_nodes_to_store == 0){return;}
     // println("\n\nNb nodes to store: {}\n\n\n", nb_nodes_to_store);
 
@@ -719,9 +731,57 @@ void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
     LoaderGpuVersion::run(&stream, editor, context);
     octreeUpdateInit(editor, context);
     octreeUpdateBottomUp(editor, context);
+
+    static uint32_t cpt = 0;
+    cpt++;
+    uint32_t max_cpt = 100;
+
+    // // TODO: to remove, just to debug
+    // {
+    //     OptionalLaunchSettings launch_settings = {
+    //         .gridsize = 1,
+    //         .blocksize = 1,
+    //         .stream = OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0
+    //     };
+    //     bool should_display = true;
+    //     PipelineLevel level = PipelineLevel::LevelBottomUp;
+    //     if(cpt < max_cpt){
+    //         prog->launch("kernel_test_display", {&level, &should_display}, launch_settings);
+    //     }
+    // }
+
     octreeUpdateSimLOD(editor, context);
 
+    // // TODO: to remove, just to debug
+    // {
+    //     OptionalLaunchSettings launch_settings = {
+    //         .gridsize = 1,
+    //         .blocksize = 1,
+    //         .stream = OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0
+    //     };
+    //     bool should_display = true;
+    //     PipelineLevel level = PipelineLevel::LevelSimlod;
+    //     if(cpt < max_cpt){
+    //         prog->launch("kernel_test_display", {&level, &should_display}, launch_settings);
+    //     }
+    // }
+
     octreeUpdateCacheUpdate(editor, context);
+
+    // // TODO: to remove, just to debug
+    // {
+    //     OptionalLaunchSettings launch_settings = {
+    //         .gridsize = 1,
+    //         .blocksize = 1,
+    //         .stream = OocSimLodSettings::IS_RUNNING_IN_PARALLEL ? stream : 0
+    //     };
+    //     bool should_display = true;
+    //     PipelineLevel level = PipelineLevel::LevelCacheUpdate;
+    //     if(cpt < max_cpt){
+    //         prog->launch("kernel_test_display", {&level, &should_display}, launch_settings);
+    //     }
+    // }
+
     // // Record completion of the update kernels on the UPDATE stream (no host block needed)
     // CURuntime::assertCudaSuccess(cuEventRecord(eventUpdateCompleted, stream));
 

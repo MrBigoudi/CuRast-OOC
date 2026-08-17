@@ -13,14 +13,14 @@ void fillUpdatesCacheRecursive(COctreeNode* cur_node){
 __device__ 
 void fillUpdatesCacheIterative(COctreeNode* root_node){
     uint32_t cpt = 1;
-    // use exchangedAABBIndices as a stack
-    globalVariables.exchangedAABBIndices[0] = root_node->aabb_index;
+    // use temporaryIdBuffer as a temporary stack
+    globalVariables.temporaryIdBuffer[0] = root_node->aabb_index;
 
     // To be sure it has not been flagged in another stack loop
     globalVariables.unsetFlagSync(root_node->aabb_index, CFlagIsFirstVisitedInStack);
 
     while(cpt > 0){
-        const CIdAABB& cur_node = globalVariables.exchangedAABBIndices[cpt-1];
+        const CIdAABB& cur_node = globalVariables.temporaryIdBuffer[cpt-1];
 
         if(globalVariables.isFirstVisitedInStack(cur_node)){
             // Add the node to the cache after all its children
@@ -40,11 +40,11 @@ void fillUpdatesCacheIterative(COctreeNode* root_node){
             const CIdAABB& child_node = globalVariables.relationshipMap[cur_node].children[child_index];
             if(child_node != CINVALID_ID && globalVariables.isUpdated(child_node)){
                 cpt++;
-                if(cpt > globalVariables.maxNbNodesExchanged){
+                if(cpt > globalVariables.temporaryBufferSize){
                     printf("ERROR: Can't update the updates cache, the stack is full\n");
                     customAssert();
                 }
-                globalVariables.exchangedAABBIndices[cpt-1] = child_node;
+                globalVariables.temporaryIdBuffer[cpt-1] = child_node;
 
                 // To be sure it has not been flagged in another stack loop
                 globalVariables.unsetFlagSync(child_node, CFlagIsFirstVisitedInStack);
@@ -60,7 +60,12 @@ void kernel_update_updates_cache(){
     if(!globalVariables.isUpdating){return;}
     globalVariables.nbNodesExchanged = 0;
 
-    if(!globalVariables.isDoneLoading || !globalVariables.isDoneStoring){
+    if(!globalVariables.isDoneLoading){
+        globalVariables.nbNodesExchangedBeforeLoadComplete = 0;
+        return;
+    }
+    if(!globalVariables.isDoneStoring){
+        globalVariables.isDoneStoring = true;
         return;
     }
 
@@ -75,9 +80,7 @@ extern "C" __global__
 void kernel_prepare_store_part_1_filling_buffers(){
     if(!globalVariables.isInitialised){return;}
     if(!globalVariables.isUpdating){return;}
-    if(!globalVariables.isDoneLoading){
-        return;
-    }
+    if(!globalVariables.isDoneLoading){return;}
 
     auto grid = cg::this_grid();
     uint32_t thread_id = grid.thread_rank();
@@ -86,7 +89,9 @@ void kernel_prepare_store_part_1_filling_buffers(){
     for(uint32_t node_index = thread_id; node_index < globalVariables.curNbNodes; node_index += nb_threads){
 
         COctreeNode* node = globalVariables.packedNodes[node_index];
-        // Unset falgs
+        if(globalVariables.isToStore(node->aabb_index)){continue;}
+
+        // Unset flags
         constexpr uint32_t clear_mask = (1u << CFlagIsVisible) - 1u;
         __nv_atomic_and(&globalVariables.nodesFlags[node->aabb_index], ~clear_mask, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
 
@@ -99,6 +104,8 @@ void kernel_prepare_store_part_1_filling_buffers(){
 
                 // Instead of panicking, warn everyone that you're not done
                 globalVariables.isDoneStoring = false;
+                // // To avoid being deleted
+                // globalVariables.setFlagSync(node->aabb_index, CFlagIsInUpdatesCache);
                 break;
             }
 
@@ -128,7 +135,7 @@ void kernel_prepare_store_part_1_filling_buffers(){
                         printf("ERROR: Too many points in the node, some will be skipped to store it: index %d / %d\n",
                             cur_point_index, MAX_NB_POINTS
                         );
-                        break;
+                        customAssert();
                     }
                     globalVariables.exchangedPoints[exchanged_index][cur_point_index] = cur_chunk->points[i];
                     cur_point_index++;
@@ -145,7 +152,7 @@ void kernel_prepare_store_part_1_filling_buffers(){
                         printf("ERROR: Too many voxels in the node, some will be skipped to store it: index %d / %d\n",
                             cur_point_index, MAX_NB_VOXELS
                         );
-                        break;
+                        customAssert();
                     }
                     globalVariables.exchangedVoxels[exchanged_index][cur_point_index] = cur_chunk->points[i];
                     cur_point_index++;
@@ -162,11 +169,6 @@ void kernel_prepare_store_part_1_filling_buffers(){
             ;
             __nv_atomic_and(&globalVariables.nodesFlags[node->aabb_index], ~clear_store_mask, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
             globalVariables.setFlagSync(node->aabb_index, CFlagToStore);
-
-            // Deleting the node
-            globalAllocator.delOctreeNode(node, true, true);
-            globalVariables.packedNodes[node_index] = nullptr;
-
         } else {
             globalVariables.setFlagSync(node->aabb_index, CFlagIsInUpdatesCache);
         }
@@ -181,6 +183,7 @@ void kernel_prepare_store_part_2_resetting_children(){
     if(!globalVariables.isInitialised){return;}
     if(!globalVariables.isUpdating){return;}
     if(!globalVariables.isDoneLoading){return;}
+    if(!globalVariables.isDoneStoring){return;}
 
     auto grid = cg::this_grid();
     uint32_t thread_id = grid.thread_rank();
@@ -188,7 +191,15 @@ void kernel_prepare_store_part_2_resetting_children(){
 
     for(uint32_t node_index = thread_id; node_index < globalVariables.curNbNodes; node_index += nb_threads){
         COctreeNode* node = globalVariables.packedNodes[node_index];
-        if(!node){continue;} // Skip if this is one of the node that has just been removed
+
+        if(globalVariables.isToStore(node->aabb_index)){
+            globalVariables.unsetFlagSync(node->aabb_index, CFlagToStore);
+            // Deleting the node
+            globalAllocator.delOctreeNode(node, true, true);
+            globalVariables.packedNodes[node_index] = nullptr;
+            continue;
+        }
+
         node->children_visibility = 0b00000000;
 
         for(uint32_t i=0; i<8; i++){
@@ -204,13 +215,6 @@ void kernel_prepare_store_part_2_resetting_children(){
             }
             node->children_visibility |= ((0x01) << i);
         }
-    }
-
-    if(thread_id == 0){
-        // Because "delOctreeNode" was called in simlodSplit
-        globalAllocator.chunksAllocator->reset_temporary_deallocations();
-        globalAllocator.gridsAllocator->reset_temporary_deallocations();
-        globalAllocator.nodesAllocator->reset_temporary_deallocations();
     }
 }
 
@@ -258,6 +262,7 @@ void kernel_prepare_store_part_3_updating_levels(){
     if(!globalVariables.isInitialised){return;}
     if(!globalVariables.isUpdating){return;}
     if(!globalVariables.isDoneLoading){return;}
+    if(!globalVariables.isDoneStoring){return;}
 
     auto grid = cg::this_grid();
     auto block = cg::this_thread_block();
@@ -273,6 +278,10 @@ void kernel_prepare_store_part_3_updating_levels(){
     
     if(is_first){
         packNodes();
+        // Because "delOctreeNode" was called in kernel_prepare_store_part_2_resetting_children
+        globalAllocator.chunksAllocator->reset_temporary_deallocations();
+        globalAllocator.gridsAllocator->reset_temporary_deallocations();
+        globalAllocator.nodesAllocator->reset_temporary_deallocations();
     }
     grid.sync();
 

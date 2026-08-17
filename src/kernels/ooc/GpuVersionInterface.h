@@ -637,6 +637,14 @@ struct CGlobalVariables {
 	// COctreeNode** renderingPackedNodes = nullptr;
 	// COctreeNode** renderingPackedNodesTmp = nullptr;
 
+	uint32_t maxCountSplitIterations = 0;
+
+	uint32_t temporaryBufferSize = 0;
+	CIdAABB* temporaryIdBuffer = nullptr;
+    COctreeNode** temporaryNodeBuffer = nullptr;
+	uint32_t nbNodesExchangedBeforeLoadComplete = 0;
+
+
 
 
 
@@ -660,6 +668,7 @@ struct CGlobalVariables {
 	CPoint** exchangedVoxels = nullptr;
 	bool isDoneLoading = true;
 	bool isDoneStoring = true;
+	bool isDoneIterating = true;
 
 	uint32_t nbGridsToInit = 0;
 	COctreeNode** gridsToInit = nullptr;

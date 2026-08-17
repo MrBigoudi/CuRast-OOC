@@ -85,6 +85,7 @@ void OocSimLodSettings::init(){
     MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE = init_field<uint32_t>("MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE", 256);
     MAX_NB_RENDERED_POINTS = init_field<uint32_t>("MAX_NB_RENDERED_POINTS", 1'000'000);
     MAX_NB_RENDERED_VOXELS = init_field<uint32_t>("MAX_NB_RENDERED_VOXELS", 1'000'000);
+    MAX_NB_COUNT_SPLIT_ITERATION = init_field<uint32_t>("MAX_NB_COUNT_SPLIT_ITERATION", 8);
 
 
     /// Ui initial parameters
@@ -172,6 +173,7 @@ void OocSimLodSettings::display(){
     println("    - MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE: {}", MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE);
     println("    - MAX_NB_RENDERED_POINTS: {}", MAX_NB_RENDERED_POINTS);
     println("    - MAX_NB_RENDERED_VOXELS: {}", MAX_NB_RENDERED_VOXELS);
+    println("    - MAX_NB_COUNT_SPLIT_ITERATION: {}", MAX_NB_COUNT_SPLIT_ITERATION);
 
     println("");
     println("UI initial settings:");

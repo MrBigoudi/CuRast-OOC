@@ -115,8 +115,6 @@ void kernel_bottom_up_update_part_2_instancing(){
     globalVariables.nbNodesExchanged = 0;
 
     if(!globalVariables.isDoneLoading || !globalVariables.isDoneStoring){
-        globalVariables.isDoneLoading = true; // To reset the flag before the simlod load
-        globalVariables.isDoneStoring = true; // To reset the flag before the cache update
         return;
     }
 
