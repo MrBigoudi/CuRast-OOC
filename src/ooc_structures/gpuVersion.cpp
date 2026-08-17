@@ -42,6 +42,8 @@ void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
     hostStaging.temporaryIdBuffer = alloc<CIdAABB>(hostStaging.temporaryBufferSize);
     hostStaging.temporaryNodeBuffer = alloc<COctreeNode*>(hostStaging.temporaryBufferSize);
 
+    hostStaging.allocatedChunks = alloc<CChunk*>(OocSimLodSettings::NB_ALLOCABLE_CHUNKS);
+
 
     hostStaging.maxCountSplitIterations = OocSimLodSettings::MAX_NB_COUNT_SPLIT_ITERATION;
 

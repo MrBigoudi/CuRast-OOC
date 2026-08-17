@@ -644,6 +644,9 @@ struct CGlobalVariables {
     COctreeNode** temporaryNodeBuffer = nullptr;
 	uint32_t nbNodesExchangedBeforeLoadComplete = 0;
 
+	uint32_t chunksAllocatorCounter = 0;
+	CChunk** allocatedChunks = nullptr;
+
 
 
 

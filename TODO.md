@@ -1,8 +1,8 @@
 # TODO list
 
 - Use nsight systems to find the bottlenecks and fix them
+- Check all the sync, to find potential issues ? There is still an unknown memory issue...
 
-- Fix the "too many nodes store / load" issue by looping multiple times through the load / store kernels
 - Make the "exchangedVoxels / Points" unrelated to the number of nodes that can be exchanged; instead just have a fixed number of exchangeable chunks (this might reduce the sizes of the structures, allowing for more nbExchangeable nodes)
 - On load, is it necessary to send all points / voxels ? Can we instead just send the counters (for the points)? and maybe an octree (for the voxels)?
 

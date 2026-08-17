@@ -94,30 +94,23 @@ void kernel_simlod_load_part_1_flagging(){
     globalVariables.nbSpilledPoints = 0;
     globalVariables.nbSpillingNodes = 0;
     globalVariables.nbBacklogVoxels = 0;
+    globalVariables.chunksAllocatorCounter = 0;
 }
 
-
-
-__device__ __forceinline__ CChunk* addPointToChunk(CChunk* initial_chunk, const CPoint& cur_point){
-    CChunk* cur_chunk = initial_chunk;
-    if(cur_chunk->size == OocSimLodSettings::NB_POINTS_PER_CHUNK){
-        cur_chunk->next = globalAllocator.newChunk(true);
-        cur_chunk = cur_chunk->next;
-    }
-    cur_chunk->points[cur_chunk->size] = cur_point;
-    cur_chunk->size++;
-    return cur_chunk;
-}
 
 __device__
-void reallocateChunks(CChunk* root_chunk, uint32_t required_chunks, uint32_t total_counter){
+void allocateChunks(CChunk* root_chunk, uint32_t required_chunks, uint32_t total_counter){
     CChunk* cur_chunk = root_chunk;
     for(uint32_t i=1; i<required_chunks; i++){
         if(!cur_chunk->next){cur_chunk->next = globalAllocator.newChunk(true);}
         cur_chunk->size = OocSimLodSettings::NB_POINTS_PER_CHUNK;
         cur_chunk = cur_chunk->next;
     }
-    if(cur_chunk){cur_chunk->size = total_counter % OocSimLodSettings::NB_POINTS_PER_CHUNK;}
+    if(cur_chunk){
+        uint32_t last_size = total_counter % OocSimLodSettings::NB_POINTS_PER_CHUNK;
+        last_size = (last_size == 0) ? OocSimLodSettings::NB_POINTS_PER_CHUNK : last_size;
+        cur_chunk->size = last_size;
+    }
 };
 
 
@@ -137,6 +130,12 @@ void kernel_simlod_load_part_2_rebuilding_nodes(){
     uint32_t thread_id = block.thread_rank();
     uint32_t nb_threads_per_block = block.num_threads();
 
+    __shared__ COctreeNode* shLoadedNode;
+    __shared__ uint32_t shFirstPointsChunks;
+    __shared__ uint32_t shNbPointsChunks;
+    __shared__ uint32_t shFirstVoxelsChunks;
+    __shared__ uint32_t shNbVoxelsChunks;
+
     globalVariables.nbNodesExchanged = min(globalVariables.maxNbNodesExchanged, globalVariables.nbNodesExchanged); // To avoid overflow
     if(block_id == 0 && thread_id == 0 && !globalVariables.isDoneLoading){
         globalVariables.nbNodesExchangedBeforeLoadComplete += globalVariables.nbNodesExchanged;
@@ -153,49 +152,152 @@ void kernel_simlod_load_part_2_rebuilding_nodes(){
         CPoint* voxels = globalVariables.exchangedVoxels[exchanged_index];
 
         // Allocate the chunks
+        __syncthreads(); // Needed to not update shLoadedNode before all threads are done
         if(thread_id == 0){ // If first thread of block
             // UI values
             __nv_atomic_add(&globalVariables.currentNbPoints, nb_points, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
             __nv_atomic_add(&globalVariables.currentNbVoxels, nb_voxels, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
             
             // TODO: parallelise
-            COctreeNode* loaded_node = globalAllocator.newOctreeNode(aabb_index, true);
+            shLoadedNode = globalAllocator.newOctreeNode(aabb_index, true);
             uint32_t node_index = __nv_atomic_fetch_add(&globalVariables.curNbNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-            globalVariables.packedNodes[node_index] = loaded_node;
+            globalVariables.packedNodes[node_index] = shLoadedNode;
 
-            loaded_node->aabb = aabb;
-            loaded_node->children_ids = children_ids;
-            loaded_node->points_counter = nb_points;
-            loaded_node->voxels_counter = nb_voxels;
-            loaded_node->points_stored = nb_points;
-            loaded_node->voxels_stored = nb_voxels;
+            shLoadedNode->aabb = aabb;
+            shLoadedNode->children_ids = children_ids;
+            shLoadedNode->points_counter = nb_points;
+            shLoadedNode->voxels_counter = nb_voxels;
+            shLoadedNode->points_stored = nb_points;
+            shLoadedNode->voxels_stored = nb_voxels;
             globalVariables.setFlagSync(aabb_index, CFlagIsUpdated);
 
-            // Rebuild points
-            if(nb_points > 0){
-                loaded_node->points = globalAllocator.newChunk(true);
-                CChunk* cur_chunk = loaded_node->points;
-                for(uint32_t i=0; i<nb_points; i++){
-                    const CPoint& cur_point = points[i];
-                    cur_chunk = addPointToChunk(cur_chunk, cur_point);
-                }
-            }
+            shFirstPointsChunks = 0;
+            shNbPointsChunks = 0;
+            shFirstVoxelsChunks = 0;
+            shNbVoxelsChunks = 0;
 
-            // Rebuild voxels
+            // Allocate the occupancy grid
             if(nb_voxels > 0){
-                // Rebuild occupancy
-                loaded_node->occupancy = globalAllocator.newOccupancyGrid(true);
+                shLoadedNode->occupancy = globalAllocator.newOccupancyGrid(true);
                 uint32_t grid_index = __nv_atomic_fetch_add(&globalVariables.nbGridsToInit, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-                globalVariables.gridsToInit[grid_index] = loaded_node;
-
-                loaded_node->voxels = globalAllocator.newChunk(true);
-                CChunk* cur_chunk = loaded_node->voxels;
-                for(uint32_t i=0; i<nb_voxels; i++){
-                    const CPoint& cur_point = voxels[i];
-                    cur_chunk = addPointToChunk(cur_chunk, cur_point);
-                }
+                globalVariables.gridsToInit[grid_index] = shLoadedNode;
             }
 
+            // Allocate the first and last chunks for the points and the voxels
+            if(nb_points > 0){
+                shLoadedNode->points = globalAllocator.newChunk(true);
+                uint32_t required_chunks = (nb_points + OocSimLodSettings::NB_POINTS_PER_CHUNK - 1) /  OocSimLodSettings::NB_POINTS_PER_CHUNK;
+                uint32_t first_chunk = __nv_atomic_fetch_add(&globalVariables.chunksAllocatorCounter, required_chunks, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+                uint32_t last_chunk = first_chunk + required_chunks - 1;
+
+                // Put first and last chunks in the chunk array
+                globalVariables.allocatedChunks[first_chunk] = shLoadedNode->points;
+                if(required_chunks > 1){
+                    globalVariables.allocatedChunks[last_chunk] = globalAllocator.newChunk(true);
+                }
+                globalVariables.allocatedChunks[first_chunk]->size = OocSimLodSettings::NB_POINTS_PER_CHUNK;
+                uint32_t last_size = nb_points % OocSimLodSettings::NB_POINTS_PER_CHUNK;
+                last_size = (last_size == 0) ? OocSimLodSettings::NB_POINTS_PER_CHUNK : last_size;
+                globalVariables.allocatedChunks[last_chunk]->size = last_size;
+               
+                // Update shared variables
+                shFirstPointsChunks = first_chunk;
+                shNbPointsChunks = required_chunks;
+            }
+            if(nb_voxels > 0){
+                shLoadedNode->voxels = globalAllocator.newChunk(true);
+                uint32_t required_chunks = (nb_voxels + OocSimLodSettings::NB_POINTS_PER_CHUNK - 1) /  OocSimLodSettings::NB_POINTS_PER_CHUNK;
+                uint32_t first_chunk = __nv_atomic_fetch_add(&globalVariables.chunksAllocatorCounter, required_chunks, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+                uint32_t last_chunk = first_chunk + required_chunks - 1;
+
+                // Put first and last chunks in the chunk array
+                globalVariables.allocatedChunks[first_chunk] = shLoadedNode->voxels;
+                if(required_chunks > 1){
+                    globalVariables.allocatedChunks[last_chunk] = globalAllocator.newChunk(true);
+                }
+                globalVariables.allocatedChunks[first_chunk]->size = OocSimLodSettings::NB_POINTS_PER_CHUNK;
+                uint32_t last_size = nb_voxels % OocSimLodSettings::NB_POINTS_PER_CHUNK;
+                last_size = (last_size == 0) ? OocSimLodSettings::NB_POINTS_PER_CHUNK : last_size;
+                globalVariables.allocatedChunks[last_chunk]->size = last_size;
+
+                // Update shared variables
+                shFirstVoxelsChunks = first_chunk;
+                shNbVoxelsChunks = required_chunks;
+            }
+        }
+        __syncthreads();
+
+
+        // Allocate the chunks for the points and the voxels
+        uint32_t first_points_chunk = shFirstPointsChunks;
+        uint32_t nb_points_chunk = shNbPointsChunks;
+        uint32_t first_voxels_chunk = shFirstVoxelsChunks;
+        uint32_t nb_voxels_chunk = shNbVoxelsChunks;
+
+        // -2 for the already two allocated chunks
+        if(nb_points_chunk > 2){
+            for(uint32_t allocation_id = thread_id; allocation_id < nb_points_chunk - 2; allocation_id += nb_threads_per_block){
+                uint32_t real_id = first_points_chunk + allocation_id + 1;
+                globalVariables.allocatedChunks[real_id] = globalAllocator.newChunk(true);
+                globalVariables.allocatedChunks[real_id]->size = OocSimLodSettings::NB_POINTS_PER_CHUNK;
+            }
+        }
+        if(nb_voxels_chunk > 2){
+            for(uint32_t allocation_id = thread_id; allocation_id < nb_voxels_chunk - 2; allocation_id += nb_threads_per_block){
+                uint32_t real_id = first_voxels_chunk + allocation_id + 1;
+                globalVariables.allocatedChunks[real_id] = globalAllocator.newChunk(true);
+                globalVariables.allocatedChunks[real_id]->size = OocSimLodSettings::NB_POINTS_PER_CHUNK;
+            }
+        }
+        __syncthreads();
+
+
+        // Link the chunks
+        if(nb_points_chunk > 1){
+            for(uint32_t allocation_id = thread_id; allocation_id < nb_points_chunk - 1; allocation_id += nb_threads_per_block){
+                uint32_t real_id = first_points_chunk + allocation_id;
+                globalVariables.allocatedChunks[real_id]->next = globalVariables.allocatedChunks[real_id+1];
+            }
+        }
+        if(nb_voxels_chunk > 1){
+            for(uint32_t allocation_id = thread_id; allocation_id < nb_voxels_chunk - 1; allocation_id += nb_threads_per_block){
+                uint32_t real_id = first_voxels_chunk + allocation_id;
+                globalVariables.allocatedChunks[real_id]->next = globalVariables.allocatedChunks[real_id+1];
+            }
+        }
+        __syncthreads();
+
+
+        // Fill up the chunks
+        if(nb_points > 0){
+            CChunk* cur_chunk = shLoadedNode->points;
+            uint32_t cur_point_index = thread_id;
+            while(cur_chunk){
+                for(uint32_t i = thread_id; i < cur_chunk->size; i += nb_threads_per_block){
+                    const CPoint& cur_point = points[cur_point_index];
+                    cur_chunk->points[i] = cur_point;
+                    cur_point_index += nb_threads_per_block;
+                }
+                cur_chunk = cur_chunk->next;
+            }
+        }
+
+        // Rebuild voxels
+        if(nb_voxels > 0){
+            CChunk* cur_chunk = shLoadedNode->voxels;
+            uint32_t cur_point_index = thread_id;
+            while(cur_chunk){
+                for(uint32_t i = thread_id; i < cur_chunk->size; i += nb_threads_per_block){
+                    const CPoint& cur_voxel = voxels[cur_point_index];
+                    cur_chunk->points[i] = cur_voxel;
+                    cur_point_index += nb_threads_per_block;
+                }
+                cur_chunk = cur_chunk->next;
+            }
+        }
+
+
+        if(thread_id == 0){
             // Find parent if needed
             // Use temporaryNodeBuffer as a temporary buffer 
             COctreeNode* potential_parent = globalVariables.temporaryNodeBuffer[exchanged_index];
@@ -209,7 +311,7 @@ void kernel_simlod_load_part_2_rebuilding_nodes(){
                             printf("ERROR: At this point, the children should not exist\n");
                             customAssert();
                         }
-                        potential_parent->children[i] = loaded_node;
+                        potential_parent->children[i] = shLoadedNode;
                         found = true;
                         break;
                     }
@@ -624,6 +726,9 @@ void kernel_simlod_voxel_sampling(){
     // Because "kernel_fill_new_grids" should be launched just before
     globalVariables.nbGridsToInit = 0;
 
+    // To reset before "kernel_simlod_insertion_part_1_chunks_allocations"
+    globalVariables.chunksAllocatorCounter = 0;
+
     auto grid = cg::this_grid();
     // auto block = cg::this_thread_block();
     // uint32_t nb_blocks = grid.num_blocks();
@@ -678,19 +783,6 @@ void kernel_simlod_voxel_sampling(){
 
 
 
-__device__
-void allocateChunks(CChunk* root_chunk, uint32_t required_chunks, uint32_t total_counter){
-    CChunk* cur_chunk = root_chunk;
-    for(uint32_t i=1; i<required_chunks; i++){
-        if(!cur_chunk->next){cur_chunk->next = globalAllocator.newChunk(true);}
-        cur_chunk->size = OocSimLodSettings::NB_POINTS_PER_CHUNK;
-        cur_chunk = cur_chunk->next;
-    }
-    if(cur_chunk){cur_chunk->size = total_counter % OocSimLodSettings::NB_POINTS_PER_CHUNK;}
-};
-
-
-
 
 /// Run on floor("NB SMs" * "Max threads per SM" / "Max threads per block") blocks of size "Max threads per block"
 /// Allocate the necessary new chunks
@@ -703,34 +795,150 @@ void kernel_simlod_insertion_part_1_chunks_allocations(){
     }
 
     auto grid = cg::this_grid();
-    uint32_t thread_id = grid.thread_rank();
-    uint32_t nb_threads = grid.num_threads();
+    auto block = cg::this_thread_block();
+    uint32_t nb_blocks = grid.num_blocks();
 
-    for(uint32_t node_index = thread_id; node_index < globalVariables.curNbNodes; node_index += nb_threads){
+    uint32_t block_id = grid.block_rank();
+    uint32_t thread_id = block.thread_rank();
+    uint32_t nb_threads_per_block = block.num_threads();
+
+    // Used Claude to implement similar parallel allocation strategy as in "kernel_simlod_load_part_2_rebuilding_nodes"
+
+    __shared__ CChunk* shPointsAttach;   // chunk to append new points chunks to (nullptr if none needed)
+    __shared__ uint32_t shPointsFirstNew;
+    __shared__ uint32_t shPointsNbNew;
+    __shared__ uint32_t shPointsLastSize;
+
+    __shared__ CChunk* shVoxelsAttach;   // chunk to append new voxels chunks to (nullptr if none needed)
+    __shared__ uint32_t shVoxelsFirstNew;
+    __shared__ uint32_t shVoxelsNbNew;
+    __shared__ uint32_t shVoxelsLastSize;
+
+    for(uint32_t node_index = block_id; node_index < globalVariables.curNbNodes; node_index += nb_blocks){
+
         COctreeNode* cur_node = globalVariables.packedNodes[node_index];
 
-        // Allocate points chunks
-        uint32_t required_chunks = (cur_node->points_counter + OocSimLodSettings::NB_POINTS_PER_CHUNK - 1) /  OocSimLodSettings::NB_POINTS_PER_CHUNK;
-        if(required_chunks > 0){
-            if(!cur_node->points){
-                cur_node->points = globalAllocator.newChunk(true);
+        // Walk the existing chains (points & voxels), figure out how many new
+        // chunks are needed, fix up the size of chunks that are no longer last,
+        // and reserve a contiguous range in the shared chunk pool for the rest.
+        __syncthreads(); // Needed to not overwrite shared vars before previous iteration is done reading them
+        if(thread_id == 0){
+            shPointsAttach = nullptr;
+            shPointsNbNew = 0;
+            shVoxelsAttach = nullptr;
+            shVoxelsNbNew = 0;
+
+            // ----- Points -----
+            uint32_t required_chunks = (cur_node->points_counter + OocSimLodSettings::NB_POINTS_PER_CHUNK - 1) / OocSimLodSettings::NB_POINTS_PER_CHUNK;
+            if(required_chunks > 0){
+                if(!cur_node->points){
+                    cur_node->points = globalAllocator.newChunk(true);
+                }
+
+                CChunk* cur_chunk = cur_node->points;
+                uint32_t existing_count = 1;
+                while(cur_chunk->next && existing_count < required_chunks){
+                    cur_chunk->size = OocSimLodSettings::NB_POINTS_PER_CHUNK;
+                    cur_chunk = cur_chunk->next;
+                    existing_count++;
+                }
+
+                uint32_t last_size = cur_node->points_counter % OocSimLodSettings::NB_POINTS_PER_CHUNK;
+                last_size = (last_size == 0) ? OocSimLodSettings::NB_POINTS_PER_CHUNK : last_size;
+
+                if(existing_count < required_chunks){
+                    cur_chunk->size = OocSimLodSettings::NB_POINTS_PER_CHUNK; // no longer the last chunk
+
+                    uint32_t nb_new_chunks = required_chunks - existing_count;
+                    uint32_t first_chunk = __nv_atomic_fetch_add(&globalVariables.chunksAllocatorCounter, nb_new_chunks, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+
+                    shPointsAttach = cur_chunk;
+                    shPointsFirstNew = first_chunk;
+                    shPointsNbNew = nb_new_chunks;
+                    shPointsLastSize = last_size;
+                } else {
+                    cur_chunk->size = last_size;
+                }
             }
-            allocateChunks(cur_node->points, required_chunks, cur_node->points_counter);
+
+            // ----- Voxels -----
+            required_chunks = (cur_node->voxels_counter + OocSimLodSettings::NB_POINTS_PER_CHUNK - 1) / OocSimLodSettings::NB_POINTS_PER_CHUNK;
+            if(required_chunks > 0){
+                if(!cur_node->voxels){
+                    cur_node->voxels = globalAllocator.newChunk(true);
+                }
+
+                CChunk* cur_chunk = cur_node->voxels;
+                uint32_t existing_count = 1;
+                while(cur_chunk->next && existing_count < required_chunks){
+                    cur_chunk->size = OocSimLodSettings::NB_POINTS_PER_CHUNK;
+                    cur_chunk = cur_chunk->next;
+                    existing_count++;
+                }
+
+                uint32_t last_size = cur_node->voxels_counter % OocSimLodSettings::NB_POINTS_PER_CHUNK;
+                last_size = (last_size == 0) ? OocSimLodSettings::NB_POINTS_PER_CHUNK : last_size;
+
+                if(existing_count < required_chunks){
+                    cur_chunk->size = OocSimLodSettings::NB_POINTS_PER_CHUNK;
+
+                    uint32_t nb_new_chunks = required_chunks - existing_count;
+                    uint32_t first_chunk = __nv_atomic_fetch_add(&globalVariables.chunksAllocatorCounter, nb_new_chunks, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+
+                    shVoxelsAttach = cur_chunk;
+                    shVoxelsFirstNew = first_chunk;
+                    shVoxelsNbNew = nb_new_chunks;
+                    shVoxelsLastSize = last_size;
+                } else {
+                    cur_chunk->size = last_size;
+                }
+            }
+        }
+        __syncthreads();
+
+        // Allocate the missing chunks in parallel
+        uint32_t points_first_new = shPointsFirstNew;
+        uint32_t points_nb_new = shPointsNbNew;
+        uint32_t voxels_first_new = shVoxelsFirstNew;
+        uint32_t voxels_nb_new = shVoxelsNbNew;
+
+        for(uint32_t i = thread_id; i < points_nb_new; i += nb_threads_per_block){
+            globalVariables.allocatedChunks[points_first_new + i] = globalAllocator.newChunk(true);
+            globalVariables.allocatedChunks[points_first_new + i]->size = OocSimLodSettings::NB_POINTS_PER_CHUNK;
+        }
+        for(uint32_t i = thread_id; i < voxels_nb_new; i += nb_threads_per_block){
+            globalVariables.allocatedChunks[voxels_first_new + i] = globalAllocator.newChunk(true);
+            globalVariables.allocatedChunks[voxels_first_new + i]->size = OocSimLodSettings::NB_POINTS_PER_CHUNK;
+        }
+        __syncthreads();
+
+        // Attach the new range to the existing chain, and fix the last chunk's size
+        if(thread_id == 0){
+            if(points_nb_new > 0){
+                shPointsAttach->next = globalVariables.allocatedChunks[points_first_new];
+                globalVariables.allocatedChunks[points_first_new + points_nb_new - 1]->size = shPointsLastSize;
+            }
+            if(voxels_nb_new > 0){
+                shVoxelsAttach->next = globalVariables.allocatedChunks[voxels_first_new];
+                globalVariables.allocatedChunks[voxels_first_new + voxels_nb_new - 1]->size = shVoxelsLastSize;
+            }
         }
 
-        // Allocate voxels chunks
-        required_chunks = (cur_node->voxels_counter + OocSimLodSettings::NB_POINTS_PER_CHUNK - 1) /  OocSimLodSettings::NB_POINTS_PER_CHUNK;
-        if(required_chunks > 0){
-            if(!cur_node->voxels){
-                cur_node->voxels = globalAllocator.newChunk(true);
+        // Link the new chunks together
+        if(points_nb_new > 1){
+            for(uint32_t i = thread_id; i < points_nb_new - 1; i += nb_threads_per_block){
+                uint32_t real_id = points_first_new + i;
+                globalVariables.allocatedChunks[real_id]->next = globalVariables.allocatedChunks[real_id + 1];
             }
-            allocateChunks(cur_node->voxels, required_chunks, cur_node->voxels_counter);
         }
+        if(voxels_nb_new > 1){
+            for(uint32_t i = thread_id; i < voxels_nb_new - 1; i += nb_threads_per_block){
+                uint32_t real_id = voxels_first_new + i;
+                globalVariables.allocatedChunks[real_id]->next = globalVariables.allocatedChunks[real_id + 1];
+            }
+        }
+        __syncthreads();
     }
-
-    // Do not reset them, they contain the real number of elements in each node
-    // cur_node->points_stored = 0;
-    // cur_node->voxels_stored = 0;
 }
 
 
