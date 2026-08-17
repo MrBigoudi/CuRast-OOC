@@ -727,6 +727,9 @@ void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
 	cuCtxSetCurrent(*context);
 
     GpuVersionUI::lastUpdateStart = high_resolution_clock::now();
+    if(GpuVersionUI::nbTotalUpdates == 0){
+        GpuVersionUI::firstUpdateStart = GpuVersionUI::lastUpdateStart;
+    }
 
     LoaderGpuVersion::run(&stream, editor, context);
     octreeUpdateInit(editor, context);
@@ -1244,8 +1247,9 @@ void GpuVersion::takeRandomScreenShots(){
 
 
 void GpuVersionUI::update() {
+    std::chrono::time_point<std::chrono::high_resolution_clock> now = high_resolution_clock::now();
     uint64_t duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-        high_resolution_clock::now() - lastUpdateStart
+        now - lastUpdateStart
     ).count();
 
 #ifndef COPY_FROM_GPU
@@ -1261,9 +1265,7 @@ void GpuVersionUI::update() {
     }
 #endif
     COPY_FROM_GPU(nbTotalUpdates, nbTotalUpdates);
-    if(lastNbTotalUpdates == nbTotalUpdates){
-        return;
-    }
+    if(lastNbTotalUpdates == nbTotalUpdates){return;}
     lastNbTotalUpdates = nbTotalUpdates;
 
     COPY_FROM_GPU(curNbNodes, currentNbNodes);
@@ -1318,9 +1320,10 @@ void GpuVersionUI::update() {
     updateStats(nbNewChunksThisUpdate, minNbNewChunksPerUpdate, maxNbNewChunksPerUpdate, avgNbNewChunksPerUpdate);
     updateStats(nbNewGridsThisUpdate, minNbNewGridsPerUpdate, maxNbNewGridsPerUpdate, avgNbNewGridsPerUpdate);
 
-    if (duration > 0) {
-        const uint64_t updatesPerSecond = static_cast<uint64_t>(1000.0 / static_cast<double>(duration));
-        updateStats(updatesPerSecond, minNbUpdatesPerSecond, maxNbUpdatesPerSecond, avgNbUpdatesPerSecond);
-    }
+    uint64_t total_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now - firstUpdateStart
+    ).count();
+    const uint64_t cur_updates_per_seconds = static_cast<uint64_t>(1000.0 * static_cast<uint64_t>(nbTotalUpdates) / total_duration);
+    updateStats(cur_updates_per_seconds, minNbUpdatesPerSecond, maxNbUpdatesPerSecond, avgNbUpdatesPerSecond);
 
 }

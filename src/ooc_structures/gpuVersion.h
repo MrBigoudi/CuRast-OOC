@@ -99,6 +99,7 @@ struct GpuVersionUI {
 
     // Timers
     static inline std::chrono::time_point<std::chrono::high_resolution_clock> lastUpdateStart;
+    static inline std::chrono::time_point<std::chrono::high_resolution_clock> firstUpdateStart;
 
     static void update();
 };

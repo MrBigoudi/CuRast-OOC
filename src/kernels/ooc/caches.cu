@@ -60,6 +60,7 @@ void kernel_update_updates_cache(){
     if(!globalVariables.isUpdating){return;}
     globalVariables.nbNodesExchanged = 0;
 
+    if(!globalVariables.isDoneIterating){return;}
     if(!globalVariables.isDoneLoading){
         globalVariables.nbNodesExchangedBeforeLoadComplete = 0;
         return;
@@ -80,6 +81,7 @@ extern "C" __global__
 void kernel_prepare_store_part_1_filling_buffers(){
     if(!globalVariables.isInitialised){return;}
     if(!globalVariables.isUpdating){return;}
+    if(!globalVariables.isDoneIterating){return;}
     if(!globalVariables.isDoneLoading){return;}
 
     auto grid = cg::this_grid();
@@ -92,16 +94,15 @@ void kernel_prepare_store_part_1_filling_buffers(){
         if(globalVariables.isToStore(node->aabb_index)){continue;}
 
         // Unset flags
-        constexpr uint32_t clear_mask = (1u << CFlagIsVisible) - 1u;
-        __nv_atomic_and(&globalVariables.nodesFlags[node->aabb_index], ~clear_mask, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+        // constexpr uint32_t clear_mask = (1u << CFlagIsVisible) - 1u;
+        // __nv_atomic_and(&globalVariables.nodesFlags[node->aabb_index], ~clear_mask, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+        globalVariables.resetFlagsSync(node->aabb_index);
 
         if(!globalVariables.updatesCache->contains(node->aabb_index)){
             uint32_t exchanged_index = __nv_atomic_fetch_add(&globalVariables.nbNodesExchanged, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
 
             if(exchanged_index >= globalVariables.maxNbNodesExchanged){
-                printf("WARN: Too many nodes are being stored\n");
-                // customAssert();
-
+                // printf("WARN: Too many nodes are being stored\n");
                 // Instead of panicking, warn everyone that you're not done
                 globalVariables.isDoneStoring = false;
                 // // To avoid being deleted
@@ -160,14 +161,14 @@ void kernel_prepare_store_part_1_filling_buffers(){
                 cur_chunk = cur_chunk->next;
             }
 
-            // Resetting flags
-            uint32_t clear_store_mask = 0
-                | CFlagHasNewPoints
-                | CFlagHasNewVoxels
-                | CFlagIsNew
-                | CFlagHasSpilled
-            ;
-            __nv_atomic_and(&globalVariables.nodesFlags[node->aabb_index], ~clear_store_mask, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            // // Resetting flags
+            // uint32_t clear_store_mask = 0
+            //     | CFlagHasNewPoints
+            //     | CFlagHasNewVoxels
+            //     | CFlagIsNew
+            //     | CFlagHasSpilled
+            // ;
+            // __nv_atomic_and(&globalVariables.nodesFlags[node->aabb_index], ~clear_store_mask, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
             globalVariables.setFlagSync(node->aabb_index, CFlagToStore);
         } else {
             globalVariables.setFlagSync(node->aabb_index, CFlagIsInUpdatesCache);
@@ -182,6 +183,7 @@ extern "C" __global__
 void kernel_prepare_store_part_2_resetting_children(){
     if(!globalVariables.isInitialised){return;}
     if(!globalVariables.isUpdating){return;}
+    if(!globalVariables.isDoneIterating){return;}
     if(!globalVariables.isDoneLoading){return;}
     if(!globalVariables.isDoneStoring){return;}
 
@@ -261,6 +263,7 @@ extern "C" __global__
 void kernel_prepare_store_part_3_updating_levels(){
     if(!globalVariables.isInitialised){return;}
     if(!globalVariables.isUpdating){return;}
+    if(!globalVariables.isDoneIterating){return;}
     if(!globalVariables.isDoneLoading){return;}
     if(!globalVariables.isDoneStoring){return;}
 
@@ -337,7 +340,8 @@ void kernel_prepare_store_part_3_updating_levels(){
 
     globalVariables.batchesToAddBottomUpCount = false;
 
-    if(globalVariables.isDoneLoading
+    if(globalVariables.isDoneIterating
+        && globalVariables.isDoneLoading
         && globalVariables.isDoneStoring // To run only on complete updates
         && block_id == 0 && thread_id == 0 // To run only once
     ){

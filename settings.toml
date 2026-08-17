@@ -32,8 +32,8 @@ BATCHES_LIST_SIZE = 1_024
 
 ### The maximum number of points per batches
 # MAX_POINTS_PER_BATCHES = 10_000
-MAX_POINTS_PER_BATCHES = 100_000
-# MAX_POINTS_PER_BATCHES = 1_000_000
+# MAX_POINTS_PER_BATCHES = 100_000
+MAX_POINTS_PER_BATCHES = 1_000_000
 # MAX_POINTS_PER_BATCHES = 4_000_000
 # MAX_POINTS_PER_BATCHES = 10_000_000
 
@@ -53,9 +53,9 @@ MAX_BATCHES_PER_GPU_LOAD = 100
 ### The minimum number of batches that should be added at the same time in the octree
 MIN_BATCHES_PER_OCTREE_UPDATE = 1
 ### The maximum number of batches that should be added at the same time in the octree
-MAX_BATCHES_PER_OCTREE_UPDATE = 1
+# MAX_BATCHES_PER_OCTREE_UPDATE = 1
 # MAX_BATCHES_PER_OCTREE_UPDATE = 2
-# MAX_BATCHES_PER_OCTREE_UPDATE = 4
+MAX_BATCHES_PER_OCTREE_UPDATE = 4
 # MAX_BATCHES_PER_OCTREE_UPDATE = 8
 # MAX_BATCHES_PER_OCTREE_UPDATE = 32
 
@@ -78,10 +78,10 @@ MAX_POINTS_PER_LEAF = 65_536 # 2^16
 # LRU_UPDATES_CACHE_SIZE = 1
 # LRU_UPDATES_CACHE_SIZE = 16
 # LRU_UPDATES_CACHE_SIZE = 32
-LRU_UPDATES_CACHE_SIZE = 128
+# LRU_UPDATES_CACHE_SIZE = 128
 # LRU_UPDATES_CACHE_SIZE = 256
 # LRU_UPDATES_CACHE_SIZE = 512
-# LRU_UPDATES_CACHE_SIZE = 1_024
+LRU_UPDATES_CACHE_SIZE = 1_024
 # LRU_UPDATES_CACHE_SIZE = 4_096
 
 ### The size of the LRU visibility cache
@@ -103,8 +103,8 @@ LRU_CPU_CACHE_SIZE = 16_384
 # NB_ALLOCABLE_CHUNKS = 4_096
 # NB_ALLOCABLE_CHUNKS = 8_192
 # NB_ALLOCABLE_CHUNKS = 16_384
-NB_ALLOCABLE_CHUNKS = 32_768
-# NB_ALLOCABLE_CHUNKS = 65_536
+# NB_ALLOCABLE_CHUNKS = 32_768
+NB_ALLOCABLE_CHUNKS = 65_536
 # NB_ALLOCABLE_CHUNKS = 131_072
 # NB_ALLOCABLE_CHUNKS = 524_288
 
@@ -133,8 +133,9 @@ NB_ALLOCABLE_NODES = 4_096
 ### The initial maximum number of nodes allowed to be created during runtime
 MAX_NB_NODES = 1_000_000
 ### The maximum number of nodes that can be exchanged at once between the host and the device
-# MAX_NB_NODES_TO_EXCHANGE = 256
-MAX_NB_NODES_TO_EXCHANGE = 1
+# MAX_NB_NODES_TO_EXCHANGE = 1
+MAX_NB_NODES_TO_EXCHANGE = 256
+
 ### The maximum number of spilling points
 MAX_NB_SPILLING_POINTS = 5_000_000
 ### The maximum number of backlog voxels
@@ -149,8 +150,9 @@ MAX_NB_RENDERED_POINTS = 5_000_000
 MAX_NB_RENDERED_VOXELS = 5_000_000
 
 ### The maximum number of Count/Split operations per update
-MAX_NB_COUNT_SPLIT_ITERATION = 4
-# MAX_NB_COUNT_SPLIT_ITERATION = 8
+# MAX_NB_COUNT_SPLIT_ITERATION = 1
+# MAX_NB_COUNT_SPLIT_ITERATION = 4
+MAX_NB_COUNT_SPLIT_ITERATION = 8
 
 
 
@@ -161,18 +163,28 @@ MAX_NB_COUNT_SPLIT_ITERATION = 4
 ### Display the bounding boxes 
 SHOW_BOUNDING_BOXES_AT_STARTUP = false
 # SHOW_BOUNDING_BOXES_AT_STARTUP = true
+
 ### Send points from batches to the GPU as well and display the complete point cloud
 BRUTE_FORCE_RENDERING_AT_STARTUP = false
+
 ### The lod to render, -1 for the dynamic selection
 DEBUG_LOD_TO_RENDER_AT_STARTUP = -1
+# DEBUG_LOD_TO_RENDER_AT_STARTUP = 0
+
 ### The number of points per axis to draw voxels as a cube of points
 VOXELS_POINTS_PER_AXIS_AT_STARTUP = 1
+# VOXELS_POINTS_PER_AXIS_AT_STARTUP = 8
+
 ### The minimum number of pixels to condider a node large
 MIN_PIXEL_SPAN_AT_STARTUP = 64.0
+
 ### Use a debug color for the voxels; the color will correspond to the level of the node
 USE_VOXELS_DEBUG_COLOR_AT_STARTUP = false
+# USE_VOXELS_DEBUG_COLOR_AT_STARTUP = true
+
 ### Activate the automatic free of unused GPU memory
 USE_AUTO_FREE_OLD_OCTREE_ON_GPU_AT_STARTUP = true
+
 ### Use a white color for the visible nodes' bounding boxes
 DISPLAY_VISIBLE_NODES_AABB_AT_STARTUP = false
 # DISPLAY_VISIBLE_NODES_AABB_AT_STARTUP = true

@@ -173,7 +173,7 @@ void kernel_init_octree_part_1_aabb_measuring(){
 /// Run on a single thread
 extern "C" __global__
 void kernel_init_octree_part_2_refining(){
-    if(globalVariables.isDoneLoading && globalVariables.isDoneStoring){
+    if(globalVariables.isDoneLoading && globalVariables.isDoneStoring && globalVariables.isDoneIterating){
         globalVariables.isUpdating = false; // To reset the flag
     }
 
@@ -233,6 +233,8 @@ void kernel_init_octree_part_2_refining(){
 /// Each thread in a block is filling it's assigned coordinates in the current grid
 extern "C" __global__
 void kernel_fill_new_grids(){
+    if(!globalVariables.isUpdating){return;}
+
     auto grid = cg::this_grid();
     auto block = cg::this_thread_block();
     uint32_t nb_blocks = grid.num_blocks();

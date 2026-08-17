@@ -426,8 +426,12 @@ void kernel_render_bounding_boxes(
         COctreeNode* node = globalVariables.packedNodes[node_index];
 
         const CAABB& aabb = node->aabb;
-        if(settings.debug_lod_to_render != -1 && settings.debug_lod_to_render != node->level){
-            return;
+        if(settings.debug_lod_to_render != -1){
+            if(settings.debug_lod_to_render != node->level
+                || globalVariables.hasSpilled(node->aabb_index)
+                || globalVariables.isToLoad(node->aabb_index)
+                || globalVariables.isToStore(node->aabb_index)
+            ){return;}
         }
 
         float factor = float(node->level) / float(max(depth, 1));
@@ -475,7 +479,11 @@ void kernel_visibilityPass(
         COctreeNode* node = globalVariables.packedNodes[node_index];
 
         // TODO: Frustum culling
-        globalVariables.setFlagSync(node->aabb_index, CFlagIsVisible);
+        if(!globalVariables.hasSpilled(node->aabb_index)
+            && !globalVariables.isToLoad(node->aabb_index) 
+            && !globalVariables.isToStore(node->aabb_index)){
+            globalVariables.setFlagSync(node->aabb_index, CFlagIsVisible);
+        }
 
         if(settings.debug_lod_to_render != -1){
             continue;

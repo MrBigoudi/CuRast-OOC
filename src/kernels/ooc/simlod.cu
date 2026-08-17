@@ -4,7 +4,8 @@
 extern "C" __global__
 void kernel_simlod_load_part_0_reset(){
     if(!globalVariables.isInitialised){return;}
-    if(!globalVariables.isDoneStoring){return;}
+    if(!globalVariables.isUpdating){return;}
+    if(!globalVariables.isDoneStoring || !globalVariables.isDoneIterating){return;}
 
     globalVariables.isDoneLoading = true;
 }
@@ -17,7 +18,8 @@ void kernel_simlod_load_part_0_reset(){
 extern "C" __global__
 void kernel_simlod_load_part_1_flagging(){
     if(!globalVariables.isInitialised){return;}
-    if(!globalVariables.isDoneStoring){return;}
+    if(!globalVariables.isUpdating){return;}
+    if(!globalVariables.isDoneStoring || !globalVariables.isDoneIterating){return;}
 
     auto grid = cg::this_grid();
     uint32_t thread_id = grid.thread_rank();
@@ -58,8 +60,7 @@ void kernel_simlod_load_part_1_flagging(){
                         uint32_t exchanged_index = __nv_atomic_fetch_add(&globalVariables.nbNodesExchanged, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
                         
                         if(exchanged_index >= globalVariables.maxNbNodesExchanged){
-                            printf("WARN: Too many nodes are being loaded\n");
-                            // customAssert();
+                            // printf("WARN: Too many nodes are being loaded\n");
 
                             // Instead of panicking, warn everyone that you're not done
                             globalVariables.isDoneLoading = false;
@@ -125,7 +126,8 @@ void reallocateChunks(CChunk* root_chunk, uint32_t required_chunks, uint32_t tot
 extern "C" __global__
 void kernel_simlod_load_part_2_rebuilding_nodes(){
     if(!globalVariables.isInitialised){return;}
-    if(!globalVariables.isDoneStoring){return;}
+    if(!globalVariables.isUpdating){return;}
+    if(!globalVariables.isDoneStoring || !globalVariables.isDoneIterating){return;}
 
     auto grid = cg::this_grid();
     auto block = cg::this_thread_block();
@@ -228,7 +230,8 @@ void kernel_simlod_load_part_2_rebuilding_nodes(){
 extern "C" __global__
 void kernel_simlod_load_part_3_rebuilding_children(){
     if(!globalVariables.isInitialised){return;}
-    if(!globalVariables.isDoneStoring){return;}
+    if(!globalVariables.isUpdating){return;}
+    if(!globalVariables.isDoneStoring || !globalVariables.isDoneIterating){return;}
     if(!globalVariables.isDoneLoading){return;}
 
     // Because "kernel_fill_new_grids" should be launched just before
@@ -442,6 +445,7 @@ void simlodSplit(uint32_t first_point, uint32_t step){
                 // Create the new AABB
                 new_child->aabb = spilling_node->aabb;
                 new_child->aabb.shrink((CNodePosition)j);
+                new_child->level = spilling_node->level + 1;
 
                 globalVariables.setFlagSync(new_child_id, CFlagIsNew);
             }
@@ -481,6 +485,7 @@ void simlodSplit(uint32_t first_point, uint32_t step){
 extern "C" __global__
 void kernel_simlod_count_split(){
     if(!globalVariables.isInitialised){return;}
+    if(!globalVariables.isUpdating){return;}
     if(!globalVariables.isDoneLoading || !globalVariables.isDoneStoring){
         return;
     }
@@ -496,12 +501,19 @@ void kernel_simlod_count_split(){
     uint32_t first_point = block_id * nb_threads_per_block + thread_id;
     uint32_t step = nb_blocks * nb_threads_per_block;
 
-    while(true){
+    globalVariables.isDoneIterating = false;
+
+    // while(true){
+    for(uint32_t loop = 0; loop < globalVariables.maxCountSplitIterations; loop++){
 
         simlodCount(first_point, step);
         grid.sync();
 
-        if(globalVariables.nbSpillingNodes == 0){break;}
+        if(globalVariables.nbSpillingNodes == 0){
+            globalVariables.isDoneIterating = true;
+            break;
+        }
+        
         simlodSplit(first_point, step);
         grid.sync();
 
@@ -524,6 +536,10 @@ void kernel_simlod_count_split(){
         globalVariables.nbSpillingNodes = 0;
         grid.sync();
     }
+
+    // if(block_id == 0 && thread_id == 0 && !globalVariables.isDoneIterating){
+    //     printf("WARN: Too many count/split iterations\n");
+    // }
 }
 
 
@@ -600,7 +616,8 @@ void sampleVoxel(const CPoint& point){
 extern "C" __global__
 void kernel_simlod_voxel_sampling(){
     if(!globalVariables.isInitialised){return;}
-    if(!globalVariables.isDoneLoading || !globalVariables.isDoneStoring){
+    if(!globalVariables.isUpdating){return;}
+    if(!globalVariables.isDoneLoading || !globalVariables.isDoneStoring || !globalVariables.isDoneIterating){
         return;
     }
 
@@ -680,7 +697,8 @@ void allocateChunks(CChunk* root_chunk, uint32_t required_chunks, uint32_t total
 extern "C" __global__
 void kernel_simlod_insertion_part_1_chunks_allocations(){
     if(!globalVariables.isInitialised){return;}
-    if(!globalVariables.isDoneLoading || !globalVariables.isDoneStoring){
+    if(!globalVariables.isUpdating){return;}
+    if(!globalVariables.isDoneLoading || !globalVariables.isDoneStoring || !globalVariables.isDoneIterating){
         return;
     }
 
@@ -777,7 +795,8 @@ void insertVoxel(const CPoint& voxel, COctreeNode* cur_node){
 extern "C" __global__
 void kernel_simlod_insertion_part_2_filling(){
     if(!globalVariables.isInitialised){return;}
-    if(!globalVariables.isDoneLoading || !globalVariables.isDoneStoring){
+    if(!globalVariables.isUpdating){return;}
+    if(!globalVariables.isDoneLoading || !globalVariables.isDoneStoring || !globalVariables.isDoneIterating){
         return;
     }
 

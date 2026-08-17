@@ -6,7 +6,7 @@
 extern "C" __global__
 void kernel_bottom_up_update_part_1_counting(){
     if(!globalVariables.isInitialised){return;}
-    if(!globalVariables.isDoneLoading || !globalVariables.isDoneStoring){
+    if(!globalVariables.isDoneLoading || !globalVariables.isDoneStoring || !globalVariables.isDoneIterating){
         return;
     }
 
@@ -111,10 +111,12 @@ __device__ void addNewVoxels(
 extern "C" __global__
 void kernel_bottom_up_update_part_2_instancing(){
     if(!globalVariables.isInitialised){return;}
+    if(!globalVariables.isUpdating){return;}
+
     // Need to be reset before simlod loading phase
     globalVariables.nbNodesExchanged = 0;
 
-    if(!globalVariables.isDoneLoading || !globalVariables.isDoneStoring){
+    if(!globalVariables.isDoneLoading || !globalVariables.isDoneStoring || !globalVariables.isDoneIterating){
         return;
     }
 
