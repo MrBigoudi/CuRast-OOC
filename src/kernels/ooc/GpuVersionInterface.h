@@ -400,12 +400,10 @@ struct COctreeNode {
 	uint8_t children_visibility = 0b00000000;
 	uint8_t level = 0;
 
-	CAABB aabb = CAABB();
-
 	__device__ __forceinline__ COctreeNode(): points(nullptr), voxels(nullptr), occupancy(nullptr),
 		aabb_index(CINVALID_ID), points_counter(0), voxels_counter(0),
 		points_stored(0), voxels_stored(0), children_ids(0),
-		children_visibility(0b00000000), level(0), aabb(CAABB())
+		children_visibility(0b00000000), level(0)
 	{
 		for(uint32_t i=0; i<8; i++){
 			children[i] = nullptr;
@@ -427,7 +425,6 @@ struct COctreeNode {
 		children_ids = 0b00000000;
 		children_visibility = 0b00000000;
 		level = 0;
-		aabb = CAABB();
 	}
 };
 
@@ -613,6 +610,7 @@ struct CGlobalVariables {
             CINVALID_ID, CINVALID_ID, CINVALID_ID, CINVALID_ID
         };
 		CIdAABB parent = CINVALID_ID;
+		CAABB aabb = CAABB();
     };
     /// The list of all AABBs created during runtime
 	uint32_t totalNbNodes = 0;
@@ -632,10 +630,6 @@ struct CGlobalVariables {
 
 	/// The buffer of nodes for rendering
 	uint32_t octreeDepth = 0;
-	// uint32_t renderingOctreeDepth = 0;
-	// uint32_t renderingNbNodes = 0;
-	// COctreeNode** renderingPackedNodes = nullptr;
-	// COctreeNode** renderingPackedNodesTmp = nullptr;
 
 	uint32_t maxCountSplitIterations = 0;
 
@@ -645,8 +639,11 @@ struct CGlobalVariables {
 	uint32_t nbNodesExchangedBeforeLoadComplete = 0;
 
 	uint32_t chunksAllocatorCounter = 0;
+	uint32_t maxAllocatedChunks = 0;
 	CChunk** allocatedChunks = nullptr;
-
+	
+	COctreeNode** memoizedBatchPointsNodes = nullptr; 
+	COctreeNode** memoizedSpilledPointsNodes = nullptr; 
 
 
 
@@ -663,7 +660,6 @@ struct CGlobalVariables {
 	uint32_t maxNbVoxelsChunksPerExchangedNode = 0;
 	CIdAABB* exchangedAABBIndices = nullptr;
 	CIdAABB* exchangedAABBParentsIndices = nullptr;
-	CAABB* exchangedAABBs = nullptr;
 	uint32_t* exchangedChildrenIds = nullptr;
 	uint32_t* exchangedPointsCounters = nullptr;
 	uint32_t* exchangedVoxelsCounters = nullptr;
@@ -678,6 +674,7 @@ struct CGlobalVariables {
 
     /// A mask to know which batches have been handled
     uint32_t maxNbBatches = 0;
+	uint32_t maxBatchSize = 0;
     uint32_t* batchesAddedMask = nullptr;
 	/// The batches to add to the scene
 	CPoint** batchesToAddPoints = nullptr;

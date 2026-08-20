@@ -92,9 +92,6 @@ CPUFallbackCache::Entry::Entry(const std::shared_ptr<HostStorageNode> node){
     serializable_node.voxels_counter = node->node.voxels_counter;
     serializable_node.children_ids = node->node.children_ids;
     serializable_node.aabb_index = node->node.aabb_index;
-    serializable_node.aabb = AABB();
-    serializable_node.aabb.maxs = node->node.aabb.maxs;
-    serializable_node.aabb.mins = node->node.aabb.mins;
 
     if(!node->points.empty()){
         serializable_node.points = getChunkFilePathV2(serializable_node.aabb_index, false);
@@ -135,8 +132,6 @@ std::shared_ptr<HostStorageNode> OctreeNodeSerializable::deserializeV2(const CId
 
     new_node->node.aabb_index = serializable_node.aabb_index;
     new_node->node.children_ids = serializable_node.children_ids;
-    new_node->node.aabb.mins = serializable_node.aabb.mins;
-    new_node->node.aabb.maxs = serializable_node.aabb.maxs;
 
     new_node->node.voxels_counter = serializable_node.voxels_counter;
     new_node->node.points_counter = serializable_node.points_counter;
@@ -452,7 +447,7 @@ void OctreeNodeSerializable::serialize(const std::string& filepath) const {
 
     std::ofstream file(filepath, std::ios::binary | std::ios::trunc);
 
-    if (!file.is_open()) {
+    if(!file.is_open()){
         println("Failed to open the file {} to serialize an octree node", filepath);
         if(!GlobalVariables::mainLoopIsTerminating){
             throw(EXIT_FAILURE);
@@ -460,9 +455,10 @@ void OctreeNodeSerializable::serialize(const std::string& filepath) const {
     }
 
     // Write fixed-size members
+    file.write(reinterpret_cast<const char*>(&aabb_index), sizeof(aabb_index));
+    file.write(reinterpret_cast<const char*>(&children_ids), sizeof(children_ids));
     file.write(reinterpret_cast<const char*>(&points_counter), sizeof(points_counter));
     file.write(reinterpret_cast<const char*>(&voxels_counter), sizeof(voxels_counter));
-    file.write(reinterpret_cast<const char*>(&children_ids), sizeof(children_ids));
 
     // Write points string
     uint64_t points_size = points.size();
@@ -474,15 +470,6 @@ void OctreeNodeSerializable::serialize(const std::string& filepath) const {
     file.write(reinterpret_cast<const char*>(&voxels_size), sizeof(voxels_size));
     file.write(voxels.data(), voxels_size);
 
-    // Write aabb
-    file.write(reinterpret_cast<const char*>(&aabb_index), sizeof(aabb_index));
-    file.write(reinterpret_cast<const char*>(&aabb.mins.x), sizeof(float));
-    file.write(reinterpret_cast<const char*>(&aabb.mins.y), sizeof(float));
-    file.write(reinterpret_cast<const char*>(&aabb.mins.z), sizeof(float));
-    file.write(reinterpret_cast<const char*>(&aabb.maxs.x), sizeof(float));
-    file.write(reinterpret_cast<const char*>(&aabb.maxs.y), sizeof(float));
-    file.write(reinterpret_cast<const char*>(&aabb.maxs.z), sizeof(float));
-
     file.close();
 }
 
@@ -493,7 +480,7 @@ OctreeNodeSerializable OctreeNodeSerializable::deserialize(const std::string& fi
     
     std::ifstream file(filepath, std::ios::binary);
 
-    if (!file.is_open()) {
+    if(!file.is_open()){
         println("Failed to open the file {} to deserialize an octree node: {}", filepath, msg);
         if(!GlobalVariables::mainLoopIsTerminating){
             throw(EXIT_FAILURE);
@@ -501,9 +488,10 @@ OctreeNodeSerializable OctreeNodeSerializable::deserialize(const std::string& fi
     }
 
     // Read fixed-size members
+    file.read(reinterpret_cast<char*>(&new_node.aabb_index), sizeof(new_node.aabb_index));
+    file.read(reinterpret_cast<char*>(&new_node.children_ids), sizeof(new_node.children_ids));
     file.read(reinterpret_cast<char*>(&new_node.points_counter), sizeof(new_node.points_counter));
     file.read(reinterpret_cast<char*>(&new_node.voxels_counter), sizeof(new_node.voxels_counter));
-    file.read(reinterpret_cast<char*>(&new_node.children_ids), sizeof(new_node.children_ids));
 
     // Read points string
     uint64_t points_size = 0;
@@ -517,15 +505,7 @@ OctreeNodeSerializable OctreeNodeSerializable::deserialize(const std::string& fi
     new_node.voxels.resize(voxels_size);
     file.read(new_node.voxels.data(), voxels_size);
 
-    // Read aabb
-    file.read(reinterpret_cast<char*>(&new_node.aabb_index), sizeof(aabb_index));
-    file.read(reinterpret_cast<char*>(&new_node.aabb.mins.x), sizeof(float));
-    file.read(reinterpret_cast<char*>(&new_node.aabb.mins.y), sizeof(float));
-    file.read(reinterpret_cast<char*>(&new_node.aabb.mins.z), sizeof(float));
-    file.read(reinterpret_cast<char*>(&new_node.aabb.maxs.x), sizeof(float));
-    file.read(reinterpret_cast<char*>(&new_node.aabb.maxs.y), sizeof(float));
-    file.read(reinterpret_cast<char*>(&new_node.aabb.maxs.z), sizeof(float));
-
+    file.close();
     return new_node;
 }
 

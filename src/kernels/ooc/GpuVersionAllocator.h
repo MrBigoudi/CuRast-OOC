@@ -109,6 +109,19 @@ struct CAllocatorPool {
         typename CDoubleLinkedList<Entry*>::Iterator* list_it = elements->end();
         if(will_run_in_parallel){
             uint32_t counter = __nv_atomic_fetch_add(&tmp_allocation_counter, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            if(counter >= CAPACITY){
+                switch(ALLOCATOR_ID){
+                    case ChunkAllocator:
+                        printf("ERROR: can't allocate more `Chunk' elements in parallel\n");
+                        customAssert();
+                    case OccupancyGridAllocator:
+                        printf("ERROR: can't allocate more `OccupancyGrid' elements in parallel\n");
+                        customAssert();
+                    case OctreeNodeAllocator:
+                        printf("ERROR: can't allocate more `OctreeNode' elements in parallel\n");
+                        customAssert();
+                }
+            }
             for(uint32_t i=0; i<counter; i++){
                 list_it = list_it->prev;
             }
@@ -195,6 +208,19 @@ struct CAllocatorPool {
 
         if(will_run_in_parallel){
             uint32_t counter = __nv_atomic_fetch_add(&tmp_deallocation_counter, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            if(counter >= CAPACITY){
+                switch(ALLOCATOR_ID){
+                    case ChunkAllocator:
+                        printf("ERROR: can't deallocate more `Chunk' elements in parallel\n");
+                        customAssert();
+                    case OccupancyGridAllocator:
+                        printf("ERROR: can't deallocate more `OccupancyGrid' elements in parallel\n");
+                        customAssert();
+                    case OctreeNodeAllocator:
+                        printf("ERROR: can't deallocate more `OctreeNode' elements in parallel\n");
+                        customAssert();
+                }
+            }
             deallocated_memory[counter] = list_it;
         } else {
             elements->moveEnd(list_it);
@@ -242,6 +268,7 @@ struct CMemoryAllocator {
         while(cur_chunk){
             CChunk* next = cur_chunk->next;
             cur_chunk->next = nullptr;
+            cur_chunk->size = 0;
             chunksAllocator->deallocate(cur_chunk, will_run_in_parallel);
             cur_chunk = next;
 
@@ -339,7 +366,6 @@ struct CMemoryAllocator {
 
         node->level = cpy->level;
         node->children_visibility = cpy->children_visibility;
-        node->aabb = CAABB(cpy->aabb);
 
         for(uint32_t i=0; i<8; i++){
             node->children[i] = nullptr;
@@ -372,6 +398,15 @@ struct CMemoryAllocator {
             }
             node->children[i] = nullptr;
         }
+
+        node->aabb_index = CINVALID_ID;
+        node->points_counter = 0;
+        node->voxels_counter = 0;
+        node->points_stored = 0;
+        node->voxels_stored = 0;
+        node->children_ids = 0;
+        node->children_visibility = 0;
+        node->level = 0;
 
         nodesAllocator->deallocate(node, will_run_in_parallel);
     }

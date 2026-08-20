@@ -57,14 +57,59 @@ void fillUpdatesCacheIterative(COctreeNode* root_node){
 extern "C" __global__
 void kernel_update_updates_cache(){
     if(!globalVariables.isInitialised){return;}
+
+    // // Sanity check unicity in cache
+    // CDoubleLinkedList<CIdAABB>::Iterator* entry = globalVariables.updatesCache->cache.begin();
+    // while(entry){
+    //     CIdAABB cur_id = entry->value;
+    //     uint32_t cpt = 0;
+    //     CDoubleLinkedList<CIdAABB>::Iterator* comp = globalVariables.updatesCache->cache.begin();
+    //     while(comp){
+    //         if(comp->value == cur_id){cpt++;}
+    //         comp = comp->next;
+    //     }
+    //     if(cpt != 1){
+    //         printf("ERROR: the cache should contain a single entry for `%d' but it contains %d entries\n", 
+    //             cur_id, cpt
+    //         );
+    //         customAssert();
+    //     }
+    //     entry = entry->next;
+    // }
+    // uint32_t expected_size = globalVariables.updatesCache->getSize();
+    // uint32_t cpt = 0;
+    // for(uint32_t i=0; i<globalVariables.curNbNodes; i++){
+    //     COctreeNode* node = globalVariables.packedNodes[i];
+    //     if(!node){continue;}
+    //     if(globalVariables.updatesCache->contains(node->aabb_index)){
+    //         cpt++;
+    //     }
+    // }
+    // if(cpt != expected_size){
+    //     printf("ERROR: there are %d nodes in the cache but cache size is %d\n", cpt, expected_size);
+    //     customAssert();
+    // }
+    // for(uint32_t i=0; i<globalVariables.curNbNodes; i++){
+    //     COctreeNode* node_i = globalVariables.packedNodes[i];
+    //     for(uint32_t j=i+1; j<globalVariables.curNbNodes; j++){
+    //         COctreeNode* node_j = globalVariables.packedNodes[j];
+    //         if(node_i->aabb_index == node_j->aabb_index){
+    //             printf("ERROR: node %d appears multiple times in the packed nodes\n", node_i->aabb_index);
+    //             customAssert();
+    //         }
+    //     }
+    // }
+
+
+
+
+
     if(!globalVariables.isUpdating){return;}
     globalVariables.nbNodesExchanged = 0;
 
     if(!globalVariables.isDoneIterating){return;}
-    if(!globalVariables.isDoneLoading){
-        globalVariables.nbNodesExchangedBeforeLoadComplete = 0;
-        return;
-    }
+    if(!globalVariables.isDoneLoading){return;}
+
     if(!globalVariables.isDoneStoring){
         globalVariables.isDoneStoring = true;
         return;
@@ -73,6 +118,45 @@ void kernel_update_updates_cache(){
     // fillUpdatesCacheRecursive(globalVariables.mainOctree);
     fillUpdatesCacheIterative(globalVariables.mainOctree);
 
+    // // Sanity check unicity in cache
+    // entry = globalVariables.updatesCache->cache.begin();
+    // while(entry){
+    //     CIdAABB cur_id = entry->value;
+    //     CIdAABB parent_id = globalVariables.relationshipMap[cur_id].parent;
+    //     if(parent_id != CINVALID_ID && !globalVariables.updatesCache->contains(parent_id)){
+    //         printf("ERROR: cache invalid, node `%d' is in cache but not its parent `%d'\n",
+    //             cur_id, parent_id
+    //         );
+    //         customAssert();
+    //     }
+    //     entry = entry->next;
+    // }
+
+    // // Sanity check
+    // for(uint32_t i=0; i<globalVariables.curNbNodes; i++){
+    //     COctreeNode* node = globalVariables.packedNodes[i];
+    //     if(!node){continue;}
+    //     if(node->points_counter != node->points_stored){
+    //         printf("ERROR: Wtf, got %d / %d for node %d\n",
+    //             node->points_counter, node->points_stored, node->aabb_index
+    //         );
+    //     }
+    //     for(uint32_t j=0; j<8; j++){
+    //         if(node->children[j] && globalVariables.relationshipMap[node->children[j]->aabb_index].parent != node->aabb_index){
+    //             printf("ERROR: child[%d] of node %d has parent %d\n",
+    //                 j, node->aabb_index, globalVariables.relationshipMap[node->children[j]->aabb_index].parent
+    //             );
+    //             customAssert();
+    //         }
+    //         if(node->children[j] && globalVariables.relationshipMap[node->aabb_index].children[j] != node->children[j]->aabb_index){
+    //             printf("ERROR: child[%d] = %d of node %d should be %d\n",
+    //                 j, node->children[j]->aabb_index, node->aabb_index,
+    //                 globalVariables.relationshipMap[node->aabb_index].children[j]
+    //             );
+    //             customAssert();
+    //         }
+    //     }
+    // }
 }
 
 
@@ -97,7 +181,7 @@ void kernel_prepare_store_part_1_filling_buffers(){
     for(uint32_t node_index = block_id; node_index < globalVariables.curNbNodes; node_index += nb_blocks){
 
         COctreeNode* node = globalVariables.packedNodes[node_index];
-        if(globalVariables.isToStore(node->aabb_index)){continue;}
+        if(!node){continue;}
 
         // Unset flags
         if(thread_id == 0){ // Only one thread per block
@@ -118,14 +202,13 @@ void kernel_prepare_store_part_1_filling_buffers(){
             __syncthreads(); // Needed to sync before break condition
 
             if(shExchangedIndex >= globalVariables.maxNbNodesExchanged){
-                break;
+                continue;
             }
 
 
             // Storing node properties
             globalVariables.exchangedAABBIndices[shExchangedIndex] = node->aabb_index;
             globalVariables.exchangedAABBParentsIndices[shExchangedIndex] = globalVariables.relationshipMap[node->aabb_index].parent;
-            globalVariables.exchangedAABBs[shExchangedIndex] = node->aabb;
             globalVariables.exchangedChildrenIds[shExchangedIndex] = node->children_ids;
             globalVariables.exchangedPointsCounters[shExchangedIndex] = node->points_counter;
             globalVariables.exchangedVoxelsCounters[shExchangedIndex] = node->voxels_counter;
@@ -137,7 +220,7 @@ void kernel_prepare_store_part_1_filling_buffers(){
                 __nv_atomic_sub(&globalVariables.currentNbPoints, node->points_counter, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
                 __nv_atomic_sub(&globalVariables.currentNbVoxels, node->voxels_counter, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
 
-                globalVariables.setFlagSync(node->aabb_index, CFlagToStore);
+                // globalVariables.setFlagSync(node->aabb_index, CFlagToStore);
             }
             
             const uint32_t MAX_NB_POINTS = globalVariables.maxNbPointsChunksPerExchangedNode * OocSimLodSettings::NB_POINTS_PER_CHUNK;
@@ -181,10 +264,15 @@ void kernel_prepare_store_part_1_filling_buffers(){
                 cur_chunk = cur_chunk->next;
             }
 
-        } else {
+            __syncthreads(); // Needed to sync before deletion
             if(thread_id == 0){
-                globalVariables.setFlagSync(node->aabb_index, CFlagIsInUpdatesCache);
+                // globalVariables.unsetFlagSync(node->aabb_index, CFlagToStore);
+                // Deleting the node
+                globalAllocator.delOctreeNode(node, true, true);
+                globalVariables.packedNodes[node_index] = nullptr;
             }
+            __syncthreads(); // Needed to sync after deletion
+
         }
     }
 }
@@ -198,7 +286,6 @@ void kernel_prepare_store_part_2_resetting_children(){
     if(!globalVariables.isUpdating){return;}
     if(!globalVariables.isDoneIterating){return;}
     if(!globalVariables.isDoneLoading){return;}
-    if(!globalVariables.isDoneStoring){return;}
 
     auto grid = cg::this_grid();
     uint32_t thread_id = grid.thread_rank();
@@ -206,14 +293,7 @@ void kernel_prepare_store_part_2_resetting_children(){
 
     for(uint32_t node_index = thread_id; node_index < globalVariables.curNbNodes; node_index += nb_threads){
         COctreeNode* node = globalVariables.packedNodes[node_index];
-
-        if(globalVariables.isToStore(node->aabb_index)){
-            globalVariables.unsetFlagSync(node->aabb_index, CFlagToStore);
-            // Deleting the node
-            globalAllocator.delOctreeNode(node, true, true);
-            globalVariables.packedNodes[node_index] = nullptr;
-            continue;
-        }
+        if(!node){continue;}
 
         node->children_visibility = 0b00000000;
 
@@ -223,8 +303,8 @@ void kernel_prepare_store_part_2_resetting_children(){
             if(child_index == CINVALID_ID){
                 continue;
             }
-            // if(globalVariables.isToStore(child_index)){
-            if(!globalVariables.isInUpdatesCache(child_index)){
+            
+            if(!globalVariables.updatesCache->contains(child_index)){
                 node->children[i] = nullptr;
                 continue;
             }
@@ -278,7 +358,6 @@ void kernel_prepare_store_part_3_updating_levels(){
     if(!globalVariables.isUpdating){return;}
     if(!globalVariables.isDoneIterating){return;}
     if(!globalVariables.isDoneLoading){return;}
-    if(!globalVariables.isDoneStoring){return;}
 
     auto grid = cg::this_grid();
     auto block = cg::this_thread_block();
@@ -293,11 +372,28 @@ void kernel_prepare_store_part_3_updating_levels(){
     bool is_first = (block_id == 0 && thread_id == 0);
     
     if(is_first){
+        // printf("step %d:\n", globalVariables.nbTotalUpdates);
+
+        // uint32_t cpt = 0;
+        // uint32_t old_cpt = globalVariables.curNbNodes;
+        // for(uint32_t i=0; i<old_cpt; i++){
+        //     if(globalVariables.packedNodes[i]){
+        //         cpt++;
+        //     }
+        // }
+
         packNodes();
-        // Because "delOctreeNode" was called in kernel_prepare_store_part_2_resetting_children
+        // Because "delOctreeNode" was called in kernel_prepare_store_part_1_filling_buffers
         globalAllocator.chunksAllocator->reset_temporary_deallocations();
         globalAllocator.gridsAllocator->reset_temporary_deallocations();
         globalAllocator.nodesAllocator->reset_temporary_deallocations();
+
+        // printf("    - exchanged = %d,\n    - cache size: %d /  %d\n    - %d nodes;\n    - non null nodes: %d / %d\n", 
+        //     globalVariables.nbNodesExchanged,
+        //     globalVariables.updatesCache->getSize(), globalVariables.updatesCacheSize,
+        //     globalVariables.curNbNodes, 
+        //     cpt, old_cpt
+        // );
     }
     grid.sync();
 
@@ -317,7 +413,14 @@ void kernel_prepare_store_part_3_updating_levels(){
             // Update max depth
             __nv_atomic_max(&globalVariables.octreeDepth, new_child_level, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
             for(uint32_t i=0; i<8; i++){
-                if(node->children[i]){node->children[i]->level = new_child_level;}
+                CIdAABB child_id = globalVariables.relationshipMap[node->aabb_index].children[i];
+                if((child_id != CINVALID_ID) && globalVariables.updatesCache->contains(child_id)){
+                    if(!node->children[i]){
+                        printf("ERROR: when updating the children levels, the child should exist\n");
+                        customAssert();
+                    }
+                    node->children[i]->level = new_child_level;
+                }
             }
         }
         grid.sync();
@@ -351,7 +454,7 @@ void kernel_prepare_store_part_3_updating_levels(){
         }
     }
 
-    globalVariables.batchesToAddBottomUpCount = false;
+    globalVariables.batchesToAddBottomUpCount = 0;
 
     if(globalVariables.isDoneIterating
         && globalVariables.isDoneLoading
@@ -362,281 +465,3 @@ void kernel_prepare_store_part_3_updating_levels(){
         __nv_atomic_add(&globalVariables.nbTotalUpdates, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-// __device__
-// void deallocateOldNodesV2(uint32_t first_point, uint32_t step){
-//     for(uint32_t node_index = first_point; node_index < globalVariables.renderingNbNodes; node_index += step){
-//         COctreeNode* node_to_remove = globalVariables.renderingPackedNodes[node_index];
-//         globalAllocator.delOctreeNode(node_to_remove, true, true, false);
-//     }
-// }
-
-// __device__
-// void createNewNodesV2(uint32_t first_point, uint32_t step){
-//     for(uint32_t node_index = first_point; node_index < globalVariables.curNbNodes; node_index += step){
-//         COctreeNode* real_node = globalVariables.packedNodes[node_index];
-//         globalVariables.renderingPackedNodes[node_index] = globalAllocator.newOctreeNodePartialCpy(real_node, true, false);
-//         COctreeNode* node = globalVariables.renderingPackedNodes[node_index];
-//         node->level = real_node->level;
-//         node->points_counter = real_node->points_counter;
-//         node->voxels_counter = real_node->voxels_counter;
-//         node->children_visibility = real_node->children_visibility;
-
-//         globalVariables.unsetFlagSync(node->aabb_index, CFlagHasNewPoints);
-//         globalVariables.unsetFlagSync(node->aabb_index, CFlagHasNewVoxels);
-//         globalVariables.unsetFlagSync(node->aabb_index, CFlagIsNew);
-//         globalVariables.unsetFlagSync(node->aabb_index, CFlagHasSpilled);
-//     }
-// }
-
-
-// __device__
-// void deallocateOldNodes(uint32_t first_point, uint32_t step){
-//     for(uint32_t node_index = first_point; node_index < globalVariables.renderingNbNodes; node_index += step){
-//         COctreeNode* node_to_remove = globalVariables.renderingPackedNodes[node_index];
-//         if(!node_to_remove){continue;}
-
-//         // Node should be deleted
-//         if(!globalVariables.isInUpdatesCache(node_to_remove->aabb_index)){
-//             globalAllocator.delOctreeNode(node_to_remove, true, true, false);
-//             globalVariables.renderingPackedNodes[node_index] = nullptr;
-//             continue;
-//         }
-
-//         // Node points should be deleted
-//         if(globalVariables.hasSpilled(node_to_remove->aabb_index)){
-//             globalAllocator.delChunk(node_to_remove->points, true, false);
-//         }
-//     }
-// }
-
-
-
-
-
-// __device__
-// void createNewNodes(uint32_t first_point, uint32_t step){
-//     for(uint32_t node_index = first_point; node_index < globalVariables.curNbNodes; node_index += step){
-//         COctreeNode* node = globalVariables.packedNodes[node_index];
-//         if(globalVariables.isNew(node->aabb_index)){
-//             uint32_t index = __nv_atomic_fetch_add(&globalVariables.renderingNbNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-//             globalVariables.renderingPackedNodes[index] = globalAllocator.newOctreeNodePartialCpy(node, true, false);
-//         }
-//     }
-// }
-
-// __device__
-// void packRenderingNodes(uint32_t first_point, uint32_t step){
-//     for(uint32_t rendering_node_index = first_point; rendering_node_index < globalVariables.renderingNbNodes; rendering_node_index += step){
-//         COctreeNode* rendering_node = globalVariables.renderingPackedNodes[rendering_node_index];
-//         globalVariables.renderingPackedNodes[rendering_node_index] = nullptr;
-//         if(!rendering_node){continue;}
-//         const CIdAABB& current_node = rendering_node->aabb_index;
-//         bool found = false;
-//         for(uint32_t node_index = 0; node_index < globalVariables.curNbNodes; node_index++){
-//             const CIdAABB& target = globalVariables.packedNodes[node_index]->aabb_index;
-//             if(current_node != target){continue;}
-//             globalVariables.renderingPackedNodesTmp[node_index] = rendering_node;
-//             found = true;
-//             break;
-//         }
-//         if(!found){
-//             printf("Failed to find a corresponding rendering node on packing\n");
-//             customAssert();
-//         }
-//     }
-// }
-
-
-// __device__
-// void updateRenderingNodes(uint32_t first_point, uint32_t step){
-//     for(uint32_t node_index = first_point; node_index < globalVariables.renderingNbNodes; node_index += step){
-//         globalVariables.renderingPackedNodes[node_index] = globalVariables.renderingPackedNodesTmp[node_index];   
-
-//         COctreeNode* node = globalVariables.renderingPackedNodes[node_index];
-//         COctreeNode* real_node = globalVariables.packedNodes[node_index];
-//         node->level = real_node->level;
-//         node->points_counter = real_node->points_counter;
-//         node->voxels_counter = real_node->voxels_counter;
-//         node->children_visibility = real_node->children_visibility;
-
-//         // Copy the points if necessary
-//         if(globalVariables.hasSpilled(node->aabb_index)){
-//             node->points = globalAllocator.newChunkPartialCpy(real_node->points, true, false);
-//         } else if(globalVariables.hasNewPoints(node->aabb_index)){
-//             if(!node->points){
-//                 node->points = globalAllocator.newChunk(true, false);
-//             }
-//             CChunk* real_node_points = real_node->points;
-//             CChunk* cur_node_points = node->points;
-//             while(real_node_points){
-//                 for(uint32_t i=cur_node_points->size; i<real_node_points->size; i++){
-//                     cur_node_points->points[i] = real_node_points->points[i];
-//                 }
-//                 cur_node_points->size = real_node_points->size;
-//                 if(real_node_points->next && !cur_node_points->next){
-//                     cur_node_points->next = globalAllocator.newChunk(true, false);
-//                 }
-//                 real_node_points = real_node_points->next;
-//                 cur_node_points = cur_node_points->next;
-//             }
-//         }
-//         // Copy the voxels if necessary
-//         if(globalVariables.hasNewVoxels(node->aabb_index)){
-//             if(!node->voxels){
-//                 node->voxels = globalAllocator.newChunk(true, false);
-//             }
-//             CChunk* real_node_voxels = real_node->voxels;
-//             CChunk* cur_node_voxels = node->voxels;
-//             while(real_node_voxels){
-//                 for(uint32_t i=cur_node_voxels->size; i<real_node_voxels->size; i++){
-//                     cur_node_voxels->points[i] = real_node_voxels->points[i];
-//                 }
-//                 cur_node_voxels->size = real_node_voxels->size;
-//                 if(real_node_voxels->next && !cur_node_voxels->next){
-//                     cur_node_voxels->next = globalAllocator.newChunk(true, false);
-//                 }
-//                 real_node_voxels = real_node_voxels->next;
-//                 cur_node_voxels = cur_node_voxels->next;
-//             }
-//         }
-
-//         globalVariables.unsetFlagSync(node->aabb_index, CFlagHasNewPoints);
-//         globalVariables.unsetFlagSync(node->aabb_index, CFlagHasNewVoxels);
-//         globalVariables.unsetFlagSync(node->aabb_index, CFlagIsNew);
-//         globalVariables.unsetFlagSync(node->aabb_index, CFlagHasSpilled);
-//     }
-// }
-
-
-// /// Run on "MaxActiveBlocksPerMultiprocessor" cooperative blocks of size "Max block size"
-// extern "C" __global__
-// void kernel_create_rendereable_octree(){
-//     if(!globalVariables.isInitialised){return;}
-//     if(!globalVariables.isUpdating){return;}
-
-//     auto grid = cg::this_grid();
-//     auto block = cg::this_thread_block();
-//     uint32_t nb_blocks = grid.num_blocks();
-
-//     uint32_t block_id = grid.block_rank();
-//     uint32_t thread_id = block.thread_rank();
-//     uint32_t nb_threads_per_block = block.num_threads();
-
-//     uint32_t first_point = block_id * nb_threads_per_block + thread_id;
-//     uint32_t step = nb_blocks * nb_threads_per_block;
-
-//     bool is_first = (block_id == 0 && thread_id == 0);
-
-//     // Deallocate old rendering nodes and old chunks
-//     deallocateOldNodes(first_point, step);
-//     // deallocateOldNodesV2(first_point, step);
-//     grid.sync();
-
-
-//     if(is_first){
-//         // Reset allocator
-//         globalAllocator.chunksAllocator->reset_temporary_deallocations();
-//         globalAllocator.nodesAllocator->reset_temporary_deallocations();
-//     }
-//     grid.sync();
-    
-
-//     // Create new nodes
-//     createNewNodes(first_point, step);
-//     // createNewNodesV2(first_point, step);
-//     grid.sync();
-
-
-//     // Make nodes match the real nodes order
-//     packRenderingNodes(first_point, step);
-//     grid.sync();
-
-
-//     // Finish building new nodes
-//     globalVariables.renderingNbNodes = globalVariables.curNbNodes;
-//     updateRenderingNodes(first_point, step);
-//     grid.sync();
-
-
-//     if(is_first){
-//         // Reset the allocator
-//         // Because "newOctreeNodePartialCpy" was called
-//         globalAllocator.chunksAllocator->reset_temporary_allocations();
-//         globalAllocator.nodesAllocator->reset_temporary_allocations();
-//         // No grids should be allocated
-
-//         globalVariables.renderingOctreeDepth = globalVariables.octreeDepth;       
-
-//         // UI values
-//         __nv_atomic_add(&globalVariables.nbTotalUpdates, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-//     }
-
-    // // Sanity check
-    // grid.sync();
-    // for(uint32_t node_index = first_point; node_index < globalVariables.renderingNbNodes; node_index += step){
-    //     COctreeNode* node = globalVariables.renderingPackedNodes[node_index];
-    //     COctreeNode* real_node = globalVariables.packedNodes[node_index];
-        
-    //     CChunk* node_points = node->points;
-    //     CChunk* real_node_points = real_node->points;
-    //     if((node_points && !real_node_points) || (!node_points && real_node_points)){
-    //         printf("Non existing points\n");
-    //         customAssert();
-    //     }
-    //     while(node_points){
-    //         if(node_points->size != real_node_points->size){
-    //             printf("Wrong points chunk size\n");
-    //             customAssert();
-    //         }
-    //         for(uint32_t point_id = 0; point_id < node_points->size; point_id++){
-    //             if(node_points->points[point_id] != real_node_points->points[point_id]){
-    //                 printf("Wrong point\n");
-    //                 customAssert();
-    //             }
-    //         }
-    //         node_points = node_points->next;
-    //         real_node_points = real_node_points->next;
-    //     }
-
-    //     CChunk* node_voxels = node->voxels;
-    //     CChunk* real_node_voxels = real_node->voxels;
-    //     if((node_voxels && !real_node_voxels) || (!node_voxels && real_node_voxels)){
-    //         printf("Non existing voxels\n");
-    //         customAssert();
-    //     }
-    //     while(node_voxels){
-    //         if(node_voxels->size != real_node_voxels->size){
-    //             printf("Wrong voxels chunk size\n");
-    //             customAssert();
-    //         }
-    //         for(uint32_t point_id = 0; point_id < node_voxels->size; point_id++){
-    //             if(node_voxels->points[point_id] != real_node_voxels->points[point_id]){
-    //                 printf("Wrong point\n");
-    //                 customAssert();
-    //             }
-    //         }
-    //         node_voxels = node_voxels->next;
-    //         real_node_voxels = real_node_voxels->next;
-    //     }
-
-    //     if(node->aabb != real_node->aabb){
-    //         printf("Wrong AABB\n");
-    //         customAssert();
-    //     }
-    //     if(node->aabb_index != real_node->aabb_index){
-    //         printf("Wrong index\n");
-    //         customAssert();
-    //     }
-    // }
-// }

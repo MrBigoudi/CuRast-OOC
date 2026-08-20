@@ -39,7 +39,6 @@ struct OctreeNodeSerializable {
 	std::string points = "";
 	std::string voxels = "";
     IdAABB aabb_index = {};
-    AABB aabb = {};
 
     friend CPUFallbackCache;
 

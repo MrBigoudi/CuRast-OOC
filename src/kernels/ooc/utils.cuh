@@ -13,7 +13,7 @@ namespace std {
 
 
 // https://forums.developer.nvidia.com/t/using-assert-in-cuda-code/21816
-#define customAssert() { printf("Assertion failure!\n"); asm("trap;"); }
+#define customAssert() { printf("Assertion failure!\n"); asm("trap;"); return;}
 
 
 // #include <curand_kernel.h>
@@ -91,7 +91,7 @@ __device__ __forceinline__ void displayOctreeNode(const COctreeNode* node, uint3
         uint8_t(node->children[6] != nullptr), 
         uint8_t(node->children[7] != nullptr)
     );
-    const CAABB& aabb = node->aabb;
+    const CAABB& aabb = globalVariables.relationshipMap[node->aabb_index].aabb;
     printf("    aabb: mins = (%f, %f, %f), maxs = (%f, %f, %f)\n",
         aabb.mins.x, aabb.mins.y, aabb.mins.z,
         aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
@@ -193,4 +193,13 @@ __device__ __forceinline__ float atomicMaxFloatRelaxedOrderSystemScope(float* ad
             __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE
         );
     }
+}
+
+__device__
+inline uint64_t nanotime(){
+
+	uint64_t nanotime;
+	asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(nanotime));
+
+	return nanotime;
 }

@@ -17,7 +17,7 @@ void kernel_bottom_up_update_part_1_counting(){
 
     uint32_t nb_new_levels = 0;
     CNodePosition node_position = CFrontTopLeft;
-    CAABB new_aabb = globalVariables.mainOctree->aabb;
+    CAABB new_aabb = globalVariables.relationshipMap[globalVariables.mainOctree->aabb_index].aabb;
 
     for(uint32_t batch = 0; batch < globalVariables.maxNbBatches; batch++){
         if(globalVariables.batchesAddedMask[batch]){continue;}
@@ -28,8 +28,15 @@ void kernel_bottom_up_update_part_1_counting(){
         CPoint* new_points = globalVariables.batchesToAddPoints[batch];
         uint32_t nb_new_points = globalVariables.batchesToAddCounts[batch];
 
+        if(nb_new_points > globalVariables.maxBatchSize){
+            printf("ERROR: On bottom up update, batch size exceeded the limit: %d / %d\n", 
+                nb_new_points, globalVariables.maxBatchSize
+            );
+            customAssert();
+        }
+
         for(uint32_t i=thread_id; i<nb_new_points; i+=nb_threads){
-            CPoint& point = new_points[i];
+            const CPoint& point = new_points[i];
             while(!new_aabb.contains(point.position)){
                 nb_new_levels++;
                 new_aabb.extend(node_position);
@@ -111,11 +118,10 @@ __device__ void addNewVoxels(
 extern "C" __global__
 void kernel_bottom_up_update_part_2_instancing(){
     if(!globalVariables.isInitialised){return;}
-    if(!globalVariables.isUpdating){return;}
-
     // Need to be reset before simlod loading phase
     globalVariables.nbNodesExchanged = 0;
 
+    if(!globalVariables.isUpdating){return;}
     if(!globalVariables.isDoneLoading || !globalVariables.isDoneStoring || !globalVariables.isDoneIterating){
         return;
     }
@@ -130,6 +136,9 @@ void kernel_bottom_up_update_part_2_instancing(){
     for(uint32_t i=0; i<nb_new_levels; i++){
 		// Create the new parent node
 		CIdAABB parent_aabb_index = createNewNodeId();
+
+        // printf("\n\n\n\n\n\n\nFrom bottom up: %d\n\n\n\n\n\n\n", parent_aabb_index);
+
 		COctreeNode* new_parent = globalAllocator.newOctreeNode(parent_aabb_index, false);
 		uint32_t node_index = globalVariables.curNbNodes;
         globalVariables.curNbNodes++;
@@ -140,8 +149,8 @@ void kernel_bottom_up_update_part_2_instancing(){
         globalVariables.packedNodes[node_index] = new_parent;
 
         // Create the new AABB
-        new_parent->aabb = cur_child->aabb;
-		new_parent->aabb.extend(node_position);
+        CAABB new_parent_aabb = globalVariables.relationshipMap[cur_child->aabb_index].aabb;
+		new_parent_aabb.extend(node_position);
         
         // Create the occupancy
 		new_parent->occupancy = globalAllocator.newOccupancyGrid(false);
@@ -155,10 +164,11 @@ void kernel_bottom_up_update_part_2_instancing(){
 		new_parent->children[node_position] = cur_child;
 
 		// Sample voxels to fill new occupancy grid
-		addNewVoxels(new_parent, new_parent->aabb, cur_child->points);
-		addNewVoxels(new_parent, new_parent->aabb, cur_child->voxels);
+		addNewVoxels(new_parent, new_parent_aabb, cur_child->points);
+		addNewVoxels(new_parent, new_parent_aabb, cur_child->voxels);
 
 		// Update the AABB maps
+        globalVariables.relationshipMap[parent_aabb_index].aabb = new_parent_aabb;
 		globalVariables.relationshipMap[parent_aabb_index].children[node_position] = cur_child->aabb_index;
         globalVariables.relationshipMap[cur_child->aabb_index].parent = parent_aabb_index;
 
@@ -167,4 +177,6 @@ void kernel_bottom_up_update_part_2_instancing(){
 	}
 
     globalVariables.mainOctree = cur_child;
+    globalVariables.mainOctree->level = 0;
+    globalVariables.batchesToAddBottomUpCount = 0;
 }
