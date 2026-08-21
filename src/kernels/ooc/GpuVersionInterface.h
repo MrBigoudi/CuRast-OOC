@@ -346,18 +346,16 @@ enum CNodeFlagType {
 	CFlagCounter6,
 	CFlagCounter7,
 
-	// If node is used in a stack
-	CFlagIsFirstVisitedInStack,
-	CFlagIsSecondlyVisitedInStack,
-
 	// Node properties
 	CFlagIsUpdated,
 	CFlagToLoad,
 	CFlagToStore,
-	CFlagIsSpilling,
-	CFlagIsInUpdatesCache,
 
 	// Pads to be replaced on need
+	CFlagPad16,
+	CFlagPad17,
+	CFlagPad18,
+	CFlagPad19,
 	CFlagPad20,
 	CFlagPad21,
 	CFlagPad22,
@@ -769,6 +767,9 @@ struct CGlobalVariables {
 	__device__ __forceinline__ uint32_t getFlagsSync(const CIdAABB& aabb_index) const {
 		return __nv_atomic_load_n(&nodesFlags[aabb_index], __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
 	}
+	__device__ __forceinline__ uint32_t getFlags(const CIdAABB& aabb_index) const {
+		return nodesFlags[aabb_index];
+	}
 	__device__ __forceinline__ bool getFlag(const CIdAABB& aabb_index, const CNodeFlagType& flag) const {
 		return nodesFlags[aabb_index] & (0x01 << flag);
 	}
@@ -788,8 +789,14 @@ struct CGlobalVariables {
 	__device__ __forceinline__ void resetFlagsSync(const CIdAABB& aabb_index){
 		__nv_atomic_and(&nodesFlags[aabb_index], 0, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
 	}
+	__device__ __forceinline__ void resetFlags(const CIdAABB& aabb_index){
+		nodesFlags[aabb_index] = 0;
+	}
 	__device__ __forceinline__ void unsetFlagSync(const CIdAABB& aabb_index, const CNodeFlagType& flag){
 		__nv_atomic_and(&nodesFlags[aabb_index], ~(1u << flag), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+	}
+	__device__ __forceinline__ void unsetFlag(const CIdAABB& aabb_index, const CNodeFlagType& flag){
+		nodesFlags[aabb_index] &= ~(1u << flag);
 	}
 	__device__ __forceinline__ uint32_t fetchUnsetFlagSync(const CIdAABB& aabb_index, const CNodeFlagType& flag){
 		return __nv_atomic_fetch_and(&nodesFlags[aabb_index], ~(1u << flag), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
@@ -857,43 +864,88 @@ struct CGlobalVariables {
 		return old_counter;
 	}
 
+	__device__ __forceinline__ uint32_t resetCounterFlag(const CIdAABB& aabb_index) const {
+		uint32_t mask = getCounterFlagMask();
+		nodesFlags[aabb_index] &= ~mask;
+	}
+
+	__device__ __forceinline__ uint32_t getCounterFlag(const CIdAABB& aabb_index) const {
+		uint32_t mask = getCounterFlagMask();
+		uint32_t flags = getFlags(aabb_index);
+		return (flags & mask) >> CFlagCounter0;
+	}
+	
+	__device__ __forceinline__ void setCounterFlag(const CIdAABB& aabb_index, uint8_t new_value) const {
+		uint32_t new_counter = (new_value) << CFlagCounter0;
+		resetCounterFlag(aabb_index);
+		nodesFlags[aabb_index] |= new_counter;
+	}
+
+	// Return the old counter
+	__device__ __forceinline__ uint32_t increaseCounterFlag(const CIdAABB& aabb_index) const {
+		uint32_t old_counter = getCounterFlag(aabb_index);
+		if(old_counter == UINT8_MAX){
+			printf("ERROR: Reached max of counter flag\n");
+			return old_counter;
+		}
+		uint32_t new_counter = (old_counter + 1) << CFlagCounter0;
+		resetCounterFlag(aabb_index);
+		nodesFlags[aabb_index] |= new_counter;
+		return old_counter;
+	}
+
+	// Return the old counter
+	__device__ __forceinline__ uint32_t decreaseCounterFlag(const CIdAABB& aabb_index) const {
+		uint32_t old_counter = getCounterFlag(aabb_index);
+		if(old_counter == 0){
+			printf("ERROR: Can't decrease a 0 counter flag\n");
+			return old_counter;
+		}
+		uint32_t new_counter = (old_counter - 1) << CFlagCounter0;
+		resetCounterFlag(aabb_index);
+		nodesFlags[aabb_index] |= new_counter;
+		return old_counter;
+	}
+
 
 	
 	__device__ __forceinline__ bool isUpdated(const CIdAABB& aabb_index) const {
-		return getFlagSync(aabb_index, CFlagIsUpdated);
+		return getFlag(aabb_index, CFlagIsUpdated);
 	}
 	__device__ __forceinline__ bool isLarge(const CIdAABB& aabb_index) const {
-		return getFlagSync(aabb_index, CFlagIsLarge);
+		return getFlag(aabb_index, CFlagIsLarge);
 	}
 	__device__ __forceinline__ bool isVisible(const CIdAABB& aabb_index) const {
-		return getFlagSync(aabb_index, CFlagIsVisible);
+		return getFlag(aabb_index, CFlagIsVisible);
 	}
 	__device__ __forceinline__ bool isCut(const CIdAABB& aabb_index) const {
-		return getFlagSync(aabb_index, CFlagIsCut);
-	}
-	__device__ __forceinline__ bool isToLoad(const CIdAABB& aabb_index) const {
-		return getFlagSync(aabb_index, CFlagToLoad);
-	}
-	__device__ __forceinline__ bool isToStore(const CIdAABB& aabb_index) const {
-		return getFlagSync(aabb_index, CFlagToStore);
-	}
-	__device__ __forceinline__ bool isSpilling(const CIdAABB& aabb_index) const {
-		return getFlagSync(aabb_index, CFlagIsSpilling);
-	}
-	__device__ __forceinline__ bool isInUpdatesCache(const CIdAABB& aabb_index) const {
-		return getFlagSync(aabb_index, CFlagIsInUpdatesCache);
+		return getFlag(aabb_index, CFlagIsCut);
 	}
 	__device__ __forceinline__ bool isInVisibilityCache(const CIdAABB& aabb_index) const {
-		return getFlagSync(aabb_index, CFlagIsInVisibilityCache);
+		return getFlag(aabb_index, CFlagIsInVisibilityCache);
 	}
 	__device__ __forceinline__ bool isFromVoxelInVisibilityCache(const CIdAABB& aabb_index) const {
+		return getFlag(aabb_index, CFlagIsFromVoxelInVisibilityCache);
+	}
+
+
+	__device__ __forceinline__ bool isUpdatedSync(const CIdAABB& aabb_index) const {
+		return getFlagSync(aabb_index, CFlagIsUpdated);
+	}
+	__device__ __forceinline__ bool isLargeSync(const CIdAABB& aabb_index) const {
+		return getFlagSync(aabb_index, CFlagIsLarge);
+	}
+	__device__ __forceinline__ bool isVisibleSync(const CIdAABB& aabb_index) const {
+		return getFlagSync(aabb_index, CFlagIsVisible);
+	}
+	__device__ __forceinline__ bool isCutSync(const CIdAABB& aabb_index) const {
+		return getFlagSync(aabb_index, CFlagIsCut);
+	}
+	__device__ __forceinline__ bool isInVisibilityCacheSync(const CIdAABB& aabb_index) const {
+		return getFlagSync(aabb_index, CFlagIsInVisibilityCache);
+	}
+	__device__ __forceinline__ bool isFromVoxelInVisibilityCacheSync(const CIdAABB& aabb_index) const {
 		return getFlagSync(aabb_index, CFlagIsFromVoxelInVisibilityCache);
-	}
-	__device__ __forceinline__ bool isFirstVisitedInStack(const CIdAABB& aabb_index) const {
-		return getFlagSync(aabb_index, CFlagIsFirstVisitedInStack);
-	}
-	__device__ __forceinline__ bool isSecondlyVisitedInStack(const CIdAABB& aabb_index) const {
-		return getFlagSync(aabb_index, CFlagIsSecondlyVisitedInStack);
 	}
 
 #endif // __CUDACC__

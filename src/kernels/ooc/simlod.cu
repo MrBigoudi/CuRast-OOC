@@ -485,7 +485,7 @@ void kernel_simlod_load_part_3_rebuilding_children(){
             }
 
             // Flag the node as not needing to be loaded anymore
-            globalVariables.unsetFlagSync(cur_node->aabb_index, CFlagToLoad);
+            globalVariables.unsetFlag(cur_node->aabb_index, CFlagToLoad);
         }
     }
 
@@ -1186,7 +1186,7 @@ void insertPoint(const CPoint& point){
 
     // Reach all corresponding leaves
     while(true){
-        globalVariables.setFlagSync(cur_node->aabb_index, CFlagIsUpdated);
+        globalVariables.setFlag(cur_node->aabb_index, CFlagIsUpdated);
         // Find next child
         const CAABB& aabb = globalVariables.relationshipMap[cur_node->aabb_index].aabb;
         if(!aabb.contains(point.position)){
@@ -1267,13 +1267,6 @@ void insertVoxel(const CPoint& voxel, COctreeNode* cur_node){
         );
         customAssert();
     }
-
-
-    // CIdAABB id = cur_node->aabb_index;
-    // while(id != CINVALID_ID){
-    //     globalVariables.setFlagSync(id, CFlagIsUpdated);
-    //     id = globalVariables.relationshipMap[id].parent;
-    // }
 
     uint32_t voxel_index = __nv_atomic_fetch_add(&cur_node->voxels_stored, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
     uint32_t chunk_index = voxel_index / OocSimLodSettings::NB_POINTS_PER_CHUNK;

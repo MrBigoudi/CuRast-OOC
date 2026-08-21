@@ -452,14 +452,14 @@ void kernel_visibilityPass(
 
     for(uint32_t node_index = thread_id; node_index < globalVariables.curNbNodes; node_index += nb_threads){
         COctreeNode* node = globalVariables.packedNodes[node_index];
-        globalVariables.setFlagSync(node->aabb_index, CFlagIsVisible);
+        globalVariables.setFlag(node->aabb_index, CFlagIsVisible);
 
         if(settings.debug_lod_to_render != -1){
             continue;
         }
 
         if(isLargerThanMinSpanning(target, settings, node)){
-            globalVariables.setFlagSync(node->aabb_index, CFlagIsLarge);
+            globalVariables.setFlag(node->aabb_index, CFlagIsLarge);
         }
     }
 
@@ -589,7 +589,7 @@ void kernel_drawOctreeLarge(
                 if(child_index == CINVALID_ID){continue;}
                 if(globalVariables.isLarge(child_index)){continue;}
                 if(!globalVariables.isVisible(child_index)){continue;}
-                globalVariables.setFlagSync(child_index, CFlagIsCut);
+                globalVariables.setFlag(child_index, CFlagIsCut);
             }
         }
     }
@@ -647,9 +647,9 @@ void kernel_drawOctreeSmall(
 
         __syncthreads();
         if(thread_id == 0){
-            globalVariables.unsetFlagSync(node->aabb_index, CFlagIsVisible);
-            globalVariables.unsetFlagSync(node->aabb_index, CFlagIsLarge);
-            globalVariables.unsetFlagSync(node->aabb_index, CFlagIsCut);
+            globalVariables.unsetFlag(node->aabb_index, CFlagIsVisible);
+            globalVariables.unsetFlag(node->aabb_index, CFlagIsLarge);
+            globalVariables.unsetFlag(node->aabb_index, CFlagIsCut);
         }
     }
 
@@ -707,7 +707,7 @@ void kernel_test_multi_resolution(
         }
 
         if(thread_id == 0){
-            globalVariables.unsetFlagSync(node->aabb_index, CFlagIsVisible);
+            globalVariables.unsetFlag(node->aabb_index, CFlagIsVisible);
         }
     }
 }

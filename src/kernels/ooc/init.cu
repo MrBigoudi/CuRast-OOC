@@ -56,7 +56,7 @@ void kernel_init_global_buffers(){
         globalVariables.relationshipMap[thread_id] = CGlobalVariables::Relationship();
         globalVariables.packedNodes[thread_id] = nullptr;
         // globalVariables.renderingPackedNodes[thread_id] = nullptr;
-        globalVariables.nodesFlags[thread_id] = 0;
+        globalVariables.resetFlags(thread_id);
     }
 
 

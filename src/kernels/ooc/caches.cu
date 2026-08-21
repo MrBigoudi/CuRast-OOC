@@ -23,17 +23,14 @@ void kernel_update_updates_cache(){
         return;
     }
 
-    // fillUpdatesCacheIterative(globalVariables.mainOctree);
-
-
     // Count updated children
     for(uint32_t node_index = thread_id; node_index < globalVariables.curNbNodes; node_index += nb_threads){
         COctreeNode* node = globalVariables.packedNodes[node_index];
-        if(!globalVariables.isUpdated(node->aabb_index)){continue;}
+        if(!globalVariables.isUpdatedSync(node->aabb_index)){continue;}
 
         uint8_t nb_updated_children = 0;
         for(uint32_t i=0; i<8; i++){
-            if(node->children[i] && globalVariables.isUpdated(node->children[i]->aabb_index)){
+            if(node->children[i] && globalVariables.isUpdatedSync(node->children[i]->aabb_index)){
                 nb_updated_children++;
             }
         }
@@ -47,7 +44,7 @@ void kernel_update_updates_cache(){
     for(uint32_t node_index = thread_id; node_index < globalVariables.curNbNodes; node_index += nb_threads){
         COctreeNode* node = globalVariables.packedNodes[node_index];
         CIdAABB cur_id = node->aabb_index;
-        if(!globalVariables.isUpdated(cur_id)){continue;}
+        if(!globalVariables.isUpdatedSync(cur_id)){continue;}
         if(globalVariables.getCounterFlagSync(cur_id) != 0){continue;}
 
         while(true){
@@ -114,7 +111,7 @@ void kernel_prepare_store_part_1_filling_buffers(){
 
         // Unset flags
         if(thread_id == 0){ // Only one thread per block
-            globalVariables.resetFlagsSync(node->aabb_index);
+            globalVariables.resetFlags(node->aabb_index);
         }
 
         if(!globalVariables.updatesCache->contains(node->aabb_index)){
@@ -148,8 +145,6 @@ void kernel_prepare_store_part_1_filling_buffers(){
                 __nv_atomic_add(&globalVariables.nbTotalStoredNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
                 __nv_atomic_sub(&globalVariables.currentNbPoints, node->points_counter, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
                 __nv_atomic_sub(&globalVariables.currentNbVoxels, node->voxels_counter, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-
-                // globalVariables.setFlagSync(node->aabb_index, CFlagToStore);
             }
             
             const uint32_t MAX_NB_POINTS = globalVariables.maxNbPointsChunksPerExchangedNode * OocSimLodSettings::NB_POINTS_PER_CHUNK;
@@ -195,7 +190,6 @@ void kernel_prepare_store_part_1_filling_buffers(){
 
             __syncthreads(); // Needed to sync before deletion
             if(thread_id == 0){
-                // globalVariables.unsetFlagSync(node->aabb_index, CFlagToStore);
                 // Deleting the node
                 globalAllocator.delOctreeNode(node, true, true);
                 globalVariables.packedNodes[node_index] = nullptr;
@@ -298,28 +292,11 @@ void kernel_prepare_store_part_3_updating_levels(){
     bool is_first = (block_id == 0 && thread_id == 0);
     
     if(is_first){
-        // printf("step %d:\n", globalVariables.nbTotalUpdates);
-
-        // uint32_t cpt = 0;
-        // uint32_t old_cpt = globalVariables.curNbNodes;
-        // for(uint32_t i=0; i<old_cpt; i++){
-        //     if(globalVariables.packedNodes[i]){
-        //         cpt++;
-        //     }
-        // }
-
         packNodes();
         // Because "delOctreeNode" was called in kernel_prepare_store_part_1_filling_buffers
         globalAllocator.chunksAllocator->reset_temporary_deallocations();
         globalAllocator.gridsAllocator->reset_temporary_deallocations();
         globalAllocator.nodesAllocator->reset_temporary_deallocations();
-
-        // printf("    - exchanged = %d,\n    - cache size: %d /  %d\n    - %d nodes;\n    - non null nodes: %d / %d\n", 
-        //     globalVariables.nbNodesExchanged,
-        //     globalVariables.updatesCache->getSize(), globalVariables.updatesCacheSize,
-        //     globalVariables.curNbNodes, 
-        //     cpt, old_cpt
-        // );
     }
     grid.sync();
 
@@ -328,14 +305,15 @@ void kernel_prepare_store_part_3_updating_levels(){
         // No need to sync "counterFlag" accesses because of this specific kernel
         COctreeNode* node = globalVariables.packedNodes[node_index];
         node->level = 0;
-        globalVariables.resetCounterFlagSync(node->aabb_index);
+        globalVariables.resetCounterFlag(node->aabb_index);
     }
+
     // The number of grid.sync() should be the same for each thread in a cooperative group
     while(true){
         // Update all child levels
         for(uint32_t node_index = first_point; node_index < globalVariables.curNbNodes; node_index += step){
             COctreeNode* node = globalVariables.packedNodes[node_index];
-            uint32_t new_child_level = globalVariables.getCounterFlagSync(node->aabb_index) + 1;
+            uint32_t new_child_level = globalVariables.getCounterFlag(node->aabb_index) + 1;
             // Update max depth
             __nv_atomic_max(&globalVariables.octreeDepth, new_child_level, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
             for(uint32_t i=0; i<8; i++){
@@ -355,9 +333,9 @@ void kernel_prepare_store_part_3_updating_levels(){
         bool is_updated = false;
         for(uint32_t node_index = first_point; node_index < globalVariables.curNbNodes; node_index += step){
             COctreeNode* node = globalVariables.packedNodes[node_index];
-            uint32_t saved_level = globalVariables.getCounterFlagSync(node->aabb_index); 
+            uint32_t saved_level = globalVariables.getCounterFlag(node->aabb_index); 
             if(saved_level < node->level){
-                globalVariables.increaseCounterFlagSync(node->aabb_index);
+                globalVariables.increaseCounterFlag(node->aabb_index);
                 is_updated = true;
             }
         }
