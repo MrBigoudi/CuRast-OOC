@@ -103,9 +103,6 @@ void kernel_init_global_buffers(){
 /// Each thread is filling independently it's own bounding box before combining all of them
 extern "C" __global__
 void kernel_init_octree_part_1_aabb_measuring(){
-    // To only run it once
-    if(globalVariables.isInitialised){return;}
-
     auto grid = cg::this_grid();
     auto block = cg::this_thread_block();
     uint32_t nb_blocks = grid.num_blocks();
@@ -116,6 +113,10 @@ void kernel_init_octree_part_1_aabb_measuring(){
 
     uint32_t first_point = block_id * nb_threads_per_block + thread_id;
     uint32_t step = nb_blocks * nb_threads_per_block;
+
+    // if(block_id == 0 && thread_id == 0){
+    //     printf("kernel_init_octree_part_1_aabb_measuring\n");
+    // }
 
     __shared__ float shBlockMinX;
     __shared__ float shBlockMinY;
@@ -220,14 +221,7 @@ void kernel_init_octree_part_1_aabb_measuring(){
 /// Run on a single thread
 extern "C" __global__
 void kernel_init_octree_part_2_refining(){
-    if(globalVariables.isDoneLoading && globalVariables.isDoneStoring && globalVariables.isDoneIterating){
-        globalVariables.isUpdating = false; // To reset the flag
-    }
-
-    // To only run it once
-    if(globalVariables.isInitialised){return;}
-    // To only run it after the first batch has been loaded
-    if(globalVariables.batchesAddedMask[0]){return;}
+    // printf("kernel_init_octree_part_2_refining\n");
 
     // Adding small 2x delta to avoid floating point issues
     float epsilon = 0.5f;
@@ -280,8 +274,6 @@ void kernel_init_octree_part_2_refining(){
 /// Each thread in a block is filling it's assigned coordinates in the current grid
 extern "C" __global__
 void kernel_fill_new_grids(){
-    if(!globalVariables.isUpdating){return;}
-
     auto grid = cg::this_grid();
     auto block = cg::this_thread_block();
     uint32_t nb_blocks = grid.num_blocks();
@@ -289,6 +281,10 @@ void kernel_fill_new_grids(){
     uint32_t block_id = grid.block_rank();
     uint32_t thread_id = block.thread_rank();
     uint32_t nb_threads_per_block = block.num_threads();
+
+    // if(block_id == 0 && thread_id == 0){
+    //     printf("kernel_fill_new_grids\n");
+    // }
 
     for(uint32_t node_id = block_id; node_id < globalVariables.nbGridsToInit; node_id += nb_blocks){
         COctreeNode* node = globalVariables.gridsToInit[node_id];
@@ -314,8 +310,4 @@ void kernel_fill_new_grids(){
             cur_chunk = cur_chunk->next;
         }
     }
-
-    // if(block_id==0 && thread_id == 0){
-    //     printf("kernel_fill_new_grids\n");
-    // }
 }

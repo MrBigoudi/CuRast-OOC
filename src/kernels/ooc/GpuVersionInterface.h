@@ -665,6 +665,7 @@ struct CGlobalVariables {
 	bool isDoneLoading = true;
 	bool isDoneStoring = true;
 	bool isDoneIterating = true;
+	bool isFirstCountSplitIteration = true;
 
 	uint32_t nbGridsToInit = 0;
 	COctreeNode** gridsToInit = nullptr;

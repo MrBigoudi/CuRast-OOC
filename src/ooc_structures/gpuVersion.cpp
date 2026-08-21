@@ -3,7 +3,32 @@
 #include "loader.h"
 #include "outOfCore.h"
 
-// #include <list>
+#ifndef COPY_FROM_GPU
+#define COPY_FROM_GPU(member, value, type)                                     \
+    {                                                                          \
+        const uint64_t pad =                                                   \
+            reinterpret_cast<uintptr_t>(&(GpuVersion::hostStaging.member)) -   \
+            reinterpret_cast<uintptr_t>(&GpuVersion::hostStaging);             \
+        const CUdeviceptr src_device = GpuVersion::deviceStaging + pad;        \
+        CURuntime::assertCudaSuccess(                                          \
+            cuMemcpyDtoH(value, src_device, sizeof(type))                      \
+        );                                                                     \
+    }
+#endif // COPY_FROM_GPU
+
+#ifndef COPY_TO_GPU
+#define COPY_TO_GPU(member, value, type)                                       \
+    {                                                                          \
+        const uint64_t pad =                                                   \
+            reinterpret_cast<uintptr_t>(&(GpuVersion::hostStaging.member)) -   \
+            reinterpret_cast<uintptr_t>(&GpuVersion::hostStaging);             \
+        const CUdeviceptr dst_device = GpuVersion::deviceStaging + pad;        \
+        CURuntime::assertCudaSuccess(                                          \
+            cuMemcpyHtoD(dst_device, value, sizeof(type))                      \
+        );                                                                     \
+    }
+#endif // COPY_TO_GPU
+
 
 void GpuVersion::initHostSide(CuRast* editor, CUcontext* context) {
     // Host side data
@@ -26,6 +51,15 @@ void GpuVersion::initHostSide(CuRast* editor, CUcontext* context) {
     // newlyVisibleToDelete = std::vector<bool>(hostCache->CACHE_SIZE, false);
     // previouslyVisible = std::vector<CIdAABB>(hostCache->CACHE_SIZE, CINVALID_ID);
     relationshipMap = std::vector<CIdAABB>(OocSimLodSettings::MAX_NB_NODES, CINVALID_ID);
+
+    CURuntime::assertCudaSuccess(cuMemAllocHost(&isDoneLoading, sizeof(bool)));
+    CURuntime::assertCudaSuccess(cuMemAllocHost(&isDoneStoring, sizeof(bool)));
+    CURuntime::assertCudaSuccess(cuMemAllocHost(&isDoneIterating, sizeof(bool)));
+    isInitialised = false;
+    *(bool*)isDoneLoading = true;
+    *(bool*)isDoneStoring = true;
+    *(bool*)isDoneIterating = true;
+
 }
 
 void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
@@ -188,8 +222,7 @@ void GpuVersion::init(CuRast* editor, CUcontext* context) {
         "./src/kernels/ooc/bottomUp.cu",
         "./src/kernels/ooc/simlod.cu",
         "./src/kernels/ooc/caches.cu",
-        "./src/kernels/ooc/render.cu",
-        "./src/kernels/ooc/test.cu",
+        "./src/kernels/ooc/render.cu"
     });
 
     CURuntime::assertCudaSuccess(cuStreamCreate(&stream, CU_STREAM_NON_BLOCKING));
@@ -235,6 +268,9 @@ void GpuVersion::destroy(CuRast *editor, CUcontext *context){
     free(exchangedVoxelsPointers);
     free(batchesToAddPointsPointers);
     CURuntime::assertCudaSuccess(cuMemFreeHost(nbExchangedNodes));
+    CURuntime::assertCudaSuccess(cuMemFreeHost(isDoneLoading));
+    CURuntime::assertCudaSuccess(cuMemFreeHost(isDoneStoring));
+    CURuntime::assertCudaSuccess(cuMemFreeHost(isDoneIterating));
     // CURuntime::assertCudaSuccess(cuMemFreeHost(isTemporarySwitching));
 
     // cuEventDestroy(eventUpdateCompleted);
@@ -351,11 +387,12 @@ void GpuVersion::octreeUpdateFillNewGrids(CuRast* editor, CUcontext* context){
 
 
 void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
-    OptionalLaunchSettings launch_settings = {
-        .gridsize  = 1,
-        .blocksize = 1
-    };
-    prog->launch("kernel_simlod_load_part_0_reset", {}, launch_settings);
+    if(*(bool*)isDoneLoading){
+        COPY_TO_GPU(nbNodesExchangedBeforeLoadComplete, &RESET, uint32_t);
+    }
+    *(bool*)isDoneLoading = true;
+    COPY_TO_GPU(isDoneLoading, isDoneLoading, bool);
+    COPY_TO_GPU(nbNodesExchanged, &RESET, uint32_t)
 
     // launch_settings = {
     //     .gridsize  = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_GRID_SIZE_FOR_MAX_BLOCK_SIZE,
@@ -366,26 +403,15 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
         (OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM + block_size - 1) 
         / block_size
     ;
-    launch_settings = {
+    OptionalLaunchSettings launch_settings = {
         .gridsize  = grid_size,
         .blocksize = block_size
     };
-
     prog->launch("kernel_simlod_load_part_1_flagging", {}, launch_settings);
+    COPY_FROM_GPU(isDoneLoading, isDoneLoading, bool);
 
-    // Pointers arithmetic shenanigans to get the correct device address
-    uint64_t pad = uint64_t(&(hostStaging.nbNodesExchanged)) - uint64_t(&hostStaging);
-    CUdeviceptr src_device = deviceStaging + pad;
-
-
-    cudaDeviceSynchronize();
     // Get the number of nodes to load
-    CURuntime::assertCudaSuccess(cuMemcpyDtoH(
-		nbExchangedNodes, 
-		src_device,
-		sizeof(uint32_t)
-	));
-
+    COPY_FROM_GPU(nbNodesExchanged, nbExchangedNodes, uint32_t);
     uint32_t nb_nodes_to_load = min(*(uint32_t*)(nbExchangedNodes), hostStaging.maxNbNodesExchanged);
     if(nb_nodes_to_load == 0){return;}
     // println("\n\nNb nodes to load: {}\n\n\n", nb_nodes_to_load);
@@ -419,41 +445,8 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
     for(uint32_t i=0; i<nb_nodes_to_load; i++){
         CIdAABB aabb_index = ids[i];
         std::shared_ptr<HostStorageNode> new_node = OctreeNodeSerializable::deserializeV2(aabb_index);
-
-        // println("Deserialised[{}]: real_id = {}, children ids = {}", 
-        //     aabb_index, new_node->node.aabb_index, new_node->node.children_ids
-        // );
-        // println("    - points counter: {}, voxels counter: {}", new_node->node.points_counter, new_node->node.voxels_counter);
-        // println("    - real points counter: {}, real voxels counter: {}", new_node->points.size(), new_node->voxels.size());
-        // println("    - first point: .position({}, {}, {}), .color({})",
-        //     new_node->node.points_counter > 0 ? new_node->points[0].position.x : 0.,
-        //     new_node->node.points_counter > 0 ? new_node->points[0].position.y : 0.,
-        //     new_node->node.points_counter > 0 ? new_node->points[0].position.z : 0.,
-        //     new_node->node.points_counter > 0 ? new_node->points[0].color : 0.
-        // );
-        // println("    - first voxel: .position({}, {}, {}), .color({})",
-        //     new_node->node.voxels_counter > 0 ? new_node->voxels[0].position.x : 0.,
-        //     new_node->node.voxels_counter > 0 ? new_node->voxels[0].position.y : 0.,
-        //     new_node->node.voxels_counter > 0 ? new_node->voxels[0].position.z : 0.,
-        //     new_node->node.voxels_counter > 0 ? new_node->voxels[0].color : 0.
-        // );
-        // println("    - last point: .position({}, {}, {}), .color({})",
-        //     new_node->node.points_counter > 0 ? new_node->points.back().position.x : 0.,
-        //     new_node->node.points_counter > 0 ? new_node->points.back().position.y : 0.,
-        //     new_node->node.points_counter > 0 ? new_node->points.back().position.z : 0.,
-        //     new_node->node.points_counter > 0 ? new_node->points.back().color : 0.
-        // );
-        // println("    - last voxel: .position({}, {}, {}), .color({})\n",
-        //     new_node->node.voxels_counter > 0 ? new_node->voxels.back().position.x : 0.,
-        //     new_node->node.voxels_counter > 0 ? new_node->voxels.back().position.y : 0.,
-        //     new_node->node.voxels_counter > 0 ? new_node->voxels.back().position.z : 0.,
-        //     new_node->node.voxels_counter > 0 ? new_node->voxels.back().color : 0.
-        // );
-
         loaded[i] = new_node;
     }
-
-
 
 
     // Send the nodes back to the device
@@ -481,7 +474,6 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
             ));
         }
     }
-
     CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync(
 		(CUdeviceptr)hostStaging.exchangedChildrenIds,
 		children_ids.data(),
@@ -497,7 +489,6 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
 		nbs_voxels.data(),
 		nb_nodes_to_load * sizeof(uint32_t), 0
 	));
-
     cudaDeviceSynchronize();
 
     launch_settings = {
@@ -526,11 +517,17 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
 
 
 void GpuVersion::octreeUpdateSimLODCountSplit(CuRast* editor, CUcontext* context){
+    COPY_TO_GPU(isFirstCountSplitIteration, isDoneIterating, bool);
+    *(bool*)isDoneIterating = false;
+    COPY_TO_GPU(isDoneIterating, isDoneIterating, bool);
+
     OptionalLaunchSettings launch_settings = {
         .gridsize = 0, // Not used with launchCoopertative
-        .blocksize = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK
+        // .blocksize = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK
+        .blocksize = 256
     };
     prog->launchCooperative("kernel_simlod_count_split", {}, launch_settings);
+    COPY_FROM_GPU(isDoneIterating, isDoneIterating, bool);
 }
 
 
@@ -548,6 +545,9 @@ void GpuVersion::octreeUpdateSimLODCountSplit(CuRast* editor, CUcontext* context
 
 void GpuVersion::octreeUpdateSimLODVoxelSampling(CuRast* editor, CUcontext* context){
     octreeUpdateFillNewGrids(editor, context);
+    COPY_TO_GPU(nbGridsToInit, &RESET, uint32_t);
+
+    if(!(bool*)isDoneIterating){return;}
 
     uint32_t block_size = 32;
     uint32_t num_sms = OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM;
@@ -607,13 +607,21 @@ void GpuVersion::octreeUpdateSimLODInsertion(CuRast* editor, CUcontext* context)
 
 
 void GpuVersion::octreeUpdateSimLOD(CuRast* editor, CUcontext* context){
-    octreeUpdateSimLODLoad(editor, context);
+    if(*(bool*)isDoneStoring && *(bool*)isDoneIterating){
+        octreeUpdateSimLODLoad(editor, context);
+    }
 
-    octreeUpdateSimLODCountSplit(editor, context);
+    if(*(bool*)isDoneLoading && *(bool*)isDoneStoring){
+        octreeUpdateSimLODCountSplit(editor, context);
+    }
 
-    octreeUpdateSimLODVoxelSampling(editor, context);
+    if(*(bool*)isDoneLoading && *(bool*)isDoneStoring){
+        octreeUpdateSimLODVoxelSampling(editor, context);
+    }
 
-    octreeUpdateSimLODInsertion(editor, context);
+    if(*(bool*)isDoneLoading && *(bool*)isDoneStoring && *(bool*)isDoneIterating){
+        octreeUpdateSimLODInsertion(editor, context);
+    }
 }
 
 
@@ -631,17 +639,18 @@ void GpuVersion::octreeUpdateSimLOD(CuRast* editor, CUcontext* context){
 
 
 void GpuVersion::octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context){
-    // OptionalLaunchSettings launch_settings = {
-    //     .gridsize = 1,
-    //     .blocksize = 1
-    // };
-    // prog->launch("kernel_update_updates_cache", {}, launch_settings);
-    OptionalLaunchSettings launch_settings = {
-        .gridsize = 1,
-        // .blocksize = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK
-        .blocksize = 256
-    };
-    prog->launch("kernel_update_updates_cache", {}, launch_settings);
+    COPY_TO_GPU(nbNodesExchanged, &RESET, uint32_t);
+
+    if(*(bool*)isDoneStoring){
+        OptionalLaunchSettings launch_settings = {
+            .gridsize = 1,
+            // .blocksize = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK
+            .blocksize = 256
+        };
+        prog->launch("kernel_update_updates_cache", {}, launch_settings);
+    }
+    *(bool*)isDoneStoring = true;
+    COPY_TO_GPU(isDoneStoring, isDoneStoring, bool);
 
     // launch_settings = {
     //     .gridsize  = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_GRID_SIZE_FOR_MAX_BLOCK_SIZE,
@@ -652,7 +661,7 @@ void GpuVersion::octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context){
         (OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM + block_size - 1) 
         / block_size
     ;
-    launch_settings = {
+    OptionalLaunchSettings launch_settings = {
         .gridsize  = grid_size,
         .blocksize = block_size
     };
@@ -662,23 +671,13 @@ void GpuVersion::octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context){
 
     launch_settings = {
         .gridsize = 0,
-        .blocksize = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK,
+        // .blocksize = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK,
+        .blocksize = 256,
     };
     prog->launchCooperative("kernel_prepare_store_part_3_updating_levels", {}, launch_settings);
+    COPY_FROM_GPU(isDoneStoring, isDoneStoring, bool);
 
-    // Readback the nodes and store them
-    // Pointers arithmetic shenanigans to get the correct device address
-    uint64_t pad = uint64_t(&(hostStaging.nbNodesExchanged)) - uint64_t(&hostStaging);
-    CUdeviceptr src_device = deviceStaging + pad;
-
-    cudaDeviceSynchronize();
-    // Get the number of nodes to store
-    CURuntime::assertCudaSuccess(cuMemcpyDtoH(
-		nbExchangedNodes, 
-		src_device,
-		sizeof(uint32_t)
-	));
-    
+    COPY_FROM_GPU(nbNodesExchanged, nbExchangedNodes, uint32_t);
     uint32_t nb_nodes_to_store = min(*(uint32_t*)(nbExchangedNodes), hostStaging.maxNbNodesExchanged);
     if(nb_nodes_to_store == 0){return;}
     // println("\n\nNb nodes to store: {}\n\n\n", nb_nodes_to_store);
@@ -768,41 +767,8 @@ void GpuVersion::octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context){
         //     std::lock_guard<std::mutex> lock(syncHostStorageNodesAccessMtx);
         //     persistentStoredNodes[node.aabb_index] = new_node;
         //     recentlyUsedNodesFromUpdates.insert(node.aabb_index);
-        // }
-
-        // println("Serialised[{}]: real_id = {}, children ids = {}", 
-        //     ids[i], new_node->node.aabb_index, new_node->node.children_ids
-        // );
-        // println("    - points counter: {}, voxels counter: {}", new_node->node.points_counter, new_node->node.voxels_counter);
-        // println("    - first point: .position({}, {}, {}), .color({})",
-        //     new_node->node.points_counter > 0 ? new_node->points[0].position.x : 0.,
-        //     new_node->node.points_counter > 0 ? new_node->points[0].position.y : 0.,
-        //     new_node->node.points_counter > 0 ? new_node->points[0].position.z : 0.,
-        //     new_node->node.points_counter > 0 ? new_node->points[0].color : 0.
-        // );
-        // println("    - first voxel: .position({}, {}, {}), .color({})",
-        //     new_node->node.voxels_counter > 0 ? new_node->voxels[0].position.x : 0.,
-        //     new_node->node.voxels_counter > 0 ? new_node->voxels[0].position.y : 0.,
-        //     new_node->node.voxels_counter > 0 ? new_node->voxels[0].position.z : 0.,
-        //     new_node->node.voxels_counter > 0 ? new_node->voxels[0].color : 0.
-        // );
-        // println("    - last point: .position({}, {}, {}), .color({})",
-        //     new_node->node.points_counter > 0 ? new_node->points.back().position.x : 0.,
-        //     new_node->node.points_counter > 0 ? new_node->points.back().position.y : 0.,
-        //     new_node->node.points_counter > 0 ? new_node->points.back().position.z : 0.,
-        //     new_node->node.points_counter > 0 ? new_node->points.back().color : 0.
-        // );
-        // println("    - last voxel: .position({}, {}, {}), .color({})\n",
-        //     new_node->node.voxels_counter > 0 ? new_node->voxels.back().position.x : 0.,
-        //     new_node->node.voxels_counter > 0 ? new_node->voxels.back().position.y : 0.,
-        //     new_node->node.voxels_counter > 0 ? new_node->voxels.back().position.z : 0.,
-        //     new_node->node.voxels_counter > 0 ? new_node->voxels.back().color : 0.
-        // );
-
-        
+        // }        
     }
-
-    cudaDeviceSynchronize();
 }
 
 
@@ -816,65 +782,35 @@ void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
         GpuVersionUI::firstUpdateStart = GpuVersionUI::lastUpdateStart;
     }
 
-    LoaderGpuVersion::run(editor, context);
-    octreeUpdateInit(editor, context);
-    octreeUpdateBottomUp(editor, context);
+    // Only load new points if previous points have been handled
+    if(*(bool*)isDoneLoading && *(bool*)isDoneStoring && *(bool*)isDoneIterating){
+        // Only run the update if the first batch has been loaded
+        if(!LoaderGpuVersion::run(editor, context)){return;}
+    }
 
-    // static uint32_t cpt = 0;
-    // cpt++;
-    // uint32_t max_cpt = 100;
+    // Only run the initialisation kernel once
+    if(!isInitialised){
+        octreeUpdateInit(editor, context);
+        isInitialised = true;
+    }
 
-    // // TODO: to remove, just to debug
-    // {
-    //     OptionalLaunchSettings launch_settings = {
-    //         .gridsize = 1,
-    //         .blocksize = 1
-    //     };
-    //     bool should_display = true;
-    //     PipelineLevel level = PipelineLevel::LevelBottomUp;
-    //     if(cpt < max_cpt){
-    //         prog->launch("kernel_test_display", {&level, &should_display}, launch_settings);
-    //     }
-    // }
+    // Only run the bottom up kernels if nothing else is stalling
+    if(*(bool*)isDoneLoading && *(bool*)isDoneStoring && *(bool*)isDoneIterating){
+        octreeUpdateBottomUp(editor, context);
+    }
 
     octreeUpdateSimLOD(editor, context);
 
-    // // TODO: to remove, just to debug
-    // {
-    //     OptionalLaunchSettings launch_settings = {
-    //         .gridsize = 1,
-    //         .blocksize = 1
-    //     };
-    //     bool should_display = true;
-    //     PipelineLevel level = PipelineLevel::LevelSimlod;
-    //     if(cpt < max_cpt){
-    //         prog->launch("kernel_test_display", {&level, &should_display}, launch_settings);
-    //     }
-    // }
+    if(*(bool*)isDoneLoading && *(bool*)isDoneIterating){
+        octreeUpdateCacheUpdate(editor, context);
+    }
 
-    octreeUpdateCacheUpdate(editor, context);
-
-    // // TODO: to remove, just to debug
-    // {
-    //     OptionalLaunchSettings launch_settings = {
-    //         .gridsize = 1,
-    //         .blocksize = 1
-    //     };
-    //     bool should_display = true;
-    //     PipelineLevel level = PipelineLevel::LevelCacheUpdate;
-    //     if(cpt < max_cpt){
-    //         prog->launch("kernel_test_display", {&level, &should_display}, launch_settings);
-    //     }
-    // }
-
-    
-    // TODO: to remove, just to flag the batches and display stuff
-    {
+    if(*(bool*)isDoneLoading && *(bool*)isDoneStoring && *(bool*)isDoneIterating){
         OptionalLaunchSettings launch_settings = {
             .gridsize = 1,
             .blocksize = 1
         };
-        prog->launch("kernel_test", {}, launch_settings);
+        prog->launch("kernel_reset_batches", {}, launch_settings);
     }
 
     GpuVersionUI::update();
@@ -1282,51 +1218,39 @@ void GpuVersionUI::update() {
         now - lastUpdateStart
     ).count();
 
-#ifndef COPY_FROM_GPU
-#define COPY_FROM_GPU(member, value)                                           \
-    {                                                                          \
-        const uint64_t pad =                                                   \
-            reinterpret_cast<uintptr_t>(&(GpuVersion::hostStaging.member)) -   \
-            reinterpret_cast<uintptr_t>(&GpuVersion::hostStaging);             \
-        const CUdeviceptr src_device = GpuVersion::deviceStaging + pad;        \
-        CURuntime::assertCudaSuccess(                                          \
-            cuMemcpyDtoH(&(value), src_device, sizeof(value))                  \
-        );                                                                     \
-    }
-#endif
-    COPY_FROM_GPU(nbTotalUpdates, nbTotalUpdates);
+    COPY_FROM_GPU(nbTotalUpdates, &nbTotalUpdates, uint32_t);
     if(lastNbTotalUpdates == nbTotalUpdates){return;}
     lastNbTotalUpdates = nbTotalUpdates;
 
-    COPY_FROM_GPU(curNbNodes, currentNbNodes);
-    COPY_FROM_GPU(currentNbChunks, currentNbChunks);
-    COPY_FROM_GPU(currentNbGrids, currentNbGrids);
-    COPY_FROM_GPU(currentNbPoints, currentNbPoints);
-    COPY_FROM_GPU(currentNbVoxels, currentNbVoxels);
+    COPY_FROM_GPU(curNbNodes, &currentNbNodes, uint32_t);
+    COPY_FROM_GPU(currentNbChunks, &currentNbChunks, uint32_t);
+    COPY_FROM_GPU(currentNbGrids, &currentNbGrids, uint32_t);
+    COPY_FROM_GPU(currentNbPoints, &currentNbPoints, uint32_t);
+    COPY_FROM_GPU(currentNbVoxels, &currentNbVoxels, uint32_t);
 
-    COPY_FROM_GPU(nbTotalPoints, nbTotalPoints);
-    COPY_FROM_GPU(nbTotalVoxels, nbTotalVoxels);
-    COPY_FROM_GPU(nbTotalNewNodes, nbTotalNewNodes);
-    COPY_FROM_GPU(nbTotalNewGrids, nbTotalNewGrids);
-    COPY_FROM_GPU(nbTotalNewChunks, nbTotalNewChunks);
-    COPY_FROM_GPU(nbTotalDeletedNodes, nbTotalDeletedNodes);
-    COPY_FROM_GPU(nbTotalDeletedGrids, nbTotalDeletedGrids);
-    COPY_FROM_GPU(nbTotalDeletedChunks, nbTotalDeletedChunks);
-    COPY_FROM_GPU(nbTotalLoadedNodes, nbTotalLoadedNodes);
-    COPY_FROM_GPU(nbTotalSplitNodes, nbTotalSplitNodes);
-    COPY_FROM_GPU(nbTotalStoredNodes, nbTotalStoredNodes);
+    COPY_FROM_GPU(nbTotalPoints, &nbTotalPoints, uint32_t);
+    COPY_FROM_GPU(nbTotalVoxels, &nbTotalVoxels, uint32_t);
+    COPY_FROM_GPU(nbTotalNewNodes, &nbTotalNewNodes, uint32_t);
+    COPY_FROM_GPU(nbTotalNewGrids, &nbTotalNewGrids, uint32_t);
+    COPY_FROM_GPU(nbTotalNewChunks, &nbTotalNewChunks, uint32_t);
+    COPY_FROM_GPU(nbTotalDeletedNodes, &nbTotalDeletedNodes, uint32_t);
+    COPY_FROM_GPU(nbTotalDeletedGrids, &nbTotalDeletedGrids, uint32_t);
+    COPY_FROM_GPU(nbTotalDeletedChunks, &nbTotalDeletedChunks, uint32_t);
+    COPY_FROM_GPU(nbTotalLoadedNodes, &nbTotalLoadedNodes, uint32_t);
+    COPY_FROM_GPU(nbTotalSplitNodes, &nbTotalSplitNodes, uint32_t);
+    COPY_FROM_GPU(nbTotalStoredNodes, &nbTotalStoredNodes, uint32_t);
     
-    COPY_FROM_GPU(nbNewPointsThisUpdate, nbNewPointsThisUpdate);
-    COPY_FROM_GPU(nbNewVoxelsThisUpdate, nbNewVoxelsThisUpdate);
-    COPY_FROM_GPU(nbNewNodesThisUpdate, nbNewNodesThisUpdate);
-    COPY_FROM_GPU(nbLoadedNodesThisUpdate, nbLoadedNodesThisUpdate);
-    COPY_FROM_GPU(nbStoredNodesThisUpdate, nbStoredNodesThisUpdate);
-    COPY_FROM_GPU(nbSplitNodesThisUpdate, nbSplitNodesThisUpdate);
-    COPY_FROM_GPU(nbDeletedNodesThisUpdate, nbDeletedNodesThisUpdate);
-    COPY_FROM_GPU(nbDeletedChunksThisUpdate, nbDeletedChunksThisUpdate);
-    COPY_FROM_GPU(nbDeletedGridsThisUpdate, nbDeletedGridsThisUpdate);
-    COPY_FROM_GPU(nbNewChunksThisUpdate, nbNewChunksThisUpdate);
-    COPY_FROM_GPU(nbNewGridsThisUpdate, nbNewGridsThisUpdate);
+    COPY_FROM_GPU(nbNewPointsThisUpdate, &nbNewPointsThisUpdate, uint32_t);
+    COPY_FROM_GPU(nbNewVoxelsThisUpdate, &nbNewVoxelsThisUpdate, uint32_t);
+    COPY_FROM_GPU(nbNewNodesThisUpdate, &nbNewNodesThisUpdate, uint32_t);
+    COPY_FROM_GPU(nbLoadedNodesThisUpdate, &nbLoadedNodesThisUpdate, uint32_t);
+    COPY_FROM_GPU(nbStoredNodesThisUpdate, &nbStoredNodesThisUpdate, uint32_t);
+    COPY_FROM_GPU(nbSplitNodesThisUpdate, &nbSplitNodesThisUpdate, uint32_t);
+    COPY_FROM_GPU(nbDeletedNodesThisUpdate, &nbDeletedNodesThisUpdate, uint32_t);
+    COPY_FROM_GPU(nbDeletedChunksThisUpdate, &nbDeletedChunksThisUpdate, uint32_t);
+    COPY_FROM_GPU(nbDeletedGridsThisUpdate, &nbDeletedGridsThisUpdate, uint32_t);
+    COPY_FROM_GPU(nbNewChunksThisUpdate, &nbNewChunksThisUpdate, uint32_t);
+    COPY_FROM_GPU(nbNewGridsThisUpdate, &nbNewGridsThisUpdate, uint32_t);
 
     auto updateStats = [](uint32_t value, uint32_t& minValue, uint32_t& maxValue, uint32_t& avgValue) {
         if (nbTotalUpdates == 1) {

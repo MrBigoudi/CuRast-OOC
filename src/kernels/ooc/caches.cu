@@ -4,24 +4,15 @@
 /// Run on 1 block of size "Max block size"
 extern "C" __global__
 void kernel_update_updates_cache(){
-    if(!globalVariables.isInitialised){return;}
-
     __shared__ uint32_t shNbOrderedNodes;
 
     auto grid = cg::this_grid();
     uint32_t thread_id = grid.thread_rank();
     uint32_t nb_threads = grid.num_threads();
 
-    if(!globalVariables.isUpdating){return;}
-    globalVariables.nbNodesExchanged = 0;
-
-    if(!globalVariables.isDoneIterating){return;}
-    if(!globalVariables.isDoneLoading){return;}
-    if(!globalVariables.isDoneStoring){
-        __syncthreads();
-        globalVariables.isDoneStoring = true;
-        return;
-    }
+    // if(thread_id == 0){
+    //     printf("kernel_update_updates_cache\n");
+    // }
 
     // Count updated children
     for(uint32_t node_index = thread_id; node_index < globalVariables.curNbNodes; node_index += nb_threads){
@@ -86,11 +77,6 @@ void kernel_update_updates_cache(){
 /// Run on floor("NB SMs" * "Max threads per SM" / "Max threads per block") blocks of size "Max threads per block"
 extern "C" __global__
 void kernel_prepare_store_part_1_filling_buffers(){
-    if(!globalVariables.isInitialised){return;}
-    if(!globalVariables.isUpdating){return;}
-    if(!globalVariables.isDoneIterating){return;}
-    if(!globalVariables.isDoneLoading){return;}
-
     auto grid = cg::this_grid();
     auto block = cg::this_thread_block();
     uint32_t nb_blocks = grid.num_blocks();
@@ -98,6 +84,10 @@ void kernel_prepare_store_part_1_filling_buffers(){
     uint32_t block_id = grid.block_rank();
     uint32_t thread_id = block.thread_rank();
     uint32_t nb_threads_per_block = block.num_threads();
+
+    // if(block_id == 0 && thread_id == 0){
+    //     printf("kernel_prepare_store_part_1_filling_buffers\n");
+    // }
 
     __shared__ uint32_t shExchangedIndex;
 
@@ -205,14 +195,13 @@ void kernel_prepare_store_part_1_filling_buffers(){
 /// Run on floor("NB SMs" * "Max threads per SM" / "Max threads per block") blocks of size "Max threads per block"
 extern "C" __global__
 void kernel_prepare_store_part_2_resetting_children(){
-    if(!globalVariables.isInitialised){return;}
-    if(!globalVariables.isUpdating){return;}
-    if(!globalVariables.isDoneIterating){return;}
-    if(!globalVariables.isDoneLoading){return;}
-
     auto grid = cg::this_grid();
     uint32_t thread_id = grid.thread_rank();
     uint32_t nb_threads = grid.num_threads();
+
+    // if(thread_id == 0){
+    //     printf("kernel_prepare_store_part_2_resetting_children\n");
+    // }
 
     for(uint32_t node_index = thread_id; node_index < globalVariables.curNbNodes; node_index += nb_threads){
         COctreeNode* node = globalVariables.packedNodes[node_index];
@@ -274,11 +263,6 @@ void packNodes(){
 /// Run on "MaxActiveBlocksPerMultiprocessor" cooperative blocks of size "Max block size"
 extern "C" __global__
 void kernel_prepare_store_part_3_updating_levels(){
-    if(!globalVariables.isInitialised){return;}
-    if(!globalVariables.isUpdating){return;}
-    if(!globalVariables.isDoneIterating){return;}
-    if(!globalVariables.isDoneLoading){return;}
-
     auto grid = cg::this_grid();
     auto block = cg::this_thread_block();
     uint32_t nb_blocks = grid.num_blocks();
@@ -290,6 +274,10 @@ void kernel_prepare_store_part_3_updating_levels(){
     uint32_t first_point = block_id * nb_threads_per_block + thread_id;
     uint32_t step = nb_blocks * nb_threads_per_block;
     bool is_first = (block_id == 0 && thread_id == 0);
+
+    // if(is_first){
+    //     printf("kernel_prepare_store_part_3_updating_levels\n");
+    // }
     
     if(is_first){
         packNodes();
@@ -367,5 +355,15 @@ void kernel_prepare_store_part_3_updating_levels(){
     ){
         // UI values
         __nv_atomic_add(&globalVariables.nbTotalUpdates, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+    }
+}
+
+
+
+extern "C" __global__
+void kernel_reset_batches(){
+    // printf("kernel_reset_batches\n");
+    for(uint32_t i=0; i<globalVariables.maxNbBatches; i++){
+        globalVariables.batchesAddedMask[i] = true;
     }
 }

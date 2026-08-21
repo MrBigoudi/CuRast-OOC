@@ -142,6 +142,14 @@ struct GpuVersion {
 	static inline void* batchesToAddPointsPointers = nullptr;
     static inline void* nbExchangedNodes = nullptr;
     static inline uint32_t curNbNodes = 0;
+    static inline const uint32_t RESET = 0;
+
+    static inline void* isDoneLoading = nullptr;
+    static inline void* isDoneStoring = nullptr;
+    static inline void* isDoneIterating = nullptr;
+    static inline bool firstBatchSent = false;
+    static inline bool isInitialised = false;
+
 
     // static inline std::mutex renderSubmissionMutex;
     // static inline void* isTemporarySwitching = nullptr;

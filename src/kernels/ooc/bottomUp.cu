@@ -5,14 +5,13 @@
 /// Each thread is filling independently it's own counter before combining all of them
 extern "C" __global__
 void kernel_bottom_up_update_part_1_counting(){
-    if(!globalVariables.isInitialised){return;}
-    if(!globalVariables.isDoneLoading || !globalVariables.isDoneStoring || !globalVariables.isDoneIterating){
-        return;
-    }
-
     auto grid = cg::this_grid();
     uint32_t thread_id = grid.thread_rank();
     uint32_t nb_threads = grid.num_threads();
+
+    // if(nb_threads == 0){
+    //     printf("kernel_bottom_up_update_part_1_counting\n");
+    // }
 
     uint32_t nb_new_levels = 0;
     CNodePosition node_position = CFrontTopLeft;
@@ -20,9 +19,6 @@ void kernel_bottom_up_update_part_1_counting(){
 
     for(uint32_t batch = 0; batch < globalVariables.maxNbBatches; batch++){
         if(globalVariables.batchesAddedMask[batch]){continue;}
-
-        // Flag to signal that new batches have arrived
-        globalVariables.isUpdating = true;
 
         CPoint* new_points = globalVariables.batchesToAddPoints[batch];
         uint32_t nb_new_points = globalVariables.batchesToAddCounts[batch];
@@ -55,19 +51,17 @@ void kernel_bottom_up_update_part_1_counting(){
 
 
     // Reset UI values
-    if(globalVariables.isUpdating){
-        globalVariables.nbNewPointsThisUpdate = 0;
-        globalVariables.nbNewVoxelsThisUpdate = 0;
-        globalVariables.nbNewNodesThisUpdate = 0;
-        globalVariables.nbLoadedNodesThisUpdate = 0;
-        globalVariables.nbStoredNodesThisUpdate = 0;
-        globalVariables.nbSplitNodesThisUpdate = 0;
-        globalVariables.nbDeletedNodesThisUpdate = 0;
-        globalVariables.nbDeletedChunksThisUpdate = 0;
-        globalVariables.nbDeletedGridsThisUpdate = 0;
-        globalVariables.nbNewChunksThisUpdate = 0;
-        globalVariables.nbNewGridsThisUpdate = 0;
-    }
+    globalVariables.nbNewPointsThisUpdate = 0;
+    globalVariables.nbNewVoxelsThisUpdate = 0;
+    globalVariables.nbNewNodesThisUpdate = 0;
+    globalVariables.nbLoadedNodesThisUpdate = 0;
+    globalVariables.nbStoredNodesThisUpdate = 0;
+    globalVariables.nbSplitNodesThisUpdate = 0;
+    globalVariables.nbDeletedNodesThisUpdate = 0;
+    globalVariables.nbDeletedChunksThisUpdate = 0;
+    globalVariables.nbDeletedGridsThisUpdate = 0;
+    globalVariables.nbNewChunksThisUpdate = 0;
+    globalVariables.nbNewGridsThisUpdate = 0;
 }
 
 
@@ -116,16 +110,8 @@ __device__ void addNewVoxels(
 /// Run on a single thread
 extern "C" __global__
 void kernel_bottom_up_update_part_2_instancing(){
-    if(!globalVariables.isInitialised){return;}
-    // Need to be reset before simlod loading phase
-    globalVariables.nbNodesExchanged = 0;
+    // printf("kernel_bottom_up_update_part_2_instancing\n");
 
-    if(!globalVariables.isUpdating){return;}
-    if(!globalVariables.isDoneLoading || !globalVariables.isDoneStoring || !globalVariables.isDoneIterating){
-        return;
-    }
-
-    // TODO: store a single value instead of full array
     uint32_t nb_new_levels = globalVariables.batchesToAddBottomUpCount;
 
     // Bottom up update of the main octree
