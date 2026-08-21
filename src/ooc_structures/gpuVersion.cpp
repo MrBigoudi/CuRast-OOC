@@ -40,6 +40,7 @@ void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
     // hostStaging.renderingPackedNodesTmp = alloc<COctreeNode*>(hostStaging.maxNbConcurrentNodes);
     hostStaging.temporaryBufferSize = hostStaging.maxNbConcurrentNodes;
     hostStaging.temporaryIdBuffer = alloc<CIdAABB>(hostStaging.temporaryBufferSize);
+    hostStaging.temporaryIdBuffer2 = alloc<CIdAABB>(hostStaging.temporaryBufferSize);
     hostStaging.temporaryNodeBuffer = alloc<COctreeNode*>(hostStaging.temporaryBufferSize);
 
     hostStaging.maxAllocatedChunks = OocSimLodSettings::NB_ALLOCABLE_CHUNKS;
@@ -630,9 +631,15 @@ void GpuVersion::octreeUpdateSimLOD(CuRast* editor, CUcontext* context){
 
 
 void GpuVersion::octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context){
+    // OptionalLaunchSettings launch_settings = {
+    //     .gridsize = 1,
+    //     .blocksize = 1
+    // };
+    // prog->launch("kernel_update_updates_cache", {}, launch_settings);
     OptionalLaunchSettings launch_settings = {
         .gridsize = 1,
-        .blocksize = 1
+        // .blocksize = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK
+        .blocksize = 256
     };
     prog->launch("kernel_update_updates_cache", {}, launch_settings);
 

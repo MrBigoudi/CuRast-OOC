@@ -10,7 +10,6 @@ void kernel_bottom_up_update_part_1_counting(){
         return;
     }
 
-
     auto grid = cg::this_grid();
     uint32_t thread_id = grid.thread_rank();
     uint32_t nb_threads = grid.num_threads();
@@ -159,7 +158,6 @@ void kernel_bottom_up_update_part_2_instancing(){
         globalVariables.gridsToInit[grid_index] = new_parent;
 
         globalVariables.setFlagSync(new_parent->aabb_index, CFlagIsUpdated);
-        globalVariables.setFlagSync(new_parent->aabb_index, CFlagIsNew);
         globalVariables.setFlagSync(cur_child->aabb_index, CFlagIsUpdated);
 		new_parent->children[node_position] = cur_child;
 

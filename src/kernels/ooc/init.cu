@@ -74,7 +74,6 @@ void kernel_init_global_buffers(){
         globalVariables.mainOctree = globalAllocator.newOctreeNode(id, false);
         globalVariables.packedNodes[0] = globalVariables.mainOctree;
         globalVariables.curNbNodes = 1;
-        globalVariables.setFlagSync(id, CFlagIsNew);
     }
 }
 
@@ -107,10 +106,23 @@ void kernel_init_octree_part_1_aabb_measuring(){
     // To only run it once
     if(globalVariables.isInitialised){return;}
 
-    // Assume 1D kernel launch
     auto grid = cg::this_grid();
-    uint32_t thread_id = grid.thread_rank();
-    uint32_t nb_threads = grid.num_threads();
+    auto block = cg::this_thread_block();
+    uint32_t nb_blocks = grid.num_blocks();
+
+    uint32_t block_id = grid.block_rank();
+    uint32_t thread_id = block.thread_rank();
+    uint32_t nb_threads_per_block = block.num_threads();
+
+    uint32_t first_point = block_id * nb_threads_per_block + thread_id;
+    uint32_t step = nb_blocks * nb_threads_per_block;
+
+    __shared__ float shBlockMinX;
+    __shared__ float shBlockMinY;
+    __shared__ float shBlockMinZ;
+    __shared__ float shBlockMaxX;
+    __shared__ float shBlockMaxY;
+    __shared__ float shBlockMaxZ;
 
     // Thread level AABB
     CAABB tmp_aabb = CAABB();
@@ -130,7 +142,7 @@ void kernel_init_octree_part_1_aabb_measuring(){
         }
 
 
-        for(uint32_t i=thread_id; i<nb_new_points; i+=nb_threads){
+        for(uint32_t i = first_point; i < nb_new_points; i += step){
             CPoint& point = new_points[i];
             if(!is_init){
                 tmp_aabb.mins = new_points[i].position;
@@ -149,30 +161,59 @@ void kernel_init_octree_part_1_aabb_measuring(){
     }
 
     // Block level AABB
-    atomicMinFloatRelaxedOrderSystemScope(
-        &globalVariables.relationshipMap[globalVariables.mainOctree->aabb_index].aabb.mins.x,
+    atomicMinFloatRelaxedOrderBlockScope(
+        &shBlockMinX,
         tmp_aabb.mins.x
     );
-    atomicMinFloatRelaxedOrderSystemScope(
-        &globalVariables.relationshipMap[globalVariables.mainOctree->aabb_index].aabb.mins.y,
+    atomicMinFloatRelaxedOrderBlockScope(
+        &shBlockMinY,
         tmp_aabb.mins.y
     );
-    atomicMinFloatRelaxedOrderSystemScope(
-        &globalVariables.relationshipMap[globalVariables.mainOctree->aabb_index].aabb.mins.z,
+    atomicMinFloatRelaxedOrderBlockScope(
+        &shBlockMinZ,
         tmp_aabb.mins.z
     );
-    atomicMaxFloatRelaxedOrderSystemScope(
-        &globalVariables.relationshipMap[globalVariables.mainOctree->aabb_index].aabb.maxs.x,
+    atomicMaxFloatRelaxedOrderBlockScope(
+        &shBlockMaxX,
         tmp_aabb.maxs.x
     );
-    atomicMaxFloatRelaxedOrderSystemScope(
-        &globalVariables.relationshipMap[globalVariables.mainOctree->aabb_index].aabb.maxs.y,
+    atomicMaxFloatRelaxedOrderBlockScope(
+        &shBlockMaxY,
         tmp_aabb.maxs.y
     );
-    atomicMaxFloatRelaxedOrderSystemScope(
-        &globalVariables.relationshipMap[globalVariables.mainOctree->aabb_index].aabb.maxs.z,
+    atomicMaxFloatRelaxedOrderBlockScope(
+        &shBlockMaxZ,
         tmp_aabb.maxs.z
     );
+    __syncthreads();
+
+    // Grid level AABB
+    if(thread_id == 0){
+        atomicMinFloatRelaxedOrderDeviceScope(
+            &globalVariables.relationshipMap[globalVariables.mainOctree->aabb_index].aabb.mins.x,
+            shBlockMinX
+        );
+        atomicMinFloatRelaxedOrderDeviceScope(
+            &globalVariables.relationshipMap[globalVariables.mainOctree->aabb_index].aabb.mins.y,
+            shBlockMinY
+        );
+        atomicMinFloatRelaxedOrderDeviceScope(
+            &globalVariables.relationshipMap[globalVariables.mainOctree->aabb_index].aabb.mins.z,
+            shBlockMinZ
+        );
+        atomicMaxFloatRelaxedOrderDeviceScope(
+            &globalVariables.relationshipMap[globalVariables.mainOctree->aabb_index].aabb.maxs.x,
+            shBlockMaxX
+        );
+        atomicMaxFloatRelaxedOrderDeviceScope(
+            &globalVariables.relationshipMap[globalVariables.mainOctree->aabb_index].aabb.maxs.y,
+            shBlockMaxY
+        );
+        atomicMaxFloatRelaxedOrderDeviceScope(
+            &globalVariables.relationshipMap[globalVariables.mainOctree->aabb_index].aabb.maxs.z,
+            shBlockMaxZ
+        );
+    }
 }
 
 
@@ -226,9 +267,7 @@ void kernel_init_octree_part_2_refining(){
         }
     }
 
-
     globalVariables.isInitialised = true;
-
 
     // UI values
     globalVariables.nbNewNodesThisUpdate = 1;

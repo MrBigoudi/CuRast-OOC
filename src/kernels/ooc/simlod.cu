@@ -228,7 +228,6 @@ void kernel_simlod_load_part_2_rebuilding_nodes(){
             shLoadedNode->voxels_counter = nb_voxels;
             shLoadedNode->points_stored = nb_points;
             shLoadedNode->voxels_stored = nb_voxels;
-            globalVariables.setFlagSync(aabb_index, CFlagIsUpdated);
 
             shFirstPointsChunks = 0;
             shNbPointsChunks = 0;
@@ -368,7 +367,6 @@ void kernel_simlod_load_part_2_rebuilding_nodes(){
             COctreeNode* potential_parent = globalVariables.temporaryNodeBuffer[exchanged_index];
             
             if(potential_parent->aabb_index == globalVariables.relationshipMap[aabb_index].parent){
-                globalVariables.setFlagSync(potential_parent->aabb_index, CFlagIsUpdated);
                 bool found = false;
                 for(uint32_t i=0; i<8; i++){
                     if(globalVariables.relationshipMap[potential_parent->aabb_index].children[i] == aabb_index){
@@ -488,7 +486,6 @@ void kernel_simlod_load_part_3_rebuilding_children(){
 
             // Flag the node as not needing to be loaded anymore
             globalVariables.unsetFlagSync(cur_node->aabb_index, CFlagToLoad);
-            globalVariables.setFlagSync(cur_node->aabb_index, CFlagIsNew);
         }
     }
 
@@ -580,7 +577,11 @@ void updateLeafCounter(
                 customAssert();
             }
 
-            __nv_atomic_or(&leaf->children_ids, (1u << child_position), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            // __nv_atomic_or(&leaf->children_ids, (1u << child_position), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            uint32_t mask = (1u << child_position);
+            if(!(leaf->children_ids & mask)){
+                __nv_atomic_or(&leaf->children_ids, mask, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            }
 
 
             // Skip if the point was already accepted at this level
@@ -588,17 +589,38 @@ void updateLeafCounter(
                 return;
             }
 
-            // Flag the leaf as spilling
-            uint32_t old_counter = __nv_atomic_fetch_add(&leaf->points_counter, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-            if(old_counter == globalVariables.maxPointsPerLeaf){ 
-                // Only added once with the above equality check
-                uint32_t spilling_node_index = __nv_atomic_fetch_add(&globalVariables.nbSpillingNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-                if(spilling_node_index >= globalVariables.maxNbSpilledPoints){
-                    printf("ERROR: reached the maximum number of spilling nodes\n");
-                    customAssert();
+            // // Flag the leaf as spilling
+            // uint32_t old_counter = __nv_atomic_fetch_add(&leaf->points_counter, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            // if(old_counter == globalVariables.maxPointsPerLeaf){ 
+            //     // Only added once with the above equality check
+            //     uint32_t spilling_node_index = __nv_atomic_fetch_add(&globalVariables.nbSpillingNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            //     if(spilling_node_index >= globalVariables.maxNbSpilledPoints){
+            //         printf("ERROR: reached the maximum number of spilling nodes\n");
+            //         customAssert();
+            //     }
+            //     globalVariables.spillingNodes[spilling_node_index] = leaf;
+            // }
+
+            // Merge atomicAdds within warps to reduce contention
+            uint64_t leafptr = uint64_t(leaf);
+			auto warp = cg::coalesced_threads();
+			auto group = cg::labeled_partition(warp, leafptr);
+
+			if(group.thread_rank() == 0){
+				uint32_t old_counter = __nv_atomic_fetch_add(&leaf->points_counter, group.num_threads(), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+
+                if((old_counter <= globalVariables.maxPointsPerLeaf)
+                    && ((old_counter + group.num_threads()) > globalVariables.maxPointsPerLeaf)
+                ){ 
+                    // Only added once with the above equality check
+                    uint32_t spilling_node_index = __nv_atomic_fetch_add(&globalVariables.nbSpillingNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+                    if(spilling_node_index >= globalVariables.maxNbSpilledPoints){
+                        printf("ERROR: reached the maximum number of spilling nodes\n");
+                        customAssert();
+                    }
+                    globalVariables.spillingNodes[spilling_node_index] = leaf;
                 }
-                globalVariables.spillingNodes[spilling_node_index] = leaf;
-            }
+			}
 
             memoisation_buffer[memoisation_index] = leaf;
             return;
@@ -680,8 +702,6 @@ void simlodSplit(uint32_t first_point, uint32_t step){
         spilling_node->points_stored = 0; // also reset the previous counter
 
         // spilling_node->children_ids = 0;
-        globalVariables.setFlagSync(spilling_node_id, CFlagHasSpilled);
-
 
         // UI values
         __nv_atomic_add(&globalVariables.nbSplitNodesThisUpdate, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
@@ -732,7 +752,6 @@ void simlodSplit(uint32_t first_point, uint32_t step){
 
                 globalVariables.relationshipMap[new_child_id].aabb.shrink((CNodePosition)j);
                 new_child->level = spilling_node->level + 1;
-                globalVariables.setFlagSync(new_child_id, CFlagIsNew);
             }
         }
 
@@ -1229,7 +1248,6 @@ void insertPoint(const CPoint& point){
             uint32_t real_index = point_index % OocSimLodSettings::NB_POINTS_PER_CHUNK;
             cur_chunk->points[real_index] = point;
 
-            globalVariables.setFlagSync(cur_node->aabb_index, CFlagHasNewPoints);
             return;
         }
     }
@@ -1250,8 +1268,6 @@ void insertVoxel(const CPoint& voxel, COctreeNode* cur_node){
         customAssert();
     }
 
-
-    globalVariables.setFlagSync(cur_node->aabb_index, CFlagHasNewVoxels);
 
     // CIdAABB id = cur_node->aabb_index;
     // while(id != CINVALID_ID){

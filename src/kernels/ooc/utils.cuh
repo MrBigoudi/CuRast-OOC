@@ -172,7 +172,7 @@ T clamp(T value, T min, T max){
 
 
 // https://stackoverflow.com/questions/17399119/how-do-i-use-atomicmax-on-floating-point-values-in-cuda/51549250#51549250
-__device__ __forceinline__ void atomicMinFloatRelaxedOrderSystemScope(float* addr, float value){
+__device__ __forceinline__ void atomicMinFloatRelaxedOrderDeviceScope(float* addr, float value){
     if(value >= 0.f) {
         __nv_atomic_min((int *)addr, __float_as_int(value),
             __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE
@@ -183,7 +183,7 @@ __device__ __forceinline__ void atomicMinFloatRelaxedOrderSystemScope(float* add
         );
     }
 }
-__device__ __forceinline__ float atomicMaxFloatRelaxedOrderSystemScope(float* addr, float value){
+__device__ __forceinline__ float atomicMaxFloatRelaxedOrderDeviceScope(float* addr, float value){
     if(value >= 0.f) {
         __nv_atomic_max((int *)addr, __float_as_int(value),
             __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE
@@ -191,6 +191,28 @@ __device__ __forceinline__ float atomicMaxFloatRelaxedOrderSystemScope(float* ad
     } else {
         __nv_atomic_min((unsigned int *)addr, __float_as_uint(value),
             __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE
+        );
+    }
+}
+__device__ __forceinline__ void atomicMinFloatRelaxedOrderBlockScope(float* addr, float value){
+    if(value >= 0.f) {
+        __nv_atomic_min((int *)addr, __float_as_int(value),
+            __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_BLOCK
+        );
+    } else {
+        __nv_atomic_max((unsigned int *)addr, __float_as_uint(value),
+            __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_BLOCK
+        );
+    }
+}
+__device__ __forceinline__ float atomicMaxFloatRelaxedOrderBlockScope(float* addr, float value){
+    if(value >= 0.f) {
+        __nv_atomic_max((int *)addr, __float_as_int(value),
+            __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_BLOCK
+        );
+    } else {
+        __nv_atomic_min((unsigned int *)addr, __float_as_uint(value),
+            __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_BLOCK
         );
     }
 }

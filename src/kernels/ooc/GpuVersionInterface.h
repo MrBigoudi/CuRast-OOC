@@ -358,6 +358,10 @@ enum CNodeFlagType {
 	CFlagIsInUpdatesCache,
 
 	// Pads to be replaced on need
+	CFlagPad20,
+	CFlagPad21,
+	CFlagPad22,
+	CFlagPad23,
 	CFlagPad24,
 	CFlagPad25,
 	CFlagPad26,
@@ -373,12 +377,6 @@ enum CNodeFlagType {
 	CFlagIsCut,
 	CFlagIsInVisibilityCache,
 	CFlagIsFromVoxelInVisibilityCache,
-
-	// For rendering recreation
-	CFlagHasNewPoints,
-	CFlagHasNewVoxels,
-	CFlagIsNew,
-	CFlagHasSpilled,
 };
 
 struct COctreeNode {
@@ -635,6 +633,7 @@ struct CGlobalVariables {
 
 	uint32_t temporaryBufferSize = 0;
 	CIdAABB* temporaryIdBuffer = nullptr;
+	CIdAABB* temporaryIdBuffer2 = nullptr;
     COctreeNode** temporaryNodeBuffer = nullptr;
 	uint32_t nbNodesExchangedBeforeLoadComplete = 0;
 
@@ -770,9 +769,15 @@ struct CGlobalVariables {
 	__device__ __forceinline__ uint32_t getFlagsSync(const CIdAABB& aabb_index) const {
 		return __nv_atomic_load_n(&nodesFlags[aabb_index], __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
 	}
+	__device__ __forceinline__ bool getFlag(const CIdAABB& aabb_index, const CNodeFlagType& flag) const {
+		return nodesFlags[aabb_index] & (0x01 << flag);
+	}
 	__device__ __forceinline__ bool getFlagSync(const CIdAABB& aabb_index, const CNodeFlagType& flag) const {
 		uint32_t flags = getFlagsSync(aabb_index);
 		return flags & (0x01 << flag);
+	}
+	__device__ __forceinline__ void setFlag(const CIdAABB& aabb_index, const CNodeFlagType& flag){
+		nodesFlags[aabb_index] |= (0x01 << flag);
 	}
 	__device__ __forceinline__ void setFlagSync(const CIdAABB& aabb_index, const CNodeFlagType& flag){
 		__nv_atomic_or(&nodesFlags[aabb_index], (0x01 << flag), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
@@ -812,6 +817,14 @@ struct CGlobalVariables {
 		uint32_t mask = getCounterFlagMask();
 		uint32_t flags = getFlagsSync(aabb_index);
 		return (flags & mask) >> CFlagCounter0;
+	}
+	
+	__device__ __forceinline__ void setCounterFlagSync(const CIdAABB& aabb_index, uint8_t new_value) const {
+		uint32_t new_counter = (new_value) << CFlagCounter0;
+		// reset old counter
+		resetCounterFlagSync(aabb_index);
+		// set new counter
+		__nv_atomic_or(&nodesFlags[aabb_index], new_counter, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
 	}
 
 	// Return the old counter
@@ -883,20 +896,6 @@ struct CGlobalVariables {
 		return getFlagSync(aabb_index, CFlagIsSecondlyVisitedInStack);
 	}
 
-
-
-	__device__ __forceinline__ bool hasNewPoints(const CIdAABB& aabb_index) const {
-		return getFlagSync(aabb_index, CFlagHasNewPoints);
-	}
-	__device__ __forceinline__ bool hasNewVoxels(const CIdAABB& aabb_index) const {
-		return getFlagSync(aabb_index, CFlagHasNewVoxels);
-	}
-	__device__ __forceinline__ bool isNew(const CIdAABB& aabb_index) const {
-		return getFlagSync(aabb_index, CFlagIsNew);
-	}
-	__device__ __forceinline__ bool hasSpilled(const CIdAABB& aabb_index) const {
-		return getFlagSync(aabb_index, CFlagHasSpilled);
-	}
 #endif // __CUDACC__
 };
 
