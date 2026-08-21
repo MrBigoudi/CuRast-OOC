@@ -1,48 +1,5 @@
 #include "utils.cuh"
 
-__device__ 
-void fillUpdatesCacheIterative(COctreeNode* root_node){
-    uint32_t cpt = 1;
-    // use temporaryIdBuffer as a temporary stack
-    globalVariables.temporaryIdBuffer[0] = root_node->aabb_index;
-
-    // To be sure it has not been flagged in another stack loop
-    globalVariables.unsetFlagSync(root_node->aabb_index, CFlagIsFirstVisitedInStack);
-
-    while(cpt > 0){
-        const CIdAABB& cur_node = globalVariables.temporaryIdBuffer[cpt-1];
-
-        if(globalVariables.isFirstVisitedInStack(cur_node)){
-            // Add the node to the cache after all its children
-            globalVariables.unsetFlagSync(cur_node, CFlagIsUpdated);
-            globalVariables.updatesCache->add(cur_node);
-
-            globalVariables.unsetFlagSync(cur_node, CFlagIsFirstVisitedInStack);
-            cpt--;
-            continue;
-        }
-
-        globalVariables.setFlagSync(cur_node, CFlagIsFirstVisitedInStack);
-
-        for(uint32_t i=0; i<8; i++){
-            // Reversed order traversal
-            uint32_t child_index = 7-i;
-            const CIdAABB& child_node = globalVariables.relationshipMap[cur_node].children[child_index];
-            if(child_node != CINVALID_ID && globalVariables.isUpdated(child_node)){
-                cpt++;
-                if(cpt > globalVariables.temporaryBufferSize){
-                    printf("ERROR: Can't update the updates cache, the stack is full\n");
-                    customAssert();
-                }
-                globalVariables.temporaryIdBuffer[cpt-1] = child_node;
-
-                // To be sure it has not been flagged in another stack loop
-                globalVariables.unsetFlagSync(child_node, CFlagIsFirstVisitedInStack);
-            }
-        }
-    }
-}
-
 
 /// Run on 1 block of size "Max block size"
 extern "C" __global__
@@ -174,7 +131,7 @@ void kernel_prepare_store_part_1_filling_buffers(){
             __syncthreads(); // Needed to sync before break condition
 
             if(shExchangedIndex >= globalVariables.maxNbNodesExchanged){
-                continue; // To avoid skipping thread sync
+                break; // To avoid skipping thread sync
             }
 
 
