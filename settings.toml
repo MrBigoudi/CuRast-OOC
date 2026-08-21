@@ -7,8 +7,8 @@
 #########################################################################
 
 ### Tells if the program should be entirely sequential or as parallelised as possible
-# IS_RUNNING_IN_PARALLEL = true
-IS_RUNNING_IN_PARALLEL = false
+IS_RUNNING_IN_PARALLEL = true
+# IS_RUNNING_IN_PARALLEL = false
 
 ### The number of frames between each GPU data transfer and visibility update
 NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE = 200

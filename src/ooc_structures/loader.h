@@ -56,4 +56,6 @@ struct LoaderGpuVersion {
     static void init();
     static void fetchFromDevice();
     static void sendToDevice();
+
+    static void loadingRoutine();
 };

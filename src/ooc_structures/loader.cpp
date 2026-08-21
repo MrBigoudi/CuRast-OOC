@@ -463,15 +463,20 @@ void LoaderGpuVersion::sendToDevice(){
 	}	
 }
 
+void LoaderGpuVersion::loadingRoutine(){
+	// Clear completed batches
+	clearUnusedBatches(batchesQueue, batchesQueueMutexes);
+	// Try loading points from disk
+	loadPointsInBatches(batchesQueue, batchesQueueMutexes);
+}
+
 void LoaderGpuVersion::run(CuRast* editor, CUcontext* context){
 	// Check if batches are done on GPU side
 	fetchFromDevice();
 
-	// Clear completed batches
-	clearUnusedBatches(batchesQueue, batchesQueueMutexes);
-
-	// Try loading points from disk
-	loadPointsInBatches(batchesQueue, batchesQueueMutexes);
+	if(!OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+		loadingRoutine();
+	}
 
 	// Get the batches to send to device side
 	sendToDevice();
