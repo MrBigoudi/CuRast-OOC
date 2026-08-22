@@ -142,7 +142,7 @@ struct CAllocatorPool {
             }
         }
         entry->is_free = false;
-        new (entry->value) T();
+        // new (entry->value) T();
 
         if(!will_run_in_parallel){
             elements->moveBegin(list_it);
@@ -256,7 +256,10 @@ struct CMemoryAllocator {
             __nv_atomic_add(&globalVariables.currentNbChunks, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
         }
 
-        return chunksAllocator->allocate(will_run_in_parallel);
+        CChunk* new_chunk = chunksAllocator->allocate(will_run_in_parallel);
+        new_chunk->size = 0;
+        new_chunk->next = nullptr;
+        return new_chunk;
     }
 
     /// Deallocate a chunk and all it's children
@@ -348,6 +351,7 @@ struct CMemoryAllocator {
             __nv_atomic_add(&globalVariables.nbTotalNewNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
         }
         COctreeNode* node = nodesAllocator->allocate(will_run_in_parallel);
+        new (node) COctreeNode();
         node->aabb_index = aabb_index;
         return node;
     }

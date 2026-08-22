@@ -714,7 +714,10 @@ struct CGlobalVariables {
     uint32_t maxNbSpilledPoints = 0;
     CPoint* spilledPoints = nullptr;
     uint32_t nbSpillingNodes = 0;
+	uint32_t nbSpillingChunks = 0;
     COctreeNode** spillingNodes = nullptr;
+	uint32_t* spilledChunksCounter = nullptr;
+	CChunk** spillingChunks = nullptr;
 
     /// The backlog buffer for new voxels
     uint32_t nbBacklogVoxels = 0;

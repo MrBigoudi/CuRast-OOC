@@ -463,7 +463,7 @@ void kernel_simlod_load_part_3_rebuilding_children(){
 __device__
 void updateLeafCounter(
     bool force_count, 
-    CPoint* point, 
+    CPoint& point, 
     COctreeNode* root, 
     COctreeNode** memoisation_buffer, 
     uint32_t memoisation_index,
@@ -473,22 +473,25 @@ void updateLeafCounter(
     COctreeNode* leaf = root;
     bool moved = false;
 
-    if(point->position == vec3(0,0,0)){
+    if(point.position == vec3(0,0,0)){
         // printf("WARN: weird point in count\n");
         memoisation_buffer[memoisation_index] = root;
         return;
     }
 
+    uint32_t max_points_per_leaf = globalVariables.maxPointsPerLeaf;
+    uint32_t max_spilling_nodes = globalVariables.maxNbSpilledPoints;
+
     while(true){
-        const CAABB& aabb = globalVariables.relationshipMap[leaf->aabb_index].aabb;
+        CAABB aabb = globalVariables.relationshipMap[leaf->aabb_index].aabb;
         
-        if(!aabb.contains(point->position)){
+        if(!aabb.contains(point.position)){
             memoisation_buffer[memoisation_index] = root;
-            point->position = vec3(0,0,0); // Flag the point as being weird
+            point.position = vec3(0,0,0); // Flag the point as being weird
             return;
         }
         
-        CNodePosition child_position = aabb.getNextChildIndex(point->position);
+        CNodePosition child_position = aabb.getNextChildIndex(point.position);
 
         if(leaf->children[child_position]){
             leaf = leaf->children[child_position];
@@ -520,12 +523,12 @@ void updateLeafCounter(
 			if(group.thread_rank() == 0){
 				uint32_t old_counter = __nv_atomic_fetch_add(&leaf->points_counter, group.num_threads(), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
 
-                if((old_counter <= globalVariables.maxPointsPerLeaf)
-                    && ((old_counter + group.num_threads()) > globalVariables.maxPointsPerLeaf)
+                if((old_counter <= max_points_per_leaf)
+                    && ((old_counter + group.num_threads()) > max_points_per_leaf)
                 ){ 
                     // Only added once with the above equality check
                     uint32_t spilling_node_index = __nv_atomic_fetch_add(&globalVariables.nbSpillingNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-                    if(spilling_node_index >= globalVariables.maxNbSpilledPoints){
+                    if(spilling_node_index >= max_spilling_nodes){
                         printf("ERROR: reached the maximum number of spilling nodes\n");
                         customAssert();
                     }
@@ -544,34 +547,40 @@ void updateLeafCounter(
 
 __device__
 void simlodCount(uint32_t first_point, uint32_t step, uint32_t iteration, bool is_first_count_split){
+    uint32_t max_nb_batches = globalVariables.maxNbBatches;
+    uint32_t max_batch_size = globalVariables.maxBatchSize;
+    uint32_t nb_spilled_points = globalVariables.nbSpilledPoints;
+    COctreeNode** memoized_batch_points_nodes = globalVariables.memoizedBatchPointsNodes;
+    COctreeNode** memoized_spilled_points_nodes = globalVariables.memoizedSpilledPointsNodes;
+    COctreeNode* main_octree = globalVariables.mainOctree;
 
     // uint64_t t_start = nanotime();
 
     // Count new points
-    for(uint32_t batch = 0; batch < globalVariables.maxNbBatches; batch++){
+    for(uint32_t batch = 0; batch < max_nb_batches; batch++){
         if(globalVariables.batchesAddedMask[batch]){continue;}
         CPoint* new_points = globalVariables.batchesToAddPoints[batch];
         uint32_t nb_new_points = globalVariables.batchesToAddCounts[batch];
 
-        if(nb_new_points > globalVariables.maxBatchSize){
+        if(nb_new_points > max_batch_size){
             printf("ERROR: On count, batch size exceeded the limit: %d / %d\n", 
-                nb_new_points, globalVariables.maxBatchSize
+                nb_new_points, max_batch_size
             );
             customAssert();
         }
 
-        uint32_t start_index = batch * globalVariables.maxBatchSize;
+        uint32_t start_index = batch * max_batch_size;
         for(uint32_t i = first_point; i < nb_new_points; i += step){
             bool is_first = (iteration == 0 && is_first_count_split);
             COctreeNode* root = is_first
-                ? globalVariables.mainOctree
-                : globalVariables.memoizedBatchPointsNodes[start_index + i]
+                ? main_octree
+                : memoized_batch_points_nodes[start_index + i]
             ;
             updateLeafCounter(
                 is_first,
-                &new_points[i], 
+                new_points[i], 
                 root, 
-                globalVariables.memoizedBatchPointsNodes, 
+                memoized_batch_points_nodes, 
                 start_index + i,
                 false
             );
@@ -588,13 +597,13 @@ void simlodCount(uint32_t first_point, uint32_t step, uint32_t iteration, bool i
     // }
 
     // Count spilled points
-    for(uint32_t i = first_point; i < globalVariables.nbSpilledPoints; i += step){
-        COctreeNode* root = globalVariables.memoizedSpilledPointsNodes[i];
+    for(uint32_t i = first_point; i < nb_spilled_points; i += step){
+        COctreeNode* root = memoized_spilled_points_nodes[i];
         updateLeafCounter(
             false,
-            &globalVariables.spilledPoints[i], 
+            globalVariables.spilledPoints[i], 
             root,
-            globalVariables.memoizedSpilledPointsNodes, 
+            memoized_spilled_points_nodes, 
             i,
             true
         );
@@ -602,21 +611,74 @@ void simlodCount(uint32_t first_point, uint32_t step, uint32_t iteration, bool i
 }
 
 
-__device__
-void simlodSplit(uint32_t first_point, uint32_t step){
-    for(uint32_t i = first_point; i < globalVariables.nbSpillingNodes; i += step){
+// __device__
+// void simlodSplit(uint32_t block_id, uint32_t nb_blocks, uint32_t thread_id, uint32_t nb_threads_per_block){
+//     for(uint32_t i = block_id; i < globalVariables.nbSpillingNodes; i += nb_blocks){
+//         COctreeNode* spilling_node = globalVariables.spillingNodes[i];
+        
+
+//         uint32_t spilled_index = globalVariables.spilledNodesCounter[block_id];
+//         CPoint* spilled_points = globalVariables.spilledPoints;
+
+//         // Add former points to spilled points and free memory
+//         CChunk* current_chunk = spilling_node->points;
+//         while(current_chunk){
+//             CPoint* points = current_chunk->points;
+//             uint32_t size = current_chunk->size;
+//             CChunk* next = current_chunk->next;
+//             for(uint32_t j = thread_id; j < size; j += nb_threads_per_block){
+//                 uint32_t real_index = spilled_index + j;
+//                 spilled_points[real_index] = points[j];
+//                 globalVariables.memoizedSpilledPointsNodes[real_index] = spilling_node;
+//             }
+//             spilled_index += size;
+//             current_chunk = next;
+//         }
+//     }
+// }
+
+
+/// Update the nodes counters
+extern "C" __global__
+void kernel_simlod_count_split_part_1_count(uint32_t loop, bool is_first_iteration){
+    auto grid = cg::this_grid();
+    uint32_t thread_id = grid.thread_rank();
+    uint32_t nb_threads = grid.num_threads();
+
+    simlodCount(thread_id, nb_threads, loop, is_first_iteration);
+}
+
+/// Fillup the spilling nodes counter and creating children
+extern "C" __global__
+void kernel_simlod_count_split_part_1_5_prefix_sum(){
+    uint32_t last = globalVariables.nbSpilledPoints;
+    uint32_t nb_chunks = 0;
+
+    for(uint32_t i=0; i<globalVariables.nbSpillingNodes; i++){
         COctreeNode* spilling_node = globalVariables.spillingNodes[i];
+
+        CChunk* cur_chunk = spilling_node->points;
+        while(cur_chunk){
+            uint32_t new_value = last + cur_chunk->size;
+            if(new_value >= globalVariables.maxNbSpilledPoints){
+                printf("ERROR: reached the maximum of spilling points\n");
+                customAssert();
+            }
+            globalVariables.spilledChunksCounter[nb_chunks] = last;
+            globalVariables.spillingChunks[nb_chunks] = cur_chunk;
+            last = new_value;
+            nb_chunks++;
+            cur_chunk = cur_chunk->next;
+        }
+
         CIdAABB spilling_node_id = spilling_node->aabb_index;
         uint32_t spilling_node_children = spilling_node->children_ids;
-
-        spilling_node->points_counter = 0;
-        spilling_node->points_stored = 0; // also reset the previous counter
 
         // UI values
         __nv_atomic_add(&globalVariables.nbSplitNodesThisUpdate, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
         __nv_atomic_add(&globalVariables.nbTotalSplitNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-        
 
+        // Rebuild the occupancy
         if(!spilling_node->occupancy){
             spilling_node->occupancy = globalAllocator.newOccupancyGrid(true);
             uint32_t grid_index = __nv_atomic_fetch_add(&globalVariables.nbGridsToInit, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
@@ -625,15 +687,14 @@ void simlodSplit(uint32_t first_point, uint32_t step){
                 printf("ERROR: failed to split the node %d; can't recreate more grids\n", spilling_node->aabb_index);
                 customAssert();
             }
-
             globalVariables.gridsToInit[grid_index] = spilling_node;
         }
-
-        for(uint32_t j=0; j<8; j++){
+        
+        // Create the needed children
+        for(uint32_t child_index = 0; child_index < 8; child_index++){
             // Create necessary empty children
-            bool can_be_spilled = (1u << j) & spilling_node_children;
-            if(can_be_spilled && (globalVariables.relationshipMap[spilling_node_id].children[j] == CINVALID_ID)){
-                
+            bool can_be_spilled = (1u << child_index) & spilling_node_children;
+            if(can_be_spilled && (globalVariables.relationshipMap[spilling_node_id].children[child_index] == CINVALID_ID)){
                 // Create the new node
                 CIdAABB new_child_id = createNewNodeId();
                 COctreeNode* new_child = globalAllocator.newOctreeNode(new_child_id, true);
@@ -646,90 +707,139 @@ void simlodSplit(uint32_t first_point, uint32_t step){
 
                 globalVariables.packedNodes[node_index] = new_child;
 
-                spilling_node->children[j] = new_child;
-                globalVariables.relationshipMap[spilling_node_id].children[j] = new_child_id;
+                spilling_node->children[child_index] = new_child;
+                globalVariables.relationshipMap[spilling_node_id].children[child_index] = new_child_id;
                 globalVariables.relationshipMap[new_child_id].parent = spilling_node_id;
 
                 // Create the new AABB
                 globalVariables.relationshipMap[new_child_id].aabb = globalVariables.relationshipMap[spilling_node_id].aabb;
-
-                globalVariables.relationshipMap[new_child_id].aabb.shrink((CNodePosition)j);
+                globalVariables.relationshipMap[new_child_id].aabb.shrink((CNodePosition)child_index);
                 new_child->level = spilling_node->level + 1;
+            }
+        }
+    }
+
+    globalVariables.nbSpilledPoints = last;
+    globalVariables.nbSpillingChunks = nb_chunks;
+}
+
+/// Split the nodes
+extern "C" __global__
+void kernel_simlod_count_split_part_2_split(){
+    auto grid = cg::this_grid();
+    auto block = cg::this_thread_block();
+    uint32_t nb_blocks = grid.num_blocks();
+
+    uint32_t block_id = grid.block_rank();
+    uint32_t thread_id = block.thread_rank();
+    uint32_t nb_threads_per_block = block.num_threads();
+
+    uint32_t nb_spilling_nodes = globalVariables.nbSpillingNodes;
+
+    for(uint32_t i = block_id; i < globalVariables.nbSpillingChunks; i += nb_blocks){
+        uint32_t spilled_index = globalVariables.spilledChunksCounter[i];
+        CChunk* current_chunk = globalVariables.spillingChunks[i];
+        CPoint* current_chunk_points = current_chunk->points;
+        CPoint* spilled_points = globalVariables.spilledPoints;
+        uint32_t size = current_chunk->size;
+
+        // Find the corresponding spilling node
+        uint32_t total_nb_chunks = 0;
+        COctreeNode* cur_spilling_node = nullptr;
+        for(uint32_t j=0; j<nb_spilling_nodes; j++){
+            COctreeNode* spilling_node = globalVariables.spillingNodes[j];
+            uint32_t nb_chunks_in_node = 
+                (spilling_node->points_stored + OocSimLodSettings::NB_POINTS_PER_CHUNK - 1)
+                    / OocSimLodSettings::NB_POINTS_PER_CHUNK
+            ;
+            total_nb_chunks += nb_chunks_in_node;
+            if(total_nb_chunks > i){
+                cur_spilling_node = spilling_node;
+                break;
             }
         }
 
         // Add former points to spilled points and free memory
-        CChunk* current_chunk = spilling_node->points;
-        while(current_chunk){
-            uint32_t spilled_index = __nv_atomic_fetch_add(&globalVariables.nbSpilledPoints, current_chunk->size, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-            for(uint32_t j=0; j<current_chunk->size; j++){
-                uint32_t real_index = spilled_index + j;
-                if(real_index >= globalVariables.maxNbSpilledPoints){
-                    printf("ERROR: reached the maximum number of spilled points\n");
-                    customAssert();
-                }
-
-                CPoint cur_point = current_chunk->points[j];
-                globalVariables.spilledPoints[real_index] = cur_point;
-                globalVariables.memoizedSpilledPointsNodes[real_index] = spilling_node;
-            }
-            current_chunk = current_chunk->next;
+        for(uint32_t j = thread_id; j < size; j += nb_threads_per_block){
+            uint32_t real_index = spilled_index + j;
+            spilled_points[real_index] = current_chunk_points[j];
+            globalVariables.memoizedSpilledPointsNodes[real_index] = cur_spilling_node;
         }
-
-        globalAllocator.delChunk(spilling_node->points, true);
-        spilling_node->points = nullptr;
     }
 }
 
 
-
-/// Run on "MaxActiveBlocksPerMultiprocessor" cooperative blocks of size "Max block size"
-/// Update the nodes counters
+// Run on a single thread
 extern "C" __global__
-void kernel_simlod_count_split(){
-    auto grid = cg::this_grid();
-    uint32_t thread_id = grid.thread_rank();
-    uint32_t nb_threads = grid.num_threads();
+void kernel_simlod_count_split_part_3_reset(){
+    // Because "newOctreeNode" was called in simlodSplit
+    globalAllocator.nodesAllocator->reset_temporary_allocations();
+    // Because "newOccupancyGrid" was called in simlodSplit
+    globalAllocator.gridsAllocator->reset_temporary_allocations();
 
-    // if(thread_id == 0){
-    //     printf("kernel_simlod_count_split\n");
-    // }
-
-    for(uint32_t loop = 0; loop < globalVariables.maxCountSplitIterations; loop++){
-        simlodCount(thread_id, nb_threads, loop, globalVariables.isFirstCountSplitIteration);
-        grid.sync();
-
-        if(globalVariables.nbSpillingNodes == 0){
-            globalVariables.isDoneIterating = true;
-            break;
-        }
-        
-        simlodSplit(thread_id, nb_threads);
-        grid.sync();
-
-
-        if(thread_id == 0){
-            // Because "delChunk" was called in simlodSplit
-            globalAllocator.chunksAllocator->reset_temporary_deallocations();
-            // Because "newOctreeNode" was called in simlodSplit
-            globalAllocator.nodesAllocator->reset_temporary_allocations();
-            // Because "newOccupancyGrid" was called in simlodSplit
-            globalAllocator.gridsAllocator->reset_temporary_allocations();
-        }
-
-        globalVariables.nbSpillingNodes = 0;
-        grid.sync();
+    for(uint32_t i=0; i < globalVariables.nbSpillingNodes; i++){
+        COctreeNode* spilling_node = globalVariables.spillingNodes[i];
+        globalAllocator.delChunk(spilling_node->points, false);
+        spilling_node->points = nullptr;
+        spilling_node->points_counter = 0;
+        spilling_node->points_stored = 0; // also reset the previous counter
     }
 
-    if(thread_id == 0){
-        // Because "delChunk" was called in simlodSplit
-        globalAllocator.chunksAllocator->reset_temporary_deallocations();
-        // Because "newOctreeNode" was called in simlodSplit
-        globalAllocator.nodesAllocator->reset_temporary_allocations();
-        // Because "newOccupancyGrid" was called in simlodSplit
-        globalAllocator.gridsAllocator->reset_temporary_allocations();
+    if(globalVariables.nbSpillingNodes == 0){
+        globalVariables.isDoneIterating = true;
     }
+    globalVariables.nbSpillingNodes = 0;
 }
+
+
+
+// /// Run on "MaxActiveBlocksPerMultiprocessor" cooperative blocks of size "Max block size"
+// /// Update the nodes counters
+// extern "C" __global__
+// void kernel_simlod_count_split(){
+//     auto grid = cg::this_grid();
+//     uint32_t thread_id = grid.thread_rank();
+//     uint32_t nb_threads = grid.num_threads();
+
+//     // if(thread_id == 0){
+//     //     printf("kernel_simlod_count_split\n");
+//     // }
+
+//     for(uint32_t loop = 0; loop < globalVariables.maxCountSplitIterations; loop++){
+//         simlodCount(thread_id, nb_threads, loop, globalVariables.isFirstCountSplitIteration);
+//         grid.sync();
+
+//         if(globalVariables.nbSpillingNodes == 0){
+//             globalVariables.isDoneIterating = true;
+//             break;
+//         }
+        
+//         simlodSplit(thread_id, nb_threads);
+//         grid.sync();
+
+
+//         if(thread_id == 0){
+//             // Because "delChunk" was called in simlodSplit
+//             globalAllocator.chunksAllocator->reset_temporary_deallocations();
+//             // Because "newOctreeNode" was called in simlodSplit
+//             globalAllocator.nodesAllocator->reset_temporary_allocations();
+//             // Because "newOccupancyGrid" was called in simlodSplit
+//             globalAllocator.gridsAllocator->reset_temporary_allocations();
+//         }
+
+//         globalVariables.nbSpillingNodes = 0;
+//         grid.sync();
+//     }
+
+//     if(thread_id == 0){
+//         // Because "delChunk" was called in simlodSplit
+//         globalAllocator.chunksAllocator->reset_temporary_deallocations();
+//         // Because "newOctreeNode" was called in simlodSplit
+//         globalAllocator.nodesAllocator->reset_temporary_allocations();
+//         // Because "newOccupancyGrid" was called in simlodSplit
+//         globalAllocator.gridsAllocator->reset_temporary_allocations();
+//     }
+// }
 
 
 

@@ -171,6 +171,8 @@ void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
     hostStaging.maxNbSpilledPoints = OocSimLodSettings::MAX_NB_SPILLING_POINTS;
     hostStaging.spilledPoints = alloc<CPoint>(hostStaging.maxNbSpilledPoints);
     hostStaging.spillingNodes = alloc<COctreeNode*>(hostStaging.maxNbSpilledPoints);
+    hostStaging.spilledChunksCounter = alloc<uint32_t>(hostStaging.maxNbSpilledPoints);
+    hostStaging.spillingChunks = alloc<CChunk*>(hostStaging.maxNbSpilledPoints);
 
     hostStaging.maxNbBacklogVoxels = OocSimLodSettings::MAX_NB_BACKLOG_VOXELS;
     hostStaging.backlogVoxels = alloc<CPoint>(hostStaging.maxNbBacklogVoxels);
@@ -249,7 +251,7 @@ void GpuVersion::init(CuRast* editor, CUcontext* context) {
         .blocksize = block_size
     };
 
-    prog->launch("kernel_init_global_allocators", {}, launch_settings);
+    // prog->launch("kernel_init_global_allocators", {}, launch_settings);
     prog->launch("kernel_init_global_buffers", {}, launch_settings);
     LoaderGpuVersion::init();
 }
@@ -517,17 +519,41 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
 
 
 void GpuVersion::octreeUpdateSimLODCountSplit(CuRast* editor, CUcontext* context){
+    bool is_first_iteration = (*(bool*)isDoneIterating == true);
     COPY_TO_GPU(isFirstCountSplitIteration, isDoneIterating, bool);
     *(bool*)isDoneIterating = false;
     COPY_TO_GPU(isDoneIterating, isDoneIterating, bool);
 
+    // OptionalLaunchSettings launch_settings = {
+    //     .gridsize = 0, // Not used with launchCoopertative
+    //     // .blocksize = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK
+    //     .blocksize = 256
+    // };
+    // prog->launchCooperative("kernel_simlod_count_split", {}, launch_settings);
+
+    uint32_t block_size = 256;
+    uint32_t grid_size =
+        (OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM + block_size - 1) 
+        / block_size
+    ;
     OptionalLaunchSettings launch_settings = {
-        .gridsize = 0, // Not used with launchCoopertative
-        // .blocksize = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK
-        .blocksize = 256
+        .gridsize  = grid_size,
+        .blocksize = block_size
     };
-    prog->launchCooperative("kernel_simlod_count_split", {}, launch_settings);
-    COPY_FROM_GPU(isDoneIterating, isDoneIterating, bool);
+    OptionalLaunchSettings single_launch = {
+        .gridsize  = 1,
+        .blocksize = 1
+    };
+
+    for(uint32_t i=0; i<OocSimLodSettings::MAX_NB_COUNT_SPLIT_ITERATION; i++){
+        prog->launch("kernel_simlod_count_split_part_1_count", {&i, &is_first_iteration}, launch_settings);
+        prog->launch("kernel_simlod_count_split_part_1_5_prefix_sum", {}, single_launch);
+        prog->launch("kernel_simlod_count_split_part_2_split", {}, launch_settings);
+        prog->launch("kernel_simlod_count_split_part_3_reset", {}, single_launch);
+        COPY_FROM_GPU(isDoneIterating, isDoneIterating, bool);
+        if(*(bool*)isDoneIterating){break;}
+    }
+
 }
 
 

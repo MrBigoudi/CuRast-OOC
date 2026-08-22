@@ -228,6 +228,7 @@ void kernel_prepare_store_part_2_resetting_children(){
 
 __device__
 void packNodes(){
+    // Better packing strategy with children close to parents
     uint32_t nb_nodes = 0;
     uint32_t begin = 0;
     uint32_t end = globalVariables.curNbNodes-1;
