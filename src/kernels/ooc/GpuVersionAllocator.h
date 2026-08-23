@@ -283,6 +283,22 @@ struct CMemoryAllocator {
             }
         }
     }
+    __device__ void delChunkSingle(CChunk* chunk, bool will_run_in_parallel, bool will_update_metrics = true){
+        if(!chunk){return;}
+
+        // Get the chunks to deallocate
+        CChunk* cur_chunk = chunk;
+        cur_chunk->next = nullptr;
+        cur_chunk->size = 0;
+        chunksAllocator->deallocate(cur_chunk, will_run_in_parallel);
+
+        // UI values
+        if(will_update_metrics){
+            __nv_atomic_add(&globalVariables.nbDeletedChunksThisUpdate, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            __nv_atomic_add(&globalVariables.nbTotalDeletedChunks, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            __nv_atomic_sub(&globalVariables.currentNbChunks, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+        }
+    }
 
     /// Copy an existing chunk
     __device__ CChunk* newChunkPartialCpy(CChunk* cpy, bool will_run_in_parallel, bool will_update_metrics = true){

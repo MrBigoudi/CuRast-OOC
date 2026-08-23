@@ -778,17 +778,32 @@ void kernel_simlod_count_split_part_2_split(){
 }
 
 
+extern "C" __global__
+void kernel_simlod_count_split_part_3_chunks_delete(){
+
+    auto grid = cg::this_grid();
+    uint32_t thread_id = grid.thread_rank();
+    uint32_t nb_threads = grid.num_threads();
+
+    uint32_t nb_spilling_chunks = globalVariables.nbSpillingChunks;
+    CChunk** spilling_chunks = globalVariables.spillingChunks;
+    for(uint32_t i=thread_id; i < nb_spilling_chunks; i += nb_threads){
+        globalAllocator.delChunkSingle(spilling_chunks[i], true);
+    }
+}
+
 // Run on a single thread
 extern "C" __global__
-void kernel_simlod_count_split_part_3_reset(){
-    // Because "newOctreeNode" was called in simlodSplit
+void kernel_simlod_count_split_part_4_reset(){
+    // Because "delChunk" was called in kernel_simlod_count_split_part_3_chunks_delete
+    globalAllocator.chunksAllocator->reset_temporary_deallocations();
+    // Because "newOctreeNode" was called in kernel_simlod_count_split_part_2_split
     globalAllocator.nodesAllocator->reset_temporary_allocations();
-    // Because "newOccupancyGrid" was called in simlodSplit
+    // Because "newOccupancyGrid" was called in kernel_simlod_count_split_part_2_split
     globalAllocator.gridsAllocator->reset_temporary_allocations();
 
     for(uint32_t i=0; i < globalVariables.nbSpillingNodes; i++){
         COctreeNode* spilling_node = globalVariables.spillingNodes[i];
-        globalAllocator.delChunk(spilling_node->points, false);
         spilling_node->points = nullptr;
         spilling_node->points_counter = 0;
         spilling_node->points_stored = 0; // also reset the previous counter

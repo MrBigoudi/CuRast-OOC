@@ -550,7 +550,8 @@ void GpuVersion::octreeUpdateSimLODCountSplit(CuRast* editor, CUcontext* context
         prog->launch("kernel_simlod_count_split_part_1_count", {&i, &is_first_iteration}, launch_settings);
         prog->launch("kernel_simlod_count_split_part_1_5_prefix_sum", {}, single_launch);
         prog->launch("kernel_simlod_count_split_part_2_split", {}, launch_settings);
-        prog->launch("kernel_simlod_count_split_part_3_reset", {}, single_launch);
+        prog->launch("kernel_simlod_count_split_part_3_chunks_delete", {}, launch_settings);
+        prog->launch("kernel_simlod_count_split_part_4_reset", {}, single_launch);
         COPY_FROM_GPU(isDoneIterating, isDoneIterating, bool);
         if(*(bool*)isDoneIterating){break;}
     }
