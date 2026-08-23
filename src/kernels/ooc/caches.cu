@@ -59,10 +59,13 @@ void kernel_update_updates_cache_part_2_sorting(){
             uint32_t old_counter = __nv_atomic_fetch_sub(
                 &globalVariables.temporaryIdBuffer[parent_id], 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE
             );
+
+#ifdef ASSERT_ENABLED
             if(old_counter == 0){
                 printf("ERROR: cache-ordering counter underflow for parent %d of node %d\n", parent_id, cur_id);
                 customAssert();
             }
+#endif
 
             // Continue only if I was the last child to update the parent
             if(old_counter != 1){break;}
@@ -141,10 +144,13 @@ void kernel_prepare_store_part_1_filling_buffers(){
     for(uint32_t node_index = block_id; node_index < globalVariables.curNbNodes; node_index += nb_blocks){
 
         COctreeNode* node = globalVariables.packedNodes[node_index];
+
+#ifdef ASSERT_ENABLED
         if(!node){
             printf("At this point, no node should be null\n");
             customAssert();
         }
+#endif
 
         bool is_in_cache = globalVariables.isInUpdatesCache(node->aabb_index);
         // Unset all the flags except the isInUpdatesCache flag
@@ -196,12 +202,16 @@ void kernel_prepare_store_part_1_filling_buffers(){
             uint32_t cur_point_index = thread_id;
             while(cur_chunk){
                 for(uint32_t i = thread_id; i < cur_chunk->size; i += nb_threads_per_block){
+
+#ifdef ASSERT_ENABLED
                     if(cur_point_index >= MAX_NB_POINTS){
                         printf("ERROR: Too many points in the node, some will be skipped to store it: index %d / %d\n",
                             cur_point_index, MAX_NB_POINTS
                         );
                         customAssert();
                     }
+#endif
+
                     const CPoint& cur_point = cur_chunk->points[i];
                     CPoint* exchangedPoints = globalVariables.exchangedPoints[shExchangedIndex];
                     exchangedPoints[cur_point_index] = cur_point;
@@ -215,12 +225,16 @@ void kernel_prepare_store_part_1_filling_buffers(){
             cur_point_index = thread_id;
             while(cur_chunk){
                 for(uint32_t i = thread_id; i < cur_chunk->size; i += nb_threads_per_block){
+
+#ifdef ASSERT_ENABLED
                     if(cur_point_index >= MAX_NB_VOXELS){
                         printf("ERROR: Too many voxels in the node, some will be skipped to store it: index %d / %d\n",
                             cur_point_index, MAX_NB_VOXELS
                         );
                         customAssert();
                     }
+#endif
+
                     const CPoint& cur_voxel = cur_chunk->points[i];
                     CPoint* exchangedVoxels = globalVariables.exchangedVoxels[shExchangedIndex];
                     exchangedVoxels[cur_point_index] = cur_voxel;
@@ -297,10 +311,14 @@ void packNodes(){
             }
             if(end==0){break;}
             if(end < begin){break;}
+
+#ifdef ASSERT_ENABLED
             if(!last_non_empty){
                 printf("ERROR: at this point a non empty node should have been found\n");
                 customAssert();
             }
+#endif
+
             globalVariables.packedNodes[begin] = last_non_empty;
             globalVariables.packedNodes[end] = nullptr;
         }
@@ -361,10 +379,14 @@ void kernel_prepare_store_part_3_updating_levels(){
                 CIdAABB child_id = globalVariables.relationshipMap[node->aabb_index].children[i];
                 // if((child_id != CINVALID_ID) && globalVariables.updatesCache->contains(child_id)){
                 if((child_id != CINVALID_ID) && globalVariables.isInUpdatesCache(child_id)){
+                    
+#ifdef ASSERT_ENABLED
                     if(!node->children[i]){
                         printf("ERROR: when updating the children levels, the child should exist\n");
                         customAssert();
                     }
+#endif
+
                     node->children[i]->level = new_child_level;
                 }
             }

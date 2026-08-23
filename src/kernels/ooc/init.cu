@@ -95,12 +95,14 @@ void kernel_init_octree_part_1_aabb_measuring(){
         CPoint* new_points = globalVariables.batchesToAddPoints[batch];
         uint32_t nb_new_points = globalVariables.batchesToAddCounts[batch];
 
+#ifdef ASSERT_ENABLED
         if(nb_new_points > globalVariables.maxBatchSize){
             printf("ERROR: On init, batch size exceeded the limit: %d / %d\n", 
                 nb_new_points, globalVariables.maxBatchSize
             );
             customAssert();
         }
+#endif
 
 
         for(uint32_t i = first_point; i < nb_new_points; i += step){
@@ -249,10 +251,13 @@ void kernel_fill_new_grids(){
     for(uint32_t node_id = block_id; node_id < globalVariables.nbGridsToInit; node_id += nb_blocks){
         COctreeNode* node = globalVariables.gridsToInit[node_id];
         COccupancyGrid* occupancy = node->occupancy;
+        
+#ifdef ASSERT_ENABLED
         if(!occupancy){
             printf("ERROR: at this point the occupancy grid should have been created\n");
             customAssert();
         }
+#endif
 
         uint32_t grid_size = OocSimLodSettings::GRID_SIZE / 32;
         for(uint32_t i=thread_id; i<grid_size; i+=nb_threads_per_block){

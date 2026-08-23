@@ -16,6 +16,9 @@ namespace std {
 #define customAssert() { printf("Assertion failure!\n"); asm("trap;"); return;}
 
 
+// #define ASSERT_ENABLED
+
+
 // #include <curand_kernel.h>
 #include <cooperative_groups.h>
 #include <cooperative_groups/memcpy_async.h>

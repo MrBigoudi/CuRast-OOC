@@ -162,7 +162,8 @@ void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
 
     // Lru caches
     hostStaging.updatesCacheSize = OocSimLodSettings::LRU_UPDATES_CACHE_SIZE;
-    hostStaging.updatesCache = nullptr;
+    // hostStaging.updatesCache = nullptr;
+    hostStaging.updatesCache = alloc<CIdAABB>(hostStaging.updatesCacheSize * 2); // Times 2 for prefix scan
     hostStaging.visibilityCacheSize = OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE;
     hostStaging.visibilityCache = alloc<CIdAABB>(hostStaging.visibilityCacheSize);
 
@@ -666,22 +667,6 @@ void GpuVersion::octreeUpdateSimLOD(CuRast* editor, CUcontext* context){
 
 void GpuVersion::octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context){
     COPY_TO_GPU(nbNodesExchanged, &RESET, uint32_t);
-
-    if(*(bool*)isDoneStoring){
-        OptionalLaunchSettings launch_settings = {
-            .gridsize = 1,
-            // .blocksize = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK
-            .blocksize = 256
-        };
-        prog->launch("kernel_update_updates_cache", {}, launch_settings);
-    }
-    *(bool*)isDoneStoring = true;
-    COPY_TO_GPU(isDoneStoring, isDoneStoring, bool);
-
-    // launch_settings = {
-    //     .gridsize  = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_GRID_SIZE_FOR_MAX_BLOCK_SIZE,
-    //     .blocksize = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK
-    // };
     uint32_t block_size = 256;
     uint32_t grid_size =
         (OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM + block_size - 1) 
@@ -691,7 +676,22 @@ void GpuVersion::octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context){
         .gridsize  = grid_size,
         .blocksize = block_size
     };
+    OptionalLaunchSettings single_launch = {
+        .gridsize  = 1,
+        .blocksize = 1
+    };
+    if(*(bool*)isDoneStoring){
+        prog->launch("kernel_update_updates_cache_part_1_counting", {}, launch_settings);
+        prog->launch("kernel_update_updates_cache_part_2_sorting", {}, launch_settings);
+        prog->launch("kernel_update_updates_cache_part_3_prefix_sum", {}, single_launch);
+    }
+    *(bool*)isDoneStoring = true;
+    COPY_TO_GPU(isDoneStoring, isDoneStoring, bool);
 
+    // launch_settings = {
+    //     .gridsize  = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_GRID_SIZE_FOR_MAX_BLOCK_SIZE,
+    //     .blocksize = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK
+    // };
     prog->launch("kernel_prepare_store_part_1_filling_buffers", {}, launch_settings);
     prog->launch("kernel_prepare_store_part_2_resetting_children", {}, launch_settings);
 

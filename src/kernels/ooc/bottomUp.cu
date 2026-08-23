@@ -23,12 +23,14 @@ void kernel_bottom_up_update_part_1_counting(){
         CPoint* new_points = globalVariables.batchesToAddPoints[batch];
         uint32_t nb_new_points = globalVariables.batchesToAddCounts[batch];
 
+#ifdef ASSERT_ENABLED
         if(nb_new_points > globalVariables.maxBatchSize){
             printf("ERROR: On bottom up update, batch size exceeded the limit: %d / %d\n", 
                 nb_new_points, globalVariables.maxBatchSize
             );
             customAssert();
         }
+#endif
 
         for(uint32_t i=thread_id; i<nb_new_points; i+=nb_threads){
             const CPoint& point = new_points[i];
@@ -127,10 +129,14 @@ void kernel_bottom_up_update_part_2_instancing(){
 		COctreeNode* new_parent = globalAllocator.newOctreeNode(parent_aabb_index, false);
 		uint32_t node_index = globalVariables.curNbNodes;
         globalVariables.curNbNodes++;
+
+#ifdef ASSERT_ENABLED
         if(node_index >= globalVariables.maxNbConcurrentNodes){
             printf("ERROR: Can't create more nodes in the bottom up update\n");
             customAssert();
         }
+#endif
+
         globalVariables.packedNodes[node_index] = new_parent;
 
         // Create the new AABB
