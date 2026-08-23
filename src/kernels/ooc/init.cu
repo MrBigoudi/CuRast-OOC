@@ -27,10 +27,8 @@ void kernel_init_global_buffers(){
 
 
     if(thread_id == 0){
-        globalVariables.updatesCache = new CLRUCache(globalVariables.updatesCacheSize);
-    }
-
-    if((nb_threads > 32 && thread_id == 32) || (nb_threads <= 32 && thread_id == 0)){
+        // globalVariables.updatesCache = new CLRUCache(globalVariables.updatesCacheSize);
+        
         // Create the main octree
         CIdAABB id = createNewNodeId();
         globalVariables.mainOctree = globalAllocator.newOctreeNode(id, false);

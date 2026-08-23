@@ -1,46 +1,55 @@
 #include "utils.cuh"
 
 
-/// Run on 1 block of size "Max block size"
 extern "C" __global__
-void kernel_update_updates_cache(){
-    __shared__ uint32_t shNbOrderedNodes;
-
+void kernel_update_updates_cache_part_1_counting(){
     auto grid = cg::this_grid();
     uint32_t thread_id = grid.thread_rank();
     uint32_t nb_threads = grid.num_threads();
 
     // if(thread_id == 0){
-    //     printf("kernel_update_updates_cache\n");
+    //     printf("kernel_update_updates_cache_part_1_counging\n");
     // }
 
     // Count updated children
     for(uint32_t node_index = thread_id; node_index < globalVariables.curNbNodes; node_index += nb_threads){
         COctreeNode* node = globalVariables.packedNodes[node_index];
-        if(!globalVariables.isUpdatedSync(node->aabb_index)){continue;}
+        if(!globalVariables.isUpdated(node->aabb_index)){continue;}
 
         uint8_t nb_updated_children = 0;
         for(uint32_t i=0; i<8; i++){
-            if(node->children[i] && globalVariables.isUpdatedSync(node->children[i]->aabb_index)){
+            if(node->children[i] && globalVariables.isUpdated(node->children[i]->aabb_index)){
                 nb_updated_children++;
             }
         }
         globalVariables.temporaryIdBuffer[node->aabb_index] = uint32_t(nb_updated_children);
-        globalVariables.setCounterFlagSync(node->aabb_index, nb_updated_children);
+        globalVariables.setCounterFlag(node->aabb_index, nb_updated_children);
     }
-    shNbOrderedNodes = 0;
-    __syncthreads();
+    
+    globalVariables.nbOrderedNodes = 0;
+}
+
+extern "C" __global__
+void kernel_update_updates_cache_part_2_sorting(){
+    auto grid = cg::this_grid();
+    uint32_t thread_id = grid.thread_rank();
+    uint32_t nb_threads = grid.num_threads();
+
+    // if(thread_id == 0){
+    //     printf("kernel_update_updates_cache_part_2_sorting\n");
+    // }
 
     // Loop to add nodes
     for(uint32_t node_index = thread_id; node_index < globalVariables.curNbNodes; node_index += nb_threads){
         COctreeNode* node = globalVariables.packedNodes[node_index];
         CIdAABB cur_id = node->aabb_index;
-        if(!globalVariables.isUpdatedSync(cur_id)){continue;}
-        if(globalVariables.getCounterFlagSync(cur_id) != 0){continue;}
+        if(!globalVariables.isUpdated(cur_id)){continue;}
+        globalVariables.setFlagSync(cur_id, CFlagWillBeInUpdatesCache);
+        if(globalVariables.getCounterFlag(cur_id) != 0){continue;}
 
         while(true){
             uint32_t position = __nv_atomic_fetch_add(
-                &shNbOrderedNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_BLOCK
+                &globalVariables.nbOrderedNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE
             );
             globalVariables.temporaryIdBuffer2[position] = cur_id;
 
@@ -48,7 +57,7 @@ void kernel_update_updates_cache(){
             if(parent_id == CINVALID_ID){break;}
 
             uint32_t old_counter = __nv_atomic_fetch_sub(
-                &globalVariables.temporaryIdBuffer[parent_id], 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_BLOCK
+                &globalVariables.temporaryIdBuffer[parent_id], 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE
             );
             if(old_counter == 0){
                 printf("ERROR: cache-ordering counter underflow for parent %d of node %d\n", parent_id, cur_id);
@@ -60,18 +69,56 @@ void kernel_update_updates_cache(){
             cur_id = parent_id;
         }
     }
-    __syncthreads();
 
-    // Add every node to the cache
-    if(thread_id == 0){
-        for(uint32_t i=0; i<shNbOrderedNodes; i++){
-            CIdAABB cur_id = globalVariables.temporaryIdBuffer2[i];
-            globalVariables.unsetFlagSync(cur_id, CFlagIsUpdated);
-            globalVariables.updatesCache->add(cur_id);
+    uint32_t cache_size = globalVariables.updatesCacheSize;
+    // Flag new elements that will be in the cache
+    for(uint32_t i = thread_id; i < cache_size; i += nb_threads){
+        CIdAABB old_id = globalVariables.updatesCache[i];
+        if(old_id == CINVALID_ID){break;}
+        globalVariables.unsetFlagSync(old_id, CFlagIsInUpdatesCache);
+    }
+}
+
+/// TODO: make the prefix scan parallel
+/// Run on a single thread
+extern "C" __global__
+void kernel_update_updates_cache_part_3_prefix_sum(){
+    // printf("kernel_update_updates_cache_part_3_prefix_sum\n");
+
+    uint32_t nb_ordered_nodes = globalVariables.nbOrderedNodes;
+    uint32_t cache_size = globalVariables.updatesCacheSize;
+    uint32_t loop_cap = min(nb_ordered_nodes, cache_size);
+    uint32_t scan_cpt = loop_cap;
+
+    if(scan_cpt < cache_size){
+        // Prefix scan
+        for(uint32_t i = 0; i < cache_size; i++){
+            CIdAABB cur_id = globalVariables.updatesCache[i];
+            if(cur_id == CINVALID_ID){break;} // Reached the end of the current cache
+            if(!globalVariables.willBeInUpdatesCache(cur_id)){
+                globalVariables.setFlag(cur_id, CFlagIsInUpdatesCache);
+                globalVariables.updatesCache[cache_size + scan_cpt] = cur_id;
+                scan_cpt++;
+                if(scan_cpt == cache_size){break;}
+            }
+        }
+
+        // Move non duplicates at the end of the cache
+        for(uint32_t i = loop_cap; i < scan_cpt; i++){
+            CIdAABB cur_id = globalVariables.updatesCache[cache_size + i];
+            globalVariables.updatesCache[i] = cur_id;
         }
     }
 
+    // Move new nodes at the beginning of the cache
+    for(uint32_t i = 0; i < loop_cap; i++){
+        uint32_t buffer_position = nb_ordered_nodes - i - 1;
+        CIdAABB cur_id = globalVariables.temporaryIdBuffer2[buffer_position];
+        globalVariables.setFlag(cur_id, CFlagIsInUpdatesCache);
+        globalVariables.updatesCache[i] = cur_id;
+    }
 }
+
 
 
 /// Run on floor("NB SMs" * "Max threads per SM" / "Max threads per block") blocks of size "Max threads per block"
@@ -99,12 +146,16 @@ void kernel_prepare_store_part_1_filling_buffers(){
             customAssert();
         }
 
-        // Unset flags
+        bool is_in_cache = globalVariables.isInUpdatesCache(node->aabb_index);
+        // Unset all the flags except the isInUpdatesCache flag
         if(thread_id == 0){ // Only one thread per block
-            globalVariables.resetFlags(node->aabb_index);
+            // globalVariables.resetFlags(node->aabb_index);
+            uint32_t flags = uint32_t(is_in_cache) << CFlagIsInUpdatesCache;
+            globalVariables.setFlags(node->aabb_index, flags);
         }
 
-        if(!globalVariables.updatesCache->contains(node->aabb_index)){
+        // if(!globalVariables.updatesCache->contains(node->aabb_index)){
+        if(!is_in_cache){
             __syncthreads(); // Needed to sync after break
             if(thread_id == 0){
                 shExchangedIndex = __nv_atomic_fetch_add(&globalVariables.nbNodesExchanged, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
@@ -214,7 +265,8 @@ void kernel_prepare_store_part_2_resetting_children(){
                 continue;
             }
             
-            if(!globalVariables.updatesCache->contains(child_index)){
+            // if(!globalVariables.updatesCache->contains(child_index)){
+            if(!globalVariables.isInUpdatesCache(child_index)){
                 node->children[i] = nullptr;
                 continue;
             }
@@ -307,7 +359,8 @@ void kernel_prepare_store_part_3_updating_levels(){
             __nv_atomic_max(&globalVariables.octreeDepth, new_child_level, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
             for(uint32_t i=0; i<8; i++){
                 CIdAABB child_id = globalVariables.relationshipMap[node->aabb_index].children[i];
-                if((child_id != CINVALID_ID) && globalVariables.updatesCache->contains(child_id)){
+                // if((child_id != CINVALID_ID) && globalVariables.updatesCache->contains(child_id)){
+                if((child_id != CINVALID_ID) && globalVariables.isInUpdatesCache(child_id)){
                     if(!node->children[i]){
                         printf("ERROR: when updating the children levels, the child should exist\n");
                         customAssert();

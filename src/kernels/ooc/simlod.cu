@@ -157,7 +157,11 @@ void kernel_simlod_load_part_2_rebuilding_nodes(){
         CPoint* points = globalVariables.exchangedPoints[exchanged_index];
         CPoint* voxels = globalVariables.exchangedVoxels[exchanged_index];
 
-        if(globalVariables.updatesCache->contains(aabb_index)){
+        // if(globalVariables.updatesCache->contains(aabb_index)){
+        //     printf("ERROR: the newly loaded point `%d' should not be contained in the cache; nbNodesExchanged = %d\n", aabb_index, globalVariables.nbNodesExchanged);
+        //     customAssert();
+        // }
+        if(globalVariables.isInUpdatesCache(aabb_index)){
             printf("ERROR: the newly loaded point `%d' should not be contained in the cache; nbNodesExchanged = %d\n", aabb_index, globalVariables.nbNodesExchanged);
             customAssert();
         }

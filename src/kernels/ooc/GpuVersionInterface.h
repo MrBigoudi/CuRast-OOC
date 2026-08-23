@@ -350,10 +350,10 @@ enum CNodeFlagType {
 	CFlagIsUpdated,
 	CFlagToLoad,
 	CFlagToStore,
+	CFlagIsInUpdatesCache,
+	CFlagWillBeInUpdatesCache,
 
 	// Pads to be replaced on need
-	CFlagPad16,
-	CFlagPad17,
 	CFlagPad18,
 	CFlagPad19,
 	CFlagPad20,
@@ -642,7 +642,7 @@ struct CGlobalVariables {
 	COctreeNode** memoizedBatchPointsNodes = nullptr; 
 	COctreeNode** memoizedSpilledPointsNodes = nullptr; 
 
-
+	uint32_t nbOrderedNodes = 0;
 
 
     ///////////////////////////////////////////////////////////////////////
@@ -698,7 +698,9 @@ struct CGlobalVariables {
     ///////////////////////////// LRU CACHES //////////////////////////////
     ///////////////////////////////////////////////////////////////////////
     uint32_t updatesCacheSize = 0;
-    CLRUCache* updatesCache = nullptr;
+    // CLRUCache* updatesCache = nullptr;
+    CIdAABB* updatesCache = nullptr;
+	
 	uint32_t visibilityCacheSize = 0;
 	uint32_t visibilityCacheCurrentSize = 0;
 	CIdAABB* visibilityCache = nullptr;
@@ -780,6 +782,12 @@ struct CGlobalVariables {
 	__device__ __forceinline__ bool getFlagSync(const CIdAABB& aabb_index, const CNodeFlagType& flag) const {
 		uint32_t flags = getFlagsSync(aabb_index);
 		return flags & (0x01 << flag);
+	}
+	__device__ __forceinline__ void setFlags(const CIdAABB& aabb_index, uint32_t flags){
+		nodesFlags[aabb_index] = flags;
+	}
+	__device__ __forceinline__ void setFlagsSync(const CIdAABB& aabb_index, uint32_t flags){
+		__nv_atomic_and(&nodesFlags[aabb_index], flags, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
 	}
 	__device__ __forceinline__ void setFlag(const CIdAABB& aabb_index, const CNodeFlagType& flag){
 		nodesFlags[aabb_index] |= (0x01 << flag);
@@ -912,7 +920,12 @@ struct CGlobalVariables {
 	}
 
 
-	
+	__device__ __forceinline__ bool isInUpdatesCache(const CIdAABB& aabb_index) const {
+		return getFlag(aabb_index, CFlagIsInUpdatesCache);
+	}
+	__device__ __forceinline__ bool willBeInUpdatesCache(const CIdAABB& aabb_index) const {
+		return getFlag(aabb_index, CFlagWillBeInUpdatesCache);
+	}
 	__device__ __forceinline__ bool isUpdated(const CIdAABB& aabb_index) const {
 		return getFlag(aabb_index, CFlagIsUpdated);
 	}
@@ -933,6 +946,12 @@ struct CGlobalVariables {
 	}
 
 
+	__device__ __forceinline__ bool isInUpdatesCacheSync(const CIdAABB& aabb_index) const {
+		return getFlagSync(aabb_index, CFlagIsInUpdatesCache);
+	}
+	__device__ __forceinline__ bool willBeInUpdatesCacheSync(const CIdAABB& aabb_index) const {
+		return getFlagSync(aabb_index, CFlagWillBeInUpdatesCache);
+	}
 	__device__ __forceinline__ bool isUpdatedSync(const CIdAABB& aabb_index) const {
 		return getFlagSync(aabb_index, CFlagIsUpdated);
 	}

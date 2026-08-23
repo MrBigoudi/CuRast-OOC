@@ -421,7 +421,8 @@ void kernel_render_bounding_boxes(
         const CAABB& aabb = globalVariables.relationshipMap[node->aabb_index].aabb;
         if(settings.debug_lod_to_render != -1){
             if(settings.debug_lod_to_render != node->level
-                || !globalVariables.updatesCache->contains(node->aabb_index)
+                // || !globalVariables.updatesCache->contains(node->aabb_index)
+                || !globalVariables.isInUpdatesCache(node->aabb_index)
             ){return;}
         }
 
