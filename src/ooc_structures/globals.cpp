@@ -691,10 +691,7 @@ std::string GlobalVariables::formatMemSize(uint64_t size_bytes, uint32_t pad){
 void GlobalVariables::destroy(CuRast* instance, CUcontext* context){
     println("Begin destroy");
 
-    {
-        std::lock_guard<std::mutex> lock4(mainLoopIsTerminatingMtx);
-        mainLoopIsTerminating = true;
-    }
+    mainLoopIsTerminating = true;
 
     std::this_thread::sleep_for(std::chrono::milliseconds(2000));
     cudaDeviceSynchronize();

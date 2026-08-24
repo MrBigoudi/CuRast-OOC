@@ -296,8 +296,6 @@ ChunkSerializable::ChunkSerializable(const std::vector<CPoint>& root_points){
 }
 
 void ChunkSerializable::serialize(const std::string& filepath) const {
-    std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
-
     // https://www.geeksforgeeks.org/cpp/serialize-and-deserialize-an-object-in-cpp/
     ofstream file(filepath, ios::binary | std::ios::trunc);
     if(!file.is_open()){
@@ -323,8 +321,6 @@ void ChunkSerializable::serialize(const std::string& filepath) const {
 
 ChunkSerializable ChunkSerializable::deserialize(const std::string& filepath){
     ChunkSerializable new_chunk = {};
-
-    std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
 
     // https://www.geeksforgeeks.org/cpp/serialize-and-deserialize-an-object-in-cpp/
     ifstream file(filepath, ios::binary);
@@ -394,7 +390,6 @@ void OctreeNodeSerializable::serialize(const OctreeNode* node){
     // const CPUFallbackCache::Entry* to_store = GlobalVariables::cpuCache->add(new_entry);
 
     // // Store node if removed from cache
-    // std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
     // if(to_store){
     //     const IdAABB& aabb_index = to_store->serializable_node.aabb_index;
     //     const OctreeNodeSerializable& new_node = to_store->serializable_node;
@@ -443,8 +438,6 @@ void OctreeNodeSerializable::serializeV2(const std::shared_ptr<HostStorageNode> 
 }
 
 void OctreeNodeSerializable::serialize(const std::string& filepath) const {
-    std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
-
     std::ofstream file(filepath, std::ios::binary | std::ios::trunc);
 
     if(!file.is_open()){
@@ -476,8 +469,6 @@ void OctreeNodeSerializable::serialize(const std::string& filepath) const {
 OctreeNodeSerializable OctreeNodeSerializable::deserialize(const std::string& filepath, const std::string& msg) {
     OctreeNodeSerializable new_node = {};
 
-    std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
-    
     std::ifstream file(filepath, std::ios::binary);
 
     if(!file.is_open()){
@@ -527,7 +518,6 @@ OctreeNode* OctreeNodeSerializable::toOctreeNode(const IdAABB& root_aabb_index){
     // OctreeNode* root = entry->toLeafNode();
 
     // // Store node if removed from cache
-    // std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
     // if(to_store){
     //     const IdAABB& aabb_index = to_store->serializable_node.aabb_index;
     //     const OctreeNodeSerializable& new_node = to_store->serializable_node;

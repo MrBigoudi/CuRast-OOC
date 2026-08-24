@@ -415,7 +415,6 @@ struct GlobalVariables {
 	static inline uint32_t elapsedFrames = 0;
 	static inline uint64_t nbPoints = 0;
 	static inline bool mainLoopIsTerminating = false;
-	static inline std::mutex mainLoopIsTerminatingMtx;
 	/// Counter for the number of octree created
 	static inline uint64_t simLodOctreeCounter = 0;
 

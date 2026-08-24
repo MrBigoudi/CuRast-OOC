@@ -403,7 +403,6 @@ void initScene() {
 	// 		println("Correct octree: cache size = {}", correct_size);
 	// 		mainOctree->display();
 	// 		{
-	// 			std::lock_guard<std::mutex> lock(mainLoopIsTerminatingMtx);
 	// 			mainLoopIsTerminating = true;
 	// 			// Destroy temporary folder
 	// 			std::filesystem::remove_all(TEMPORARY_DIRECTORY);
@@ -758,7 +757,6 @@ int main(int argc, char** argv){
 		}
 		if(OocSimLodSettings::IS_USING_GPU_VERSION){
 			{
-				std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
 				GlobalVariables::mainLoopIsTerminating = true;
 				if(thread_points_loader){
 					thread_points_loader->join();
@@ -786,7 +784,6 @@ int main(int argc, char** argv){
 		}
 		if(OocSimLodSettings::IS_USING_GPU_VERSION){
 			{
-				std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
 				GlobalVariables::mainLoopIsTerminating = true;
 				if(thread_points_loader){
 					thread_points_loader->join();

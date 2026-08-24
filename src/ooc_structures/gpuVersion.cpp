@@ -16,6 +16,19 @@
     }
 #endif // COPY_FROM_GPU
 
+#ifndef COPY_FROM_GPU_ASYNC
+#define COPY_FROM_GPU_ASYNC(member, value, type)                               \
+    {                                                                          \
+        const uint64_t pad =                                                   \
+            reinterpret_cast<uintptr_t>(&(GpuVersion::hostStaging.member)) -   \
+            reinterpret_cast<uintptr_t>(&GpuVersion::hostStaging);             \
+        const CUdeviceptr src_device = GpuVersion::deviceStaging + pad;        \
+        CURuntime::assertCudaSuccess(                                          \
+            cuMemcpyDtoHAsync(value, src_device, sizeof(type), 0)              \
+        );                                                                     \
+    }
+#endif // COPY_FROM_GPU_ASYNC
+
 #ifndef COPY_TO_GPU
 #define COPY_TO_GPU(member, value, type)                                       \
     {                                                                          \
@@ -28,6 +41,19 @@
         );                                                                     \
     }
 #endif // COPY_TO_GPU
+
+#ifndef COPY_TO_GPU_ASYNC
+#define COPY_TO_GPU_ASYNC(member, value, type)                                 \
+    {                                                                          \
+        const uint64_t pad =                                                   \
+            reinterpret_cast<uintptr_t>(&(GpuVersion::hostStaging.member)) -   \
+            reinterpret_cast<uintptr_t>(&GpuVersion::hostStaging);             \
+        const CUdeviceptr dst_device = GpuVersion::deviceStaging + pad;        \
+        CURuntime::assertCudaSuccess(                                          \
+            cuMemcpyHtoDAsync(dst_device, value, sizeof(type), 0)              \
+        );                                                                     \
+    }
+#endif // COPY_TO_GPU_ASYNC
 
 
 void GpuVersion::initHostSide(CuRast* editor, CUcontext* context) {
@@ -712,7 +738,7 @@ void GpuVersion::octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context){
         .blocksize = 256,
     };
     prog->launchCooperative("kernel_prepare_store_part_3_updating_levels", {}, launch_settings);
-    COPY_FROM_GPU(isDoneStoring, isDoneStoring, bool);
+    COPY_FROM_GPU_ASYNC(isDoneStoring, isDoneStoring, bool);
 
     COPY_FROM_GPU(nbNodesExchanged, nbExchangedNodes, uint32_t);
     uint32_t nb_nodes_to_store = min(*(uint32_t*)(nbExchangedNodes), hostStaging.maxNbNodesExchanged);
