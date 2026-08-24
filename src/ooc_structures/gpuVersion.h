@@ -197,6 +197,30 @@ struct GpuVersion {
     static inline bool isInitialised = false;
 
 
+    static inline CUevent eventLoadingComplete;
+    static inline std::vector<CUmemcpyAttributes> batchLoadingAttributes = {
+        CUmemcpyAttributes {
+            .srcAccessOrder = CU_MEMCPY_SRC_ACCESS_ORDER_ANY,
+            .srcLocHint = {CU_MEM_LOCATION_TYPE_HOST},
+            .dstLocHint = {CU_MEM_LOCATION_TYPE_DEVICE},
+            .flags = CU_MEMCPY_FLAG_DEFAULT
+        }
+    };
+    static inline std::vector<uint64_t> batchLoadingAttributesIndices = {0};
+
+    static inline CUevent eventStoringComplete;
+    static inline std::vector<CUmemcpyAttributes> batchStoringAttributes = {
+        CUmemcpyAttributes {
+            .srcAccessOrder = CU_MEMCPY_SRC_ACCESS_ORDER_ANY,
+            .srcLocHint = {CU_MEM_LOCATION_TYPE_DEVICE},
+            .dstLocHint = {CU_MEM_LOCATION_TYPE_HOST},
+            .flags = CU_MEMCPY_FLAG_DEFAULT
+        }
+    };
+    static inline std::vector<uint64_t> batchStoringAttributesIndices = {0};
+    static void storeNodes(uint32_t nb_nodes_to_store);
+
+
     // static inline std::mutex renderSubmissionMutex;
     // static inline void* isTemporarySwitching = nullptr;
     // static inline CUevent eventUpdateCompleted;

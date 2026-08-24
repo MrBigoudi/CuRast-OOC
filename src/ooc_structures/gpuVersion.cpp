@@ -70,6 +70,8 @@ void GpuVersion::initHostSide(CuRast* editor, CUcontext* context) {
     // CURuntime::assertCudaSuccess(cuEventCreate(&eventSwapCompleted, CU_EVENT_DISABLE_TIMING));
     // CURuntime::assertCudaSuccess(cuEventCreate(&eventRenderingStreamInformed, CU_EVENT_DISABLE_TIMING));
 
+    CURuntime::assertCudaSuccess(cuEventCreate(&eventLoadingComplete, CU_EVENT_DISABLE_TIMING));
+    CURuntime::assertCudaSuccess(cuEventCreate(&eventStoringComplete, CU_EVENT_DISABLE_TIMING));
 
     hostCache = new CLRUCache(OocSimLodSettings::LRU_CPU_CACHE_SIZE);
     // removedNodes.reserve(hostCache->CACHE_SIZE);
@@ -85,7 +87,6 @@ void GpuVersion::initHostSide(CuRast* editor, CUcontext* context) {
     *(bool*)isDoneLoading = true;
     *(bool*)isDoneStoring = true;
     *(bool*)isDoneIterating = true;
-
 }
 
 void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
@@ -306,6 +307,9 @@ void GpuVersion::destroy(CuRast *editor, CUcontext *context){
     // cuEventDestroy(eventSwapCompleted);
     // cuEventDestroy(eventRenderingStreamInformed);
 
+    CURuntime::assertCudaSuccess(cuEventDestroy(eventLoadingComplete));
+    CURuntime::assertCudaSuccess(cuEventDestroy(eventStoringComplete));
+
     cudaDeviceSynchronize();
     CURuntime::assertCudaSuccess(cuStreamDestroy(stream));
 }
@@ -481,11 +485,6 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
             persistentStoredNodes[id] = loaded[i];
         }
     }
-    // for(uint32_t i=0; i<nb_nodes_to_load; i++){
-    //     CIdAABB aabb_index = ids[i];
-    //     std::shared_ptr<HostStorageNode> new_node = OctreeNodeSerializable::deserializeV2(aabb_index);
-    //     loaded[i] = new_node;
-    // }
 
 
     // Send the nodes back to the device
@@ -493,42 +492,49 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
     std::vector<uint32_t> nbs_points(nb_nodes_to_load, 0);
     std::vector<uint32_t> nbs_voxels(nb_nodes_to_load, 0);
 
+    std::vector<CUdeviceptr> srcs_host   = {}; srcs_host.reserve(nb_nodes_to_load);
+    std::vector<CUdeviceptr> dsts_device = {}; dsts_device.reserve(nb_nodes_to_load);
+    std::vector<uint64_t>    sizes       = {}; sizes.reserve(nb_nodes_to_load);
+
     for(uint32_t i = 0; i<nb_nodes_to_load; i++){
         children_ids[i] = loaded[i]->node.children_ids;
         nbs_points[i] = loaded[i]->node.points_counter;
         nbs_voxels[i] = loaded[i]->node.voxels_counter;
 
         if(nbs_points[i] > 0){
-            CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync( 
-                ((CUdeviceptr*)(exchangedPointsPointers))[i],
-                loaded[i]->points.data(), nbs_points[i]*sizeof(CPoint), 
-                0
-            ));
+            srcs_host.push_back((CUdeviceptr)loaded[i]->points.data());
+            dsts_device.push_back(((CUdeviceptr*)(exchangedPointsPointers))[i]);
+            sizes.push_back(nbs_points[i]*sizeof(CPoint));
         }
         if(nbs_voxels[i] > 0){
-            CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync( 
-                ((CUdeviceptr*)(exchangedVoxelsPointers))[i],
-                loaded[i]->voxels.data(), nbs_voxels[i]*sizeof(CPoint),
-                0
-            ));
+            srcs_host.push_back((CUdeviceptr)loaded[i]->voxels.data());
+            dsts_device.push_back(((CUdeviceptr*)(exchangedVoxelsPointers))[i]);
+            sizes.push_back(nbs_voxels[i]*sizeof(CPoint));
         }
     }
-    CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync(
-		(CUdeviceptr)hostStaging.exchangedChildrenIds,
-		children_ids.data(),
-		nb_nodes_to_load * sizeof(uint32_t), 0
-	));
-    CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync(
-		(CUdeviceptr)hostStaging.exchangedPointsCounters,
-		nbs_points.data(),
-		nb_nodes_to_load * sizeof(uint32_t), 0
-	));
-    CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync(
-		(CUdeviceptr)hostStaging.exchangedVoxelsCounters,
-		nbs_voxels.data(),
-		nb_nodes_to_load * sizeof(uint32_t), 0
-	));
-    cudaDeviceSynchronize();
+
+    srcs_host.push_back((CUdeviceptr)children_ids.data());
+    dsts_device.push_back((CUdeviceptr)hostStaging.exchangedChildrenIds);
+    sizes.push_back(nb_nodes_to_load * sizeof(uint32_t));
+
+    srcs_host.push_back((CUdeviceptr)nbs_points.data());
+    dsts_device.push_back((CUdeviceptr)hostStaging.exchangedPointsCounters);
+    sizes.push_back(nb_nodes_to_load * sizeof(uint32_t));
+
+    srcs_host.push_back((CUdeviceptr)nbs_voxels.data());
+    dsts_device.push_back((CUdeviceptr)hostStaging.exchangedVoxelsCounters);
+    sizes.push_back(nb_nodes_to_load * sizeof(uint32_t));
+
+    uint64_t nb_copies = sizes.size();
+    CURuntime::assertCudaSuccess(cuMemcpyBatchAsync(
+        dsts_device.data(), srcs_host.data(), sizes.data(), nb_copies, 
+        batchLoadingAttributes.data(), 
+        batchLoadingAttributesIndices.data(), 
+        batchLoadingAttributes.size(), 
+        stream
+    ));
+    CURuntime::assertCudaSuccess(cuEventRecord(eventLoadingComplete, stream));
+    cudaStreamWaitEvent(0, eventLoadingComplete);
 
     launch_settings = {
         .gridsize = OocSimLodSettings::MAX_NB_NODES_TO_EXCHANGE,
@@ -536,9 +542,7 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
         .blocksize = 256
     };
     prog->launch("kernel_simlod_load_part_2_rebuilding_nodes", {}, launch_settings);
-
     octreeUpdateFillNewGrids(editor, context);
-
     prog->launch("kernel_simlod_load_part_3_rebuilding_children", {}, launch_settings);
 }
 
@@ -738,91 +742,113 @@ void GpuVersion::octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context){
         .blocksize = 256,
     };
     prog->launchCooperative("kernel_prepare_store_part_3_updating_levels", {}, launch_settings);
-    COPY_FROM_GPU_ASYNC(isDoneStoring, isDoneStoring, bool);
+    COPY_FROM_GPU(isDoneStoring, isDoneStoring, bool);
 
     COPY_FROM_GPU(nbNodesExchanged, nbExchangedNodes, uint32_t);
     uint32_t nb_nodes_to_store = min(*(uint32_t*)(nbExchangedNodes), hostStaging.maxNbNodesExchanged);
     if(nb_nodes_to_store == 0){return;}
     // println("\n\nNb nodes to store: {}\n\n\n", nb_nodes_to_store);
 
-    std::vector<CIdAABB> ids(nb_nodes_to_store, CINVALID_ID);
-    std::vector<CIdAABB> parents_ids(nb_nodes_to_store, CINVALID_ID);
-    std::vector<uint32_t> children_ids(nb_nodes_to_store, 0);
-    std::vector<uint32_t> nbs_points(nb_nodes_to_store, 0);
-    std::vector<uint32_t> nbs_voxels(nb_nodes_to_store, 0);
-
-    CURuntime::assertCudaSuccess(cuMemcpyDtoHAsync(
-		ids.data(),
-		(CUdeviceptr)hostStaging.exchangedAABBIndices, 
-		nb_nodes_to_store * sizeof(CIdAABB), 0
-	));
-    CURuntime::assertCudaSuccess(cuMemcpyDtoHAsync(
-		parents_ids.data(),
-		(CUdeviceptr)hostStaging.exchangedAABBParentsIndices, 
-		nb_nodes_to_store * sizeof(CIdAABB), 0
-	));
-    CURuntime::assertCudaSuccess(cuMemcpyDtoHAsync(
-		children_ids.data(),
-		(CUdeviceptr)hostStaging.exchangedChildrenIds, 
-		nb_nodes_to_store * sizeof(uint32_t), 0
-	));
-    CURuntime::assertCudaSuccess(cuMemcpyDtoHAsync(
-		nbs_points.data(),
-		(CUdeviceptr)hostStaging.exchangedPointsCounters, 
-		nb_nodes_to_store * sizeof(uint32_t), 0
-	));
-    CURuntime::assertCudaSuccess(cuMemcpyDtoHAsync(
-		nbs_voxels.data(),
-		(CUdeviceptr)hostStaging.exchangedVoxelsCounters, 
-		nb_nodes_to_store * sizeof(uint32_t), 0
-	));
-    cudaDeviceSynchronize();
-
-
-    for(uint32_t i=0; i<nb_nodes_to_store; i++){
-        
-        std::shared_ptr<HostStorageNode> new_node = std::make_shared<HostStorageNode>();
-        new_node->node.aabb_index = ids[i];
-        new_node->node.children_ids = children_ids[i];
-        new_node->node.points_counter = nbs_points[i];
-        new_node->node.voxels_counter = nbs_voxels[i];
-        new_node->points = std::vector<CPoint>(new_node->node.points_counter);
-        new_node->voxels = std::vector<CPoint>(new_node->node.voxels_counter);
-
-        if(new_node->node.points_counter > 0){
-            CURuntime::assertCudaSuccess(cuMemcpyDtoHAsync(
-                new_node->points.data(),
-                ((CUdeviceptr*)(exchangedPointsPointers))[i],
-                new_node->node.points_counter * sizeof(CPoint), 0
-            ));
-        }
-
-        if(new_node->node.voxels_counter > 0){
-            CURuntime::assertCudaSuccess(cuMemcpyDtoHAsync(
-                new_node->voxels.data(),
-                ((CUdeviceptr*)(exchangedVoxelsPointers))[i],
-                new_node->node.voxels_counter * sizeof(CPoint), 0
-            ));
-        }
-
-        cudaDeviceSynchronize();
-
-        
-        // Update the CPU version of the relationship map
-        relationshipMap[ids[i]] = parents_ids[i];
-
-        // Store to CPU cache
-        {
-            persistentStoredNodes[new_node->node.aabb_index] = new_node;
-            hostCache->add(new_node->node.aabb_index);
-        }
-        // // Store the node on disk
-        // OctreeNodeSerializable::serializeV2(new_node);     
-    }
+    storeNodes(nb_nodes_to_store);
 }
 
 
+void GpuVersion::storeNodes(uint32_t nb_nodes_to_store){
+    std::vector<CUdeviceptr> srcs_device = {}; srcs_device.reserve(nb_nodes_to_store);
+    std::vector<CUdeviceptr> dsts_host   = {}; dsts_host.reserve(nb_nodes_to_store);
+    std::vector<uint64_t>    sizes       = {}; sizes.reserve(nb_nodes_to_store);
 
+    // Get the number of points and voxels
+    std::vector<uint32_t> nbs_points(nb_nodes_to_store, 0);
+    std::vector<uint32_t> nbs_voxels(nb_nodes_to_store, 0);
+
+    srcs_device.push_back((CUdeviceptr)hostStaging.exchangedPointsCounters);
+    dsts_host.push_back((CUdeviceptr)nbs_points.data());
+    sizes.push_back(nb_nodes_to_store * sizeof(uint32_t));
+
+    srcs_device.push_back((CUdeviceptr)hostStaging.exchangedVoxelsCounters);
+    dsts_host.push_back((CUdeviceptr)nbs_voxels.data());
+    sizes.push_back(nb_nodes_to_store * sizeof(uint32_t));
+
+    uint64_t nb_copies = sizes.size();
+    CURuntime::assertCudaSuccess(cuMemcpyBatchAsync(
+        dsts_host.data(), srcs_device.data(), sizes.data(), nb_copies, 
+        batchStoringAttributes.data(), 
+        batchStoringAttributesIndices.data(), 
+        batchStoringAttributes.size(), 
+        stream
+    ));
+    CURuntime::assertCudaSuccess(cuEventRecord(eventStoringComplete, stream));
+
+    std::vector<std::shared_ptr<HostStorageNode>> new_nodes = {};
+    new_nodes.reserve(nb_nodes_to_store);
+    for (uint32_t i = 0; i < nb_nodes_to_store; i++) {
+        new_nodes.push_back(std::make_shared<HostStorageNode>());
+    }
+
+    std::vector<CIdAABB> ids(nb_nodes_to_store, CINVALID_ID);
+    std::vector<CIdAABB> parents_ids(nb_nodes_to_store, CINVALID_ID);
+    std::vector<uint32_t> children_ids(nb_nodes_to_store, 0);
+
+    // Wait for the points / voxels counters
+    CURuntime::assertCudaSuccess(cuEventSynchronize(eventStoringComplete));
+    srcs_device.clear(); dsts_host.clear(); sizes.clear();
+
+    // Get the nodes data
+    srcs_device.push_back((CUdeviceptr)hostStaging.exchangedAABBIndices);
+    dsts_host.push_back((CUdeviceptr)ids.data());
+    sizes.push_back(nb_nodes_to_store * sizeof(CIdAABB));
+
+    srcs_device.push_back((CUdeviceptr)hostStaging.exchangedAABBParentsIndices);
+    dsts_host.push_back((CUdeviceptr)parents_ids.data());
+    sizes.push_back(nb_nodes_to_store * sizeof(CIdAABB));
+
+    srcs_device.push_back((CUdeviceptr)hostStaging.exchangedChildrenIds);
+    dsts_host.push_back((CUdeviceptr)children_ids.data());
+    sizes.push_back(nb_nodes_to_store * sizeof(uint32_t));
+
+    for(uint32_t i=0; i<nb_nodes_to_store; i++){
+        uint32_t nb_points = nbs_points[i];
+        uint32_t nb_voxels = nbs_voxels[i];
+
+        new_nodes[i]->node.points_counter = nb_points;
+        new_nodes[i]->node.voxels_counter = nb_voxels;
+
+        if(nb_points > 0){
+            new_nodes[i]->points = std::vector<CPoint>(nb_points);
+            srcs_device.push_back(((CUdeviceptr*)(exchangedPointsPointers))[i]);
+            dsts_host.push_back((CUdeviceptr)new_nodes[i]->points.data());
+            sizes.push_back(nbs_points[i] * sizeof(CPoint));
+        }
+        if(nbs_voxels[i] > 0){
+            new_nodes[i]->voxels = std::vector<CPoint>(nb_voxels);
+            srcs_device.push_back(((CUdeviceptr*)(exchangedVoxelsPointers))[i]);
+            dsts_host.push_back((CUdeviceptr)new_nodes[i]->voxels.data());
+            sizes.push_back(nbs_voxels[i] * sizeof(CPoint));
+        }
+    }
+
+    nb_copies = sizes.size();
+    CURuntime::assertCudaSuccess(cuMemcpyBatchAsync(
+        dsts_host.data(), srcs_device.data(), sizes.data(), nb_copies, 
+        batchStoringAttributes.data(), 
+        batchStoringAttributesIndices.data(), 
+        batchStoringAttributes.size(), 
+        stream
+    ));
+    CURuntime::assertCudaSuccess(cuEventRecord(eventStoringComplete, stream));
+    CURuntime::assertCudaSuccess(cuEventSynchronize(eventStoringComplete));
+
+    for(uint32_t i=0; i<nb_nodes_to_store; i++){
+        new_nodes[i]->node.aabb_index = ids[i];
+        new_nodes[i]->node.children_ids = children_ids[i];
+        // Update the CPU version of the relationship map
+        relationshipMap[ids[i]] = parents_ids[i];
+        // Store to CPU cache
+        persistentStoredNodes[new_nodes[i]->node.aabb_index] = new_nodes[i];
+        hostCache->add(new_nodes[i]->node.aabb_index);
+    }
+}
 
 
 
