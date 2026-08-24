@@ -4,6 +4,51 @@
 #include "../kernels/ooc/GpuVersionInterface.h"
 #include "../kernels/ooc/GpuVersionAllocator.h"
 
+#include <list>
+
+/// The LRU caches for the nodes
+/// https://www.geeksforgeeks.org/dsa/lru-cache-implementation-using-double-linked-lists/ + ChatGPT
+struct CLRUCache {
+	const uint32_t CACHE_SIZE;
+    list<CIdAABB> cache;
+    std::unordered_map<CIdAABB, list<CIdAABB>::iterator> cache_map;
+
+    CLRUCache(uint32_t cache_size) : CACHE_SIZE(cache_size) {
+        cache_map.reserve(CACHE_SIZE);
+    }
+
+    CIdAABB add(const CIdAABB& aabb_index) {
+        // Already present: make it most recently used
+        auto map_it = cache_map.find(aabb_index);
+
+        if(map_it != cache_map.end()){
+            cache.splice(cache.begin(), cache, map_it->second);
+            return CINVALID_ID;
+        }
+
+        CIdAABB removed = CINVALID_ID;
+        // Evict least recently used
+        if (cache_map.size() >= CACHE_SIZE) {
+            auto lru_it = std::prev(cache.end());
+            removed = *lru_it;
+            cache_map.erase(removed);
+            cache.erase(lru_it);
+        }
+
+        // Add as most recently used
+        cache.push_front(aabb_index);
+        cache_map[aabb_index] = cache.begin();
+        return removed;
+    }
+
+    bool contains(const CIdAABB& aabb_index) {
+        return cache_map.contains(aabb_index);
+    }
+
+    uint32_t getSize() const {
+        return static_cast<uint32_t>(cache_map.size());
+    }
+};
 
 
 struct GpuVersionUI {
@@ -120,11 +165,13 @@ struct GpuVersion {
 
     
     // CPU cache
+    static inline CLRUCache* hostCache = nullptr;
+    static inline std::unordered_map<CIdAABB, std::shared_ptr<HostStorageNode>> persistentStoredNodes = {};
+    static void updateHostCache();
+
     // static inline std::unordered_map<CIdAABB, CAABB> storedNodes = {}; 
-    // static inline CLRUCache* hostCache = nullptr;
     // static inline std::unordered_set<CIdAABB> recentlyUsedNodesFromUpdates = {};
     // static inline std::unordered_set<CIdAABB> removedNodes = {};
-    // static inline std::unordered_map<CIdAABB, std::shared_ptr<HostStorageNode>> persistentStoredNodes = {};
     // static inline std::mutex syncAABBStorageAccessMtx;
     // static inline std::mutex syncHostStorageNodesAccessMtx;
     // static inline std::mutex syncVisibilityUpdateMtx;
@@ -133,7 +180,6 @@ struct GpuVersion {
     // static inline std::vector<std::shared_ptr<HostStorageNode>> newlyVisible = {};
     // static inline std::vector<bool> newlyVisibleToDelete = {};
 
-    // static void updateHostCache();
     // static void visibilityUpdate(CuRast* editor, CUcontext* context);
 
 

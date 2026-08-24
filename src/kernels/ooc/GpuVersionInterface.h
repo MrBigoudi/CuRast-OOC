@@ -510,57 +510,6 @@ struct CRenderTarget{
 
 
 
-/// The LRU caches for the nodes
-/// https://www.geeksforgeeks.org/dsa/lru-cache-implementation-using-double-linked-lists/
-struct CLRUCache {
-	const uint32_t CACHE_SIZE;
-	CDoubleLinkedList<CIdAABB> cache = {};
-	CHashMap<CIdAABB, CDoubleLinkedList<CIdAABB>::Iterator*> cache_map = {};
-
-	__host__ __device__ __forceinline__ CLRUCache(uint32_t cache_size) : CACHE_SIZE(cache_size){
-		cache.init();
-		cache_map.init(cache_size);
-	}
-
-	/// Add a node to the cache and return the id of a node if it has been removed from the cache
-	__host__ __device__ __forceinline__ CIdAABB add(const CIdAABB& aabb_index){
-		CDoubleLinkedList<CIdAABB>::Iterator** it = cache_map.find(aabb_index);
-
-		// If the AABB was already in cache, remove its old version from the list
-		if(it){
-			cache.moveBegin(*it);
-			return CINVALID_ID;
-		}
-
-		// If the cache is full, remove the last node
-		if(cache_map.size >= CACHE_SIZE){
-			CDoubleLinkedList<CIdAABB>::Iterator* end = cache.end();
-			CIdAABB old_aabb = end->value;
-			end->value = aabb_index;
-			cache.moveBegin(end);
-			// cache_map.erase(old_aabb);
-			cache_map.partialErase(old_aabb);
-			cache_map[aabb_index] = end;
-			return old_aabb;
-		}
-
-		// Insert the new node at the front of the list
-		cache.pushFront(aabb_index);
-		cache_map[aabb_index] = cache.begin();
-		return CINVALID_ID;
-	}
-
-	/// Check if a node is already in cache
-	__host__ __device__ __forceinline__ bool contains(const CIdAABB& aabb_index) {
-		return cache_map.contains(aabb_index);
-	}
-
-	/// Returns the number of occupied cell in the cache
-	__host__ __device__ __forceinline__ uint32_t getSize() const {
-		return cache_map.size;
-	}
-};
-
 struct CSemaphore {
 #ifdef __CUDACC__
 	enum State {
@@ -698,7 +647,6 @@ struct CGlobalVariables {
     ///////////////////////////// LRU CACHES //////////////////////////////
     ///////////////////////////////////////////////////////////////////////
     uint32_t updatesCacheSize = 0;
-    // CLRUCache* updatesCache = nullptr;
     CIdAABB* updatesCache = nullptr;
 	
 	uint32_t visibilityCacheSize = 0;

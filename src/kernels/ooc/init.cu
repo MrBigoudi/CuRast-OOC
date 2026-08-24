@@ -26,9 +26,12 @@ void kernel_init_global_buffers(){
     }
 
 
+    for(uint32_t i = thread_id; i < globalVariables.updatesCacheSize; i += nb_threads){
+        globalVariables.updatesCache[i] = CINVALID_ID;
+    }
+
+
     if(thread_id == 0){
-        // globalVariables.updatesCache = new CLRUCache(globalVariables.updatesCacheSize);
-        
         // Create the main octree
         CIdAABB id = createNewNodeId();
         globalVariables.mainOctree = globalAllocator.newOctreeNode(id, false);

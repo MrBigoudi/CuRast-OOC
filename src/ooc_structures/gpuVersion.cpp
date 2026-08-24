@@ -45,7 +45,7 @@ void GpuVersion::initHostSide(CuRast* editor, CUcontext* context) {
     // CURuntime::assertCudaSuccess(cuEventCreate(&eventRenderingStreamInformed, CU_EVENT_DISABLE_TIMING));
 
 
-    // hostCache = new CLRUCache(OocSimLodSettings::LRU_CPU_CACHE_SIZE);
+    hostCache = new CLRUCache(OocSimLodSettings::LRU_CPU_CACHE_SIZE);
     // removedNodes.reserve(hostCache->CACHE_SIZE);
     // newlyVisible = std::vector<std::shared_ptr<HostStorageNode>>(hostCache->CACHE_SIZE, nullptr);
     // newlyVisibleToDelete = std::vector<bool>(hostCache->CACHE_SIZE, false);
@@ -259,7 +259,7 @@ void GpuVersion::init(CuRast* editor, CUcontext* context) {
 
 
 void GpuVersion::destroy(CuRast *editor, CUcontext *context){
-    // if(hostCache){delete(hostCache);}
+    if(hostCache){delete(hostCache);}
 
     cudaDeviceSynchronize();
     for(CUdeviceptr& ptr : pointers){
@@ -430,26 +430,36 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
     // Load the nodes from disk
     std::vector<std::shared_ptr<HostStorageNode>> loaded(nb_nodes_to_load, nullptr);
     
-    // // Sync
-    // {
-    //     std::lock_guard<std::mutex> lock(syncHostStorageNodesAccessMtx);
-    //     for(uint32_t i=0; i<nb_nodes_to_load; i++){
-    //         CIdAABB aabb_index = ids[i];
-    //         if(persistentStoredNodes.contains(aabb_index)){
-    //             loaded[i] = persistentStoredNodes[aabb_index];            
-    //         } else {
-    //             std::shared_ptr<HostStorageNode> new_node = OctreeNodeSerializable::deserializeV2(aabb_index, "From simlod load");
-    //             persistentStoredNodes[aabb_index] = new_node;
-    //             loaded[i] = new_node;
-    //         }
-    //         recentlyUsedNodesFromUpdates.insert(aabb_index);
-    //     }
-    // }
-    for(uint32_t i=0; i<nb_nodes_to_load; i++){
-        CIdAABB aabb_index = ids[i];
-        std::shared_ptr<HostStorageNode> new_node = OctreeNodeSerializable::deserializeV2(aabb_index);
-        loaded[i] = new_node;
+    // Load from CPU cache
+    {
+        std::vector<uint32_t> indices(nb_nodes_to_load, 0);
+        std::iota(indices.begin(), indices.end(), 0);
+
+        auto load_node = [&](uint32_t& i){
+            CIdAABB aabb_index = ids[i];
+            if(!persistentStoredNodes.contains(aabb_index)){
+                loaded[i] = OctreeNodeSerializable::deserializeV2(aabb_index, "From simlod load");
+            } else {
+                loaded[i] = persistentStoredNodes[aabb_index];
+            }
+        };
+
+        if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+            std::for_each(std::execution::par, indices.begin(), indices.end(), load_node);
+        } else {
+            std::for_each(indices.begin(), indices.end(), load_node);
+        }
+        for(uint32_t i=0; i<nb_nodes_to_load; i++){
+            CIdAABB id = ids[i];
+            hostCache->add(id);
+            persistentStoredNodes[id] = loaded[i];
+        }
     }
+    // for(uint32_t i=0; i<nb_nodes_to_load; i++){
+    //     CIdAABB aabb_index = ids[i];
+    //     std::shared_ptr<HostStorageNode> new_node = OctreeNodeSerializable::deserializeV2(aabb_index);
+    //     loaded[i] = new_node;
+    // }
 
 
     // Send the nodes back to the device
@@ -775,28 +785,47 @@ void GpuVersion::octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context){
         // Update the CPU version of the relationship map
         relationshipMap[ids[i]] = parents_ids[i];
 
-        // Store the node on disk
-        OctreeNodeSerializable::serializeV2(new_node);
-
-        // {
-        //     std::lock_guard<std::mutex> lock(syncAABBStorageAccessMtx);
-        //     if(!storedNodes.contains(node.aabb_index)){
-        //         storedNodes[node.aabb_index] =  node.aabb;
-        //     }
-        // }
-        // std::shared_ptr<HostStorageNode> new_node = new HostStorageNode();
-        // new_node->node = node;
-        // new_node->points = points;
-        // new_node->voxels = voxels;
-        
-        // // Sync
-        // {
-        //     std::lock_guard<std::mutex> lock(syncHostStorageNodesAccessMtx);
-        //     persistentStoredNodes[node.aabb_index] = new_node;
-        //     recentlyUsedNodesFromUpdates.insert(node.aabb_index);
-        // }        
+        // Store to CPU cache
+        {
+            persistentStoredNodes[new_node->node.aabb_index] = new_node;
+            hostCache->add(new_node->node.aabb_index);
+        }
+        // // Store the node on disk
+        // OctreeNodeSerializable::serializeV2(new_node);     
     }
 }
+
+
+
+
+
+
+
+void GpuVersion::updateHostCache(){
+    std::vector<std::shared_ptr<HostStorageNode>> nodes_to_store = {};
+    for(auto it = persistentStoredNodes.begin(); it != persistentStoredNodes.end();){
+        const CIdAABB& id = it->first;
+        std::shared_ptr<HostStorageNode> node = it->second;
+        if(!hostCache->contains(id)){
+            nodes_to_store.push_back(node);
+            it = persistentStoredNodes.erase(it);
+        } else {
+            it++;
+        }
+    }
+
+    // Store all nodes in parallel
+    if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+        std::for_each(std::execution::par, nodes_to_store.begin(), nodes_to_store.end(), [](std::shared_ptr<HostStorageNode>& node){
+            OctreeNodeSerializable::serializeV2(node);
+        });
+    } else {
+        std::for_each(nodes_to_store.begin(), nodes_to_store.end(), [](std::shared_ptr<HostStorageNode>& node){
+            OctreeNodeSerializable::serializeV2(node);
+        });
+    }
+}
+
 
 
 
@@ -841,7 +870,7 @@ void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
     }
 
     GpuVersionUI::update();
-    // updateHostCache();
+    updateHostCache();
 }
 
 
@@ -989,39 +1018,6 @@ void GpuVersion::takeRandomScreenShots(){
         screenshotCounter++;
     }
 }
-
-
-
-
-
-// void GpuVersion::updateHostCache(){
-//     std::vector<std::shared_ptr<HostStorageNode>> nodes_to_erase = {};
-
-//     std::lock_guard<std::mutex> lock(syncHostStorageNodesAccessMtx);
-
-//     for(const CIdAABB& index : recentlyUsedNodesFromUpdates){
-//         removedNodes.erase(index);
-//         CIdAABB old_index = hostCache->add(index);
-//         if(old_index != CINVALID_ID){
-//             removedNodes.insert(old_index);
-//         }
-//     }
-
-//     for(const CIdAABB& index : removedNodes){
-//         if(!persistentStoredNodes.contains(index)){
-//             println("ERROR: At this point, the node `{}' should be in the persistent storage", index);
-//             throw(EXIT_FAILURE);
-//         }
-//         nodes_to_erase.push_back(persistentStoredNodes[index]);
-//         persistentStoredNodes.erase(index);
-//     }
-
-
-//     for(std::shared_ptr<HostStorageNode> node : nodes_to_erase){
-//         OctreeNodeSerializable::serializeV2(node);
-//         delete(node);
-//     }
-// }
 
 
 
