@@ -36,7 +36,8 @@ Frustum::Frustum(const mat4& view_proj){
     planes[2] = Plane(m_03 + m_01, m_13 + m_11, m_23 + m_21, m_33 + m_31);
     planes[3] = Plane(m_03 - m_01, m_13 - m_11, m_23 - m_21, m_33 - m_31);
     planes[4] = Plane(m_03 - m_02, m_13 - m_12, m_23 - m_22, m_33 - m_32);
-    planes[5] = Plane(m_03 + m_02, m_13 + m_12, m_23 + m_22, m_33 + m_32);
+    // planes[5] = Plane(m_03 + m_02, m_13 + m_12, m_23 + m_22, m_33 + m_32);
+    planes[5] = Plane(m_02, m_12, m_22, m_32); // Near (z >= 0, Vulkan)
 }
 
 bool Frustum::doesIntersect(const AABB& aabb) const {
@@ -54,19 +55,25 @@ bool Frustum::doesIntersect(const AABB& aabb) const {
 	return true;
 }
 
-bool Frustum::doesIntersect(const CAABB& aabb) const {
+bool Frustum::doesIntersect(const CAABB& aabb, const vec3& camera_pos) const {
+    if(camera_pos.x >= aabb.mins.x && camera_pos.x <= aabb.maxs.x &&
+       camera_pos.y >= aabb.mins.y && camera_pos.y <= aabb.maxs.y &&
+       camera_pos.z >= aabb.mins.z && camera_pos.z <= aabb.maxs.z){
+        return true;
+    }
+
     for(uint32_t i = 0; i < 6; i++){
-		vec3 vector = {
-		    planes[i].normal.x > 0.0 ? aabb.maxs.x : aabb.mins.x,
-		    planes[i].normal.y > 0.0 ? aabb.maxs.y : aabb.mins.y,
-		    planes[i].normal.z > 0.0 ? aabb.maxs.z : aabb.mins.z
+        vec3 vector = {
+            planes[i].normal.x > 0.0 ? aabb.maxs.x : aabb.mins.x,
+            planes[i].normal.y > 0.0 ? aabb.maxs.y : aabb.mins.y,
+            planes[i].normal.z > 0.0 ? aabb.maxs.z : aabb.mins.z
         };
 
-		float d = glm::dot(planes[i].normal, vector) + planes[i].constant;
-		if(d < 0){return false;}
-	}
+        float d = glm::dot(planes[i].normal, vector) + planes[i].constant;
+        if(d < 0){return false;}
+    }
 
-	return true;
+    return true;
 }
 
 void Frustum::display() const {

@@ -182,6 +182,7 @@ void kernel_prepare_store_part_1_filling_buffers(){
             // Storing node properties
             globalVariables.exchangedAABBIndices[shExchangedIndex] = node->aabb_index;
             globalVariables.exchangedAABBParentsIndices[shExchangedIndex] = globalVariables.relationshipMap[node->aabb_index].parent;
+            globalVariables.exchangedAABBs[shExchangedIndex] = globalVariables.relationshipMap[node->aabb_index].aabb;
             globalVariables.exchangedChildrenIds[shExchangedIndex] = node->children_ids;
             globalVariables.exchangedPointsCounters[shExchangedIndex] = node->points_counter;
             globalVariables.exchangedVoxelsCounters[shExchangedIndex] = node->voxels_counter;

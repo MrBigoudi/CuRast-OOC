@@ -354,6 +354,7 @@ enum CNodeFlagType {
 	CFlagWillBeInUpdatesCache,
 
 	// Pads to be replaced on need
+	CFlagPad17,
 	CFlagPad18,
 	CFlagPad19,
 	CFlagPad20,
@@ -374,7 +375,6 @@ enum CNodeFlagType {
 	CFlagIsLarge,
 	CFlagIsCut,
 	CFlagIsInVisibilityCache,
-	CFlagIsFromVoxelInVisibilityCache,
 };
 
 struct COctreeNode {
@@ -606,6 +606,7 @@ struct CGlobalVariables {
 	uint32_t maxNbVoxelsChunksPerExchangedNode = 0;
 	CIdAABB* exchangedAABBIndices = nullptr;
 	CIdAABB* exchangedAABBParentsIndices = nullptr;
+	CAABB* exchangedAABBs = nullptr;
 	uint32_t* exchangedChildrenIds = nullptr;
 	uint32_t* exchangedPointsCounters = nullptr;
 	uint32_t* exchangedVoxelsCounters = nullptr;
@@ -637,8 +638,8 @@ struct CGlobalVariables {
 	uint32_t nbRenderedVoxels = 0;
 	uint32_t maxNbRenderedVoxels = 0;
 	CPoint* renderedVoxels = nullptr;
-	glm::vec3* renderedVoxelsSizes = nullptr;
-	CNodePosition* renderedVoxelsNextChildIndex = nullptr;
+	// glm::vec3* renderedVoxelsSizes = nullptr;
+	// CNodePosition* renderedVoxelsNextChildIndex = nullptr;
 	CIdAABB* renderedVoxelsNodes = nullptr;
 
 
@@ -726,10 +727,6 @@ struct CGlobalVariables {
 	}
 	__device__ __forceinline__ bool getFlag(const CIdAABB& aabb_index, const CNodeFlagType& flag) const {
 		return nodesFlags[aabb_index] & (0x01 << flag);
-	}
-	__device__ __forceinline__ bool getFlagSync(const CIdAABB& aabb_index, const CNodeFlagType& flag) const {
-		uint32_t flags = getFlagsSync(aabb_index);
-		return flags & (0x01 << flag);
 	}
 	__device__ __forceinline__ void setFlags(const CIdAABB& aabb_index, uint32_t flags){
 		nodesFlags[aabb_index] = flags;
@@ -888,35 +885,6 @@ struct CGlobalVariables {
 	}
 	__device__ __forceinline__ bool isInVisibilityCache(const CIdAABB& aabb_index) const {
 		return getFlag(aabb_index, CFlagIsInVisibilityCache);
-	}
-	__device__ __forceinline__ bool isFromVoxelInVisibilityCache(const CIdAABB& aabb_index) const {
-		return getFlag(aabb_index, CFlagIsFromVoxelInVisibilityCache);
-	}
-
-
-	__device__ __forceinline__ bool isInUpdatesCacheSync(const CIdAABB& aabb_index) const {
-		return getFlagSync(aabb_index, CFlagIsInUpdatesCache);
-	}
-	__device__ __forceinline__ bool willBeInUpdatesCacheSync(const CIdAABB& aabb_index) const {
-		return getFlagSync(aabb_index, CFlagWillBeInUpdatesCache);
-	}
-	__device__ __forceinline__ bool isUpdatedSync(const CIdAABB& aabb_index) const {
-		return getFlagSync(aabb_index, CFlagIsUpdated);
-	}
-	__device__ __forceinline__ bool isLargeSync(const CIdAABB& aabb_index) const {
-		return getFlagSync(aabb_index, CFlagIsLarge);
-	}
-	__device__ __forceinline__ bool isVisibleSync(const CIdAABB& aabb_index) const {
-		return getFlagSync(aabb_index, CFlagIsVisible);
-	}
-	__device__ __forceinline__ bool isCutSync(const CIdAABB& aabb_index) const {
-		return getFlagSync(aabb_index, CFlagIsCut);
-	}
-	__device__ __forceinline__ bool isInVisibilityCacheSync(const CIdAABB& aabb_index) const {
-		return getFlagSync(aabb_index, CFlagIsInVisibilityCache);
-	}
-	__device__ __forceinline__ bool isFromVoxelInVisibilityCacheSync(const CIdAABB& aabb_index) const {
-		return getFlagSync(aabb_index, CFlagIsFromVoxelInVisibilityCache);
 	}
 
 #endif // __CUDACC__

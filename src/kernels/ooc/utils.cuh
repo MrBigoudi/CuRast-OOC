@@ -16,7 +16,7 @@ namespace std {
 #define customAssert() { printf("Assertion failure!\n"); asm("trap;"); return;}
 
 
-#define ASSERT_ENABLED
+// #define ASSERT_ENABLED
 
 
 // #include <curand_kernel.h>

@@ -421,7 +421,6 @@ void kernel_render_bounding_boxes(
         const CAABB& aabb = globalVariables.relationshipMap[node->aabb_index].aabb;
         if(settings.debug_lod_to_render != -1){
             if(settings.debug_lod_to_render != node->level
-                // || !globalVariables.updatesCache->contains(node->aabb_index)
                 || !globalVariables.isInUpdatesCache(node->aabb_index)
             ){return;}
         }
@@ -453,83 +452,74 @@ void kernel_visibilityPass(
 
     for(uint32_t node_index = thread_id; node_index < globalVariables.curNbNodes; node_index += nb_threads){
         COctreeNode* node = globalVariables.packedNodes[node_index];
-        globalVariables.setFlag(node->aabb_index, CFlagIsVisible);
+        globalVariables.setFlagSync(node->aabb_index, CFlagIsVisible);
 
         if(settings.debug_lod_to_render != -1){
             continue;
         }
 
         if(isLargerThanMinSpanning(target, settings, node)){
-            globalVariables.setFlag(node->aabb_index, CFlagIsLarge);
+            globalVariables.setFlagSync(node->aabb_index, CFlagIsLarge);
         }
     }
 
-    // // Also flag the nodes from the cache
-    // for(uint32_t node_index = first_point; node_index < globalVariables.visibilityCacheCurrentSize; node_index += step){
-    //     const CIdAABB& id = globalVariables.visibilityCache[node_index];
-    //     globalVariables.setFlagSync(id, CFlagIsInVisibilityCache);
-    // }
-    // for(uint32_t voxel_index = first_point; voxel_index < globalVariables.nbRenderedVoxels; voxel_index += step){
-    //     const CIdAABB& node_id = globalVariables.renderedVoxelsNodes[voxel_index];
-    //     globalVariables.setFlagSync(node_id, CFlagIsFromVoxelInVisibilityCache);
-    // }
+    // Also flag the nodes from the cache
+    for(uint32_t node_index = thread_id; node_index < globalVariables.visibilityCacheCurrentSize; node_index += nb_threads){
+        const CIdAABB& id = globalVariables.visibilityCache[node_index];
+        globalVariables.setFlagSync(id, CFlagIsInVisibilityCache);
+    }
 }
 
 
-// /// Run on "NB SMs" blocks of size min("Max threads per SM", "Max block dim")
-// extern "C" __global__
-// void kernel_drawVisibilityCache(
-// 	CRenderTarget target,
-//     CRenderingSettings settings
-// ){
-//     auto grid = cg::this_grid();
-//     auto block = cg::this_thread_block();
-//     uint32_t nb_blocks = grid.num_blocks();
+/// Run on "NB SMs" blocks of size min("Max threads per SM", "Max block dim")
+extern "C" __global__
+void kernel_drawVisibilityCache(
+	CRenderTarget target,
+    CRenderingSettings settings
+){
+    auto grid = cg::this_grid();
+    uint32_t thread_id = grid.thread_rank();
+    uint32_t nb_threads = grid.num_threads();
 
-//     uint32_t block_id = grid.block_rank();
-//     uint32_t thread_id = block.thread_rank();
-//     uint32_t nb_threads_per_block = block.num_threads();
+    // Render points
+    for(uint32_t point_id = thread_id; point_id < globalVariables.nbRenderedPoints; point_id += nb_threads){
+        const CPoint& point = globalVariables.renderedPoints[point_id];
+        // drawPoint(target, point.position, point.color);
+        drawPoint(target, point.position, 0xff00ffff);
+    }
 
-//     uint32_t first_point = block_id * nb_threads_per_block + thread_id;
-//     uint32_t step = nb_blocks * nb_threads_per_block;
+    // Render voxels
+    for(uint32_t voxel_id = thread_id; voxel_id < globalVariables.nbRenderedVoxels; voxel_id += nb_threads){
+        const CPoint& voxel = globalVariables.renderedVoxels[voxel_id];
+        const CIdAABB& node_id = globalVariables.renderedVoxelsNodes[voxel_id];
 
-//     // Render points
-//     for(uint32_t point_id = first_point; point_id < globalVariables.nbRenderedPoints; point_id += step){
-//         const CPoint& point = globalVariables.renderedPoints[point_id];
-//         // drawPoint(target, point.position, point.color);
-//         drawPoint(target, point.position, 0xff00ffff);
-//     }
+        const CAABB& node_aabb = globalVariables.relationshipMap[node_id].aabb;
+        const CNodePosition next_child_pos = node_aabb.getNextChildIndex(voxel.position);
+        const CIdAABB& child_index = globalVariables.relationshipMap[node_id].children[next_child_pos];
+        const vec3& voxel_size = globalVariables.relationshipMap[node_id].aabb.getSize() / float(OocSimLodSettings::GRID_SIZE_PER_DIMENSION);
 
-//     // Render voxels
-//     for(uint32_t voxel_id = first_point; voxel_id < globalVariables.nbRenderedVoxels; voxel_id += step){
-//         const CPoint& voxel = globalVariables.renderedVoxels[voxel_id];
-//         const vec3& voxel_size = globalVariables.renderedVoxelsSizes[voxel_id];
-//         const CNodePosition& next_child_pos = globalVariables.renderedVoxelsNextChildIndex[voxel_id];
-//         const CIdAABB& node_id = globalVariables.renderedVoxelsNodes[voxel_id];
-//         const CIdAABB& child_index = globalVariables.relationshipMap[node_id].children[next_child_pos];
+        // Only render the voxel if the corresponding child is not present
+        bool child_is_visible = (child_index != CINVALID_ID) && globalVariables.isVisible(child_index);
+        bool child_is_in_vis_cache = (child_index != CINVALID_ID) && globalVariables.isInVisibilityCache(child_index);
+        // bool child_is_in_vis_cache = false;
 
-//         // Only render the voxel if the corresponding child is not present
-//         bool child_is_visible = (child_index != CINVALID_ID) && globalVariables.isVisible(child_index);
-//         bool child_is_in_vis_cache = (child_index != CINVALID_ID) && globalVariables.isInVisibilityCache(child_index);
-//         // bool child_is_in_vis_cache = false;
+        if(!child_is_visible && !child_is_in_vis_cache){
+            const vec3 root_aabb_size = globalVariables.relationshipMap[globalVariables.mainOctree->aabb_index].aabb.getSize();
+            float root_size = max(root_aabb_size.x, max(root_aabb_size.y, root_aabb_size.z));
+            float cur_size = max(voxel_size.x, max(voxel_size.y, voxel_size.z));
+            uint32_t nb_points_per_axis = clamp(uint32_t(root_size / cur_size), 1u, 8u);
 
-//         if(!child_is_visible && !child_is_in_vis_cache){
-//             const vec3 root_aabb_size = globalVariables.mainOctree->aabb.getSize();
-//             float root_size = max(root_aabb_size.x, max(root_aabb_size.y, root_aabb_size.z));
-//             float cur_size = max(voxel_size.x, max(voxel_size.y, voxel_size.z));
-//             uint32_t nb_points_per_axis = clamp(uint32_t(root_size / cur_size), 1u, 8u);
-
-//             drawVoxel(
-//                 target, 
-//                 voxel.position, 
-//                 // voxel.color, 
-//                 0xffff00ff, 
-//                 voxel_size, 
-//                 nb_points_per_axis
-//             );
-//         }
-//     }
-// }
+            drawVoxel(
+                target, 
+                voxel.position, 
+                // voxel.color, 
+                0xffff00ff, 
+                voxel_size, 
+                nb_points_per_axis
+            );
+        }
+    }
+}
 
 
 
@@ -564,8 +554,8 @@ void kernel_drawOctreeLarge(
                 if(child_index == CINVALID_ID){continue;}
                 
                 bool child_is_visible = globalVariables.isVisible(child_index);
-                // bool child_is_in_vis_cache = globalVariables.isInVisibilityCache(child_index);
-                if(child_is_visible){
+                bool child_is_in_vis_cache = globalVariables.isInVisibilityCache(child_index);
+                if(child_is_visible || child_is_in_vis_cache){
                     flags |= ((0x01) << i);
                 }
             }
@@ -648,23 +638,19 @@ void kernel_drawOctreeSmall(
 
         __syncthreads();
         if(thread_id == 0){
-            globalVariables.unsetFlag(node->aabb_index, CFlagIsVisible);
-            globalVariables.unsetFlag(node->aabb_index, CFlagIsLarge);
-            globalVariables.unsetFlag(node->aabb_index, CFlagIsCut);
+            globalVariables.unsetFlagSync(node->aabb_index, CFlagIsVisible);
+            globalVariables.unsetFlagSync(node->aabb_index, CFlagIsLarge);
+            globalVariables.unsetFlagSync(node->aabb_index, CFlagIsCut);
         }
     }
 
-    // // Also unflag the nodes from the cache
-    // uint32_t first_point = block_id * nb_threads_per_block + thread_id;
-    // uint32_t step = nb_blocks * nb_threads_per_block;
-    // for(uint32_t node_index = first_point; node_index < globalVariables.visibilityCacheCurrentSize; node_index += step){
-    //     const CIdAABB& id = globalVariables.visibilityCache[node_index];
-    //     globalVariables.unsetFlagSync(id, CFlagIsInVisibilityCache);
-    // }
-    // for(uint32_t voxel_index = first_point; voxel_index < globalVariables.nbRenderedVoxels; voxel_index += step){
-    //     const CIdAABB& node_id = globalVariables.renderedVoxelsNodes[voxel_index];
-    //     globalVariables.unsetFlagSync(node_id, CFlagIsFromVoxelInVisibilityCache);
-    // }
+    // Also unflag the nodes from the cache
+    uint32_t first_point = block_id * nb_threads_per_block + thread_id;
+    uint32_t step = nb_blocks * nb_threads_per_block;
+    for(uint32_t node_index = first_point; node_index < globalVariables.visibilityCacheCurrentSize; node_index += step){
+        const CIdAABB& id = globalVariables.visibilityCache[node_index];
+        globalVariables.unsetFlagSync(id, CFlagIsInVisibilityCache);
+    }
 }
 
 

@@ -161,7 +161,8 @@ struct GpuVersion {
     static inline CUstream stream;
     static inline uint64_t totalAllocatedMemory = 0;
 
-    static inline std::vector<CIdAABB> relationshipMap = {};
+    static inline std::vector<CIdAABB> parentsMap = {};
+    static inline std::vector<CAABB> aabbsMap = {};
 
     
     // CPU cache
@@ -169,7 +170,6 @@ struct GpuVersion {
     static inline std::unordered_map<CIdAABB, std::shared_ptr<HostStorageNode>> persistentStoredNodes = {};
     static void updateHostCache();
 
-    // static inline std::unordered_map<CIdAABB, CAABB> storedNodes = {}; 
     // static inline std::unordered_set<CIdAABB> recentlyUsedNodesFromUpdates = {};
     // static inline std::unordered_set<CIdAABB> removedNodes = {};
     // static inline std::mutex syncAABBStorageAccessMtx;
@@ -180,7 +180,10 @@ struct GpuVersion {
     // static inline std::vector<std::shared_ptr<HostStorageNode>> newlyVisible = {};
     // static inline std::vector<bool> newlyVisibleToDelete = {};
 
-    // static void visibilityUpdate(CuRast* editor, CUcontext* context);
+    // Visibility cache
+    static inline std::unordered_set<CIdAABB> storedNodes = {}; 
+    static inline std::unordered_set<CIdAABB> currentlyInUpdatesCache = {}; 
+    static void visibilityUpdate(CuRast* editor, CUcontext* context);
 
 
 	static inline void* exchangedPointsPointers = nullptr;
@@ -197,6 +200,7 @@ struct GpuVersion {
     static inline bool isInitialised = false;
 
 
+    static inline CUevent eventVisibilityUpdateComplete;
     static inline CUevent eventLoadingComplete;
     static inline std::vector<CUmemcpyAttributes> batchLoadingAttributes = {
         CUmemcpyAttributes {

@@ -72,13 +72,15 @@ void GpuVersion::initHostSide(CuRast* editor, CUcontext* context) {
 
     CURuntime::assertCudaSuccess(cuEventCreate(&eventLoadingComplete, CU_EVENT_DISABLE_TIMING));
     CURuntime::assertCudaSuccess(cuEventCreate(&eventStoringComplete, CU_EVENT_DISABLE_TIMING));
+    CURuntime::assertCudaSuccess(cuEventCreate(&eventVisibilityUpdateComplete, CU_EVENT_DISABLE_TIMING));
 
     hostCache = new CLRUCache(OocSimLodSettings::LRU_CPU_CACHE_SIZE);
     // removedNodes.reserve(hostCache->CACHE_SIZE);
     // newlyVisible = std::vector<std::shared_ptr<HostStorageNode>>(hostCache->CACHE_SIZE, nullptr);
     // newlyVisibleToDelete = std::vector<bool>(hostCache->CACHE_SIZE, false);
     // previouslyVisible = std::vector<CIdAABB>(hostCache->CACHE_SIZE, CINVALID_ID);
-    relationshipMap = std::vector<CIdAABB>(OocSimLodSettings::MAX_NB_NODES, CINVALID_ID);
+    parentsMap = std::vector<CIdAABB>(OocSimLodSettings::MAX_NB_NODES, CINVALID_ID);
+    aabbsMap = std::vector<CAABB>(OocSimLodSettings::MAX_NB_NODES, CAABB());
 
     CURuntime::assertCudaSuccess(cuMemAllocHost(&isDoneLoading, sizeof(bool)));
     CURuntime::assertCudaSuccess(cuMemAllocHost(&isDoneStoring, sizeof(bool)));
@@ -115,6 +117,7 @@ void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
     hostStaging.maxNbNodesExchanged = OocSimLodSettings::MAX_NB_NODES_TO_EXCHANGE;
     hostStaging.exchangedAABBIndices = alloc<CIdAABB>(hostStaging.maxNbNodesExchanged);
     hostStaging.exchangedAABBParentsIndices = alloc<CIdAABB>(hostStaging.maxNbNodesExchanged);
+    hostStaging.exchangedAABBs = alloc<CAABB>(hostStaging.maxNbNodesExchanged);
     hostStaging.exchangedChildrenIds = alloc<uint32_t>(hostStaging.maxNbNodesExchanged);
     hostStaging.exchangedPointsCounters = alloc<uint32_t>(hostStaging.maxNbNodesExchanged);
     hostStaging.exchangedVoxelsCounters = alloc<uint32_t>(hostStaging.maxNbNodesExchanged);
@@ -182,8 +185,8 @@ void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
     // Visibility cache
     hostStaging.renderedPoints = alloc<CPoint>(hostStaging.maxNbRenderedPoints);
     hostStaging.renderedVoxels = alloc<CPoint>(hostStaging.maxNbRenderedVoxels);
-    hostStaging.renderedVoxelsSizes = alloc<glm::vec3>(hostStaging.maxNbRenderedVoxels);
-    hostStaging.renderedVoxelsNextChildIndex = alloc<CNodePosition>(hostStaging.maxNbRenderedVoxels);
+    // hostStaging.renderedVoxelsSizes = alloc<glm::vec3>(hostStaging.maxNbRenderedVoxels);
+    // hostStaging.renderedVoxelsNextChildIndex = alloc<CNodePosition>(hostStaging.maxNbRenderedVoxels);
     hostStaging.renderedVoxelsNodes = alloc<CIdAABB>(hostStaging.maxNbRenderedVoxels);
     
 
@@ -309,6 +312,7 @@ void GpuVersion::destroy(CuRast *editor, CUcontext *context){
 
     CURuntime::assertCudaSuccess(cuEventDestroy(eventLoadingComplete));
     CURuntime::assertCudaSuccess(cuEventDestroy(eventStoringComplete));
+    CURuntime::assertCudaSuccess(cuEventDestroy(eventVisibilityUpdateComplete));
 
     cudaDeviceSynchronize();
     CURuntime::assertCudaSuccess(cuStreamDestroy(stream));
@@ -497,6 +501,7 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
     std::vector<uint64_t>    sizes       = {}; sizes.reserve(nb_nodes_to_load);
 
     for(uint32_t i = 0; i<nb_nodes_to_load; i++){
+        currentlyInUpdatesCache.insert(loaded[i]->node.aabb_index);
         children_ids[i] = loaded[i]->node.children_ids;
         nbs_points[i] = loaded[i]->node.points_counter;
         nbs_voxels[i] = loaded[i]->node.voxels_counter;
@@ -789,6 +794,7 @@ void GpuVersion::storeNodes(uint32_t nb_nodes_to_store){
     std::vector<CIdAABB> ids(nb_nodes_to_store, CINVALID_ID);
     std::vector<CIdAABB> parents_ids(nb_nodes_to_store, CINVALID_ID);
     std::vector<uint32_t> children_ids(nb_nodes_to_store, 0);
+    std::vector<CAABB> aabbs(nb_nodes_to_store, CAABB());
 
     // Wait for the points / voxels counters
     CURuntime::assertCudaSuccess(cuEventSynchronize(eventStoringComplete));
@@ -806,6 +812,10 @@ void GpuVersion::storeNodes(uint32_t nb_nodes_to_store){
     srcs_device.push_back((CUdeviceptr)hostStaging.exchangedChildrenIds);
     dsts_host.push_back((CUdeviceptr)children_ids.data());
     sizes.push_back(nb_nodes_to_store * sizeof(uint32_t));
+
+    srcs_device.push_back((CUdeviceptr)hostStaging.exchangedAABBs);
+    dsts_host.push_back((CUdeviceptr)aabbs.data());
+    sizes.push_back(nb_nodes_to_store * sizeof(CAABB));
 
     for(uint32_t i=0; i<nb_nodes_to_store; i++){
         uint32_t nb_points = nbs_points[i];
@@ -843,13 +853,200 @@ void GpuVersion::storeNodes(uint32_t nb_nodes_to_store){
         new_nodes[i]->node.aabb_index = ids[i];
         new_nodes[i]->node.children_ids = children_ids[i];
         // Update the CPU version of the relationship map
-        relationshipMap[ids[i]] = parents_ids[i];
+        parentsMap[ids[i]] = parents_ids[i];
+        aabbsMap[ids[i]] = aabbs[i];
+        storedNodes.insert(ids[i]);
+        currentlyInUpdatesCache.erase(ids[i]);
         // Store to CPU cache
         persistentStoredNodes[new_nodes[i]->node.aabb_index] = new_nodes[i];
         hostCache->add(new_nodes[i]->node.aabb_index);
     }
 }
 
+
+
+
+
+
+
+
+
+
+#include "visibility.h"
+
+void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
+	cuCtxSetCurrent(*context);
+    
+    // Get the frustum
+    const mat4&  view = VKRenderer::view.view;
+    const mat4&  proj = VKRenderer::view.proj;
+    Frustum frustum = Frustum(proj * view);
+    vec3 camera_pos = vec3(glm::inverse(view) * vec4(0.0f, 0.0f, 0.0f, 1.0f));
+
+    // Get all visible nodes and initialise their distances to the camera
+    std::vector<std::pair<CIdAABB, float>> visible_nodes = {};
+    for(const CIdAABB& id : storedNodes){
+        const CAABB& aabb = aabbsMap[id];
+        if(frustum.doesIntersect(aabb, camera_pos)){
+            float dist = glm::length(aabb.getCentroid() - camera_pos);
+            visible_nodes.push_back({id, dist});
+        }
+    }
+
+    // Order the nodes with respect to the camera
+    std::sort(visible_nodes.begin(), visible_nodes.end(), 
+        [](const std::pair<CIdAABB, float>& lhs, const std::pair<CIdAABB, float>& rhs){
+            return lhs.second < rhs.second; // From closest to furthest 
+        }
+    );
+
+    // Order to put parent before children
+    // From claude
+    {
+        std::unordered_map<CIdAABB, size_t> indexOf = {};
+        indexOf.reserve(visible_nodes.size());
+        for(size_t i = 0; i < visible_nodes.size(); i++){
+            indexOf[visible_nodes[i].first] = i;
+        }
+
+        std::vector<std::pair<CIdAABB, float>> ordered = {};
+        ordered.reserve(visible_nodes.size());
+        std::vector<bool> placed(visible_nodes.size(), false);
+
+        std::vector<CIdAABB> ancestorChain; // scratch, reused per node
+        for(size_t i = 0; i < visible_nodes.size(); i++){
+            if(placed[i]){continue;}
+
+            // Climb from this node's parent upward, collecting ancestors
+            // that are themselves in visible_nodes and not yet placed.
+            ancestorChain.clear();
+            CIdAABB parent = parentsMap[visible_nodes[i].first];
+            while(parent != CINVALID_ID){
+                auto it = indexOf.find(parent);
+                if(it == indexOf.end()){break;} // parent isn't in the visible set, stop
+                size_t parentIndex = it->second;
+                if(placed[parentIndex]){break;} // parent (and its own ancestors) already placed
+                ancestorChain.push_back(parent);
+                parent = parentsMap[parent];
+            }
+
+            // ancestorChain was built immediate-parent-first, reverse so we
+            // emit the outermost ancestor first, then down to the immediate parent.
+            for(auto it = ancestorChain.rbegin(); it != ancestorChain.rend(); ++it){
+                size_t idx = indexOf[*it];
+                ordered.push_back(visible_nodes[idx]);
+                placed[idx] = true;
+            }
+
+            ordered.push_back(visible_nodes[i]);
+            placed[i] = true;
+        }
+
+        visible_nodes = std::move(ordered);
+    }
+
+
+    // Gather the correct number of nodes to send to the device
+    std::vector<CIdAABB> visibility_cache_to_send(hostStaging.visibilityCacheSize);
+    std::vector<CIdAABB> voxels_nodes_to_send(hostStaging.maxNbRenderedVoxels, CINVALID_ID);
+    uint32_t cpt = 0;
+    uint32_t point_cpt = 0;
+    uint32_t voxel_cpt = 0;
+
+    std::vector<CUdeviceptr> srcs_host   = {};
+    std::vector<CUdeviceptr> dsts_device = {};
+    std::vector<uint64_t>    sizes       = {};
+
+    // Get the LRU_VISIBILTY_CACHE closest nodes
+    for(const std::pair<CIdAABB, float>& visible_node : visible_nodes){
+        CIdAABB cur_node = visible_node.first;
+        if(currentlyInUpdatesCache.contains(cur_node)){continue;}
+
+        hostCache->add(cur_node);
+        std::shared_ptr<HostStorageNode> node = nullptr;
+        // Load wanted node
+        if(persistentStoredNodes.contains(cur_node)){
+            node = persistentStoredNodes[cur_node];
+        } else {
+            node = OctreeNodeSerializable::deserializeV2(cur_node, "From vis update");
+            persistentStoredNodes[cur_node] = node;
+        }
+
+        bool added = false;
+
+        // Add points
+        if(point_cpt < OocSimLodSettings::MAX_NB_RENDERED_POINTS && node->node.points_counter > 0){
+            uint32_t new_total = min(OocSimLodSettings::MAX_NB_RENDERED_POINTS, point_cpt + node->node.points_counter);
+            uint32_t nb_new_points = new_total - point_cpt;
+            srcs_host.push_back((CUdeviceptr)node->points.data());
+            dsts_device.push_back((CUdeviceptr)hostStaging.renderedPoints + (CUdeviceptr)(point_cpt * sizeof(CPoint)));
+            sizes.push_back(nb_new_points * sizeof(CPoint));
+            point_cpt = new_total;
+            added = true;
+        }
+
+        // Add voxels
+        if(voxel_cpt < OocSimLodSettings::MAX_NB_RENDERED_VOXELS && node->node.voxels_counter > 0){
+            uint32_t new_total = min(OocSimLodSettings::MAX_NB_RENDERED_VOXELS, voxel_cpt + node->node.voxels_counter);
+            uint32_t nb_new_voxels = new_total - voxel_cpt;
+            srcs_host.push_back((CUdeviceptr)node->voxels.data());
+            dsts_device.push_back((CUdeviceptr)hostStaging.renderedVoxels + (CUdeviceptr)(voxel_cpt * sizeof(CPoint)));
+            sizes.push_back(nb_new_voxels * sizeof(CPoint));
+
+            // Add other voxels properties
+            for(uint32_t voxel_id = 0; voxel_id < nb_new_voxels; voxel_id++){
+                voxels_nodes_to_send[voxel_cpt + voxel_id] = cur_node;
+            }
+            voxel_cpt = new_total;
+            added = true;
+        }
+
+        // Add the node
+        if(added){
+            visibility_cache_to_send[cpt] = cur_node;
+            cpt++;
+        }
+
+        if(point_cpt >= OocSimLodSettings::MAX_NB_RENDERED_POINTS && voxel_cpt >= OocSimLodSettings::MAX_NB_RENDERED_VOXELS){
+            break;
+        }
+        if(cpt >= OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE){
+            break;
+        }
+    }
+
+    // Add other voxels properties
+    if(voxel_cpt > 0){
+        srcs_host.push_back((CUdeviceptr)voxels_nodes_to_send.data());
+        dsts_device.push_back((CUdeviceptr)hostStaging.renderedVoxelsNodes);
+        sizes.push_back(voxel_cpt * sizeof(CIdAABB));
+    }
+
+    // Add visibility cache
+    if(cpt > 0){
+        srcs_host.push_back((CUdeviceptr)visibility_cache_to_send.data());
+        dsts_device.push_back((CUdeviceptr)hostStaging.visibilityCache);
+        sizes.push_back(cpt * sizeof(CIdAABB));
+
+        // Send the data to the device
+        uint64_t nb_copies = sizes.size();
+        CURuntime::assertCudaSuccess(cuMemcpyBatchAsync(
+            dsts_device.data(), srcs_host.data(), sizes.data(), nb_copies, 
+            batchLoadingAttributes.data(), 
+            batchLoadingAttributesIndices.data(), 
+            batchLoadingAttributes.size(), 
+            stream
+        ));
+    }
+    COPY_TO_GPU_ASYNC(nbRenderedPoints, &point_cpt, uint32_t);
+    COPY_TO_GPU_ASYNC(nbRenderedVoxels, &voxel_cpt, uint32_t);
+    COPY_TO_GPU_ASYNC(visibilityCacheCurrentSize, &cpt, uint32_t);
+    CURuntime::assertCudaSuccess(cuEventRecord(eventVisibilityUpdateComplete, stream));
+    CURuntime::assertCudaSuccess(cuEventSynchronize(eventVisibilityUpdateComplete));
+    // cudaStreamWaitEvent(0, eventVisibilityUpdateComplete);
+
+    // println("Nb nodes: {}, nb voxels: {}, nb points: {}\n", cpt, voxel_cpt, point_cpt);
+}
 
 
 
@@ -890,39 +1087,46 @@ void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
         GpuVersionUI::firstUpdateStart = GpuVersionUI::lastUpdateStart;
     }
 
+    bool skip_update = false;
     // Only load new points if previous points have been handled
     if(*(bool*)isDoneLoading && *(bool*)isDoneStoring && *(bool*)isDoneIterating){
         // Only run the update if the first batch has been loaded
-        if(!LoaderGpuVersion::run(editor, context)){return;}
+        skip_update = !LoaderGpuVersion::run(editor, context);
     }
 
-    // Only run the initialisation kernel once
-    if(!isInitialised){
-        octreeUpdateInit(editor, context);
-        isInitialised = true;
+    if(!skip_update){
+        // Only run the initialisation kernel once
+        if(!isInitialised){
+            octreeUpdateInit(editor, context);
+            isInitialised = true;
+        }
+
+        // Only run the bottom up kernels if nothing else is stalling
+        if(*(bool*)isDoneLoading && *(bool*)isDoneStoring && *(bool*)isDoneIterating){
+            octreeUpdateBottomUp(editor, context);
+        }
+
+        octreeUpdateSimLOD(editor, context);
+
+        if(*(bool*)isDoneLoading && *(bool*)isDoneIterating){
+            octreeUpdateCacheUpdate(editor, context);
+        }
+
+        if(*(bool*)isDoneLoading && *(bool*)isDoneStoring && *(bool*)isDoneIterating){
+            OptionalLaunchSettings launch_settings = {
+                .gridsize = 1,
+                .blocksize = 1
+            };
+            prog->launch("kernel_reset_batches", {}, launch_settings);
+        }
+
+        GpuVersionUI::update();
     }
 
-    // Only run the bottom up kernels if nothing else is stalling
-    if(*(bool*)isDoneLoading && *(bool*)isDoneStoring && *(bool*)isDoneIterating){
-        octreeUpdateBottomUp(editor, context);
+    if(isInitialised){
+        GpuVersion::visibilityUpdate(editor, context);
+        updateHostCache();
     }
-
-    octreeUpdateSimLOD(editor, context);
-
-    if(*(bool*)isDoneLoading && *(bool*)isDoneIterating){
-        octreeUpdateCacheUpdate(editor, context);
-    }
-
-    if(*(bool*)isDoneLoading && *(bool*)isDoneStoring && *(bool*)isDoneIterating){
-        OptionalLaunchSettings launch_settings = {
-            .gridsize = 1,
-            .blocksize = 1
-        };
-        prog->launch("kernel_reset_batches", {}, launch_settings);
-    }
-
-    GpuVersionUI::update();
-    updateHostCache();
 }
 
 
@@ -942,16 +1146,23 @@ void GpuVersion::renderOctree(RenderTarget& target){
     real_settings.min_pixel_span = CuRastSettings::minPixelSpan;
     real_settings.voxels_nb_points_per_axis = uint32_t(CuRastSettings::voxelsPointsPerAxis);
 
-    // std::lock_guard<std::mutex> lock_visibility(syncVisibilityUpdateMtx);
-
     // Render nodes
     {
-        uint32_t block_size = min(
-            OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM,
-            OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X
-        );
+        // uint32_t block_size = min(
+        //     OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM,
+        //     OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X
+        // );
+        // OptionalLaunchSettings launch_settings = {
+        //     .gridsize = OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM,
+        //     .blocksize = block_size
+        // };
+        uint32_t block_size = 256;
+        uint32_t grid_size =
+            (OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM + block_size - 1) 
+            / block_size
+        ;
         OptionalLaunchSettings launch_settings = {
-            .gridsize = OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM,
+            .gridsize  = grid_size,
             .blocksize = block_size
         };
 
@@ -960,7 +1171,7 @@ void GpuVersion::renderOctree(RenderTarget& target){
             prog->launch("kernel_test_multi_resolution", {&real_target, &real_settings}, launch_settings);
         } else {
             prog->launch("kernel_visibilityPass", {&real_target, &real_settings}, launch_settings);
-            // prog->launch("kernel_drawVisibilityCache", {&real_target, &real_settings}, launch_settings);
+            prog->launch("kernel_drawVisibilityCache", {&real_target, &real_settings}, launch_settings);
             prog->launch("kernel_drawOctreeLarge", {&real_target, &real_settings}, launch_settings);
             prog->launch("kernel_drawOctreeSmall", {&real_target, &real_settings}, launch_settings);
             // Render bounding boxes
@@ -1070,218 +1281,6 @@ void GpuVersion::takeRandomScreenShots(){
         screenshotCounter++;
     }
 }
-
-
-
-
-// #include "visibility.h"
-
-// void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
-// 	cuCtxSetCurrent(*context);
-    
-//     // Get the frustum
-//     const mat4&  view = VKRenderer::view.view;
-//     const mat4&  proj = VKRenderer::view.proj;
-//     Frustum frustum = Frustum(proj * view);
-//     vec3 camera_pos = vec3(glm::inverse(view) * vec4(0.0f, 0.0f, 0.0f, 1.0f));
-
-//     // Get all visible nodes and initialise their distances to the camera
-//     std::vector<std::pair<CIdAABB, float>> visible_nodes = {};
-//     {
-//         std::lock_guard<std::mutex> lock(syncAABBStorageAccessMtx);
-//         for(const auto& [index, aabb] : storedNodes){
-//             if(frustum.doesIntersect(aabb)){
-//                 float dist = glm::length(aabb.getCentroid() - camera_pos);
-//                 visible_nodes.push_back({index, dist});
-//             }
-//         }
-//     }
-
-//     // Order the nodes with respect to the camera
-//     std::sort(visible_nodes.begin(), visible_nodes.end(), 
-//         [](const std::pair<CIdAABB, float>& lhs, const std::pair<CIdAABB, float>& rhs){
-//             return lhs.second < rhs.second; // From closest to furthest 
-//         }
-//     );
-
-
-//     // Gather the correct number of nodes to send to the device
-//     std::unordered_set<CIdAABB> visibility_cache_set(hostStaging.visibilityCacheSize);
-//     std::vector<CPoint> points_to_send(hostStaging.maxNbRenderedPoints, CPoint());
-//     std::vector<CPoint> voxels_to_send(hostStaging.maxNbRenderedVoxels, CPoint());
-//     std::vector<glm::vec3> voxels_sizes_to_send(hostStaging.maxNbRenderedVoxels, glm::vec3());
-//     std::vector<CNodePosition> voxels_next_child_indices_to_send(hostStaging.maxNbRenderedVoxels);
-//     std::vector<CIdAABB> voxels_nodes_to_send(hostStaging.maxNbRenderedVoxels, CINVALID_ID);
-//     uint32_t cpt = 0;
-//     uint32_t point_cpt = 0;
-//     uint32_t voxel_cpt = 0;
-
-
-//     std::unordered_set<CIdAABB> visited_nodes = {};
-//     std::list<CIdAABB> to_visit_node = {};
-
-//     {
-//         std::lock_guard<std::mutex> lock(syncHostStorageNodesAccessMtx);
-
-//         // Get the LRU_VISIBILTY_CACHE closest nodes
-//         for(const std::pair<CIdAABB, float>& visible_node : visible_nodes){
-//             to_visit_node.push_back(visible_node.first);
-//         }
-
-//         while(!to_visit_node.empty()){
-//             if(cpt == OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE){break;}
-//             const CIdAABB node_index = to_visit_node.front();
-//             if(visited_nodes.contains(node_index)){
-//                 to_visit_node.pop_front();
-//                 continue;
-//             }
-//             CIdAABB parent = relationshipMap[node_index];
-//             if(parent != CINVALID_ID // if has parent
-//                 && !visited_nodes.contains(parent) // if parent not already in cache 
-//                 && (relationshipMap[parent] != CINVALID_ID) // if parent exist in memory
-//             ){
-//                 to_visit_node.push_front(parent);
-//                 continue;
-//             }
-//             to_visit_node.pop_front();
-//             visited_nodes.insert(node_index);
-
-//             // Check if the node is in the persistent storage
-//             if(persistentStoredNodes.contains(node_index)){
-//                 newlyVisible[cpt] = persistentStoredNodes[node_index];
-//                 cpt++;
-//                 continue;
-//             }
-
-//             // Load the stored node
-//             std::shared_ptr<HostStorageNode> new_node = OctreeNodeSerializable::deserializeV2(node_index, "From vis update");
-//             newlyVisible[cpt] = new_node;
-//             newlyVisibleToDelete[cpt] = true;
-//             cpt++;
-//             continue;
-//         }
-
-//         // Get the maxNbRenderedPoints closest points and the maxNbRenderedVoxels closest voxels
-//         for(uint32_t i=0; i<cpt; i++){
-//             const std::shared_ptr<HostStorageNode> cur_node = newlyVisible[i];
-//             bool should_be_in_cache_points = true;
-//             bool should_be_in_cache_voxels = true;
-
-//             if(point_cpt < hostStaging.maxNbRenderedPoints){
-//                 uint32_t cur_nb_points = cur_node->points.size();
-//                 for(uint32_t point_id = 0; point_id < cur_nb_points; point_id++){
-//                     const CPoint& point = cur_node->points[point_id];
-//                     points_to_send[point_cpt] = point;
-//                     point_cpt++;
-//                     if(point_cpt == hostStaging.maxNbRenderedPoints){
-//                         should_be_in_cache_points = (point_id == cur_nb_points);
-//                         break;
-//                     }
-//                 }
-//             }
-//             if(voxel_cpt < hostStaging.maxNbRenderedVoxels){
-//                 uint32_t cur_nb_voxels = cur_node->voxels.size();
-//                 for(uint32_t voxel_id = 0; voxel_id < cur_nb_voxels; voxel_id++){
-//                     const CPoint& voxel = cur_node->voxels[voxel_id];
-//                     CAABB voxel_aabb = cur_node->node.aabb;
-//                     vec3 voxel_size = (voxel_aabb.maxs - voxel_aabb.mins) / float(OocSimLodSettings::GRID_SIZE_PER_DIMENSION);
-//                     voxels_sizes_to_send[voxel_cpt] = voxel_size;
-//                     voxels_next_child_indices_to_send[voxel_cpt] = voxel_aabb.getNextChildIndex(voxel.position);
-//                     voxels_nodes_to_send[voxel_cpt] = cur_node->node.aabb_index;
-//                     voxels_to_send[voxel_cpt] = voxel;
-
-//                     voxel_cpt++;
-//                     if(voxel_cpt == hostStaging.maxNbRenderedVoxels){
-//                         should_be_in_cache_voxels = (voxel_id == cur_nb_voxels);
-//                         break;
-//                     }
-//                 }
-//             }
-
-//             if(should_be_in_cache_points && should_be_in_cache_voxels){
-//                 visibility_cache_set.insert(cur_node->node.aabb_index);
-//             }
-
-//             if(voxel_cpt == hostStaging.maxNbRenderedVoxels && point_cpt == hostStaging.maxNbRenderedPoints){break;}
-
-//             if(newlyVisibleToDelete[i]){
-//                 delete(newlyVisible[i]);
-//                 newlyVisibleToDelete[i] = false;
-//             }
-//         }
-//     }
-
-//     std::vector<CIdAABB> visibility_cache(visibility_cache_set.begin(), visibility_cache_set.end());
-//     uint32_t nb_rendered_nodes = visibility_cache.size();
-//     GpuVersionUI::visNbNodes = nb_rendered_nodes;
-//     GpuVersionUI::visNbPoints = point_cpt;
-//     GpuVersionUI::visNbVoxels = voxel_cpt;
-
-//     // Send the nodes to the device
-//     {
-//         std::lock_guard<std::mutex> lock(syncVisibilityUpdateMtx);
-
-//         // Sending points
-//         uint64_t pad = uint64_t(&(hostStaging.nbRenderedPoints)) - uint64_t(&hostStaging);
-//         CUdeviceptr dst_device = deviceStaging + pad;
-//         CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync(
-//             dst_device,
-//             &point_cpt,
-//             sizeof(uint32_t), 0
-//         ));
-//         CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync(
-//             (CUdeviceptr)hostStaging.renderedPoints,
-//             points_to_send.data(),
-//             point_cpt * sizeof(CPoint), 0
-//         ));
-
-//         // Sending voxels
-//         pad = uint64_t(&(hostStaging.nbRenderedVoxels)) - uint64_t(&hostStaging);
-//         dst_device = deviceStaging + pad;
-//         CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync(
-//             dst_device,
-//             &voxel_cpt,
-//             sizeof(uint32_t), 0
-//         ));
-//         CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync(
-//             (CUdeviceptr)hostStaging.renderedVoxels,
-//             voxels_to_send.data(),
-//             voxel_cpt * sizeof(CPoint), 0
-//         ));
-//         CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync(
-//             (CUdeviceptr)hostStaging.renderedVoxelsSizes,
-//             voxels_sizes_to_send.data(),
-//             voxel_cpt * sizeof(glm::vec3), 0
-//         ));
-//         CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync(
-//             (CUdeviceptr)hostStaging.renderedVoxelsNextChildIndex,
-//             voxels_next_child_indices_to_send.data(),
-//             voxel_cpt * sizeof(CNodePosition), 0
-//         ));
-//         CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync(
-//             (CUdeviceptr)hostStaging.renderedVoxelsNodes,
-//             voxels_nodes_to_send.data(),
-//             voxel_cpt * sizeof(CIdAABB), 0
-//         ));
-
-//         // Sending nodes ids
-//         pad = uint64_t(&(hostStaging.visibilityCacheCurrentSize)) - uint64_t(&hostStaging);
-//         dst_device = deviceStaging + pad;
-//         CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync(
-//             dst_device,
-//             &nb_rendered_nodes,
-//             sizeof(uint32_t), 0
-//         ));
-//         CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync(
-//             (CUdeviceptr)hostStaging.visibilityCache,
-//             visibility_cache.data(),
-//             nb_rendered_nodes * sizeof(CIdAABB), 0
-//         ));
-//         // cudaStreamSynchronize(0);
-//     }
-
-// }
-
 
 
 
