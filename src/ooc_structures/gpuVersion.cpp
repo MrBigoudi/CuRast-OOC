@@ -1168,7 +1168,8 @@ void GpuVersion::renderOctree(RenderTarget& target){
 
         if(CuRastSettings::bruteForceRendering){
             // TODO: to remove
-            prog->launch("kernel_test_multi_resolution", {&real_target, &real_settings}, launch_settings);
+            // randomOffset = rand();
+            prog->launch("kernel_test_multi_resolution", {&real_target, &real_settings, &randomOffset}, launch_settings);
         } else {
             prog->launch("kernel_visibilityPass", {&real_target, &real_settings}, launch_settings);
             prog->launch("kernel_drawVisibilityCache", {&real_target, &real_settings}, launch_settings);
@@ -1249,6 +1250,7 @@ void GpuVersion::takeRandomScreenShots(){
                 )
             );
             CuRastSettings::voxelsPointsPerAxis = 1;
+            randomOffset = 0;
             // Runtime::mouseEvents.wheel_y = lastScroll;
             // Runtime::mouseEvents.pos_x = lastPosX;
             // Runtime::mouseEvents.pos_y = lastPosY;
@@ -1269,6 +1271,7 @@ void GpuVersion::takeRandomScreenShots(){
             lastBg = CuRastSettings::background;
 
             CuRastSettings::voxelsPointsPerAxis = rand() % 128 + 1; 
+            randomOffset = rand();
 
             CuRastSettings::requestScreenshot = std::make_shared<string>(
                 format("./screenshots/id_{}_perturbed_{}.png", 
@@ -1276,6 +1279,7 @@ void GpuVersion::takeRandomScreenShots(){
                     CuRastSettings::voxelsPointsPerAxis
                 )
             );
+
         }
 
         screenshotCounter++;

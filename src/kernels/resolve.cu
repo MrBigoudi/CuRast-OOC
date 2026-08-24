@@ -1363,7 +1363,7 @@ void kernel_resolve_lod_to_screenshot(
 	if(y >= source.height) return;
 
 	uint64_t pixel = c_target.framebuffer[pixelID];
-	uint8_t level = pixel & 0xff;
+	uint8_t level = uint8_t(pixel >> 56);
 	uint32_t level_rgb = 0;
 
 	uint8_t* rgba = (uint8_t*)&level_rgb;

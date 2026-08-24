@@ -199,6 +199,8 @@ struct GpuVersion {
     static inline bool firstBatchSent = false;
     static inline bool isInitialised = false;
 
+    static inline uint32_t randomOffset = 0;
+
 
     static inline CUevent eventVisibilityUpdateComplete;
     static inline CUevent eventLoadingComplete;

@@ -136,7 +136,7 @@ void drawPoint(
 	const CRenderTarget& target,
 	vec3 position,
     uint32_t color,
-    uint32_t lod = 0
+    uint8_t lod = 0
 ){
 	vec4 projected = target.proj * target.view * vec4(position, 1.0f);
 	float depth = projected.w;
@@ -152,7 +152,7 @@ void drawPoint(
 	uint64_t udepth = __float_as_uint(depth);
 	uint64_t fragment = (udepth << 32) | color;
 
-	uint64_t lod_fragment = (udepth << 32) | lod;
+	uint64_t lod_fragment = lod;
 
 	if(fragment < target.colorbuffer[pixelID]){
 		atomicMin(&target.colorbuffer[pixelID], fragment);
@@ -167,7 +167,7 @@ void drawVoxel(
     uint32_t voxel_color,
     vec3 voxel_size,
     uint32_t nb_points_per_axis,
-    uint32_t node_level = 0
+    uint8_t node_level = 0
 ){
     // Draw the middle point
     // Usually 1 point is enough to represent a voxel from far away
@@ -484,8 +484,8 @@ void kernel_drawVisibilityCache(
     // Render points
     for(uint32_t point_id = thread_id; point_id < globalVariables.nbRenderedPoints; point_id += nb_threads){
         const CPoint& point = globalVariables.renderedPoints[point_id];
-        // drawPoint(target, point.position, point.color);
-        drawPoint(target, point.position, 0xff00ffff);
+        drawPoint(target, point.position, point.color);
+        // drawPoint(target, point.position, 0xff00ffff);
     }
 
     // Render voxels
@@ -512,8 +512,8 @@ void kernel_drawVisibilityCache(
             drawVoxel(
                 target, 
                 voxel.position, 
-                // voxel.color, 
-                0xffff00ff, 
+                voxel.color, 
+                // 0xffff00ff, 
                 voxel_size, 
                 nb_points_per_axis
             );
@@ -666,7 +666,8 @@ void kernel_drawOctreeSmall(
 extern "C" __global__
 void kernel_test_multi_resolution(
 	CRenderTarget target,
-    CRenderingSettings settings
+    CRenderingSettings settings, 
+    uint32_t random_offset
 ){
     auto grid = cg::this_grid();
     auto block = cg::this_thread_block();
@@ -683,12 +684,15 @@ void kernel_test_multi_resolution(
 
         CChunk* cur_points = node->points;
 
+        uint32_t offset = (random_offset == 0) ? 1 : (1 + random_offset + node_index) % 128;
+
         while(cur_points){
             for(uint32_t i = thread_id; i < cur_points->size; i += nb_threads_per_block){
-                if(i % settings.voxels_nb_points_per_axis != 0){continue;}
+                // if(i % settings.voxels_nb_points_per_axis != 0){continue;}
+                if(i % offset != 0){continue;}
 
                 const CPoint& point = cur_points->points[i];
-                drawPoint(target, point.position, point.color);
+                drawPoint(target, point.position, point.color, uint8_t(offset));
             }
             cur_points = cur_points->next;
         }
