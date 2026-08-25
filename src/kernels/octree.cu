@@ -21,6 +21,7 @@ namespace std {
 
 #include "./utils.cuh"
 #include "./HostDeviceInterface.h"
+#include "./ooc/GpuVersionInterface.h"
 
 using glm::ivec2;
 using glm::i8vec4;

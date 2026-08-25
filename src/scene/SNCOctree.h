@@ -4,7 +4,7 @@
 #include <vector>
 
 #include "SceneNode.h"
-#include "./kernels/HostDeviceInterface.h"
+#include "./kernels/ooc/GpuVersionInterface.h"
 
 using std::string;
 using std::vector;

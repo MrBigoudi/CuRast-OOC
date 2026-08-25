@@ -29,6 +29,31 @@ struct OocSimLodSettings {
     ;
 
 
+
+    /////////////////////////////////////////////////////////////////////////
+    /////////////////////////// DEVICE PROPERTIES ///////////////////////////
+    /////////////////////////////////////////////////////////////////////////
+    
+    /// The number of multiprocessors
+    static inline uint32_t DEVICE_ATTRIBUTE_NB_SM;
+    /// The maximum number of threads per sm
+    static inline uint32_t DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM;
+    /// The maximum number of threads per block
+    static inline uint32_t DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK;
+    /// The maximum number of blocks per sm
+    static inline uint32_t DEVICE_ATTRIBUTE_MAX_BLOCKS_PER_SM;
+    /// The maximum block size
+    static inline uint32_t DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X;
+    static inline uint32_t DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Y;
+    static inline uint32_t DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Z;
+    /// The maximum grid size
+    static inline uint32_t DEVICE_ATTRIBUTE_MAX_GRID_DIM_X;
+    static inline uint32_t DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y;
+    static inline uint32_t DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z;
+    static inline uint32_t DEVICE_ATTRIBUTE_MAX_GRID_SIZE_FOR_MAX_BLOCK_SIZE;
+
+
+
     /////////////////////////////////////////////////////////////////////////
     ///////////////////////////// MISCELLANEOUS /////////////////////////////
     /////////////////////////////////////////////////////////////////////////
@@ -39,14 +64,8 @@ struct OocSimLodSettings {
     static inline uint32_t NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE;
     /// Measure the timings
     static inline bool MEASURE_TIMINGS;
-
-    /// The number of threads per block
-    /// Each node will be given an entire block of thread to render all of its points
-    /// Default to the maximum number of threads per block
-    static inline uint32_t PER_NODE_KERNEL_BLOCK_SIZE;
-    /// The number of blocks per node
-    /// Default to the number of blocks per SM
-    static inline uint32_t NB_BLOCKS_PER_NODE;
+    /// Run the GPU version
+    static inline bool IS_USING_GPU_VERSION;
 
 
 
@@ -96,11 +115,35 @@ struct OocSimLodSettings {
     static inline uint32_t LRU_CPU_CACHE_SIZE;
 
     /// The maximum number of chunks allowed in memory
-    static inline uint32_t NB_ALLOCATED_CHUNKS;
+    static inline uint32_t NB_ALLOCABLE_CHUNKS;
     /// The maximum number of occupancy grids allowed in memory
-    static inline uint32_t NB_ALLOCATED_GRIDS;
+    static inline uint32_t NB_ALLOCABLE_GRIDS;
     /// The maximum number of nodes allowed in memory
-    static inline uint32_t NB_ALLOCATED_NODES;
+    static inline uint32_t NB_ALLOCABLE_NODES;
+
+
+
+    /////////////////////////////////////////////////////////////////////////
+    ////////////////////////////// GPU VERSION //////////////////////////////
+    /////////////////////////////////////////////////////////////////////////
+
+    /// The initial maximum number of nodes allowed to be created during runtime
+    static inline uint32_t MAX_NB_NODES; 
+    /// The maximum number of nodes that can be exchanged at once between the host and the device
+    static inline uint32_t MAX_NB_NODES_TO_EXCHANGE;
+    /// The maximum number of spilling points
+    static inline uint32_t MAX_NB_SPILLING_POINTS;
+    /// The maximum number of backlog voxels
+    static inline uint32_t MAX_NB_BACKLOG_VOXELS;
+    /// The maximum number of voxels chunk that can be exchanged at once
+    static inline uint32_t MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE;
+    /// The points rendering budget for the visibility cache
+    static inline uint32_t MAX_NB_RENDERED_POINTS;
+    /// The voxels rendering budget for the visibility cache
+    static inline uint32_t MAX_NB_RENDERED_VOXELS;
+    /// The maximum number of Count/Split operations per update
+    static inline uint32_t MAX_NB_COUNT_SPLIT_ITERATION;
+
 
 
 
@@ -123,7 +166,7 @@ struct OocSimLodSettings {
     /// Activate the automatic free of unused GPU memory
     static inline bool USE_AUTO_FREE_OLD_OCTREE_ON_GPU_AT_STARTUP;
     /// Use a white color for the visible nodes' bounding boxes
-	static inline bool DIFFERENTIATE_VISIBLE_NODES_AABB_AT_STARTUP;
+	static inline bool DISPLAY_VISIBLE_NODES_AABB_AT_STARTUP;
     
 
 

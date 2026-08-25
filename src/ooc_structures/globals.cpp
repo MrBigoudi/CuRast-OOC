@@ -4,7 +4,7 @@
 #include "structureUpdate.h"
 #include "visibility.h"
 #include "outOfCore.h"
-
+#include "gpuVersion.h"
 
 bool Point::operator==(const Point& rhs) const {
     if(position != rhs.position){return false;}
@@ -629,6 +629,9 @@ std::string GlobalVariables::getSimLodOctreeName(bool generate_new_name){
 }
 
 void GlobalVariables::init(CuRast* instance, CUcontext* context){
+    /// The maps
+    allOctreesRefCounter.init(1024);
+
     /// The queue of batches
     batchesQueue = std::deque<std::shared_ptr<PointBatch>>(OocSimLodSettings::BATCHES_LIST_SIZE, nullptr);
     batchesQueueMutexes = std::deque<std::mutex>(OocSimLodSettings::BATCHES_LIST_SIZE);
@@ -686,20 +689,16 @@ std::string GlobalVariables::formatMemSize(uint64_t size_bytes, uint32_t pad){
 
 
 void GlobalVariables::destroy(CuRast* instance, CUcontext* context){
-    {
-        std::lock_guard<std::mutex> lock4(mainLoopIsTerminatingMtx);
-        mainLoopIsTerminating = true;
-    }
+    println("Begin destroy");
+
+    mainLoopIsTerminating = true;
+
     std::this_thread::sleep_for(std::chrono::milliseconds(2000));
-
-    displayTimings();
-    displayBuffers();
-    OocSimLodSettings::display();
-
     cudaDeviceSynchronize();
 
-    // Destroy temporary folder
-    std::filesystem::remove_all(OocSimLodSettings::TEMPORARY_NODE_STORAGE_DIRECTORY);
+    OocSimLodSettings::display();
+    displayTimings();
+    displayBuffers();
 
     cudaDeviceSynchronize();
     for(auto& memory : batchedMemories){
@@ -709,10 +708,9 @@ void GlobalVariables::destroy(CuRast* instance, CUcontext* context){
     cudaDeviceSynchronize();
     freeOctreesOnGPU(CuRast::instance);
 
-    
     cudaDeviceSynchronize();
     freeOctreesOnCPU();
-    
+
     std::lock_guard<std::mutex> lock1(isUpdatingMtx);
     std::lock_guard<std::mutex> lock2(LRUCache::caches_sync_mtx);
     displayCpuMemoryUsage();
@@ -726,10 +724,10 @@ IdAABB GlobalVariables::createNewAABB(const AABB& aabb){
         throw(EXIT_FAILURE);
     }
     allAABBs.push_back(aabb);
-    aabbRelationshipMap->insert({id, {
+    aabbRelationshipMap->insertOrReplace(id, {
         INVALID_ID, INVALID_ID, INVALID_ID, INVALID_ID,
         INVALID_ID, INVALID_ID, INVALID_ID, INVALID_ID
-    }});
+    });
     return id;
 }
 const AABB& GlobalVariables::getAABB(const IdAABB& id){
@@ -787,7 +785,7 @@ void GlobalVariables::displayCpuMemoryUsage(){
     uint32_t real_nb_chunks = OctreeNode::getNbChunks(mainOctree) 
         + OctreeNode::getNbChunks(mainOctreeCpy)
     ;
-    uint32_t real_nb_octrees = allOctreesRefCounter.size();
+    uint32_t real_nb_octrees = allOctreesRefCounter.size;
 
     println("    - nb nodes = {}, lost nodes = {}", real_nb_nodes,
         MemoryAllocator::nodesAllocator->nb_allocated_elements.load() - real_nb_nodes
@@ -801,9 +799,10 @@ void GlobalVariables::displayCpuMemoryUsage(){
     println("    - nb octrees = {}, lost octrees = {}", 
         real_nb_octrees, real_nb_octrees - 1
     );
-    for(auto& [node, counter] : allOctreesRefCounter){
+
+    allOctreesRefCounter.mapWithKey([&](OctreeNode* node, uint32_t& counter){
         printf("    - counter[%p] = %u\n", node, counter);
-    }
+    });
     println("\n");
 }
 
@@ -1058,25 +1057,28 @@ void GlobalVariables::displayBuffers(){
 
 
 std::optional<IdAABB> LRUCache::add(const IdAABB& aabb_index){
-    auto it = cache_map.find(aabb_index);
+    CDoubleLinkedList<IdAABB>::Iterator** it = cache_map.find(aabb_index);
 
     // If the AABB was already in cache, remove its old version from the list
-    if(it != cache_map.end()){
-        cache.erase(it->second);
-        cache_map.erase(it);
+    if(it){
+        cache.moveBegin(*it);
+        return nullopt;
     }
 
     std::optional<IdAABB> old_aabb = nullopt;
 
     // If the cache is full, remove the last node
-    if(cache_map.size() >= CACHE_SIZE){
-        old_aabb = cache.back();
-        cache.pop_back();
-        cache_map.erase(old_aabb.value());
+    if(cache_map.size >= CACHE_SIZE){
+        old_aabb = *cache.back();
+        cache.popBack();
+        if(!cache_map.erase(old_aabb.value())){
+            println("Erasing an LRU entry should always work at this point: old_aabb.value() = {}", old_aabb.value());
+            throw(EXIT_FAILURE);
+        }
     }
 
     // Insert the new node at the front of the list
-    cache.push_front(aabb_index);
+    cache.pushFront(aabb_index);
     cache_map[aabb_index] = cache.begin();
 
     return old_aabb;
@@ -1087,7 +1089,7 @@ bool LRUCache::contains(const IdAABB& aabb_index) {
 }
 
 uint32_t LRUCache::getSize() const {
-    return cache_map.size();
+    return cache_map.size;
 }
 
 
@@ -1097,7 +1099,10 @@ void LRUCache::display() {
 	println("////////////////////// {} //////////////////////", name);
 	println("////////////////////////////////////////////////{}\n", pad);
     uint32_t index = 0;
-	for(const IdAABB& aabb_index : cache){
+
+    CDoubleLinkedList<IdAABB>::Iterator* list_it = cache.begin();
+    while(list_it){
+        const IdAABB& aabb_index = list_it->value;
         const AABB& aabb = GlobalVariables::getAABB(aabb_index);
         std::string output = format("mins = ({}, {}, {}), maxs = ({}, {}, {})",
             aabb.mins.x, 
@@ -1109,6 +1114,7 @@ void LRUCache::display() {
         );
         println("- [ {} ]: {}", index, output);
         index++;
+        list_it = list_it->next;
     }
 	println("\n////////////////////////////////////////////////{}", pad);
     println("////////////////////////////////////////////////{}", pad);
@@ -1204,8 +1210,8 @@ void BatchedMemory::display() const {
             println("Chunk: size = {}", ((CChunk*)src)->size);
         } else if(sizes[i] == sizeof(COctreeNode)){
             COctreeNode* node = (COctreeNode*)src;
-            println("level: {}, counter: {}, updated: {}, visibility: {}, children visibility: 0b{}{}{}{}{}{}{}{}, points location: 0b{}{}{}{}{}{}{}{}, children: 0b{}{}{}{}{}{}{}{}",
-                node->level, node->counter, node->updated, node->is_visible,
+            println("level: {}, counter: {}, children visibility: 0b{}{}{}{}{}{}{}{}, points location: 0b{}{}{}{}{}{}{}{}, children: 0b{}{}{}{}{}{}{}{}",
+                node->level, node->points_counter,
                 uint8_t(bool(node->children_visibility & 0x01 << 0)),
                 uint8_t(bool(node->children_visibility & 0x01 << 1)),
                 uint8_t(bool(node->children_visibility & 0x01 << 2)),
@@ -1374,19 +1380,30 @@ void GlobalVariables::swapOctrees(){
 
 
 void GlobalVariables::freeOctreesOnCPU(){
-    if(allOctreesRefCounter.size() <= 1){
+    if(allOctreesRefCounter.size <= 1){
         return;
     }
 
-    // https://stackoverflow.com/questions/15662412/how-to-remove-multiple-items-from-unordered-map-while-iterating-over-it
-    for (auto it = allOctreesRefCounter.begin(); it != allOctreesRefCounter.end();) {
-        OctreeNode* node = it->first;
-        uint32_t counter = it->second;
-        if(counter == 0) {
-            MemoryAllocator::delOctreeNode(node);
-            it = allOctreesRefCounter.erase(it);
-        } else {
-            it++;
+    // // https://stackoverflow.com/questions/15662412/how-to-remove-multiple-items-from-unordered-map-while-iterating-over-it
+    // for (auto it = allOctreesRefCounter.begin(); it != allOctreesRefCounter.end();) {
+    //     OctreeNode* node = it->first;
+    //     uint32_t counter = it->second;
+    //     if(counter == 0) {
+    //         MemoryAllocator::delOctreeNode(node);
+    //         it = allOctreesRefCounter.erase(it);
+    //     } else {
+    //         it++;
+    //     }
+    // }
+
+    std::vector<OctreeNode*> to_erase = {};
+    allOctreesRefCounter.mapWithKey([&](OctreeNode* node, uint32_t counter){
+        if(counter == 0){
+            to_erase.push_back(node);            
         }
+    });
+    for(OctreeNode* node : to_erase){
+        allOctreesRefCounter.erase(node);
+        MemoryAllocator::delOctreeNode(node);
     }
 }

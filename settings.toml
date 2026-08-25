@@ -17,19 +17,10 @@ NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE = 200
 # MEASURE_TIMINGS = true
 MEASURE_TIMINGS = false
 
-### The number of threads per block
-### Each node will be given an entire block of thread to render all of its points
-### Default to the maximum number of threads per block
-# PER_NODE_KERNEL_BLOCK_SIZE = 1
-# PER_NODE_KERNEL_BLOCK_SIZE = 256
-# PER_NODE_KERNEL_BLOCK_SIZE = 512
 
-### The number of blocks per node
-### Default to the number of blocks per SM
-# NB_BLOCKS_PER_NODE = 1
-NB_BLOCKS_PER_NODE = 2
-# NB_BLOCKS_PER_NODE = 4
-# NB_BLOCKS_PER_NODE = 8
+### Run the GPU version
+IS_USING_GPU_VERSION = true
+# IS_USING_GPU_VERSION = false
 
 
 #########################################################################
@@ -43,12 +34,14 @@ BATCHES_LIST_SIZE = 1_024
 # MAX_POINTS_PER_BATCHES = 10_000
 # MAX_POINTS_PER_BATCHES = 100_000
 MAX_POINTS_PER_BATCHES = 1_000_000
+# MAX_POINTS_PER_BATCHES = 4_000_000
+# MAX_POINTS_PER_BATCHES = 10_000_000
 
 ### The minimum number of batches that can be loaded from disk at once
 MIN_BATCHES_PER_LOAD = 1
 ### The maximum number of batches that can be loaded from disk at once
 MAX_BATCHES_PER_LOAD = 100
-# MAX_BATCHES_PER_LOAD = 1000
+# MAX_BATCHES_PER_LOAD = 1_000
 
 ### The minimum number of batches that can be loaded to the GPU at once
 ### A batch is loaded as a collection of points on the GPU only for the brute-force comparison
@@ -61,6 +54,7 @@ MAX_BATCHES_PER_GPU_LOAD = 100
 MIN_BATCHES_PER_OCTREE_UPDATE = 1
 ### The maximum number of batches that should be added at the same time in the octree
 # MAX_BATCHES_PER_OCTREE_UPDATE = 1
+# MAX_BATCHES_PER_OCTREE_UPDATE = 2
 MAX_BATCHES_PER_OCTREE_UPDATE = 4
 # MAX_BATCHES_PER_OCTREE_UPDATE = 8
 # MAX_BATCHES_PER_OCTREE_UPDATE = 32
@@ -81,36 +75,90 @@ MAX_POINTS_PER_LEAF = 65_536 # 2^16
 # MAX_POINTS_PER_LEAF = 250_000
 
 ### The size of the LRU updates cache
+# LRU_UPDATES_CACHE_SIZE = 1
 # LRU_UPDATES_CACHE_SIZE = 16
 # LRU_UPDATES_CACHE_SIZE = 32
 # LRU_UPDATES_CACHE_SIZE = 128
-LRU_UPDATES_CACHE_SIZE = 256
-# LRU_UPDATES_CACHE_SIZE = 1024
-# LRU_UPDATES_CACHE_SIZE = 4096
+# LRU_UPDATES_CACHE_SIZE = 256
+# LRU_UPDATES_CACHE_SIZE = 512
+LRU_UPDATES_CACHE_SIZE = 1_024
+# LRU_UPDATES_CACHE_SIZE = 4_096
 
 ### The size of the LRU visibility cache
+# LRU_VISIBILITY_CACHE_SIZE = 1
 # LRU_VISIBILITY_CACHE_SIZE = 16
 # LRU_VISIBILITY_CACHE_SIZE = 32
 # LRU_VISIBILITY_CACHE_SIZE = 128
-# LRU_VISIBILITY_CACHE_SIZE = 256
-LRU_VISIBILITY_CACHE_SIZE = 1024
-# LRU_VISIBILITY_CACHE_SIZE = 2048
-# LRU_VISIBILITY_CACHE_SIZE = 4096
+LRU_VISIBILITY_CACHE_SIZE = 256
+# LRU_VISIBILITY_CACHE_SIZE = 1_024
+# LRU_VISIBILITY_CACHE_SIZE = 2_048
+# LRU_VISIBILITY_CACHE_SIZE = 4_096
 
 ### The size of the LRU cpu cache
 # LRU_CPU_CACHE_SIZE = 1
-LRU_CPU_CACHE_SIZE = 16_384
+# LRU_CPU_CACHE_SIZE = 512
+# LRU_CPU_CACHE_SIZE = 1_024
+# LRU_CPU_CACHE_SIZE = 2_048
+LRU_CPU_CACHE_SIZE = 4_096
+# LRU_CPU_CACHE_SIZE = 8_192
+# LRU_CPU_CACHE_SIZE = 16_384
 
 ### The maximum number of chunks allowed in memory
-NB_ALLOCATED_CHUNKS = 524_288
+# NB_ALLOCABLE_CHUNKS = 16
+# NB_ALLOCABLE_CHUNKS = 4_096
+# NB_ALLOCABLE_CHUNKS = 8_192
+# NB_ALLOCABLE_CHUNKS = 16_384
+# NB_ALLOCABLE_CHUNKS = 32_768
+# NB_ALLOCABLE_CHUNKS = 65_536
+NB_ALLOCABLE_CHUNKS = 80_000
+# NB_ALLOCABLE_CHUNKS = 131_072
+# NB_ALLOCABLE_CHUNKS = 524_288
+
 ### The maximum number of occupancy grids allowed in memory
-# NB_ALLOCATED_GRIDS = 8192
-NB_ALLOCATED_GRIDS = 16_384
-# NB_ALLOCATED_GRIDS = 32_768
+# NB_ALLOCABLE_GRIDS = 256
+# NB_ALLOCABLE_GRIDS = 512
+NB_ALLOCABLE_GRIDS = 1_024
+# NB_ALLOCABLE_GRIDS = 2_048
+# NB_ALLOCABLE_GRIDS = 8_192
+# NB_ALLOCABLE_GRIDS = 16_384
+# NB_ALLOCABLE_GRIDS = 32_768
+
 ### The maximum number of nodes allowed in memory
-# NB_ALLOCATED_NODES = 8192
-# NB_ALLOCATED_NODES = 16_384
-NB_ALLOCATED_NODES = 32_768
+# NB_ALLOCABLE_NODES = 1_024
+# NB_ALLOCABLE_NODES = 2_048
+NB_ALLOCABLE_NODES = 4_096
+# NB_ALLOCABLE_NODES = 8_192
+# NB_ALLOCABLE_NODES = 16_384
+# NB_ALLOCABLE_NODES = 32_768
+
+
+
+#########################################################################
+############################## GPU VERSION ##############################
+#########################################################################
+
+### The initial maximum number of nodes allowed to be created during runtime
+MAX_NB_NODES = 1_000_000
+### The maximum number of nodes that can be exchanged at once between the host and the device
+# MAX_NB_NODES_TO_EXCHANGE = 1
+MAX_NB_NODES_TO_EXCHANGE = 256
+
+### The maximum number of spilling points
+MAX_NB_SPILLING_POINTS = 5_000_000
+### The maximum number of backlog voxels
+MAX_NB_BACKLOG_VOXELS = 5_000_000
+
+### The maximum number of voxels chunk that can be exchanged at once
+MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE = 256
+### The points rendering budget for the visibility cache
+MAX_NB_RENDERED_POINTS = 5_000_000
+### The voxels rendering budget for the visibility cache
+MAX_NB_RENDERED_VOXELS = 5_000_000
+
+### The maximum number of Count/Split operations per update
+# MAX_NB_COUNT_SPLIT_ITERATION = 1
+# MAX_NB_COUNT_SPLIT_ITERATION = 4
+MAX_NB_COUNT_SPLIT_ITERATION = 8
 
 
 
@@ -121,18 +169,28 @@ NB_ALLOCATED_NODES = 32_768
 ### Display the bounding boxes 
 SHOW_BOUNDING_BOXES_AT_STARTUP = false
 # SHOW_BOUNDING_BOXES_AT_STARTUP = true
+
 ### Send points from batches to the GPU as well and display the complete point cloud
 BRUTE_FORCE_RENDERING_AT_STARTUP = false
+
 ### The lod to render, -1 for the dynamic selection
 DEBUG_LOD_TO_RENDER_AT_STARTUP = -1
+# DEBUG_LOD_TO_RENDER_AT_STARTUP = 0
+
 ### The number of points per axis to draw voxels as a cube of points
 VOXELS_POINTS_PER_AXIS_AT_STARTUP = 1
+# VOXELS_POINTS_PER_AXIS_AT_STARTUP = 8
+
 ### The minimum number of pixels to condider a node large
 MIN_PIXEL_SPAN_AT_STARTUP = 64.0
+
 ### Use a debug color for the voxels; the color will correspond to the level of the node
 USE_VOXELS_DEBUG_COLOR_AT_STARTUP = false
+# USE_VOXELS_DEBUG_COLOR_AT_STARTUP = true
+
 ### Activate the automatic free of unused GPU memory
 USE_AUTO_FREE_OLD_OCTREE_ON_GPU_AT_STARTUP = true
+
 ### Use a white color for the visible nodes' bounding boxes
-DIFFERENTIATE_VISIBLE_NODES_AABB_AT_STARTUP = false
-# DIFFERENTIATE_VISIBLE_NODES_AABB_AT_STARTUP = true
+DISPLAY_VISIBLE_NODES_AABB_AT_STARTUP = false
+# DISPLAY_VISIBLE_NODES_AABB_AT_STARTUP = true

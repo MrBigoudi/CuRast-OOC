@@ -8,6 +8,19 @@
 #include <functional>
 
 #include "settings.h"
+#include "kernels/ooc/GpuVersionStructs.h"
+
+
+
+
+
+
+struct HostStorageNode {
+	COctreeNode node;
+	std::vector<CPoint> points;
+	std::vector<CPoint> voxels;
+};
+
 
 ///////////////////////////////////////////////////////////////////////////////
 /////////////////////////// GLOBAL ENUM DECLARATION ///////////////////////////
@@ -31,6 +44,7 @@ enum BatchState {
 	Empty,
 	ToLoad,
 	Loaded,
+	Sent,
 	Inserted,
 	ToRemove
 };
@@ -251,20 +265,22 @@ struct Timing {
 /////////////////////////// LRU CACHING SHENANIGANS ///////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
 
-#include <list>
-
 /// The LRU caches for the nodes
 /// https://www.geeksforgeeks.org/dsa/lru-cache-implementation-using-double-linked-lists/
 struct LRUCache {
+	// TODO: rework as the allocator to avoid useless free on add
 	static inline std::mutex caches_sync_mtx;
 
 	const uint32_t CACHE_SIZE;
-	std::list<IdAABB> cache = {};
-	std::unordered_map<IdAABB, std::list<IdAABB>::iterator> cache_map = {};
+	CDoubleLinkedList<IdAABB> cache = {};
+	CHashMap<IdAABB, CDoubleLinkedList<IdAABB>::Iterator*> cache_map = {};
 	std::string name = "";
 
 	LRUCache(const std::string& name, uint32_t cache_size)
-		: name(name), CACHE_SIZE(cache_size){}
+		: name(name), CACHE_SIZE(cache_size){
+		cache.init();
+		cache_map.init(cache_size);
+	}
 
 	/// Add a node to the cache and return the id of a node if it has been removed from the cache
 	std::optional<IdAABB> add(const IdAABB& aabb_index);
@@ -357,7 +373,7 @@ struct BatchedMemory {
 ////////////////////////// GLOBAL EXTERNAL VARIABLES //////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
 
-typedef std::unordered_map<IdAABB, std::array<IdAABB, 8>> AABBRelationshipMap;
+typedef CHashMap<IdAABB, std::array<IdAABB, 8>> AABBRelationshipMap;
 
 struct GlobalVariables {
 	/// Used to store all the AABBs created during runtime
@@ -375,7 +391,7 @@ struct GlobalVariables {
 	static void swapAABBsMaps();
 	static void swapOctrees();
 
-	static inline std::unordered_map<OctreeNode*, uint32_t> allOctreesRefCounter = {};
+	static inline CHashMap<OctreeNode*, uint32_t> allOctreesRefCounter = {};
 	static void freeOctreesOnCPU();
 
 
@@ -399,7 +415,6 @@ struct GlobalVariables {
 	static inline uint32_t elapsedFrames = 0;
 	static inline uint64_t nbPoints = 0;
 	static inline bool mainLoopIsTerminating = false;
-	static inline std::mutex mainLoopIsTerminatingMtx;
 	/// Counter for the number of octree created
 	static inline uint64_t simLodOctreeCounter = 0;
 

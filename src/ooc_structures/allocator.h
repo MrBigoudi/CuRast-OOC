@@ -1,6 +1,7 @@
 #pragma once
 
 #include "globals.h"
+#include "kernels/ooc/GpuVersionStructs.h"
 
 
 /// A pre-allocated pool of elements
@@ -23,9 +24,9 @@ struct AllocatorPool {
 
     /// The double linked list of pre-allocated elements
     /// The last element of the list should always be available (unless the list is full)
-    std::list<std::shared_ptr<Entry>> elements = {};
+    CDoubleLinkedList<std::shared_ptr<Entry>> elements = {};
     /// A map to easily find the next free entry
-	std::unordered_map<T*, typename std::list<std::shared_ptr<Entry>>::iterator> elements_map = {};
+	CHashMap<T*, typename CDoubleLinkedList<std::shared_ptr<Entry>>::Iterator*> elements_map = {};
 
 
     /// For stats
@@ -42,19 +43,25 @@ struct AllocatorPool {
         allocated_memory = static_cast<T*>(::operator new[](CAPACITY * sizeof(T), std::align_val_t(alignof(T))));
         total_allocated_size = CAPACITY * sizeof(T);
 
+        elements.init();
+        elements_map.init(CAPACITY);
+
         for (uint32_t i = 0; i < CAPACITY; i++) {
             std::shared_ptr<Entry> entry = std::make_shared<Entry>();
 
             entry->value = allocated_memory + i;
 
-            elements.push_front(entry);
+            elements.pushFront(entry);
             elements_map[entry->value] = elements.begin();
         }
     }
 
     ~AllocatorPool() {
-        for(std::shared_ptr<Entry>& entry : elements) {
+        typename CDoubleLinkedList<std::shared_ptr<Entry>>::Iterator* loop_it = elements.begin();
+        while(loop_it){
+            std::shared_ptr<Entry>& entry = loop_it->value;
             if(!entry->is_free){entry->value->~T();}
+            loop_it = loop_it->next;
         }
         ::operator delete[](allocated_memory, std::align_val_t(alignof(T)));
     }
@@ -62,8 +69,8 @@ struct AllocatorPool {
 
     uint64_t getSize() const {
         return total_allocated_size 
-            + elements.size() * sizeof(Entry)
-            + elements_map.size() * (sizeof(T*) + sizeof(typename std::list<std::shared_ptr<Entry>>::iterator))
+            + elements.size * sizeof(Entry)
+            + elements_map.capacity * (sizeof(T*) + sizeof(typename CDoubleLinkedList<std::shared_ptr<Entry>>::Iterator*))
             + sizeof(AllocatorPool<T>);
     }
 
@@ -83,19 +90,17 @@ struct AllocatorPool {
         auto lock = auto_sync ? std::unique_lock<std::mutex>(mtx) : std::unique_lock<std::mutex>();
 
         // Get the first free element of the list
-        std::shared_ptr<Entry> entry = elements.back();
+        typename CDoubleLinkedList<std::shared_ptr<Entry>>::Iterator* list_it = elements.end(); 
+        std::shared_ptr<Entry> entry = list_it->value;
         if(!entry->is_free){
-            println("ERROR: this should not be possible");
+            println("ERROR: the last element of an allocator should be free if the allocator is not full");
             throw(EXIT_FAILURE);
         }
         entry->is_free = false;
 
-        // Update the element position in the list and in the map
-        elements_map.erase(entry->value);
-        elements.pop_back();
-        elements.push_front(entry);
-        elements_map[entry->value] = elements.begin();
-
+        // Update the element position in the list
+        // No need to update the map as the iterator pointer is unchanged
+        elements.moveBegin(list_it);
         new (entry->value) T();
 
         return entry->value;
@@ -117,8 +122,8 @@ struct AllocatorPool {
 
         auto lock = auto_sync ? std::unique_lock<std::mutex>(mtx) : std::unique_lock<std::mutex>();
 
-        auto it = elements_map.find(entry_id);
-        if(it == elements_map.end()){
+        typename CDoubleLinkedList<std::shared_ptr<Entry>>::Iterator** it = elements_map.find(entry_id);
+        if(!it){
             println("ERROR: can't deallocate an unknown `{}' element", typeid(T).name());
             throw(EXIT_FAILURE);
         }
@@ -126,19 +131,17 @@ struct AllocatorPool {
         // Reset the element
         entry_id->~T();
 
-        std::shared_ptr<Entry> real_entry = *(it->second);
-        if(real_entry->is_free){
+        typename CDoubleLinkedList<std::shared_ptr<Entry>>::Iterator* list_it = *it;
+        std::shared_ptr<Entry> entry = list_it->value;
+        if(entry->is_free){
             println("ERROR: double free of `{}' element {}", typeid(T).name(), (void*)entry_id);
             throw(EXIT_FAILURE);
         }
-        real_entry->is_free = true;
+        entry->is_free = true;
 
         // Remove the element and put it in the back
-        auto list_it = it->second;
-        elements_map.erase(it);
-        elements.erase(list_it);
-        elements.push_back(real_entry);
-        elements_map[entry_id] = std::prev(elements.end());
+        // No need to update the map as the iterator pointer is unchanged
+        elements.moveEnd(list_it);
     }
 
     void displayInfo() {
@@ -148,8 +151,12 @@ struct AllocatorPool {
         uint32_t total_deallocation = total_nb_deallocation.load();
 
         uint32_t real_nb_free = 0;
-        for(const std::shared_ptr<Entry>& entry : elements){
+
+        typename CDoubleLinkedList<std::shared_ptr<Entry>>::Iterator* loop_it = elements.begin();
+        while(loop_it){
+            const std::shared_ptr<Entry>& entry = loop_it->value;
             real_nb_free += entry->is_free ? 1 : 0;
+            loop_it = loop_it->next;
         }
 
         println("    - memory consumption: {}", GlobalVariables::formatMemSize(total_allocated_size));
@@ -171,9 +178,9 @@ struct MemoryAllocator {
     static inline std::shared_ptr<AllocatorPool<OctreeNode>> nodesAllocator = nullptr;
 
     static void init() {
-        chunksAllocator = std::make_shared<AllocatorPool<Chunk>>(OocSimLodSettings::NB_ALLOCATED_CHUNKS);
-        gridsAllocator = std::make_shared<AllocatorPool<OccupancyGrid>>(OocSimLodSettings::NB_ALLOCATED_GRIDS);
-        nodesAllocator = std::make_shared<AllocatorPool<OctreeNode>>(OocSimLodSettings::NB_ALLOCATED_NODES);
+        chunksAllocator = std::make_shared<AllocatorPool<Chunk>>(OocSimLodSettings::NB_ALLOCABLE_CHUNKS);
+        gridsAllocator = std::make_shared<AllocatorPool<OccupancyGrid>>(OocSimLodSettings::NB_ALLOCABLE_GRIDS);
+        nodesAllocator = std::make_shared<AllocatorPool<OctreeNode>>(OocSimLodSettings::NB_ALLOCABLE_NODES);
     }
     static uint64_t getSize(){
         return chunksAllocator->getSize() + gridsAllocator->getSize() + nodesAllocator->getSize();
@@ -334,7 +341,7 @@ struct MemoryAllocator {
     static void delOctreeNode(OctreeNode* node){
         if(!node){return;}
 
-        std::vector<Chunk*> chuks_to_delete = {};
+        std::vector<Chunk*> chunks_to_delete = {};
         std::vector<OccupancyGrid*> grids_to_delete = {};
         std::vector<OctreeNode*> nodes_to_delete = {};
 
@@ -345,14 +352,14 @@ struct MemoryAllocator {
             if(cur_node->points){
                 Chunk* cur_chunk = cur_node->points;
                 while(cur_chunk){
-                    chuks_to_delete.push_back(cur_chunk);
+                    chunks_to_delete.push_back(cur_chunk);
                     cur_chunk = cur_chunk->next;
                 }
             }
             if(cur_node->voxels){
                 Chunk* cur_chunk = cur_node->voxels;
                 while(cur_chunk){
-                    chuks_to_delete.push_back(cur_chunk);
+                    chunks_to_delete.push_back(cur_chunk);
                     cur_chunk = cur_chunk->next;
                 }
             }
@@ -369,7 +376,7 @@ struct MemoryAllocator {
         // Delete chunks
         {
             std::lock_guard<std::mutex> lock(chunksAllocator->mtx);
-            std::for_each(chuks_to_delete.begin(), chuks_to_delete.end(), [&](Chunk* cur_chunk){
+            std::for_each(chunks_to_delete.begin(), chunks_to_delete.end(), [&](Chunk* cur_chunk){
                 chunksAllocator->deallocate(cur_chunk, false);
             });
         }

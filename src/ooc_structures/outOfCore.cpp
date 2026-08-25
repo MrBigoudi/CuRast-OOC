@@ -51,13 +51,26 @@ std::string getChunkFilePath(const AABB& aabb, bool is_voxel){
     );
 }
 
+std::string getNodeFilePathV2(const CIdAABB& aabb_index){
+    return format("{}/{}.node", OocSimLodSettings::TEMPORARY_NODE_STORAGE_DIRECTORY, aabb_index);
+}
+std::string getOccupancyFilePathV2(const CIdAABB& aabb_index){
+    return format("{}/{}.grid", OocSimLodSettings::TEMPORARY_NODE_STORAGE_DIRECTORY, aabb_index);
+}
+std::string getChunkFilePathV2(const CIdAABB& aabb_index, bool is_voxel){
+    return format( "{}/{}.{}", 
+        OocSimLodSettings::TEMPORARY_NODE_STORAGE_DIRECTORY, aabb_index,
+        is_voxel ? "voxels" : "points"
+    );
+}
+
 
 
 
 /// A constructor from an existing node
 CPUFallbackCache::Entry::Entry(const OctreeNode* node){
     serializable_node = {};
-    serializable_node.counter = node->counter.load();
+    serializable_node.points_counter = node->counter.load();
     serializable_node.children_ids = node->children_ids;
     serializable_node.aabb_index = node->aabb_index;
 
@@ -68,6 +81,24 @@ CPUFallbackCache::Entry::Entry(const OctreeNode* node){
     }
     if(node->voxels){
         serializable_node.voxels = getChunkFilePath(aabb, true);
+        serializable_voxels = ChunkSerializable(node->voxels);
+    }
+}
+
+/// A constructor from an existing node
+CPUFallbackCache::Entry::Entry(const std::shared_ptr<HostStorageNode> node){
+    serializable_node = {};
+    serializable_node.points_counter = node->node.points_counter;
+    serializable_node.voxels_counter = node->node.voxels_counter;
+    serializable_node.children_ids = node->node.children_ids;
+    serializable_node.aabb_index = node->node.aabb_index;
+
+    if(!node->points.empty()){
+        serializable_node.points = getChunkFilePathV2(serializable_node.aabb_index, false);
+        serializable_points = ChunkSerializable(node->points);
+    }
+    if(!node->voxels.empty()){
+        serializable_node.voxels = getChunkFilePathV2(serializable_node.aabb_index, true);
         serializable_voxels = ChunkSerializable(node->voxels);
     }
 }
@@ -94,12 +125,69 @@ CPUFallbackCache::Entry CPUFallbackCache::Entry::deserialize(const IdAABB& aabb_
     return new_entry;
 }
 
+/// A constructor which is deserialized from an aabb
+std::shared_ptr<HostStorageNode> OctreeNodeSerializable::deserializeV2(const CIdAABB& aabb_index, const std::string& msg){
+    std::shared_ptr<HostStorageNode> new_node = std::make_shared<HostStorageNode>();
+    OctreeNodeSerializable serializable_node = OctreeNodeSerializable::deserialize(getNodeFilePathV2(aabb_index), msg);
+
+    new_node->node.aabb_index = serializable_node.aabb_index;
+    new_node->node.children_ids = serializable_node.children_ids;
+
+    new_node->node.voxels_counter = serializable_node.voxels_counter;
+    new_node->node.points_counter = serializable_node.points_counter;
+
+
+    if(new_node->node.points_counter > 0){
+        ChunkSerializable loaded_points = ChunkSerializable::deserialize(
+            getChunkFilePathV2(aabb_index, false)
+        );
+        new_node->points.reserve(new_node->node.points_counter);
+        for(uint32_t j=0; j<loaded_points.points.size(); j++){
+            for(uint32_t k=0; k<loaded_points.sizes[j]; k++){
+                CPoint cur_point = {};
+                cur_point.position = loaded_points.points[j][k].position;
+                cur_point.setColor(
+                    loaded_points.points[j][k].color[0],
+                    loaded_points.points[j][k].color[1],
+                    loaded_points.points[j][k].color[2],
+                    loaded_points.points[j][k].color[3]
+                );
+                new_node->points.push_back(cur_point);
+            }
+        }
+    }
+
+
+    new_node->node.voxels_counter = serializable_node.voxels_counter;
+    if(new_node->node.voxels_counter > 0){
+        ChunkSerializable loaded_voxels = ChunkSerializable::deserialize(
+            getChunkFilePathV2(aabb_index, true)
+        );
+        new_node->voxels.reserve(new_node->node.voxels_counter);
+        for(uint32_t j=0; j<loaded_voxels.points.size(); j++){
+            for(uint32_t k=0; k<loaded_voxels.sizes[j]; k++){
+                CPoint cur_point = {};
+                cur_point.position = loaded_voxels.points[j][k].position;
+                cur_point.setColor(
+                    loaded_voxels.points[j][k].color[0],
+                    loaded_voxels.points[j][k].color[1],
+                    loaded_voxels.points[j][k].color[2],
+                    loaded_voxels.points[j][k].color[3]
+                );
+                new_node->voxels.push_back(cur_point);
+            }
+        }
+    }
+    
+    return new_node;
+}
+
 /// Builds an octree node from an entry
 OctreeNode* CPUFallbackCache::Entry::toLeafNode() const {
     // OctreeNode* new_node = new OctreeNode(serializable_node.aabb_index);
     OctreeNode* new_node = MemoryAllocator::newOctreeNode(serializable_node.aabb_index);
     
-    new_node->counter.store(serializable_node.counter);
+    new_node->counter.store(serializable_node.points_counter);
     new_node->children_ids = serializable_node.children_ids;
 
     if(serializable_points.has_value()){
@@ -114,39 +202,44 @@ OctreeNode* CPUFallbackCache::Entry::toLeafNode() const {
     return new_node;
 }
 
-CPUFallbackCache::CPUFallbackCache(uint32_t cache_size): CACHE_SIZE(cache_size){}
+CPUFallbackCache::CPUFallbackCache(uint32_t cache_size): CACHE_SIZE(cache_size){
+    cache.init();
+    cache_map.init(cache_size);
+}
 
 const CPUFallbackCache::Entry* CPUFallbackCache::add(const Entry* new_entry){
-    auto it = cache_map.find(new_entry->serializable_node.aabb_index);
+    CDoubleLinkedList<const Entry*>::Iterator** it = cache_map.find(new_entry->serializable_node.aabb_index);
 
     // If the AABB was already in cache, remove its old version from the list
-    if(it != cache_map.end()){
-        cache.erase(it->second);
-        cache_map.erase(it);
-        // delete(*it->second);
+    if(it){
+        CDoubleLinkedList<const Entry*>::Iterator* list_it = *it;
+        cache.erase(list_it);
+        cache_map.erase(list_it->value->serializable_node.aabb_index);
+        delete(list_it);
     }
 
     const Entry* old_entry = nullptr;
 
     // If the cache is full, remove the last node
-    if(cache_map.size() >= CACHE_SIZE){
-        old_entry = cache.back();
-        cache.pop_back();
+    if(cache_map.size >= CACHE_SIZE){
+        old_entry = *cache.back();
+        cache.popBack();
         cache_map.erase(old_entry->serializable_node.aabb_index);
     }
 
     // Insert the new node at the front of the list
-    cache.push_front(new_entry);
+    cache.pushFront(new_entry);
     cache_map[new_entry->serializable_node.aabb_index] = cache.begin();
 
     return old_entry;
 }
 
 const CPUFallbackCache::Entry* CPUFallbackCache::get(const IdAABB& aabb_index) {    
-    auto it = cache_map.find(aabb_index);
+    CDoubleLinkedList<const Entry*>::Iterator** it = cache_map.find(aabb_index);
 
-    if(it != cache_map.end()){
-        const Entry* output = *it->second;
+    if(it){
+        CDoubleLinkedList<const Entry*>::Iterator* list_it = *it;
+        const Entry* output = list_it->value;
         return output;
     }
 
@@ -177,9 +270,32 @@ ChunkSerializable::ChunkSerializable(const Chunk* root_chunk){
     }
 }
 
-void ChunkSerializable::serialize(const std::string& filepath) const {
-    std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
+ChunkSerializable::ChunkSerializable(const std::vector<CPoint>& root_points){
+    uint32_t total_size = root_points.size();
+    if(!total_size){return;}
+    uint32_t nb_chunks = (total_size + OocSimLodSettings::NB_POINTS_PER_CHUNK - 1) / OocSimLodSettings::NB_POINTS_PER_CHUNK;
+    uint32_t last_size = total_size % OocSimLodSettings::NB_POINTS_PER_CHUNK;
+    
+    uint32_t cur_index = 0;
+    for(uint32_t i=0; i<nb_chunks; i++){
+        std::array<Point, OocSimLodSettings::NB_POINTS_PER_CHUNK> new_points = {};
+        sizes.push_back(OocSimLodSettings::NB_POINTS_PER_CHUNK);
+        for(uint32_t j=0; j<OocSimLodSettings::NB_POINTS_PER_CHUNK; j++){
+            if(cur_index >= root_points.size()){break;}
+            new_points[j] = {};
+            new_points[j].position = root_points[cur_index].position;
+            new_points[j].color[0] = uint8_t((root_points[cur_index].color << 24) >> 24);
+            new_points[j].color[1] = uint8_t(((root_points[cur_index].color >> 8) << 24) >> 24);
+            new_points[j].color[2] = uint8_t(((root_points[cur_index].color >> 16) << 24) >> 24);
+            new_points[j].color[3] = uint8_t(root_points[cur_index].color >> 24);
+            cur_index++;
+        }
+        points.push_back(new_points);
+    }
+    sizes.back() = last_size;
+}
 
+void ChunkSerializable::serialize(const std::string& filepath) const {
     // https://www.geeksforgeeks.org/cpp/serialize-and-deserialize-an-object-in-cpp/
     ofstream file(filepath, ios::binary | std::ios::trunc);
     if(!file.is_open()){
@@ -205,8 +321,6 @@ void ChunkSerializable::serialize(const std::string& filepath) const {
 
 ChunkSerializable ChunkSerializable::deserialize(const std::string& filepath){
     ChunkSerializable new_chunk = {};
-
-    std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
 
     // https://www.geeksforgeeks.org/cpp/serialize-and-deserialize-an-object-in-cpp/
     ifstream file(filepath, ios::binary);
@@ -276,7 +390,6 @@ void OctreeNodeSerializable::serialize(const OctreeNode* node){
     // const CPUFallbackCache::Entry* to_store = GlobalVariables::cpuCache->add(new_entry);
 
     // // Store node if removed from cache
-    // std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
     // if(to_store){
     //     const IdAABB& aabb_index = to_store->serializable_node.aabb_index;
     //     const OctreeNodeSerializable& new_node = to_store->serializable_node;
@@ -310,12 +423,24 @@ void OctreeNodeSerializable::serialize(const OctreeNode* node){
     stored_node.serialize(getNodeFilePath(aabb));
 }
 
-void OctreeNodeSerializable::serialize(const std::string& filepath) const {
-    std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
+void OctreeNodeSerializable::serializeV2(const std::shared_ptr<HostStorageNode> node){
+    const CPUFallbackCache::Entry to_store = CPUFallbackCache::Entry(node);
+    const OctreeNodeSerializable& stored_node = to_store.serializable_node;
+    if(to_store.serializable_points.has_value()){
+        const ChunkSerializable& serializable = to_store.serializable_points.value();
+        serializable.serialize(stored_node.points);
+    }
+    if(to_store.serializable_voxels.has_value()){
+        const ChunkSerializable& serializable = to_store.serializable_voxels.value();
+        serializable.serialize(stored_node.voxels);
+    }
+    stored_node.serialize(getNodeFilePathV2(node->node.aabb_index));
+}
 
+void OctreeNodeSerializable::serialize(const std::string& filepath) const {
     std::ofstream file(filepath, std::ios::binary | std::ios::trunc);
 
-    if (!file.is_open()) {
+    if(!file.is_open()){
         println("Failed to open the file {} to serialize an octree node", filepath);
         if(!GlobalVariables::mainLoopIsTerminating){
             throw(EXIT_FAILURE);
@@ -323,8 +448,10 @@ void OctreeNodeSerializable::serialize(const std::string& filepath) const {
     }
 
     // Write fixed-size members
-    file.write(reinterpret_cast<const char*>(&counter), sizeof(counter));
+    file.write(reinterpret_cast<const char*>(&aabb_index), sizeof(aabb_index));
     file.write(reinterpret_cast<const char*>(&children_ids), sizeof(children_ids));
+    file.write(reinterpret_cast<const char*>(&points_counter), sizeof(points_counter));
+    file.write(reinterpret_cast<const char*>(&voxels_counter), sizeof(voxels_counter));
 
     // Write points string
     uint64_t points_size = points.size();
@@ -336,29 +463,26 @@ void OctreeNodeSerializable::serialize(const std::string& filepath) const {
     file.write(reinterpret_cast<const char*>(&voxels_size), sizeof(voxels_size));
     file.write(voxels.data(), voxels_size);
 
-    // Write aabb
-    file.write(reinterpret_cast<const char*>(&aabb_index), sizeof(aabb_index));
-
     file.close();
 }
 
-OctreeNodeSerializable OctreeNodeSerializable::deserialize(const std::string& filepath) {
+OctreeNodeSerializable OctreeNodeSerializable::deserialize(const std::string& filepath, const std::string& msg) {
     OctreeNodeSerializable new_node = {};
 
-    std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
-    
     std::ifstream file(filepath, std::ios::binary);
 
-    if (!file.is_open()) {
-        println("Failed to open the file {} to deserialize an octree node", filepath);
+    if(!file.is_open()){
+        println("Failed to open the file {} to deserialize an octree node: {}", filepath, msg);
         if(!GlobalVariables::mainLoopIsTerminating){
             throw(EXIT_FAILURE);
         }
     }
 
     // Read fixed-size members
-    file.read(reinterpret_cast<char*>(&new_node.counter), sizeof(new_node.counter));
+    file.read(reinterpret_cast<char*>(&new_node.aabb_index), sizeof(new_node.aabb_index));
     file.read(reinterpret_cast<char*>(&new_node.children_ids), sizeof(new_node.children_ids));
+    file.read(reinterpret_cast<char*>(&new_node.points_counter), sizeof(new_node.points_counter));
+    file.read(reinterpret_cast<char*>(&new_node.voxels_counter), sizeof(new_node.voxels_counter));
 
     // Read points string
     uint64_t points_size = 0;
@@ -372,9 +496,7 @@ OctreeNodeSerializable OctreeNodeSerializable::deserialize(const std::string& fi
     new_node.voxels.resize(voxels_size);
     file.read(new_node.voxels.data(), voxels_size);
 
-    // Read aabb
-    file.read(reinterpret_cast<char*>(&new_node.aabb_index), sizeof(aabb_index));
-
+    file.close();
     return new_node;
 }
 
@@ -396,7 +518,6 @@ OctreeNode* OctreeNodeSerializable::toOctreeNode(const IdAABB& root_aabb_index){
     // OctreeNode* root = entry->toLeafNode();
 
     // // Store node if removed from cache
-    // std::lock_guard<std::mutex> lock(GlobalVariables::mainLoopIsTerminatingMtx);
     // if(to_store){
     //     const IdAABB& aabb_index = to_store->serializable_node.aabb_index;
     //     const OctreeNodeSerializable& new_node = to_store->serializable_node;

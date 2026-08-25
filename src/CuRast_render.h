@@ -8,6 +8,7 @@
 #include "TextureManager.h"
 
 #include "ooc_structures/globals.h"
+#include "ooc_structures/gpuVersion.h"
 
 using namespace std;
 
@@ -63,6 +64,7 @@ void saveScreenshot(RenderTarget target, View view, CUdeviceptr cptr_ssaoShadebu
 	bgRgba[3] = 255;
 
 	void* args[] = {
+		&target,
 		&cptr_screenshot,
 		&cptr_ssaoShadebuffer,
 		&CuRastSettings::enableEDL,
@@ -88,6 +90,83 @@ void saveScreenshot(RenderTarget target, View view, CUdeviceptr cptr_ssaoShadebu
 	}else{
 		path = *CuRastSettings::requestScreenshot;
 	}
+	println("Screenshot path: {}", path);
+
+	int stride_in_bytes = target.width * 4;
+	stbi_flip_vertically_on_write(1);
+	stbi_write_png(path.c_str(), target.width, target.height, 4, screenshot_host, stride_in_bytes);
+
+	MemoryManager::free(cptr_screenshot);
+	cuMemFreeHost(screenshot_host);
+}
+
+void saveScreenshotDepth(RenderTarget target, CudaModularProgram* prog_resolve){
+
+	uint64_t numPixels = target.width * target.height;
+	CUdeviceptr cptr_screenshot = MemoryManager::alloc(numPixels * 4, "screenshot");
+
+	void* args[] = {
+		&target,
+		&cptr_screenshot
+	};
+	prog_resolve->launch2D("kernel_resolve_depthbuffer_to_screenshot", args, target.width, target.height);
+
+	void* screenshot_host = nullptr;
+	cuMemAllocHost(&screenshot_host, 4 * numPixels);
+	cuMemcpyDtoH(screenshot_host, cptr_screenshot, 4 * numPixels);
+
+	string path = "";
+	if(*CuRastSettings::requestScreenshot == ""){
+		for(int i = 0; i <= 10'000'000; i++){
+			fs::create_directories("./screenshots");
+			path = format("./screenshots/depth_screenshot_{}.png", i);
+
+			if(!fs::exists(path)) break;
+		}
+	} else {
+		size_t lastindex = (*CuRastSettings::requestScreenshot).find_last_of("."); 
+		string rawname = (*CuRastSettings::requestScreenshot).substr(0, lastindex);
+		path = format("{}_depth.png", rawname);
+	}
+	println("Screenshot path: {}", path);
+
+	int stride_in_bytes = target.width * 4;
+	stbi_flip_vertically_on_write(1);
+	stbi_write_png(path.c_str(), target.width, target.height, 4, screenshot_host, stride_in_bytes);
+
+	MemoryManager::free(cptr_screenshot);
+	cuMemFreeHost(screenshot_host);
+}
+
+void saveScreenshotLod(RenderTarget target, CudaModularProgram* prog_resolve){
+
+	uint64_t numPixels = target.width * target.height;
+	CUdeviceptr cptr_screenshot = MemoryManager::alloc(numPixels * 4, "screenshot");
+
+	void* args[] = {
+		&target,
+		&cptr_screenshot
+	};
+	prog_resolve->launch2D("kernel_resolve_lod_to_screenshot", args, target.width, target.height);
+
+	void* screenshot_host = nullptr;
+	cuMemAllocHost(&screenshot_host, 4 * numPixels);
+	cuMemcpyDtoH(screenshot_host, cptr_screenshot, 4 * numPixels);
+
+	string path = "";
+	if(*CuRastSettings::requestScreenshot == ""){
+		for(int i = 0; i <= 10'000'000; i++){
+			fs::create_directories("./screenshots");
+			path = format("./screenshots/lod_screenshot_{}.png", i);
+
+			if(!fs::exists(path)) break;
+		}
+	} else {
+		size_t lastindex = (*CuRastSettings::requestScreenshot).find_last_of("."); 
+		string rawname = (*CuRastSettings::requestScreenshot).substr(0, lastindex);
+		path = format("{}_lod.png", rawname);
+	}
+	println("Screenshot path: {}", path);
 
 	int stride_in_bytes = target.width * 4;
 	stbi_flip_vertically_on_write(1);
@@ -151,11 +230,11 @@ void drawOctree(Scene* scene, View view, RenderTarget& target){
 		cfo.voxels_nb_points_per_axis = uint32_t(CuRastSettings::voxelsPointsPerAxis);
 		cfo.min_pixel_span = CuRastSettings::minPixelSpan;
 		cfo.use_voxels_debug_color = CuRastSettings::voxelsDebugColor;
-		cfo.nb_blocks_per_node = OocSimLodSettings::NB_BLOCKS_PER_NODE;
+		cfo.nb_blocks_per_node = 1;
         
 		OptionalLaunchSettings launch_settings = {
-			.gridsize = OocSimLodSettings::NB_BLOCKS_PER_NODE * cfo.num_nodes,
-			.blocksize = OocSimLodSettings::PER_NODE_KERNEL_BLOCK_SIZE
+			.gridsize = cfo.num_nodes,
+			.blocksize = 1024
 		};
 
 		prog->launch("kernel_visibilityPass", {&cfo, &target}, launch_settings);
@@ -176,10 +255,10 @@ void drawOctreeUnified(Scene* scene, View view, RenderTarget& target, CFullOctre
 	cfo.min_pixel_span = CuRastSettings::minPixelSpan;
 	cfo.use_voxels_debug_color = CuRastSettings::voxelsDebugColor;
         
-	uint32_t numThreads = cfo.num_nodes * OocSimLodSettings::PER_NODE_KERNEL_BLOCK_SIZE;
+	uint32_t numThreads = cfo.num_nodes * 1024;
 	OptionalLaunchSettings launch_settings = {
 		.gridsize = cfo.num_nodes,
-		.blocksize = OocSimLodSettings::PER_NODE_KERNEL_BLOCK_SIZE
+		.blocksize = 1024
 	};
 
 	prog->launch("kernel_visibilityPass", {&cfo, &target}, launch_settings);
@@ -686,19 +765,98 @@ void CuRast::draw(Scene* scene, vector<View> views){
 			cfo = unifiedOctreeBuilder.build();
 		}
 
-		if(CuRastSettings::bruteForceRendering){
-			drawPoints(scene, view, target);
+		if(OocSimLodSettings::IS_USING_GPU_VERSION){
+			GpuVersion::renderOctree(target);
 		} else {
-			if(CuRastSettings::useUnifiedMemory){ drawOctreeUnified(scene, view, target, cfo); } 
-			else { drawOctree(scene, view, target); }
+			if(CuRastSettings::bruteForceRendering){
+				drawPoints(scene, view, target);
+			} else {
+				if(CuRastSettings::useUnifiedMemory){ drawOctreeUnified(scene, view, target, cfo); } 
+				else { drawOctree(scene, view, target); }
+			}
+			if(CuRastSettings::showBoundingBoxes){
+				if(CuRastSettings::useUnifiedMemory){ drawOctreeAABBUnified(scene, view, target, cfo); } 
+				else { drawOctreeAABB(scene, view, target); }
+			}
 		}
-		if(CuRastSettings::showBoundingBoxes){
-			if(CuRastSettings::useUnifiedMemory){ drawOctreeAABBUnified(scene, view, target, cfo); } 
-			else { drawOctreeAABB(scene, view, target); }
-		}
+		
 
 
-		{
+
+		if(OocSimLodSettings::IS_USING_GPU_VERSION){
+			dvlist.push_back({"Total allocated size:    ", GlobalVariables::formatMemSize(GpuVersion::totalAllocatedMemory)});
+			dvlist.push_back({"Current values:          ", std::string(42, ' ')});
+			dvlist.push_back({"    # current nodes      ", format("{:40L}  ", GpuVersionUI::currentNbNodes)});
+			dvlist.push_back({"    # current chunks     ", format("{:40L}  ", GpuVersionUI::currentNbChunks)});
+			dvlist.push_back({"    # current grids      ", format("{:40L}  ", GpuVersionUI::currentNbGrids)});
+			dvlist.push_back({"    # current points     ", format("{:40L}  ", GpuVersionUI::currentNbPoints)});
+			dvlist.push_back({"    # current voxels     ", format("{:40L}  ", GpuVersionUI::currentNbVoxels)});
+			dvlist.push_back({"    # current vis nodes  ", format("{:40L}  ", GpuVersionUI::visNbNodes)});
+			dvlist.push_back({"    # current vis points ", format("{:40L}  ", GpuVersionUI::visNbPoints)});
+			dvlist.push_back({"    # current vis voxels ", format("{:40L}  ", GpuVersionUI::visNbVoxels)});
+			dvlist.push_back({"Current update:          ", format("{:40L}  ", GpuVersionUI::nbTotalUpdates)});
+			dvlist.push_back({"    # new points         ", format("{:40L}  ", GpuVersionUI::nbNewPointsThisUpdate)});
+			dvlist.push_back({"    # new voxels         ", format("{:40L}  ", GpuVersionUI::nbNewVoxelsThisUpdate)});
+			dvlist.push_back({"    # new chunks         ", format("{:40L}  ", GpuVersionUI::nbNewChunksThisUpdate)});
+			dvlist.push_back({"    # new grids          ", format("{:40L}  ", GpuVersionUI::nbNewGridsThisUpdate)});
+			dvlist.push_back({"    # new nodes          ", format("{:40L}  ", GpuVersionUI::nbNewNodesThisUpdate)});
+			dvlist.push_back({"    # del chunks         ", format("{:40L}  ", GpuVersionUI::nbDeletedChunksThisUpdate)});
+			dvlist.push_back({"    # del grids          ", format("{:40L}  ", GpuVersionUI::nbDeletedGridsThisUpdate)});
+			dvlist.push_back({"    # del nodes          ", format("{:40L}  ", GpuVersionUI::nbDeletedNodesThisUpdate)});
+			dvlist.push_back({"    # loaded nodes       ", format("{:40L}  ", GpuVersionUI::nbLoadedNodesThisUpdate)});
+			dvlist.push_back({"    # stored nodes       ", format("{:40L}  ", GpuVersionUI::nbStoredNodesThisUpdate)});
+			dvlist.push_back({"    # split nodes        ", format("{:40L}  ", GpuVersionUI::nbSplitNodesThisUpdate)});
+			dvlist.push_back({"Total values:            ", std::string(42, ' ')});
+			dvlist.push_back({"    # total points       ", format("{:40L}  ", GpuVersionUI::nbTotalPoints)});
+			dvlist.push_back({"    # total voxels       ", format("{:40L}  ", GpuVersionUI::nbTotalVoxels)});
+			dvlist.push_back({"    # total new chunks   ", format("{:40L}  ", GpuVersionUI::nbTotalNewChunks)});
+			dvlist.push_back({"    # total new grids    ", format("{:40L}  ", GpuVersionUI::nbTotalNewGrids)});
+			dvlist.push_back({"    # total new nodes    ", format("{:40L}  ", GpuVersionUI::nbTotalNewNodes)});
+			dvlist.push_back({"    # total del chunks   ", format("{:40L}  ", GpuVersionUI::nbTotalDeletedChunks)});
+			dvlist.push_back({"    # total del grids    ", format("{:40L}  ", GpuVersionUI::nbTotalDeletedGrids)});
+			dvlist.push_back({"    # total del nodes    ", format("{:40L}  ", GpuVersionUI::nbTotalDeletedNodes)});
+			dvlist.push_back({"    # total loaded nodes ", format("{:40L}  ", GpuVersionUI::nbTotalLoadedNodes)});
+			dvlist.push_back({"    # total stored nodes ", format("{:40L}  ", GpuVersionUI::nbTotalStoredNodes)});
+			dvlist.push_back({"    # total split nodes  ", format("{:40L}  ", GpuVersionUI::nbTotalSplitNodes)});
+			dvlist.push_back({"Flow rates (per second): ", std::string(42, ' ')});
+			dvlist.push_back({"    # updates            ", format("max: {:7L}, min: {:7L}, avg: {:7L}  ", 
+				GpuVersionUI::maxNbUpdatesPerSecond, GpuVersionUI::minNbUpdatesPerSecond, GpuVersionUI::avgNbUpdatesPerSecond
+			)});
+			dvlist.push_back({"Flow rates (per update): ", std::string(42, ' ')});
+			dvlist.push_back({"    # new points         ", format("max: {:7L}, min: {:7L}, avg: {:7L}  ", 
+				GpuVersionUI::maxNbNewPointsPerUpdate, GpuVersionUI::minNbNewPointsPerUpdate, GpuVersionUI::avgNbNewPointsPerUpdate
+			)});
+			dvlist.push_back({"    # new voxels         ", format("max: {:7L}, min: {:7L}, avg: {:7L}  ", 
+				GpuVersionUI::maxNbNewVoxelsPerUpdate, GpuVersionUI::minNbNewVoxelsPerUpdate, GpuVersionUI::avgNbNewVoxelsPerUpdate
+			)});
+			dvlist.push_back({"    # new chunks         ", format("max: {:7L}, min: {:7L}, avg: {:7L}  ", 
+				GpuVersionUI::maxNbNewChunksPerUpdate, GpuVersionUI::minNbNewChunksPerUpdate, GpuVersionUI::avgNbNewChunksPerUpdate
+			)});
+			dvlist.push_back({"    # new grids          ", format("max: {:7L}, min: {:7L}, avg: {:7L}  ", 
+				GpuVersionUI::maxNbNewGridsPerUpdate, GpuVersionUI::minNbNewGridsPerUpdate, GpuVersionUI::avgNbNewGridsPerUpdate
+			)});
+			dvlist.push_back({"    # new nodes          ", format("max: {:7L}, min: {:7L}, avg: {:7L}  ", 
+				GpuVersionUI::maxNbNewNodesPerUpdate, GpuVersionUI::minNbNewNodesPerUpdate, GpuVersionUI::avgNbNewNodesPerUpdate
+			)});
+			dvlist.push_back({"    # del chunks         ", format("max: {:7L}, min: {:7L}, avg: {:7L}  ", 
+				GpuVersionUI::maxNbDeletedChunksPerUpdate, GpuVersionUI::minNbDeletedChunksPerUpdate, GpuVersionUI::avgNbDeletedChunksPerUpdate
+			)});
+			dvlist.push_back({"    # del grids          ", format("max: {:7L}, min: {:7L}, avg: {:7L}  ", 
+				GpuVersionUI::maxNbDeletedGridsPerUpdate, GpuVersionUI::minNbDeletedGridsPerUpdate, GpuVersionUI::avgNbDeletedGridsPerUpdate
+			)});
+			dvlist.push_back({"    # del nodes          ", format("max: {:7L}, min: {:7L}, avg: {:7L}  ", 
+				GpuVersionUI::maxNbDeletedNodesPerUpdate, GpuVersionUI::minNbDeletedNodesPerUpdate, GpuVersionUI::avgNbDeletedNodesPerUpdate
+			)});
+			dvlist.push_back({"    # loaded nodes       ", format("max: {:7L}, min: {:7L}, avg: {:7L}  ", 
+				GpuVersionUI::maxNbLoadedNodesPerUpdate, GpuVersionUI::minNbLoadedNodesPerUpdate, GpuVersionUI::avgNbLoadedNodesPerUpdate
+			)});
+			dvlist.push_back({"    # stored nodes       ", format("max: {:7L}, min: {:7L}, avg: {:7L}  ", 
+				GpuVersionUI::maxNbStoredNodesPerUpdate, GpuVersionUI::minNbStoredNodesPerUpdate, GpuVersionUI::avgNbStoredNodesPerUpdate
+			)});
+			dvlist.push_back({"    # split nodes        ", format("max: {:7L}, min: {:7L}, avg: {:7L}  ", 
+				GpuVersionUI::maxNbSplitNodesPerUpdate, GpuVersionUI::minNbSplitNodesPerUpdate, GpuVersionUI::avgNbSplitNodesPerUpdate
+			)});
+		} else {
 			// DEBUG
 			std::vector<SNCPoints*> batches = {};
 			SNCOctree* octree = nullptr;
@@ -742,17 +900,17 @@ void CuRast::draw(Scene* scene, vector<View> views){
 			// Octree info
 			if(octree){
 				dvlist.push_back({format("octree '{}' ", octree->name), ""});
-				dvlist.push_back({"     - # nodes           ", format("{:30L}", octree->nb_nodes)});
-				dvlist.push_back({"     - # chunks          ", format("{:30L}", octree->nb_chunks)});
-				dvlist.push_back({"     - # voxels          ", format("{:30L}", octree->nb_voxels)});
-				dvlist.push_back({"     - # points          ", format("{:30L}", octree->nb_points)});
+				dvlist.push_back({"     - # nodes           ", format("{:40L}", octree->nb_nodes)});
+				dvlist.push_back({"     - # chunks          ", format("{:40L}", octree->nb_chunks)});
+				dvlist.push_back({"     - # voxels          ", format("{:40L}", octree->nb_voxels)});
+				dvlist.push_back({"     - # points          ", format("{:40L}", octree->nb_points)});
 				dvlist.push_back({"     - GPU memory usage  ", GlobalVariables::formatMemSize(octree->getGpuMemoryUsage(), 25)});
 			}
 
 			// Batches info
-			dvlist.push_back({"\n# total batches          ", format("{:30L}", nb_batches)});
-			dvlist.push_back({"# total points           ", format("{:30L}", GlobalVariables::nbPoints)});
-			dvlist.push_back({"# total nodes            ", format("{:30L}", GlobalVariables::allAABBs.size())});
+			dvlist.push_back({"\n# total batches          ", format("{:40L}", nb_batches)});
+			dvlist.push_back({"# total points           ", format("{:40L}", GlobalVariables::nbPoints)});
+			dvlist.push_back({"# total nodes            ", format("{:40L}", GlobalVariables::allAABBs.size())});
 			dvlist.push_back({"batches GPU memory usage ", GlobalVariables::formatMemSize(points_gpu_memory, 25)});
 			dvlist.push_back({"total GPU memory usage   ", GlobalVariables::formatMemSize(total_gpu_memory, 25)});
 			
@@ -817,6 +975,8 @@ void CuRast::draw(Scene* scene, vector<View> views){
 
 		if(CuRastSettings::requestScreenshot){
 			saveScreenshot(target, view, cvm_ssaoShadebuffer->cptr, prog);
+			saveScreenshotDepth(target, prog);
+			saveScreenshotLod(target, prog);
 		}
 
 		unmapCudaVk(mappings);

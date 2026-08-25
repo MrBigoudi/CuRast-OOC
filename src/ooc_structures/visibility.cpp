@@ -36,7 +36,8 @@ Frustum::Frustum(const mat4& view_proj){
     planes[2] = Plane(m_03 + m_01, m_13 + m_11, m_23 + m_21, m_33 + m_31);
     planes[3] = Plane(m_03 - m_01, m_13 - m_11, m_23 - m_21, m_33 - m_31);
     planes[4] = Plane(m_03 - m_02, m_13 - m_12, m_23 - m_22, m_33 - m_32);
-    planes[5] = Plane(m_03 + m_02, m_13 + m_12, m_23 + m_22, m_33 + m_32);
+    // planes[5] = Plane(m_03 + m_02, m_13 + m_12, m_23 + m_22, m_33 + m_32);
+    planes[5] = Plane(m_02, m_12, m_22, m_32); // Near (z >= 0, Vulkan)
 }
 
 bool Frustum::doesIntersect(const AABB& aabb) const {
@@ -52,6 +53,27 @@ bool Frustum::doesIntersect(const AABB& aabb) const {
 	}
 
 	return true;
+}
+
+bool Frustum::doesIntersect(const CAABB& aabb, const vec3& camera_pos) const {
+    if(camera_pos.x >= aabb.mins.x && camera_pos.x <= aabb.maxs.x &&
+       camera_pos.y >= aabb.mins.y && camera_pos.y <= aabb.maxs.y &&
+       camera_pos.z >= aabb.mins.z && camera_pos.z <= aabb.maxs.z){
+        return true;
+    }
+
+    for(uint32_t i = 0; i < 6; i++){
+        vec3 vector = {
+            planes[i].normal.x > 0.0 ? aabb.maxs.x : aabb.mins.x,
+            planes[i].normal.y > 0.0 ? aabb.maxs.y : aabb.mins.y,
+            planes[i].normal.z > 0.0 ? aabb.maxs.z : aabb.mins.z
+        };
+
+        float d = glm::dot(planes[i].normal, vector) + planes[i].constant;
+        if(d < 0){return false;}
+    }
+
+    return true;
 }
 
 void Frustum::display() const {
@@ -71,19 +93,19 @@ std::unordered_set<IdAABB> Visibility::getVisibleNodes(
     std::shared_ptr<AABBRelationshipMap> relationship_map_ref
 ){
     std::unordered_set<IdAABB> res = {};
-    res.reserve(relationship_map_ref->size());
+    res.reserve(relationship_map_ref->size);
 
     // println("before get nodes: vis cache size = {}, updates cache size = {}, total nodes = {}, nb_nodes = {}", 
     //     GlobalVariables::visibilityCache->getSize(), GlobalVariables::updatesCache->getSize(), 
     //     relationship_map_ref->size(), res.size()
     // );
 
-    for(const auto& [aabb_index, children] : *relationship_map_ref){
+    relationship_map_ref->mapWithKey([&](IdAABB aabb_index, std::array<IdAABB, 8>& children){
         const AABB& aabb = GlobalVariables::getAABB(aabb_index);
         if(frustum.doesIntersect(aabb)){
             res.insert(aabb_index);
         }
-    }
+    });
 
     // println("after get nodes: vis cache size = {}, updates cache size = {}, total nodes = {}, nb_nodes = {}\n", 
     //     GlobalVariables::visibilityCache->getSize(), GlobalVariables::updatesCache->getSize(), 
@@ -136,7 +158,7 @@ std::vector<IdAABB> Visibility::orderNodes(
             println("WTFF");
 
             println("Relationship map: ");
-            for(const auto& [id, children] : *relationship_map_ref){
+            relationship_map_ref->mapWithKey([&](IdAABB id, std::array<IdAABB, 8>& children){
                 println("    - [{}]: children: [{}, {}, {}, {}, {}, {}, {}, {}]",
                     id,
                     children[0] == INVALID_ID ? -1 : int32_t(children[0]),
@@ -148,7 +170,7 @@ std::vector<IdAABB> Visibility::orderNodes(
                     children[6] == INVALID_ID ? -1 : int32_t(children[6]),
                     children[7] == INVALID_ID ? -1 : int32_t(children[7])
                 );
-            }
+            });
             println("\n\n\n");
 
             println("All AABBs");
@@ -243,7 +265,7 @@ void Visibility::fillVisibilityCache(
             cur_node->display(id, level, true);
 
             println("Relationship map: ");
-            for(const auto& [id, children] : *relationship_map_ref){
+            relationship_map_ref->mapWithKey([&](IdAABB id, std::array<IdAABB, 8>& children){
                 println("    - [{}]: children: [{}, {}, {}, {}, {}, {}, {}, {}]",
                     id,
                     children[0] == INVALID_ID ? -1 : int32_t(children[0]),
@@ -255,7 +277,7 @@ void Visibility::fillVisibilityCache(
                     children[6] == INVALID_ID ? -1 : int32_t(children[6]),
                     children[7] == INVALID_ID ? -1 : int32_t(children[7])
                 );
-            }
+            });
             println("\n\n\n");
 
             println("All AABBs");
@@ -342,8 +364,8 @@ bool Visibility::updateVisibilityCache(
 
     std::unordered_set<IdAABB> visible_nodes = getVisibleNodes(frustum, relationship_map_ref);
 
-    vec3 cameraPos = vec3(glm::inverse(view) * vec4(0.0f, 0.0f, 0.0f, 1.0f));
-    std::vector<IdAABB> ordered_nodes = orderNodes(octree_ref->aabb_index, visible_nodes, cameraPos, relationship_map_ref);
+    vec3 camera_pos = vec3(glm::inverse(view) * vec4(0.0f, 0.0f, 0.0f, 1.0f));
+    std::vector<IdAABB> ordered_nodes = orderNodes(octree_ref->aabb_index, visible_nodes, camera_pos, relationship_map_ref);
 
     static std::vector<IdAABB> oldOrderedNodes = {};
     if(ordered_nodes != oldOrderedNodes){

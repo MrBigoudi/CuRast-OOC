@@ -231,13 +231,13 @@ std::optional<CUdeviceptr> allocateChunks(
 		}
 
 		for(uint32_t j=0; j<tmp->size; j++){
-			CPoint tmp_point = {
-				.position = cur_chunk->points[j].position, 
-				.color = (uint32_t)cur_chunk->points[j].color[0]
-					| ((uint32_t)cur_chunk->points[j].color[1] << 8)
-					| ((uint32_t)cur_chunk->points[j].color[2] << 16)
-					| (0xFFu << 24)
-			};
+			CPoint tmp_point = {};
+			tmp_point.position = cur_chunk->points[j].position;
+			tmp_point.color = (uint32_t)cur_chunk->points[j].color[0]
+				| ((uint32_t)cur_chunk->points[j].color[1] << 8)
+				| ((uint32_t)cur_chunk->points[j].color[2] << 16)
+				| (0xFFu << 24)
+			;
 			tmp->points[j] = tmp_point;
 		}
 	};
@@ -313,15 +313,11 @@ void createCudaMemory(CuRast* editor, CUcontext* context,
 		new_node->occupancy = nullptr;
 		new_node->aabb_index = cur_node->aabb_index;
 
-		new_node->counter = cur_node->counter.load();
-		new_node->children_ids = cur_node->children_ids;
+		new_node->points_counter = cur_node->counter.load();
+		new_node->children_ids = uint32_t(cur_node->children_ids);
+		// new_node->children_ids = cur_node->children_ids;
 		new_node->children_visibility = cur_node->children_visibility;
 		new_node->level = level;
-
-		new_node->updated = cur_node->updated;
-		new_node->is_large = cur_node->is_large;
-		new_node->is_visible = cur_node->is_visible;
-		new_node->is_cut = cur_node->is_cut;
 
 		if(level > max_lod_level){
 			max_lod_level = level;
@@ -342,7 +338,7 @@ void createCudaMemory(CuRast* editor, CUcontext* context,
 
 	octree->max_lod_level = max_lod_level;
 
-	octree->nb_aabbs = relationship_map_ref->size();
+	octree->nb_aabbs = relationship_map_ref->size;
 
 	// Copy arrays of pointers to GPU
 	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
@@ -422,6 +418,7 @@ void addPointBatches(){
 
 	if(!GlobalVariables::mainOctree){
 		GlobalVariables::aabbRelationshipMap = std::make_shared<AABBRelationshipMap>();
+		GlobalVariables::aabbRelationshipMap->init(1024);
 
 		std::shared_ptr<Timing> timing = Timing::addTiming("init octree", true);
 		std::lock_guard<std::mutex> lock_send(GlobalVariables::isUpdatingMtx);

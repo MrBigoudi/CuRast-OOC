@@ -1,30 +1,45 @@
 # TODO list
 
+
+- Make things faster:
+    - Remove spilled points + do not load points, just the counter (this will reduce bandwith + memory on device side)
+    - Better handling for voxels as well ?? maybe a compressed octree (building DAGs on CPU side in the background) ?
+
+    - Make the "exchangedVoxels / Points" unrelated to the number of nodes that can be exchanged; instead just have a fixed number of exchangeable chunks (this might reduce the sizes of the structures, allowing for more nbExchangeable nodes)
+
+    - Find better launching values
+
+
+- Aim for 100M points / seconds ??
+
+
+
+
 ## Next steps (in priority order)
 
-- Only send new AABBs to the GPU (send deltas more generally, is this worth it ?)
-- Fix the huge CPU cache
+- Use cuda graphs to combine repetitive kernel launches
+- Check all globalVariables and their initial values (rename some, destroy some, ...)
 - Better voxel rendering
-- Update the CpyOctree before updating the Octree to include visible nodes and make it a bit bigger ?
+
+
 
 ## Coding part
 
-- Delay load / store of nodes as waiting for loading and storing won't be possible on GPU side
 - Clean the code + improve comments
-- Automatically fetch CPU / GPU capacities to set the constants
 - Fix Vulkan segfault on quit
 - supress warnings
-- Replace list with fixed size array to prepare for GPU side
+
 
 
 ## Research part
 
-- Find a way to only send the delta
 - Find which node to store (is LRU best strategy)
 - Find a way to compress stored nodes
 - Improve Color-filtering
 - Find a way to load closest batches first
 - Improve on linked-list approach ?
+
+
 
 
 ## Report part

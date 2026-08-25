@@ -21,31 +21,40 @@ T init_field(const std::string& toml_entry, const T default_value) {
 
 /// Initialises the settings
 void OocSimLodSettings::init(){
+    /// Device properties
+    CUdevice device;
+    cuCtxGetDevice(&device);
+    int value = 0;
+    CURuntime::assertCudaSuccess(cuDeviceGetAttribute(&value, CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT, device));
+    DEVICE_ATTRIBUTE_NB_SM = (uint32_t)value;
+    CURuntime::assertCudaSuccess(cuDeviceGetAttribute(&value, CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_MULTIPROCESSOR, device));
+    DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM = (uint32_t)value;
+    CURuntime::assertCudaSuccess(cuDeviceGetAttribute(&value, CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK, device));
+    DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK = (uint32_t)value;
+    CURuntime::assertCudaSuccess(cuDeviceGetAttribute(&value, CU_DEVICE_ATTRIBUTE_MAX_BLOCKS_PER_MULTIPROCESSOR, device));
+    DEVICE_ATTRIBUTE_MAX_BLOCKS_PER_SM = (uint32_t)value;
+    CURuntime::assertCudaSuccess(cuDeviceGetAttribute(&value, CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X, device));
+    DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X = (uint32_t)value;
+    CURuntime::assertCudaSuccess(cuDeviceGetAttribute(&value, CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Y, device));
+    DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Y = (uint32_t)value;
+    CURuntime::assertCudaSuccess(cuDeviceGetAttribute(&value, CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Z, device));
+    DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Z = (uint32_t)value;
+    CURuntime::assertCudaSuccess(cuDeviceGetAttribute(&value, CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_X, device));
+    DEVICE_ATTRIBUTE_MAX_GRID_DIM_X = (uint32_t)value;
+    CURuntime::assertCudaSuccess(cuDeviceGetAttribute(&value, CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y, device));
+    DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y = (uint32_t)value;
+    CURuntime::assertCudaSuccess(cuDeviceGetAttribute(&value, CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z, device));
+    DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z = (uint32_t)value;
+    DEVICE_ATTRIBUTE_MAX_GRID_SIZE_FOR_MAX_BLOCK_SIZE = 
+        (DEVICE_ATTRIBUTE_NB_SM * DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM + DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK - 1) 
+        / DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK
+    ;
+
     /// Miscellaneous
     IS_RUNNING_IN_PARALLEL = init_field<bool>("IS_RUNNING_IN_PARALLEL", false);
     NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE = init_field<uint32_t>("NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE", 60);
     MEASURE_TIMINGS = init_field<bool>("MEASURE_TIMINGS", false);
-
-    CUdevice device;
-    cuCtxGetDevice(&device);
-    int val = 0;
-    CURuntime::assertCudaSuccess(cuDeviceGetAttribute(
-        &val, 
-        CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK, 
-        device)
-    );
-    uint32_t max_threads_per_block = uint32_t(val);
-    CURuntime::assertCudaSuccess(cuDeviceGetAttribute(
-        &val, 
-        CU_DEVICE_ATTRIBUTE_MAX_BLOCKS_PER_MULTIPROCESSOR, 
-        device)
-    );
-    uint32_t max_blocks_per_sm = uint32_t(val);
-    cudaDeviceProp properties;
-    cudaGetDeviceProperties(&properties, 0);
-    uint32_t nb_sm = uint32_t(properties.multiProcessorCount);
-    PER_NODE_KERNEL_BLOCK_SIZE = init_field<uint32_t>("PER_NODE_KERNEL_BLOCK_SIZE", max_threads_per_block);
-    NB_BLOCKS_PER_NODE = init_field<uint32_t>("NB_BLOCKS_PER_NODE", max_blocks_per_sm);
+    IS_USING_GPU_VERSION = init_field<bool>("IS_USING_GPU_VERSION", false);
 
     /// Batch sizes
     BATCHES_LIST_SIZE = init_field<uint32_t>("BATCHES_LIST_SIZE", 1'024);
@@ -63,9 +72,21 @@ void OocSimLodSettings::init(){
     LRU_UPDATES_CACHE_SIZE = init_field<uint32_t>("LRU_UPDATES_CACHE_SIZE", 128);
     LRU_VISIBILITY_CACHE_SIZE = init_field<uint32_t>("LRU_VISIBILITY_CACHE_SIZE", 512);
     LRU_CPU_CACHE_SIZE = init_field<uint32_t>("LRU_CPU_CACHE_SIZE", 2048);
-    NB_ALLOCATED_CHUNKS = init_field<uint32_t>("NB_ALLOCATED_CHUNKS", 32'000);
-    NB_ALLOCATED_GRIDS = init_field<uint32_t>("NB_ALLOCATED_GRIDS", 2048);
-    NB_ALLOCATED_NODES = init_field<uint32_t>("NB_ALLOCATED_NODES", 2048);
+    NB_ALLOCABLE_CHUNKS = init_field<uint32_t>("NB_ALLOCABLE_CHUNKS", 32'000);
+    NB_ALLOCABLE_GRIDS = init_field<uint32_t>("NB_ALLOCABLE_GRIDS", 2048);
+    NB_ALLOCABLE_NODES = init_field<uint32_t>("NB_ALLOCABLE_NODES", 2048);
+
+    /// GPU Version buffers
+    MAX_NB_NODES = init_field<uint32_t>("MAX_NB_NODES", 1'000'000);
+    MAX_NB_NODES_TO_EXCHANGE = init_field<uint32_t>("MAX_NB_NODES_TO_EXCHANGE", 128);
+    MAX_NB_SPILLING_POINTS = init_field<uint32_t>("MAX_NB_SPILLING_POINTS", 1'000'000);
+    MAX_NB_BACKLOG_VOXELS = init_field<uint32_t>("MAX_NB_BACKLOG_VOXELS", 1'000'000);
+
+    MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE = init_field<uint32_t>("MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE", 256);
+    MAX_NB_RENDERED_POINTS = init_field<uint32_t>("MAX_NB_RENDERED_POINTS", 1'000'000);
+    MAX_NB_RENDERED_VOXELS = init_field<uint32_t>("MAX_NB_RENDERED_VOXELS", 1'000'000);
+    MAX_NB_COUNT_SPLIT_ITERATION = init_field<uint32_t>("MAX_NB_COUNT_SPLIT_ITERATION", 8);
+
 
     /// Ui initial parameters
     SHOW_BOUNDING_BOXES_AT_STARTUP = init_field<bool>("SHOW_BOUNDING_BOXES_AT_STARTUP", false);
@@ -82,8 +103,8 @@ void OocSimLodSettings::init(){
     CuRastSettings::voxelsDebugColor = USE_VOXELS_DEBUG_COLOR_AT_STARTUP;
     USE_AUTO_FREE_OLD_OCTREE_ON_GPU_AT_STARTUP = init_field<bool>("USE_AUTO_FREE_OLD_OCTREE_ON_GPU_AT_STARTUP", true);
     CuRastSettings::autoFreeOldOctreeMemoryOnGPU = USE_AUTO_FREE_OLD_OCTREE_ON_GPU_AT_STARTUP;
-    DIFFERENTIATE_VISIBLE_NODES_AABB_AT_STARTUP = init_field<bool>("DIFFERENTIATE_VISIBLE_NODES_AABB_AT_STARTUP", false);
-    CuRastSettings::showVisibleNodes = DIFFERENTIATE_VISIBLE_NODES_AABB_AT_STARTUP;
+    DISPLAY_VISIBLE_NODES_AABB_AT_STARTUP = init_field<bool>("DIFFERENTIATE_VISIBLE_NODES_AABB_AT_STARTUP", false);
+    CuRastSettings::showVisibleNodes = DISPLAY_VISIBLE_NODES_AABB_AT_STARTUP;
 }
 
 
@@ -101,12 +122,25 @@ void OocSimLodSettings::display(){
     println("    - GRID_SIZE_PER_DIMENSION: {}", GRID_SIZE_PER_DIMENSION);
 
     println("");
+    println("Device properties:");
+    println("    - DEVICE_ATTRIBUTE_NB_SM: {}", DEVICE_ATTRIBUTE_NB_SM);
+    println("    - DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM: {}", DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM);
+    println("    - DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK: {}", DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK);
+    println("    - DEVICE_ATTRIBUTE_MAX_BLOCKS_PER_SM: {}", DEVICE_ATTRIBUTE_MAX_BLOCKS_PER_SM);
+    println("    - DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X: {}", DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X);
+    println("    - DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Y: {}", DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Y);
+    println("    - DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Z: {}", DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Z);
+    println("    - DEVICE_ATTRIBUTE_MAX_GRID_DIM_X: {}", DEVICE_ATTRIBUTE_MAX_GRID_DIM_X);
+    println("    - DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y: {}", DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y);
+    println("    - DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z: {}", DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z);
+    println("    - DEVICE_ATTRIBUTE_MAX_GRID_SIZE_FOR_MAX_BLOCK_SIZE: {}", DEVICE_ATTRIBUTE_MAX_GRID_SIZE_FOR_MAX_BLOCK_SIZE);
+
+    println("");
     println("Miscellaneous:");
     println("    - IS_RUNNING_IN_PARALLEL: {}", IS_RUNNING_IN_PARALLEL);
     println("    - NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE: {}", NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE);
     println("    - MEASURE_TIMINGS: {}", MEASURE_TIMINGS);
-    println("    - PER_NODE_KERNEL_BLOCK_SIZE: {}", PER_NODE_KERNEL_BLOCK_SIZE);
-    println("    - NB_BLOCKS_PER_NODE: {}", NB_BLOCKS_PER_NODE);
+    println("    - IS_USING_GPU_VERSION: {}", IS_USING_GPU_VERSION);
 
     println("");
     println("Batch sizes:");
@@ -126,9 +160,20 @@ void OocSimLodSettings::display(){
     println("    - LRU_UPDATES_CACHE_SIZE: {}", LRU_UPDATES_CACHE_SIZE);
     println("    - LRU_VISIBILITY_CACHE_SIZE: {}", LRU_VISIBILITY_CACHE_SIZE);
     println("    - LRU_CPU_CACHE_SIZE: {}", LRU_CPU_CACHE_SIZE);
-    println("    - NB_ALLOCATED_CHUNKS: {}", NB_ALLOCATED_CHUNKS);
-    println("    - NB_ALLOCATED_GRIDS: {}", NB_ALLOCATED_GRIDS);
-    println("    - NB_ALLOCATED_NODES: {}", NB_ALLOCATED_NODES);
+    println("    - NB_ALLOCABLE_CHUNKS: {}", NB_ALLOCABLE_CHUNKS);
+    println("    - NB_ALLOCABLE_GRIDS: {}", NB_ALLOCABLE_GRIDS);
+    println("    - NB_ALLOCABLE_NODES: {}", NB_ALLOCABLE_NODES);
+
+    println("");
+    println("GPU version properties:");
+    println("    - MAX_NB_NODES: {}", MAX_NB_NODES);
+    println("    - MAX_NB_NODES_TO_EXCHANGE: {}", MAX_NB_NODES_TO_EXCHANGE);
+    println("    - MAX_NB_SPILLING_POINTS: {}", MAX_NB_SPILLING_POINTS);
+    println("    - MAX_NB_BACKLOG_VOXELS: {}", MAX_NB_BACKLOG_VOXELS);
+    println("    - MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE: {}", MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE);
+    println("    - MAX_NB_RENDERED_POINTS: {}", MAX_NB_RENDERED_POINTS);
+    println("    - MAX_NB_RENDERED_VOXELS: {}", MAX_NB_RENDERED_VOXELS);
+    println("    - MAX_NB_COUNT_SPLIT_ITERATION: {}", MAX_NB_COUNT_SPLIT_ITERATION);
 
     println("");
     println("UI initial settings:");
@@ -139,7 +184,7 @@ void OocSimLodSettings::display(){
     println("    - MIN_PIXEL_SPAN_AT_STARTUP: {}", MIN_PIXEL_SPAN_AT_STARTUP);
     println("    - USE_VOXELS_DEBUG_COLOR_AT_STARTUP: {}", USE_VOXELS_DEBUG_COLOR_AT_STARTUP);
     println("    - USE_AUTO_FREE_OLD_OCTREE_ON_GPU_AT_STARTUP: {}", USE_AUTO_FREE_OLD_OCTREE_ON_GPU_AT_STARTUP);
-    println("    - DIFFERENTIATE_VISIBLE_NODES_AABB_AT_STARTUP: {}", DIFFERENTIATE_VISIBLE_NODES_AABB_AT_STARTUP);
+    println("    - DISPLAY_VISIBLE_NODES_AABB_AT_STARTUP: {}", DISPLAY_VISIBLE_NODES_AABB_AT_STARTUP);
 
 	println("\n//////////////////////////////////////////////////////////");
 	println("//////////////////////////////////////////////////////////");
