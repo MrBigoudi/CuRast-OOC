@@ -372,28 +372,6 @@ struct CMemoryAllocator {
         return node;
     }
 
-    /// Copy an existing node
-    __device__ COctreeNode* newOctreeNodePartialCpy(COctreeNode* cpy, bool will_run_in_parallel, bool will_update_metrics = true){
-        if(!cpy){return nullptr;}
-        COctreeNode* node = newOctreeNode(cpy->aabb_index, will_run_in_parallel, will_update_metrics);
-
-        node->children_ids = cpy->children_ids;
-        node->points_counter = cpy->points_counter;
-        node->voxels_counter = cpy->voxels_counter;
-
-        node->points = cpy->points ? newChunkPartialCpy(cpy->points, will_run_in_parallel, will_update_metrics) : nullptr;
-        node->voxels = cpy->voxels ? newChunkPartialCpy(cpy->voxels, will_run_in_parallel, will_update_metrics) : nullptr;
-
-        node->level = cpy->level;
-        node->children_visibility = cpy->children_visibility;
-
-        for(uint32_t i=0; i<8; i++){
-            node->children[i] = nullptr;
-        }
-
-        return node;
-    }
-
 
     /// Deallocate a node
     __device__ void delOctreeNode(COctreeNode* node, bool node_only, bool will_run_in_parallel, bool will_update_metrics = true){
@@ -423,6 +401,7 @@ struct CMemoryAllocator {
         node->points_counter = 0;
         node->voxels_counter = 0;
         node->points_stored = 0;
+        node->points_last_stored = 0;
         node->voxels_stored = 0;
         node->children_ids = 0;
         node->children_visibility = 0;

@@ -390,6 +390,8 @@ struct COctreeNode {
 	uint32_t points_stored = 0;
 	uint32_t voxels_stored = 0;
 
+	uint32_t points_last_stored = 0;
+
 	// TODO: pack all of the following in a single uint32_t
 	uint32_t children_ids = 0;
 	// uint8_t children_ids = 0b00000000;

@@ -103,7 +103,7 @@ ADD_IMGUI(${TARGET_NAME})
 # Choose GPU architectures (adjust for your machine)
 # set(CMAKE_CUDA_ARCHITECTURES 75 86 89 90)
 set_property(TARGET ${TARGET_NAME}
-    PROPERTY CUDA_ARCHITECTURES 86)
+    PROPERTY CUDA_ARCHITECTURES 86;120)
 
 # Enable separable compilation (for multi-file CUDA builds)
 set_target_properties(${TARGET_NAME} PROPERTIES CUDA_SEPARABLE_COMPILATION ON)

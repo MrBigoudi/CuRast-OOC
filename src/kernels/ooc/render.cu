@@ -484,8 +484,10 @@ void kernel_drawVisibilityCache(
     // Render points
     for(uint32_t point_id = thread_id; point_id < globalVariables.nbRenderedPoints; point_id += nb_threads){
         const CPoint& point = globalVariables.renderedPoints[point_id];
-        drawPoint(target, point.position, point.color);
-        // drawPoint(target, point.position, 0xff00ffff);
+        drawPoint(
+            target, point.position, 
+            settings.use_voxels_debug_color ? 0xff00ffff : point.color
+        );
     }
 
     // Render voxels
@@ -512,8 +514,7 @@ void kernel_drawVisibilityCache(
             drawVoxel(
                 target, 
                 voxel.position, 
-                voxel.color, 
-                // 0xffff00ff, 
+                settings.use_voxels_debug_color ? 0xffff00ff : voxel.color, 
                 voxel_size, 
                 nb_points_per_axis
             );
@@ -552,11 +553,22 @@ void kernel_drawOctreeLarge(
             for(uint32_t i=0; i<8; i++){
                 CIdAABB child_index = globalVariables.relationshipMap[node->aabb_index].children[i];
                 if(child_index == CINVALID_ID){continue;}
-                
-                bool child_is_visible = globalVariables.isVisible(child_index);
+
                 bool child_is_in_vis_cache = globalVariables.isInVisibilityCache(child_index);
-                if(child_is_visible || child_is_in_vis_cache){
+                if(child_is_in_vis_cache){
                     flags |= ((0x01) << i);
+                    continue;
+                }
+                
+                if(!node->children[i]){continue;}
+                uint32_t child_points_counter = node->children[i]->points_counter;
+                // Replace the child node by a voxel if less than X% of its total points are available
+                const float X = 50.;
+                uint32_t threshold = uint32_t(float(child_points_counter) * (X * 0.01));
+                uint32_t available_points = (child_points_counter - node->children[i]->points_last_stored);
+                if(available_points >= threshold){
+                    flags |= ((0x01) << i);
+                    continue;
                 }
             }
 

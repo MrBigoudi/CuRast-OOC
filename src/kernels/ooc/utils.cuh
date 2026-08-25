@@ -266,3 +266,13 @@ inline uint64_t nanotime(){
 //         printf("\n\n");
 //     }
 // }
+
+
+
+// uint64_t t_start = nanotime();
+// cg::this_grid().sync();
+// uint64_t nanos = nanotime() - t_start;
+// float micros = nanos / 1000;
+// if(cg::this_grid().thread_rank() == 0){
+//     printf("microseconds: %f \n", micros);
+// }

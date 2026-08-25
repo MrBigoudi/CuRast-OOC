@@ -506,11 +506,11 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
         nbs_points[i] = loaded[i]->node.points_counter;
         nbs_voxels[i] = loaded[i]->node.voxels_counter;
 
-        if(nbs_points[i] > 0){
-            srcs_host.push_back((CUdeviceptr)loaded[i]->points.data());
-            dsts_device.push_back(((CUdeviceptr*)(exchangedPointsPointers))[i]);
-            sizes.push_back(nbs_points[i]*sizeof(CPoint));
-        }
+        // if(nbs_points[i] > 0){
+        //     srcs_host.push_back((CUdeviceptr)loaded[i]->points.data());
+        //     dsts_device.push_back(((CUdeviceptr*)(exchangedPointsPointers))[i]);
+        //     sizes.push_back(nbs_points[i]*sizeof(CPoint));
+        // }
         if(nbs_voxels[i] > 0){
             srcs_host.push_back((CUdeviceptr)loaded[i]->voxels.data());
             dsts_device.push_back(((CUdeviceptr*)(exchangedVoxelsPointers))[i]);
@@ -828,13 +828,13 @@ void GpuVersion::storeNodes(uint32_t nb_nodes_to_store){
             new_nodes[i]->points = std::vector<CPoint>(nb_points);
             srcs_device.push_back(((CUdeviceptr*)(exchangedPointsPointers))[i]);
             dsts_host.push_back((CUdeviceptr)new_nodes[i]->points.data());
-            sizes.push_back(nbs_points[i] * sizeof(CPoint));
+            sizes.push_back(nb_points * sizeof(CPoint));
         }
-        if(nbs_voxels[i] > 0){
+        if(nb_voxels > 0){
             new_nodes[i]->voxels = std::vector<CPoint>(nb_voxels);
             srcs_device.push_back(((CUdeviceptr*)(exchangedVoxelsPointers))[i]);
             dsts_host.push_back((CUdeviceptr)new_nodes[i]->voxels.data());
-            sizes.push_back(nbs_voxels[i] * sizeof(CPoint));
+            sizes.push_back(nb_voxels * sizeof(CPoint));
         }
     }
 
@@ -850,16 +850,39 @@ void GpuVersion::storeNodes(uint32_t nb_nodes_to_store){
     CURuntime::assertCudaSuccess(cuEventSynchronize(eventStoringComplete));
 
     for(uint32_t i=0; i<nb_nodes_to_store; i++){
-        new_nodes[i]->node.aabb_index = ids[i];
+        CIdAABB id = ids[i];
+        new_nodes[i]->node.aabb_index = id;
         new_nodes[i]->node.children_ids = children_ids[i];
-        // Update the CPU version of the relationship map
-        parentsMap[ids[i]] = parents_ids[i];
-        aabbsMap[ids[i]] = aabbs[i];
-        storedNodes.insert(ids[i]);
-        currentlyInUpdatesCache.erase(ids[i]);
+
+        if(!persistentStoredNodes.contains(id) && storedNodes.contains(id)){
+            persistentStoredNodes[id] = OctreeNodeSerializable::deserializeV2(id, "From update cache");
+        }
+
         // Store to CPU cache
-        persistentStoredNodes[new_nodes[i]->node.aabb_index] = new_nodes[i];
-        hostCache->add(new_nodes[i]->node.aabb_index);
+        if(persistentStoredNodes.contains(id)){
+            // Update the node if already exists
+            std::shared_ptr<HostStorageNode> existing_node = persistentStoredNodes[id];
+            existing_node->node.children_ids = new_nodes[i]->node.children_ids;
+            if(nbs_points[i] > 0){
+                existing_node->node.points_counter += nbs_points[i];
+                existing_node->points.insert(
+                    existing_node->points.end(), 
+                    new_nodes[i]->points.begin(), 
+                    new_nodes[i]->points.end()
+                );
+            }
+            existing_node->node.voxels_counter = nbs_voxels[i];
+            existing_node->voxels = new_nodes[i]->voxels;
+        } else {
+            persistentStoredNodes[id] = new_nodes[i];
+        }
+        hostCache->add(id);
+
+        // Update the CPU version of the relationship map
+        parentsMap[id] = parents_ids[i];
+        aabbsMap[id] = aabbs[i];
+        storedNodes.insert(id);
+        currentlyInUpdatesCache.erase(id);
     }
 }
 
@@ -960,7 +983,7 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
     // Get the LRU_VISIBILTY_CACHE closest nodes
     for(const std::pair<CIdAABB, float>& visible_node : visible_nodes){
         CIdAABB cur_node = visible_node.first;
-        if(currentlyInUpdatesCache.contains(cur_node)){continue;}
+        // if(currentlyInUpdatesCache.contains(cur_node)){continue;}
 
         hostCache->add(cur_node);
         std::shared_ptr<HostStorageNode> node = nullptr;

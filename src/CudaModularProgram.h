@@ -351,7 +351,10 @@ struct CudaModularProgram{
 		//CUlinkState linkState;
 
 		CUdevice cuDevice;
-		cuDeviceGet(&cuDevice, 0);
+		CUcontext ctx;
+		cuCtxGetCurrent(&ctx);
+		cuCtxGetDevice(&cuDevice);
+		// cuDeviceGet(&cuDevice, 0);
 
 		int major = 0;
 		int minor = 0;
