@@ -186,8 +186,6 @@ struct GpuVersion {
     static void visibilityUpdate(CuRast* editor, CUcontext* context);
 
 
-	static inline void* exchangedPointsPointers = nullptr;
-	static inline void* exchangedVoxelsPointers = nullptr;
 	static inline void* batchesToAddPointsPointers = nullptr;
     static inline void* nbExchangedNodes = nullptr;
     static inline uint32_t curNbNodes = 0;
@@ -198,6 +196,8 @@ struct GpuVersion {
     static inline void* isDoneIterating = nullptr;
     static inline bool firstBatchSent = false;
     static inline bool isInitialised = false;
+    static inline void* nbPointsExchanged = nullptr;
+    static inline void* nbVoxelsExchanged = nullptr;
 
     static inline uint32_t randomOffset = 0;
 

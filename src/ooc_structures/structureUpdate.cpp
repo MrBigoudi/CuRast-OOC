@@ -316,7 +316,7 @@ void createCudaMemory(CuRast* editor, CUcontext* context,
 		new_node->points_counter = cur_node->counter.load();
 		new_node->children_ids = uint32_t(cur_node->children_ids);
 		// new_node->children_ids = cur_node->children_ids;
-		new_node->children_visibility = cur_node->children_visibility;
+		// new_node->children_visibility = cur_node->children_visibility;
 		new_node->level = level;
 
 		if(level > max_lod_level){

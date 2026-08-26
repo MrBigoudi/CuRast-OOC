@@ -463,12 +463,18 @@ void kernel_visibilityPass(
         }
     }
 
-    // Also flag the nodes from the cache
+    // Also flag the nodes from the visibility cache
     for(uint32_t node_index = thread_id; node_index < globalVariables.visibilityCacheCurrentSize; node_index += nb_threads){
         const CIdAABB& id = globalVariables.visibilityCache[node_index];
         globalVariables.setFlagSync(id, CFlagIsInVisibilityCache);
     }
+    // for(uint32_t voxel_id = thread_id; voxel_id < globalVariables.nbRenderedVoxels; voxel_id += nb_threads){
+    //     const CPoint& voxel = globalVariables.renderedVoxels[voxel_id];
+    //     const CIdAABB& node_id = globalVariables.renderedVoxelsNodes[voxel_id];
+    //     globalVariables.setFlag(node_id, CFlagIsFromVoxelsInVisibilityCache);
+    // }
 }
+
 
 
 /// Run on "NB SMs" blocks of size min("Max threads per SM", "Max block dim")
@@ -501,11 +507,16 @@ void kernel_drawVisibilityCache(
         const vec3& voxel_size = globalVariables.relationshipMap[node_id].aabb.getSize() / float(OocSimLodSettings::GRID_SIZE_PER_DIMENSION);
 
         // Only render the voxel if the corresponding child is not present
-        bool child_is_visible = (child_index != CINVALID_ID) && globalVariables.isVisible(child_index);
-        bool child_is_in_vis_cache = (child_index != CINVALID_ID) && globalVariables.isInVisibilityCache(child_index);
-        // bool child_is_in_vis_cache = false;
-
-        if(!child_is_visible && !child_is_in_vis_cache){
+        bool child_is_loaded = false;
+        bool child_has_enough_points = false;
+        if(child_index != CINVALID_ID){
+            if(globalVariables.isInVisibilityCache(child_index)){continue;}
+            child_is_loaded = globalVariables.isInUpdatesCache(child_index);
+            child_has_enough_points = globalVariables.hasEnoughPoints(child_index);
+        }
+                
+        bool should_draw_voxels = !child_is_loaded || !child_has_enough_points;
+        if(should_draw_voxels){
             const vec3 root_aabb_size = globalVariables.relationshipMap[globalVariables.mainOctree->aabb_index].aabb.getSize();
             float root_size = max(root_aabb_size.x, max(root_aabb_size.y, root_aabb_size.z));
             float cur_size = max(voxel_size.x, max(voxel_size.y, voxel_size.z));
@@ -518,9 +529,12 @@ void kernel_drawVisibilityCache(
                 voxel_size, 
                 nb_points_per_axis
             );
+
         }
     }
 }
+
+
 
 
 
@@ -559,14 +573,11 @@ void kernel_drawOctreeLarge(
                     flags |= ((0x01) << i);
                     continue;
                 }
-                
                 if(!node->children[i]){continue;}
-                uint32_t child_points_counter = node->children[i]->points_counter;
-                // Replace the child node by a voxel if less than X% of its total points are available
-                const float X = 50.;
-                uint32_t threshold = uint32_t(float(child_points_counter) * (X * 0.01));
-                uint32_t available_points = (child_points_counter - node->children[i]->points_last_stored);
-                if(available_points >= threshold){
+                
+                bool child_has_enough_points = globalVariables.hasEnoughPoints(child_index);
+                bool child_has_enough_voxels = globalVariables.hasEnoughVoxels(child_index);
+                if(child_has_enough_points && child_has_enough_voxels){
                     flags |= ((0x01) << i);
                     continue;
                 }
@@ -597,6 +608,10 @@ void kernel_drawOctreeLarge(
         }
     }
 }
+
+
+
+
 
 
 
@@ -662,6 +677,7 @@ void kernel_drawOctreeSmall(
     for(uint32_t node_index = first_point; node_index < globalVariables.visibilityCacheCurrentSize; node_index += step){
         const CIdAABB& id = globalVariables.visibilityCache[node_index];
         globalVariables.unsetFlagSync(id, CFlagIsInVisibilityCache);
+        globalVariables.unsetFlagSync(id, CFlagIsFromVoxelsInVisibilityCache);
     }
 }
 

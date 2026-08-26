@@ -106,20 +106,6 @@ void kernel_simlod_load_part_1_flagging(){
 }
 
 
-__device__
-void allocateChunks(CChunk* root_chunk, uint32_t required_chunks, uint32_t total_counter){
-    CChunk* cur_chunk = root_chunk;
-    for(uint32_t i=1; i<required_chunks; i++){
-        if(!cur_chunk->next){cur_chunk->next = globalAllocator.newChunk(true);}
-        cur_chunk->size = OocSimLodSettings::NB_POINTS_PER_CHUNK;
-        cur_chunk = cur_chunk->next;
-    }
-    if(cur_chunk){
-        uint32_t last_size = total_counter % OocSimLodSettings::NB_POINTS_PER_CHUNK;
-        last_size = (last_size == 0) ? OocSimLodSettings::NB_POINTS_PER_CHUNK : last_size;
-        cur_chunk->size = last_size;
-    }
-};
 
 
 /// Run on "maxNbNodesExchanged" blocks of size "Max threads per block"
@@ -127,37 +113,25 @@ void allocateChunks(CChunk* root_chunk, uint32_t required_chunks, uint32_t total
 extern "C" __global__
 void kernel_simlod_load_part_2_rebuilding_nodes(){
     auto grid = cg::this_grid();
-    auto block = cg::this_thread_block();
-    uint32_t nb_blocks = grid.num_blocks();
-
-    uint32_t block_id = grid.block_rank();
-    uint32_t thread_id = block.thread_rank();
-    uint32_t nb_threads_per_block = block.num_threads();
+    uint32_t thread_id = grid.thread_rank();
+    uint32_t nb_threads = grid.num_threads();
 
     // if(block_id == 0 && thread_id == 0){
     //     printf("kernel_simlod_load_part_2_rebuilding_nodes\n");
     // }
 
-    __shared__ COctreeNode* shLoadedNode;
-    // __shared__ uint32_t shFirstPointsChunks;
-    // __shared__ uint32_t shNbPointsChunks;
-    __shared__ uint32_t shFirstVoxelsChunks;
-    __shared__ uint32_t shNbVoxelsChunks;
-
     globalVariables.nbNodesExchanged = min(globalVariables.nbNodesExchanged, globalVariables.maxNbNodesExchanged);
-    if(block_id == 0 && thread_id == 0){
+    if(thread_id == 0){
         globalVariables.nbNodesExchangedBeforeLoadComplete += globalVariables.nbNodesExchanged;
     }
 
 
-    for(uint32_t exchanged_index = block_id; exchanged_index < globalVariables.nbNodesExchanged; exchanged_index += nb_blocks){
+    for(uint32_t exchanged_index = thread_id; exchanged_index < globalVariables.nbNodesExchanged; exchanged_index += nb_threads){
 
         CIdAABB aabb_index = globalVariables.exchangedAABBIndices[exchanged_index];
         uint32_t children_ids = globalVariables.exchangedChildrenIds[exchanged_index];
         uint32_t nb_points = globalVariables.exchangedPointsCounters[exchanged_index];
         uint32_t nb_voxels = globalVariables.exchangedVoxelsCounters[exchanged_index];
-        // CPoint* points = globalVariables.exchangedPoints[exchanged_index];
-        CPoint* voxels = globalVariables.exchangedVoxels[exchanged_index];
 
 #ifdef ASSERT_ENABLED
         if(globalVariables.isInUpdatesCache(aabb_index)){
@@ -166,225 +140,90 @@ void kernel_simlod_load_part_2_rebuilding_nodes(){
         }
 #endif
 
-        // Allocate the chunks
-        __syncthreads(); // Needed to not update shLoadedNode before all threads are done
-        if(thread_id == 0){ // If first thread of block
-            // UI values
-            // __nv_atomic_add(&globalVariables.currentNbPoints, nb_points, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-            __nv_atomic_add(&globalVariables.currentNbVoxels, nb_voxels, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
             
-            shLoadedNode = globalAllocator.newOctreeNode(aabb_index, true);
-            uint32_t node_index = __nv_atomic_fetch_add(&globalVariables.curNbNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+        COctreeNode* loaded_node = globalAllocator.newOctreeNode(aabb_index, true);
+        uint32_t node_index = __nv_atomic_fetch_add(&globalVariables.curNbNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
 
 #ifdef ASSERT_ENABLED
-            if(node_index >= globalVariables.maxNbConcurrentNodes){
-                printf("ERROR: failed to rebuild a new node for `%d'; can't add more nodes to the octree\n", aabb_index);
+        if(node_index >= globalVariables.maxNbConcurrentNodes){
+            printf("ERROR: failed to rebuild a new node for `%d'; can't add more nodes to the octree\n", aabb_index);
+            customAssert();
+        }
+#endif
+
+        globalVariables.packedNodes[node_index] = loaded_node;
+        loaded_node->children_ids = children_ids;
+        loaded_node->points_counter = nb_points;
+        loaded_node->points_stored = 0;
+        loaded_node->points_last_stored = nb_points;
+        loaded_node->voxels_last_stored = nb_voxels;
+
+        // Allocate the occupancy grid
+        if(nb_voxels > 0){
+            loaded_node->occupancy = globalAllocator.newOccupancyGrid(true);
+            uint32_t grid_index = __nv_atomic_fetch_add(&globalVariables.nbGridsToInit, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            
+#ifdef ASSERT_ENABLED
+            if(grid_index >= globalVariables.maxNbConcurrentNodes){
+                printf("ERROR: failed to rebuild a new node for `%d'; can't recreate more grids\n", aabb_index);
                 customAssert();
             }
 #endif
 
-            globalVariables.packedNodes[node_index] = shLoadedNode;
+            globalVariables.gridsToInit[grid_index] = loaded_node;
+        }
 
-            shLoadedNode->children_ids = children_ids;
-            shLoadedNode->points_counter = nb_points;
-            shLoadedNode->voxels_counter = nb_voxels;
-            // shLoadedNode->points_stored = nb_points;
-            shLoadedNode->points_stored = 0;
-            shLoadedNode->points_last_stored = nb_points;
-            shLoadedNode->voxels_stored = nb_voxels;
-
-            // shFirstPointsChunks = 0;
-            // shNbPointsChunks = 0;
-            shFirstVoxelsChunks = 0;
-            shNbVoxelsChunks = 0;
-
-            // Allocate the occupancy grid
-            if(nb_voxels > 0){
-                shLoadedNode->occupancy = globalAllocator.newOccupancyGrid(true);
-                uint32_t grid_index = __nv_atomic_fetch_add(&globalVariables.nbGridsToInit, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-                
-#ifdef ASSERT_ENABLED
-                if(grid_index >= globalVariables.maxNbConcurrentNodes){
-                    printf("ERROR: failed to rebuild a new node for `%d'; can't recreate more grids\n", aabb_index);
-                    customAssert();
-                }
-#endif
-
-                globalVariables.gridsToInit[grid_index] = shLoadedNode;
-            }
-
-            // Allocate the first and last chunks for the points and the voxels
-//             if(nb_points > 0){
-//                 shLoadedNode->points = globalAllocator.newChunk(true);
-//                 uint32_t required_chunks = (nb_points + OocSimLodSettings::NB_POINTS_PER_CHUNK - 1) /  OocSimLodSettings::NB_POINTS_PER_CHUNK;
-//                 uint32_t first_chunk = __nv_atomic_fetch_add(&globalVariables.chunksAllocatorCounter, required_chunks, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-//                 uint32_t last_chunk = first_chunk + required_chunks - 1;
-
-// #ifdef ASSERT_ENABLED
-//                 if(last_chunk >= globalVariables.maxAllocatedChunks){
-//                     printf("ERROR: failed to rebuild a new node for `%d'; can't allocate more chunks for the points\n", aabb_index);
-//                     customAssert();
-//                 }
-// #endif
-
-//                 // Put first and last chunks in the chunk array
-//                 globalVariables.allocatedChunks[first_chunk] = shLoadedNode->points;
-//                 if(required_chunks > 1){
-//                     globalVariables.allocatedChunks[last_chunk] = globalAllocator.newChunk(true);
-//                 }
-//                 globalVariables.allocatedChunks[first_chunk]->size = OocSimLodSettings::NB_POINTS_PER_CHUNK;
-//                 uint32_t last_size = nb_points % OocSimLodSettings::NB_POINTS_PER_CHUNK;
-//                 last_size = (last_size == 0) ? OocSimLodSettings::NB_POINTS_PER_CHUNK : last_size;
-//                 globalVariables.allocatedChunks[last_chunk]->size = last_size;
-               
-//                 // Update shared variables
-//                 shFirstPointsChunks = first_chunk;
-//                 shNbPointsChunks = required_chunks;
-//             }
-            if(nb_voxels > 0){
-                shLoadedNode->voxels = globalAllocator.newChunk(true);
-                uint32_t required_chunks = (nb_voxels + OocSimLodSettings::NB_POINTS_PER_CHUNK - 1) /  OocSimLodSettings::NB_POINTS_PER_CHUNK;
-                uint32_t first_chunk = __nv_atomic_fetch_add(&globalVariables.chunksAllocatorCounter, required_chunks, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-                uint32_t last_chunk = first_chunk + required_chunks - 1;
+ 
+        // Find parent if needed
+        // Use temporaryNodeBuffer as a temporary buffer 
+        COctreeNode* potential_parent = globalVariables.temporaryNodeBuffer[exchanged_index];
+        
+        if(potential_parent->aabb_index == globalVariables.relationshipMap[aabb_index].parent){
+            bool found = false;
+            for(uint32_t i=0; i<8; i++){
+                if(globalVariables.relationshipMap[potential_parent->aabb_index].children[i] == aabb_index){
 
 #ifdef ASSERT_ENABLED
-                if(last_chunk >= globalVariables.maxAllocatedChunks){
-                    printf("ERROR: failed to rebuild a new node for `%d'; can't allocate more chunks for the voxels\n", aabb_index);
-                    customAssert();
-                }
-#endif
-
-                // Put first and last chunks in the chunk array
-                globalVariables.allocatedChunks[first_chunk] = shLoadedNode->voxels;
-                if(required_chunks > 1){
-                    globalVariables.allocatedChunks[last_chunk] = globalAllocator.newChunk(true);
-                }
-                globalVariables.allocatedChunks[first_chunk]->size = OocSimLodSettings::NB_POINTS_PER_CHUNK;
-                uint32_t last_size = nb_voxels % OocSimLodSettings::NB_POINTS_PER_CHUNK;
-                last_size = (last_size == 0) ? OocSimLodSettings::NB_POINTS_PER_CHUNK : last_size;
-                globalVariables.allocatedChunks[last_chunk]->size = last_size;
-
-                // Update shared variables
-                shFirstVoxelsChunks = first_chunk;
-                shNbVoxelsChunks = required_chunks;
-            }
-        }
-        __syncthreads();
-
-
-        // Allocate the chunks for the points and the voxels
-        // uint32_t first_points_chunk = shFirstPointsChunks;
-        // uint32_t nb_points_chunk = shNbPointsChunks;
-        uint32_t first_voxels_chunk = shFirstVoxelsChunks;
-        uint32_t nb_voxels_chunk = shNbVoxelsChunks;
-
-        // -2 for the already two allocated chunks
-        // if(nb_points_chunk > 2){
-        //     for(uint32_t allocation_id = thread_id; allocation_id < nb_points_chunk - 2; allocation_id += nb_threads_per_block){
-        //         uint32_t real_id = first_points_chunk + allocation_id + 1;
-        //         globalVariables.allocatedChunks[real_id] = globalAllocator.newChunk(true);
-        //         globalVariables.allocatedChunks[real_id]->size = OocSimLodSettings::NB_POINTS_PER_CHUNK;
-        //     }
-        // }
-        if(nb_voxels_chunk > 2){
-            for(uint32_t allocation_id = thread_id; allocation_id < nb_voxels_chunk - 2; allocation_id += nb_threads_per_block){
-                uint32_t real_id = first_voxels_chunk + allocation_id + 1;
-                globalVariables.allocatedChunks[real_id] = globalAllocator.newChunk(true);
-                globalVariables.allocatedChunks[real_id]->size = OocSimLodSettings::NB_POINTS_PER_CHUNK;
-            }
-        }
-        __syncthreads();
-
-
-        // Link the chunks
-        // if(nb_points_chunk > 1){
-        //     for(uint32_t allocation_id = thread_id; allocation_id < nb_points_chunk - 1; allocation_id += nb_threads_per_block){
-        //         uint32_t real_id = first_points_chunk + allocation_id;
-        //         globalVariables.allocatedChunks[real_id]->next = globalVariables.allocatedChunks[real_id+1];
-        //     }
-        // }
-        if(nb_voxels_chunk > 1){
-            for(uint32_t allocation_id = thread_id; allocation_id < nb_voxels_chunk - 1; allocation_id += nb_threads_per_block){
-                uint32_t real_id = first_voxels_chunk + allocation_id;
-                globalVariables.allocatedChunks[real_id]->next = globalVariables.allocatedChunks[real_id+1];
-            }
-        }
-        __syncthreads();
-
-
-        // Fill up the chunks
-        // if(nb_points > 0){
-        //     for(uint32_t i = thread_id; i < nb_points; i += nb_threads_per_block){
-        //         const CPoint& cur_point = points[i];
-        //         uint32_t chunk_index = i / OocSimLodSettings::NB_POINTS_PER_CHUNK;
-        //         uint32_t point_index = i % OocSimLodSettings::NB_POINTS_PER_CHUNK;
-        //         globalVariables.allocatedChunks[first_points_chunk + chunk_index]->points[point_index] = cur_point;
-        //     }
-        // }
-
-        // Rebuild voxels
-        if(nb_voxels > 0){
-            for(uint32_t i = thread_id; i < nb_voxels; i += nb_threads_per_block){
-                const CPoint& cur_voxel = voxels[i];
-                uint32_t chunk_index = i / OocSimLodSettings::NB_POINTS_PER_CHUNK;
-                uint32_t point_index = i % OocSimLodSettings::NB_POINTS_PER_CHUNK;
-                globalVariables.allocatedChunks[first_voxels_chunk + chunk_index]->points[point_index] = cur_voxel;
-            }
-        }
-
-
-        if(thread_id == 0){
-            // Find parent if needed
-            // Use temporaryNodeBuffer as a temporary buffer 
-            COctreeNode* potential_parent = globalVariables.temporaryNodeBuffer[exchanged_index];
-            
-            if(potential_parent->aabb_index == globalVariables.relationshipMap[aabb_index].parent){
-                bool found = false;
-                for(uint32_t i=0; i<8; i++){
-                    if(globalVariables.relationshipMap[potential_parent->aabb_index].children[i] == aabb_index){
-
-#ifdef ASSERT_ENABLED
-                        if(potential_parent->children[i] != nullptr){
-                            printf("ERROR: At this point, the child[%d] = %d of node %d should not exist: parent = %d, relationship parent = %d\n",
-                                i, potential_parent->children[i]->aabb_index, aabb_index, potential_parent->aabb_index, 
-                                globalVariables.relationshipMap[potential_parent->children[i]->aabb_index].parent
-                            );
-                            customAssert();
-                        }
-#endif
-
-                        potential_parent->children[i] = shLoadedNode;
-                        found = true;
-                        break;
+                    if(potential_parent->children[i] != nullptr){
+                        printf("ERROR: At this point, the child[%d] = %d of node %d should not exist: parent = %d, relationship parent = %d\n",
+                            i, potential_parent->children[i]->aabb_index, aabb_index, potential_parent->aabb_index, 
+                            globalVariables.relationshipMap[potential_parent->children[i]->aabb_index].parent
+                        );
+                        customAssert();
                     }
-                }
-
-#ifdef ASSERT_ENABLED
-                if(!found){
-                    printf("ERROR: The parent %d doesn't contain the wanted child %d; real children are [%d, %d, %d, %d, %d, %d, %d, %d], relationship children are [%d, %d, %d, %d, %d, %d, %d, %d]\n",
-                        potential_parent->aabb_index, aabb_index,
-                        potential_parent->children[0] ? potential_parent->children[0]->aabb_index : -1,
-                        potential_parent->children[1] ? potential_parent->children[1]->aabb_index : -1,
-                        potential_parent->children[2] ? potential_parent->children[2]->aabb_index : -1,
-                        potential_parent->children[3] ? potential_parent->children[3]->aabb_index : -1,
-                        potential_parent->children[4] ? potential_parent->children[4]->aabb_index : -1,
-                        potential_parent->children[5] ? potential_parent->children[5]->aabb_index : -1,
-                        potential_parent->children[6] ? potential_parent->children[6]->aabb_index : -1,
-                        potential_parent->children[7] ? potential_parent->children[7]->aabb_index : -1,
-                        globalVariables.relationshipMap[potential_parent->aabb_index].children[0],
-                        globalVariables.relationshipMap[potential_parent->aabb_index].children[1],
-                        globalVariables.relationshipMap[potential_parent->aabb_index].children[2],
-                        globalVariables.relationshipMap[potential_parent->aabb_index].children[3],
-                        globalVariables.relationshipMap[potential_parent->aabb_index].children[4],
-                        globalVariables.relationshipMap[potential_parent->aabb_index].children[5],
-                        globalVariables.relationshipMap[potential_parent->aabb_index].children[6],
-                        globalVariables.relationshipMap[potential_parent->aabb_index].children[7]
-                    );
-                    customAssert();
-                }
 #endif
 
+                    potential_parent->children[i] = loaded_node;
+                    found = true;
+                    break;
+                }
             }
+
+#ifdef ASSERT_ENABLED
+            if(!found){
+                printf("ERROR: The parent %d doesn't contain the wanted child %d; real children are [%d, %d, %d, %d, %d, %d, %d, %d], relationship children are [%d, %d, %d, %d, %d, %d, %d, %d]\n",
+                    potential_parent->aabb_index, aabb_index,
+                    potential_parent->children[0] ? potential_parent->children[0]->aabb_index : -1,
+                    potential_parent->children[1] ? potential_parent->children[1]->aabb_index : -1,
+                    potential_parent->children[2] ? potential_parent->children[2]->aabb_index : -1,
+                    potential_parent->children[3] ? potential_parent->children[3]->aabb_index : -1,
+                    potential_parent->children[4] ? potential_parent->children[4]->aabb_index : -1,
+                    potential_parent->children[5] ? potential_parent->children[5]->aabb_index : -1,
+                    potential_parent->children[6] ? potential_parent->children[6]->aabb_index : -1,
+                    potential_parent->children[7] ? potential_parent->children[7]->aabb_index : -1,
+                    globalVariables.relationshipMap[potential_parent->aabb_index].children[0],
+                    globalVariables.relationshipMap[potential_parent->aabb_index].children[1],
+                    globalVariables.relationshipMap[potential_parent->aabb_index].children[2],
+                    globalVariables.relationshipMap[potential_parent->aabb_index].children[3],
+                    globalVariables.relationshipMap[potential_parent->aabb_index].children[4],
+                    globalVariables.relationshipMap[potential_parent->aabb_index].children[5],
+                    globalVariables.relationshipMap[potential_parent->aabb_index].children[6],
+                    globalVariables.relationshipMap[potential_parent->aabb_index].children[7]
+                );
+                customAssert();
+            }
+#endif
+
         }
     }
 }
@@ -398,75 +237,65 @@ void kernel_simlod_load_part_3_rebuilding_children(){
     globalVariables.nbGridsToInit = 0;
 
     auto grid = cg::this_grid();
-    auto block = cg::this_thread_block();
-    uint32_t nb_blocks = grid.num_blocks();
+    uint32_t thread_id = grid.thread_rank();
+    uint32_t nb_threads = grid.num_threads();
 
-    uint32_t block_id = grid.block_rank();
-    uint32_t thread_id = block.thread_rank();
-    uint32_t nb_threads_per_block = block.num_threads();
-
-    // if(block_id == 0 && thread_id == 0){
+    // if(thread_id == 0){
     //     printf("kernel_simlod_load_part_3_rebuilding_children\n");
     // }
 
-    if(block_id == 0 && thread_id == 0){
-        // Because "newChunk" was called in part 3
-        globalAllocator.chunksAllocator->reset_temporary_allocations();
-        // Because "newOctreeNode" was called in part 3
+    if(thread_id == 0){
+        // Because "newOctreeNode" was called in part 2
         globalAllocator.nodesAllocator->reset_temporary_allocations();
-        // Because "newOccupancyGrid" was called in part 3
+        // Because "newOccupancyGrid" was called in part 2
         globalAllocator.gridsAllocator->reset_temporary_allocations();
     }
 
     if(!globalVariables.isDoneLoading){return;}
 
     uint32_t first_node = globalVariables.curNbNodes - globalVariables.nbNodesExchangedBeforeLoadComplete;
-    // if(thread_id == 0 && block_id == 0){
+    // if(thread_id == 0){
     //     printf("nb exchanged: %d\n", globalVariables.nbNodesExchangedBeforeLoadComplete);
     // }
-    for(uint32_t node_index = first_node + block_id; node_index < globalVariables.curNbNodes; node_index += nb_blocks){
-
-        if(thread_id == 0){ // If first thread of block
-            // TODO: parallelise
-            COctreeNode* cur_node = globalVariables.packedNodes[node_index];
-
-            uint32_t child_aabbs[8] = {
-                CINVALID_ID, CINVALID_ID, CINVALID_ID, CINVALID_ID,
-                CINVALID_ID, CINVALID_ID, CINVALID_ID, CINVALID_ID
-            };
-            uint32_t to_find = 0;
-            for(uint32_t i=0; i<8; i++){
+    for(uint32_t node_index = first_node + thread_id; node_index < globalVariables.curNbNodes; node_index += nb_threads){
+        COctreeNode* cur_node = globalVariables.packedNodes[node_index];
+        uint32_t child_aabbs[8] = {
+            CINVALID_ID, CINVALID_ID, CINVALID_ID, CINVALID_ID,
+            CINVALID_ID, CINVALID_ID, CINVALID_ID, CINVALID_ID
+        };
+        uint32_t to_find = 0;
+        for(uint32_t i=0; i<8; i++){
 
 #ifdef ASSERT_ENABLED
-                if(cur_node->children[i] && 
-                    (cur_node->aabb_index != globalVariables.relationshipMap[cur_node->children[i]->aabb_index].parent)
-                ){
-                    printf("ERROR: a newly loaded node `%d' should not have children already initialised: children[%d] = %d; parent = %d\n", 
-                        cur_node->aabb_index, i, cur_node->children[i]->aabb_index, globalVariables.relationshipMap[cur_node->children[i]->aabb_index].parent
-                    );
-                    customAssert();
-                }
+            if(cur_node->children[i] && 
+                (cur_node->aabb_index != globalVariables.relationshipMap[cur_node->children[i]->aabb_index].parent)
+            ){
+                printf("ERROR: a newly loaded node `%d' should not have children already initialised: children[%d] = %d; parent = %d\n", 
+                    cur_node->aabb_index, i, cur_node->children[i]->aabb_index, globalVariables.relationshipMap[cur_node->children[i]->aabb_index].parent
+                );
+                customAssert();
+            }
 #endif
 
-                child_aabbs[i] = globalVariables.relationshipMap[cur_node->aabb_index].children[i];
-                if(child_aabbs[i] != CINVALID_ID){to_find++;}
-            }
-            uint32_t nb_found = 0;
-            for(uint32_t i=0; i<globalVariables.curNbNodes; i++){
-                if(nb_found == to_find){break;}
-                COctreeNode* potential_node = globalVariables.packedNodes[i];
-                for(uint32_t child=0; child<8; child++){
-                    if(child_aabbs[child] == potential_node->aabb_index){
-                        cur_node->children[child] = potential_node;
-                        nb_found++;
-                        break;
-                    }
+            child_aabbs[i] = globalVariables.relationshipMap[cur_node->aabb_index].children[i];
+            if(child_aabbs[i] != CINVALID_ID){to_find++;}
+        }
+
+        uint32_t nb_found = 0;
+        for(uint32_t i=0; i<globalVariables.curNbNodes; i++){
+            if(nb_found == to_find){break;}
+            COctreeNode* potential_node = globalVariables.packedNodes[i];
+            for(uint32_t child=0; child<8; child++){
+                if(child_aabbs[child] == potential_node->aabb_index){
+                    cur_node->children[child] = potential_node;
+                    nb_found++;
+                    break;
                 }
             }
-
-            // Flag the node as not needing to be loaded anymore
-            globalVariables.unsetFlag(cur_node->aabb_index, CFlagToLoad);
         }
+
+        // Flag the node as not needing to be loaded anymore
+        globalVariables.unsetFlag(cur_node->aabb_index, CFlagToLoad);
     }
 }
 
@@ -850,31 +679,29 @@ void sampleVoxel(const CPoint& point){
         CNodePosition child_position = aabb.getNextChildIndex(point.position);
         if(!cur_node->children[child_position]){return;}
 
-        // if(level % nb_threads == thread_id){
-            // Sample voxel occupancy grid at this location if the node is inner for this point
-            COccupancyGrid::GridIndex grid_index = COccupancyGrid::getCellIndices(aabb, point);
-            bool is_cell_occupied = cur_node->occupancy->markCellAsFilled(grid_index);
+        // Sample voxel occupancy grid at this location if the node is inner for this point
+        COccupancyGrid::GridIndex grid_index = COccupancyGrid::getCellIndices(aabb, point);
+        bool is_cell_occupied = cur_node->occupancy->markCellAsFilled(grid_index);
 
-            if(!is_cell_occupied){
-                // Create corresponding voxel using this point
-                vec3 voxel_centroid = COccupancyGrid::getCellCentroid(aabb, grid_index);
-                CPoint new_voxel = {};
-                new_voxel.position = voxel_centroid;
-                new_voxel.color = point.color;
+        if(!is_cell_occupied){
+            // Create corresponding voxel using this point
+            vec3 voxel_centroid = COccupancyGrid::getCellCentroid(aabb, grid_index);
+            CPoint new_voxel = {};
+            new_voxel.position = voxel_centroid;
+            new_voxel.color = point.color;
 
-                // Add voxel to backlog buffers
-                __nv_atomic_add(&cur_node->voxels_counter, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-                uint32_t backlog_index = __nv_atomic_fetch_add(&globalVariables.nbBacklogVoxels, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-                
-                if(backlog_index >= globalVariables.maxNbBacklogVoxels){
-                    printf("ERROR: Max nb backlog buffer reached: i = %d / %d\n", backlog_index, globalVariables.maxNbBacklogVoxels);
-                    customAssert();
-                }
-
-                globalVariables.backlogVoxels[backlog_index] = new_voxel;
-                globalVariables.backlogVoxelsNodes[backlog_index] = cur_node;
+            // Add voxel to backlog buffers
+            __nv_atomic_add(&cur_node->voxels_counter, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            uint32_t backlog_index = __nv_atomic_fetch_add(&globalVariables.nbBacklogVoxels, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            
+            if(backlog_index >= globalVariables.maxNbBacklogVoxels){
+                printf("ERROR: Max nb backlog buffer reached: i = %d / %d\n", backlog_index, globalVariables.maxNbBacklogVoxels);
+                customAssert();
             }
-        // }
+
+            globalVariables.backlogVoxels[backlog_index] = new_voxel;
+            globalVariables.backlogVoxelsNodes[backlog_index] = cur_node;
+        }
 
         cur_node = cur_node->children[child_position];
         level++;

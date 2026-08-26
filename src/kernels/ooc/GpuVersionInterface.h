@@ -353,10 +353,16 @@ enum CNodeFlagType {
 	CFlagIsInUpdatesCache,
 	CFlagWillBeInUpdatesCache,
 
+	// Rendering properties
+	CFlagHasEnoughPoints,
+	CFlagHasEnoughVoxels,
+	CFlagIsVisible,
+	CFlagIsLarge,
+	CFlagIsCut,
+	CFlagIsInVisibilityCache,
+	CFlagIsFromVoxelsInVisibilityCache,
+
 	// Pads to be replaced on need
-	CFlagPad17,
-	CFlagPad18,
-	CFlagPad19,
 	CFlagPad20,
 	CFlagPad21,
 	CFlagPad22,
@@ -369,12 +375,6 @@ enum CNodeFlagType {
 	CFlagPad29,
 	CFlagPad30,
 	CFlagPad31,
-
-	// Must be last of existing flags for flags reset without modifying rendering pipeline
-	CFlagIsVisible,
-	CFlagIsLarge,
-	CFlagIsCut,
-	CFlagIsInVisibilityCache,
 };
 
 struct COctreeNode {
@@ -391,17 +391,14 @@ struct COctreeNode {
 	uint32_t voxels_stored = 0;
 
 	uint32_t points_last_stored = 0;
+	uint32_t voxels_last_stored = 0;
 
-	// TODO: pack all of the following in a single uint32_t
 	uint32_t children_ids = 0;
-	// uint8_t children_ids = 0b00000000;
-	uint8_t children_visibility = 0b00000000;
 	uint8_t level = 0;
 
 	__device__ __forceinline__ COctreeNode(): points(nullptr), voxels(nullptr), occupancy(nullptr),
 		aabb_index(CINVALID_ID), points_counter(0), voxels_counter(0),
-		points_stored(0), voxels_stored(0), children_ids(0),
-		children_visibility(0b00000000), level(0)
+		points_stored(0), voxels_stored(0), children_ids(0), level(0)
 	{
 		for(uint32_t i=0; i<8; i++){
 			children[i] = nullptr;
@@ -421,7 +418,6 @@ struct COctreeNode {
 		points_stored = 0;
 		voxels_stored = 0;
 		children_ids = 0b00000000;
-		children_visibility = 0b00000000;
 		level = 0;
 	}
 };
@@ -604,16 +600,21 @@ struct CGlobalVariables {
 	/// Data exchanged from the host
 	uint32_t nbNodesExchanged = 0;
 	uint32_t maxNbNodesExchanged = 0;
-	uint32_t maxNbPointsChunksPerExchangedNode = 0;
-	uint32_t maxNbVoxelsChunksPerExchangedNode = 0;
+	uint32_t maxNbPointsExchanged= 0;
+	uint32_t maxNbVoxelsExchanged = 0;
+	uint32_t nbPointsExchanged = 0;
+	uint32_t nbVoxelsExchanged = 0;
 	CIdAABB* exchangedAABBIndices = nullptr;
 	CIdAABB* exchangedAABBParentsIndices = nullptr;
 	CAABB* exchangedAABBs = nullptr;
 	uint32_t* exchangedChildrenIds = nullptr;
 	uint32_t* exchangedPointsCounters = nullptr;
 	uint32_t* exchangedVoxelsCounters = nullptr;
-	CPoint** exchangedPoints = nullptr;
-	CPoint** exchangedVoxels = nullptr;
+	CPoint* exchangedPoints = nullptr;
+	CIdAABB* exchangedPointsNodesIds = nullptr;
+	CPoint* exchangedVoxels = nullptr;
+	CIdAABB* exchangedVoxelsNodesIds = nullptr;
+
 	bool isDoneLoading = true;
 	bool isDoneStoring = true;
 	bool isDoneIterating = true;
@@ -887,6 +888,15 @@ struct CGlobalVariables {
 	}
 	__device__ __forceinline__ bool isInVisibilityCache(const CIdAABB& aabb_index) const {
 		return getFlag(aabb_index, CFlagIsInVisibilityCache);
+	}
+	__device__ __forceinline__ bool isFromVoxelsInVisibilityCache(const CIdAABB& aabb_index) const {
+		return getFlag(aabb_index, CFlagIsFromVoxelsInVisibilityCache);
+	}
+	__device__ __forceinline__ bool hasEnoughPoints(const CIdAABB& aabb_index) const {
+		return getFlag(aabb_index, CFlagHasEnoughPoints);
+	}
+	__device__ __forceinline__ bool hasEnoughVoxels(const CIdAABB& aabb_index) const {
+		return getFlag(aabb_index, CFlagHasEnoughVoxels);
 	}
 
 #endif // __CUDACC__

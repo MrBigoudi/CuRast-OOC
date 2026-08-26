@@ -402,9 +402,9 @@ struct CMemoryAllocator {
         node->voxels_counter = 0;
         node->points_stored = 0;
         node->points_last_stored = 0;
+        node->voxels_last_stored = 0;
         node->voxels_stored = 0;
         node->children_ids = 0;
-        node->children_visibility = 0;
         node->level = 0;
 
         nodesAllocator->deallocate(node, will_run_in_parallel);

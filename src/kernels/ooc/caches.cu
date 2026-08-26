@@ -140,6 +140,8 @@ void kernel_prepare_store_part_1_filling_buffers(){
     // }
 
     __shared__ uint32_t shExchangedIndex;
+    __shared__ uint32_t shPointsIndex;
+    __shared__ uint32_t shVoxelsIndex;
 
     for(uint32_t node_index = block_id; node_index < globalVariables.curNbNodes; node_index += nb_blocks){
 
@@ -160,17 +162,30 @@ void kernel_prepare_store_part_1_filling_buffers(){
             globalVariables.setFlags(node->aabb_index, flags);
         }
 
-        // if(!globalVariables.updatesCache->contains(node->aabb_index)){
         if(!is_in_cache){
             __syncthreads(); // Needed to sync after break
             if(thread_id == 0){
                 shExchangedIndex = __nv_atomic_fetch_add(&globalVariables.nbNodesExchanged, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-            
                 if(shExchangedIndex >= globalVariables.maxNbNodesExchanged){
-                    // printf("WARN: Too many nodes are being stored\n");
                     globalVariables.isDoneStoring = false;
+                } else {
+                    uint32_t nb_new_points = (node->points_counter - node->points_last_stored);
+                    shPointsIndex = __nv_atomic_fetch_add(&globalVariables.nbPointsExchanged, nb_new_points, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+                    if(shPointsIndex + nb_new_points >= globalVariables.maxNbPointsExchanged){
+                        printf("ERROR: Too many points are being stored:\n    Total points before = %d, new points = %d, max nb points = %d\n", 
+                            shPointsIndex, nb_new_points, globalVariables.maxNbPointsExchanged
+                        );
+                        customAssert();
+                    }
+                    uint32_t nb_new_voxels = node->voxels_counter;
+                    shVoxelsIndex = __nv_atomic_fetch_add(&globalVariables.nbVoxelsExchanged, nb_new_voxels, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+                    if(shVoxelsIndex + nb_new_voxels >= globalVariables.maxNbVoxelsExchanged){
+                        printf("ERROR: Too many voxels are being stored:\n    Total voxels before = %d, new voxels = %d, max nb voxels = %d\n", 
+                            shVoxelsIndex, nb_new_voxels, globalVariables.maxNbVoxelsExchanged
+                        );
+                        customAssert();
+                    }
                 }
-
             }
             __syncthreads(); // Needed to sync before break condition
 
@@ -178,45 +193,25 @@ void kernel_prepare_store_part_1_filling_buffers(){
                 break; // To avoid skipping thread sync
             }
 
-
             // Storing node properties
             globalVariables.exchangedAABBIndices[shExchangedIndex] = node->aabb_index;
             globalVariables.exchangedAABBParentsIndices[shExchangedIndex] = globalVariables.relationshipMap[node->aabb_index].parent;
             globalVariables.exchangedAABBs[shExchangedIndex] = globalVariables.relationshipMap[node->aabb_index].aabb;
             globalVariables.exchangedChildrenIds[shExchangedIndex] = node->children_ids;
             // globalVariables.exchangedPointsCounters[shExchangedIndex] = node->points_counter;
-            globalVariables.exchangedPointsCounters[shExchangedIndex] = (node->points_counter - node->points_last_stored);
-            globalVariables.exchangedVoxelsCounters[shExchangedIndex] = node->voxels_counter;
+            // globalVariables.exchangedPointsCounters[shExchangedIndex] = (node->points_counter - node->points_last_stored);
+            // globalVariables.exchangedVoxelsCounters[shExchangedIndex] = node->voxels_counter;
 
-            // UI values
-            if(thread_id == 0){
-                __nv_atomic_add(&globalVariables.nbStoredNodesThisUpdate, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-                __nv_atomic_add(&globalVariables.nbTotalStoredNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-                __nv_atomic_sub(&globalVariables.currentNbPoints, node->points_counter, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-                __nv_atomic_sub(&globalVariables.currentNbVoxels, node->voxels_counter, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-            }
-            
-            const uint32_t MAX_NB_POINTS = globalVariables.maxNbPointsChunksPerExchangedNode * OocSimLodSettings::NB_POINTS_PER_CHUNK;
-            const uint32_t MAX_NB_VOXELS = globalVariables.maxNbVoxelsChunksPerExchangedNode * OocSimLodSettings::NB_POINTS_PER_CHUNK;
-            
             // Storing node points
             CChunk* cur_chunk = node->points;
-            uint32_t cur_point_index = thread_id;
+            uint32_t cur_point_index = shPointsIndex + thread_id;
+            CPoint* exchanged_points = globalVariables.exchangedPoints;
+            CIdAABB* exchanged_points_ids = globalVariables.exchangedPointsNodesIds;
             while(cur_chunk){
                 for(uint32_t i = thread_id; i < cur_chunk->size; i += nb_threads_per_block){
-
-#ifdef ASSERT_ENABLED
-                    if(cur_point_index >= MAX_NB_POINTS){
-                        printf("ERROR: Too many points in the node, some will be skipped to store it: index %d / %d\n",
-                            cur_point_index, MAX_NB_POINTS
-                        );
-                        customAssert();
-                    }
-#endif
-
                     const CPoint& cur_point = cur_chunk->points[i];
-                    CPoint* exchangedPoints = globalVariables.exchangedPoints[shExchangedIndex];
-                    exchangedPoints[cur_point_index] = cur_point;
+                    exchanged_points[cur_point_index] = cur_point;
+                    exchanged_points_ids[cur_point_index] = node->aabb_index;
                     cur_point_index += nb_threads_per_block;
                 }
                 cur_chunk = cur_chunk->next;
@@ -224,22 +219,14 @@ void kernel_prepare_store_part_1_filling_buffers(){
 
             // Storing node voxels
             cur_chunk = node->voxels;
-            cur_point_index = thread_id;
+            cur_point_index = shVoxelsIndex + thread_id;
+            CPoint* exchanged_voxels = globalVariables.exchangedVoxels;
+            CIdAABB* exchanged_voxels_ids = globalVariables.exchangedVoxelsNodesIds;
             while(cur_chunk){
                 for(uint32_t i = thread_id; i < cur_chunk->size; i += nb_threads_per_block){
-
-#ifdef ASSERT_ENABLED
-                    if(cur_point_index >= MAX_NB_VOXELS){
-                        printf("ERROR: Too many voxels in the node, some will be skipped to store it: index %d / %d\n",
-                            cur_point_index, MAX_NB_VOXELS
-                        );
-                        customAssert();
-                    }
-#endif
-
                     const CPoint& cur_voxel = cur_chunk->points[i];
-                    CPoint* exchangedVoxels = globalVariables.exchangedVoxels[shExchangedIndex];
-                    exchangedVoxels[cur_point_index] = cur_voxel;
+                    exchanged_voxels[cur_point_index] = cur_voxel;
+                    exchanged_voxels_ids[cur_point_index] = node->aabb_index;
                     cur_point_index += nb_threads_per_block;
                 }
                 cur_chunk = cur_chunk->next;
@@ -247,9 +234,16 @@ void kernel_prepare_store_part_1_filling_buffers(){
 
             __syncthreads(); // Needed to sync before deletion
             if(thread_id == 0){
+                // TODO: slow, refactor to let each thread delete a chunk
                 // Deleting the node
                 globalAllocator.delOctreeNode(node, true, true);
                 globalVariables.packedNodes[node_index] = nullptr;
+
+                // UI values
+                __nv_atomic_add(&globalVariables.nbStoredNodesThisUpdate, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+                __nv_atomic_add(&globalVariables.nbTotalStoredNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+                __nv_atomic_sub(&globalVariables.currentNbPoints, node->points_counter, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+                __nv_atomic_sub(&globalVariables.currentNbVoxels, node->voxels_counter, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
             }
             __syncthreads(); // Needed to sync after deletion
 
@@ -286,6 +280,21 @@ void kernel_prepare_store_part_2_resetting_children(){
                 node->children[i] = nullptr;
                 continue;
             }
+        }
+
+        // Check its points / voxels counters
+        // Check if more than X% of the node's total points are available
+        const float X_POINTS = 50.;
+        uint32_t threshold_points = uint32_t(float(node->points_counter) * (X_POINTS * 0.01));
+        uint32_t available_points = (node->points_counter - node->points_last_stored);
+        if(available_points >= threshold_points){
+            globalVariables.setFlag(node->aabb_index, CFlagHasEnoughPoints);
+        }
+        const float X_VOXELS = 50.;
+        uint32_t threshold_voxels = uint32_t(float(node->voxels_counter) * (X_VOXELS * 0.01));
+        uint32_t available_voxels = (node->voxels_counter - node->voxels_last_stored);
+        if(available_voxels >= threshold_voxels){
+            globalVariables.setFlag(node->aabb_index, CFlagHasEnoughVoxels);
         }
     }
 }
