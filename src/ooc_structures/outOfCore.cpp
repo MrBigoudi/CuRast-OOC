@@ -158,8 +158,8 @@ std::shared_ptr<HostStorageNode> OctreeNodeSerializable::deserializeV2(const CId
     }
 
 
-    new_node->node.voxels_counter = serializable_node.voxels_counter;
     if(new_node->node.voxels_counter > 0){
+        new_node->svo = std::make_shared<SVONode>(); 
         ChunkSerializable loaded_voxels = ChunkSerializable::deserialize(
             getChunkFilePathV2(aabb_index, true)
         );
@@ -174,7 +174,13 @@ std::shared_ptr<HostStorageNode> OctreeNodeSerializable::deserializeV2(const CId
                     loaded_voxels.points[j][k].color[2],
                     loaded_voxels.points[j][k].color[3]
                 );
-                new_node->voxels.push_back(cur_point);
+
+                COccupancyGrid::GridIndex voxel_index = COccupancyGrid::getCellIndices(
+                    GpuVersion::aabbsMap[aabb_index], cur_point
+                );
+                if(SVONode::insertVoxelIntoSVO(new_node->svo, voxel_index)){
+                    new_node->voxels.push_back(cur_point);
+                }
             }
         }
     }

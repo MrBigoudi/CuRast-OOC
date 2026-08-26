@@ -6,6 +6,41 @@
 
 #include <list>
 
+
+struct SVONode {
+    std::shared_ptr<SVONode> children[8] = {
+        nullptr, nullptr, nullptr, nullptr,
+        nullptr, nullptr, nullptr, nullptr
+    };
+
+    static bool insertVoxelIntoSVO(
+        std::shared_ptr<SVONode>& node,
+        const COccupancyGrid::GridIndex& index,
+        uint32_t depth = std::log2(OocSimLodSettings::GRID_SIZE_PER_DIMENSION)
+    ){
+        if(depth == 0){
+            bool already_present = (node != nullptr);
+            if(!already_present){node = std::make_shared<SVONode>();}
+            return !already_present;
+        }
+
+        if(!node){node = std::make_shared<SVONode>();}
+
+        uint32_t bit = depth - 1;
+        uint32_t octant = ((index.grid.x >> bit) & 1u)
+            | (((index.grid.y >> bit) & 1u) << 1)
+            | (((index.grid.z >> bit) & 1u) << 2);
+        return insertVoxelIntoSVO(node->children[octant], index, depth - 1);
+    }
+};
+
+struct HostStorageNode {
+	COctreeNode node;
+	std::vector<CPoint> points = {};
+	std::vector<CPoint> voxels = {};
+    std::shared_ptr<SVONode> svo = nullptr;
+};
+
 /// The LRU caches for the nodes
 /// https://www.geeksforgeeks.org/dsa/lru-cache-implementation-using-double-linked-lists/ + ChatGPT
 struct CLRUCache {

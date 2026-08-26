@@ -15,11 +15,7 @@
 
 
 
-struct HostStorageNode {
-	COctreeNode node;
-	std::vector<CPoint> points;
-	std::vector<CPoint> voxels;
-};
+
 
 
 ///////////////////////////////////////////////////////////////////////////////

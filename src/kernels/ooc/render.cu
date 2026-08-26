@@ -505,18 +505,16 @@ void kernel_drawVisibilityCache(
         const CNodePosition next_child_pos = node_aabb.getNextChildIndex(voxel.position);
         const CIdAABB& child_index = globalVariables.relationshipMap[node_id].children[next_child_pos];
         const vec3& voxel_size = globalVariables.relationshipMap[node_id].aabb.getSize() / float(OocSimLodSettings::GRID_SIZE_PER_DIMENSION);
+        if(child_index == CINVALID_ID){continue;}
 
         // Only render the voxel if the corresponding child is not present
-        bool child_is_loaded = false;
-        bool child_has_enough_points = false;
-        if(child_index != CINVALID_ID){
-            if(globalVariables.isInVisibilityCache(child_index)){continue;}
-            child_is_loaded = globalVariables.isInUpdatesCache(child_index);
-            child_has_enough_points = globalVariables.hasEnoughPoints(child_index);
-        }
-                
-        bool should_draw_voxels = !child_is_loaded || !child_has_enough_points;
-        if(should_draw_voxels){
+        if(globalVariables.isInVisibilityCache(child_index)){continue;}
+        bool child_is_visible = globalVariables.isVisible(child_index);
+        bool child_has_enough_points = globalVariables.hasEnoughPoints(child_index);
+        // bool child_has_enough_voxels = globalVariables.hasEnoughVoxels(child_index);
+        
+        if(!child_is_visible || !child_has_enough_points){
+        // if(!child_is_visible){
             const vec3 root_aabb_size = globalVariables.relationshipMap[globalVariables.mainOctree->aabb_index].aabb.getSize();
             float root_size = max(root_aabb_size.x, max(root_aabb_size.y, root_aabb_size.z));
             float cur_size = max(voxel_size.x, max(voxel_size.y, voxel_size.z));
@@ -561,7 +559,7 @@ void kernel_drawOctreeLarge(
     for(uint32_t node_index = block_id; node_index < nb_nodes; node_index += nb_blocks){
         COctreeNode* node = globalVariables.packedNodes[node_index];
 
-        // Render stored nodes
+        // Render unloaded nodes
         {
             uint32_t flags = 0b00000000;
             for(uint32_t i=0; i<8; i++){
@@ -576,7 +574,9 @@ void kernel_drawOctreeLarge(
                 if(!node->children[i]){continue;}
                 
                 bool child_has_enough_points = globalVariables.hasEnoughPoints(child_index);
-                bool child_has_enough_voxels = globalVariables.hasEnoughVoxels(child_index);
+                // bool child_has_enough_points = true;
+                // bool child_has_enough_voxels = globalVariables.hasEnoughVoxels(child_index);
+                bool child_has_enough_voxels = true;
                 if(child_has_enough_points && child_has_enough_voxels){
                     flags |= ((0x01) << i);
                     continue;
@@ -658,7 +658,9 @@ void kernel_drawOctreeSmall(
                 drawAllVoxels(
                     target, settings, node,
                     settings.voxels_nb_points_per_axis,
-                    0b11111111, false
+                    0b11111111, 
+                    false
+                    // true
                 );
             }
         }

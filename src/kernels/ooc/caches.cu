@@ -291,8 +291,8 @@ void kernel_prepare_store_part_2_resetting_children(){
             globalVariables.setFlag(node->aabb_index, CFlagHasEnoughPoints);
         }
         const float X_VOXELS = 50.;
-        uint32_t threshold_voxels = uint32_t(float(node->voxels_counter) * (X_VOXELS * 0.01));
-        uint32_t available_voxels = (node->voxels_counter - node->voxels_last_stored);
+        uint32_t threshold_voxels = uint32_t(float(node->voxels_counter + node->voxels_last_stored) * (X_VOXELS * 0.01));
+        uint32_t available_voxels = node->voxels_counter;
         if(available_voxels >= threshold_voxels){
             globalVariables.setFlag(node->aabb_index, CFlagHasEnoughVoxels);
         }

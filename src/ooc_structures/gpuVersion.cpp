@@ -837,8 +837,15 @@ void GpuVersion::storeNodes(uint32_t nb_nodes_to_store){
         CIdAABB node_id = voxels_nodes_ids[i];
         const CPoint& voxel = voxels[i];
         std::shared_ptr<HostStorageNode>& node = persistentStoredNodes[node_id];
-        node->node.voxels_counter++;
-        node->voxels.push_back(voxel);
+
+        const CAABB& aabb = aabbsMap[node_id];
+        COccupancyGrid::GridIndex index = COccupancyGrid::getCellIndices(aabb, voxel);
+
+        // TODO: only add point if not already in SVO
+        if(SVONode::insertVoxelIntoSVO(node->svo, index)){
+            node->node.voxels_counter++;
+            node->voxels.push_back(voxel);
+        }
     }
 
 }
@@ -954,52 +961,54 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
             persistentStoredNodes[cur_node] = node;
         }
 
-        bool points_added = (node->node.points_counter == 0);
-        bool voxels_added = (node->node.voxels_counter == 0);
-
-        // Add points
-        if(
+        bool has_points = (node->node.points_counter > 0);
+        bool has_voxels = (node->node.voxels_counter > 0);
+        bool points_can_be_added = 
             // Only send if the maximum of voxels to send is not reached
             (point_cpt < OocSimLodSettings::MAX_NB_RENDERED_POINTS)
             // Only send if has points
             && (node->node.points_counter > 0)
             // Only send if all points are loaded
             && (node->node.points_counter + point_cpt <= OocSimLodSettings::MAX_NB_RENDERED_POINTS)
-        ){
-            uint32_t new_total = point_cpt + node->node.points_counter;
-            uint32_t nb_new_points = node->node.points_counter;
-            srcs_host.push_back((CUdeviceptr)node->points.data());
-            dsts_device.push_back((CUdeviceptr)hostStaging.renderedPoints + (CUdeviceptr)(point_cpt * sizeof(CPoint)));
-            sizes.push_back(nb_new_points * sizeof(CPoint));
-            point_cpt = new_total;
-            points_added = true;
-        }
-
-        // Add voxels
-        if(
+        ;
+        bool voxels_can_be_added =
             // Only send if the maximum of voxels to send is not reached
             (voxel_cpt < OocSimLodSettings::MAX_NB_RENDERED_VOXELS)
             // Only send if has voxels
             && (node->node.voxels_counter > 0)
             // Only send if all voxels are loaded
             && (node->node.voxels_counter + voxel_cpt <= OocSimLodSettings::MAX_NB_RENDERED_VOXELS)
-        ){
-            uint32_t new_total = voxel_cpt + node->node.voxels_counter;
-            uint32_t nb_new_voxels = node->node.voxels_counter;
-            srcs_host.push_back((CUdeviceptr)node->voxels.data());
-            dsts_device.push_back((CUdeviceptr)hostStaging.renderedVoxels + (CUdeviceptr)(voxel_cpt * sizeof(CPoint)));
-            sizes.push_back(nb_new_voxels * sizeof(CPoint));
+        ;
 
-            // Add other voxels properties
-            for(uint32_t voxel_id = 0; voxel_id < nb_new_voxels; voxel_id++){
-                voxels_nodes_to_send[voxel_cpt + voxel_id] = cur_node;
+        bool points_ok = !has_points || points_can_be_added;
+        bool voxels_ok = !has_voxels || voxels_can_be_added;
+        if(points_ok && voxels_ok){
+            // Add points
+            if(has_points){
+                uint32_t new_total_points = point_cpt + node->node.points_counter;
+                uint32_t nb_new_points = node->node.points_counter;
+                srcs_host.push_back((CUdeviceptr)node->points.data());
+                dsts_device.push_back((CUdeviceptr)hostStaging.renderedPoints + (CUdeviceptr)(point_cpt * sizeof(CPoint)));
+                sizes.push_back(nb_new_points * sizeof(CPoint));
+                point_cpt = new_total_points;
             }
-            voxel_cpt = new_total;
-            voxels_added = true;
-        }
 
-        // Add the node
-        if(points_added || voxels_added){
+            // Add voxels
+            if(has_voxels){
+                uint32_t new_total_voxels = voxel_cpt + node->node.voxels_counter;
+                uint32_t nb_new_voxels = node->node.voxels_counter;
+                srcs_host.push_back((CUdeviceptr)node->voxels.data());
+                dsts_device.push_back((CUdeviceptr)hostStaging.renderedVoxels + (CUdeviceptr)(voxel_cpt * sizeof(CPoint)));
+                sizes.push_back(nb_new_voxels * sizeof(CPoint));
+            
+                // Add other voxels properties
+                for(uint32_t voxel_id = 0; voxel_id < nb_new_voxels; voxel_id++){
+                    voxels_nodes_to_send[voxel_cpt + voxel_id] = cur_node;
+                }
+                voxel_cpt = new_total_voxels;
+            }
+
+            // Add the node
             visibility_cache_to_send[cpt] = cur_node;
             cpt++;
         }
@@ -1012,15 +1021,15 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
         }
     }
 
-    // Add other voxels properties
-    if(voxel_cpt > 0){
-        srcs_host.push_back((CUdeviceptr)voxels_nodes_to_send.data());
-        dsts_device.push_back((CUdeviceptr)hostStaging.renderedVoxelsNodes);
-        sizes.push_back(voxel_cpt * sizeof(CIdAABB));
-    }
-
-    // Add visibility cache
     if(cpt > 0){
+        // Add other voxels properties
+        if(voxel_cpt > 0){
+            srcs_host.push_back((CUdeviceptr)voxels_nodes_to_send.data());
+            dsts_device.push_back((CUdeviceptr)hostStaging.renderedVoxelsNodes);
+            sizes.push_back(voxel_cpt * sizeof(CIdAABB));
+        }
+
+        // Add visibility cache
         srcs_host.push_back((CUdeviceptr)visibility_cache_to_send.data());
         dsts_device.push_back((CUdeviceptr)hostStaging.visibilityCache);
         sizes.push_back(cpt * sizeof(CIdAABB));

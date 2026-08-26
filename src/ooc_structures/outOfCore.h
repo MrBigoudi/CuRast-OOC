@@ -1,6 +1,7 @@
 #pragma once
 
 #include "globals.h"
+#include "gpuVersion.h"
 
 #include <array>
 
