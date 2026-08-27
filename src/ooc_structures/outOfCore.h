@@ -71,7 +71,7 @@ struct OctreeNodeSerializable {
     static OctreeNode* toOctreeNode(const IdAABB& node_aabb_index);
     
     static void serializeV2(const std::shared_ptr<HostStorageNode> node);
-    static std::shared_ptr<HostStorageNode> deserializeV2(const CIdAABB& aabb_index, const std::string& msg = "");
+    static void deserializeV2(HostStorageNode* node, const CIdAABB& aabb_index, const std::string& msg = "");
 
     private:
         // helpers

@@ -456,7 +456,8 @@ void OctreeNodeSerializable::serializeV2(const std::shared_ptr<HostStorageNode> 
         std::string points_filepath = getChunkFilePathV2(node->node.aabb_index, false);
         uint32_t nb_old_points = node->node.points_last_stored;
         uint32_t nb_new_points = node->node.points_counter - nb_old_points;
-        ChunkSerializable::serializeV2(points_filepath, node->points.data(), 
+        // ChunkSerializable::serializeV2(points_filepath, node->points.data(), 
+        ChunkSerializable::serializeV2(points_filepath, node->points,
             nb_old_points, nb_new_points
         );
     }
@@ -478,8 +479,7 @@ void OctreeNodeSerializable::serializeV2(const std::shared_ptr<HostStorageNode> 
 }
 
 /// A constructor which is deserialized from an aabb
-std::shared_ptr<HostStorageNode> OctreeNodeSerializable::deserializeV2(const CIdAABB& aabb_index, const std::string& msg){
-    std::shared_ptr<HostStorageNode> node = std::make_shared<HostStorageNode>();
+void OctreeNodeSerializable::deserializeV2(HostStorageNode* node, const CIdAABB& aabb_index, const std::string& msg){
     node->node.aabb_index = aabb_index;
     
     // Read node
@@ -504,9 +504,10 @@ std::shared_ptr<HostStorageNode> OctreeNodeSerializable::deserializeV2(const CId
 
     // Read points
     if(node->node.points_counter > 0){
-        node->points = std::vector<CPoint>(node->node.points_counter);
+        // node->points = std::vector<CPoint>(node->node.points_counter);
         std::string points_filepath = getChunkFilePathV2(node->node.aabb_index, false);
-        ChunkSerializable::deserializeV2(points_filepath, node->points.data(), node->node.points_counter);
+        // ChunkSerializable::deserializeV2(points_filepath, node->points.data(), node->node.points_counter);
+        ChunkSerializable::deserializeV2(points_filepath, node->points, node->node.points_counter);
     }
 
     // Read voxels
@@ -518,8 +519,6 @@ std::shared_ptr<HostStorageNode> OctreeNodeSerializable::deserializeV2(const CId
         ChunkSerializable::deserializeV2(voxels_filepath, node->voxels.data(), node->node.voxels_counter);
         OccupancyGridSerializable::deserializeV2(grid_filepath, node->occupancy_indices, node->node.voxels_counter);
     }
-    
-    return node;
 }
 
 

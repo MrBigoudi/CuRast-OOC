@@ -38,14 +38,13 @@ struct PointsAllocator {
 
 struct HostStorageNode {
 	COctreeNode node = {};
-	// CPoint* points = nullptr;
-	std::vector<CPoint> points = {};
+	CPoint* points = nullptr;
 	std::vector<CPoint> voxels = {};
     std::vector<uint64_t> occupancy_indices = {};
 
-    // HostStorageNode() {
-    //     points = PointsAllocator::allocate();
-    // }
+    HostStorageNode() {
+        points = PointsAllocator::allocate();
+    }
 };
 
 /// The LRU caches for the nodes

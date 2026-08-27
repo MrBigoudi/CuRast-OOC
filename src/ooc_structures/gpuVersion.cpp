@@ -480,25 +480,35 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
     
     // Load from CPU cache
     {
-        std::vector<uint32_t> indices(nb_nodes_to_load, 0);
-        std::iota(indices.begin(), indices.end(), 0);
-
-        auto load_node = [&](uint32_t& i){
-            CIdAABB aabb_index = static_cast<CIdAABB*>(exchangedIds)[i];
-            if(!persistentStoredNodes.contains(aabb_index)){
-                loaded[i] = OctreeNodeSerializable::deserializeV2(aabb_index, "From simlod load");
-            } else {
-                loaded[i] = persistentStoredNodes[aabb_index];
-            }
+        CIdAABB* ids = static_cast<CIdAABB*>(exchangedIds);
+        struct TmpToLoadStruct {
+            CIdAABB id;
+            std::shared_ptr<HostStorageNode> node;
+            uint32_t loaded_id;
         };
-
-        if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-            std::for_each(std::execution::par, indices.begin(), indices.end(), load_node);
-        } else {
-            std::for_each(indices.begin(), indices.end(), load_node);
+        std::vector<TmpToLoadStruct> to_load = {};
+        for(uint32_t i = 0; i < nb_nodes_to_load; i++){
+            if(!persistentStoredNodes.contains(ids[i])){
+                to_load.push_back({
+                    ids[i], std::make_shared<HostStorageNode>(), i
+                });
+            } else {
+                loaded[i] = persistentStoredNodes[ids[i]];
+            }
         }
+
+        auto load_node = [&](TmpToLoadStruct& to_load){
+            OctreeNodeSerializable::deserializeV2(to_load.node.get(), to_load.id, "From simlod load");
+            loaded[to_load.loaded_id] = to_load.node;
+        };
+        if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+            std::for_each(std::execution::par, to_load.begin(), to_load.end(), load_node);
+        } else {
+            std::for_each(to_load.begin(), to_load.end(), load_node);
+        }
+
         for(uint32_t i=0; i<nb_nodes_to_load; i++){
-            CIdAABB id = static_cast<CIdAABB*>(exchangedIds)[i];
+            CIdAABB id = ids[i];
             hostCache->add(id);
             persistentStoredNodes[id] = loaded[i];
         }
@@ -818,13 +828,12 @@ void GpuVersion::storeNodes(uint32_t nb_nodes_to_store){
         CIdAABB id = ids[i];
         // Load or create the nodes
         if(!persistentStoredNodes.contains(id)){
+            std::shared_ptr<HostStorageNode> new_node = std::make_shared<HostStorageNode>();
+            new_node->node.aabb_index = id;
             if(storedNodes.contains(id)){
-                persistentStoredNodes[id] = OctreeNodeSerializable::deserializeV2(id, "From update cache");
-            } else {
-                std::shared_ptr<HostStorageNode> new_node = std::make_shared<HostStorageNode>();
-                new_node->node.aabb_index = id;
-                persistentStoredNodes[id] = new_node;
+                OctreeNodeSerializable::deserializeV2(new_node.get(), id, "From update cache");
             }
+            persistentStoredNodes[id] = new_node;
         }
 
         // Update node properties
@@ -842,10 +851,11 @@ void GpuVersion::storeNodes(uint32_t nb_nodes_to_store){
         if(nbs_points[i] > 0){
             uint32_t old_counter = cur_node->node.points_counter;
             cur_node->node.points_counter += nbs_points[i];
-            cur_node->points.resize(cur_node->node.points_counter);
+            // cur_node->points.resize(cur_node->node.points_counter);
 
             srcs_device.push_back(exchangedPointsPointers[i]);
-            dsts_host.push_back((CUdeviceptr)(cur_node->points.data() + old_counter));
+            // dsts_host.push_back((CUdeviceptr)(cur_node->points.data() + old_counter));
+            dsts_host.push_back((CUdeviceptr)(cur_node->points + old_counter));
             sizes.push_back(nbs_points[i] * sizeof(CPoint));
         }
 
@@ -989,7 +999,8 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
         if(persistentStoredNodes.contains(cur_node)){
             node = persistentStoredNodes[cur_node];
         } else {
-            node = OctreeNodeSerializable::deserializeV2(cur_node, "From vis update");
+            node = std::make_shared<HostStorageNode>();
+            OctreeNodeSerializable::deserializeV2(node.get(), cur_node, "From vis update");
             persistentStoredNodes[cur_node] = node;
         }
 
@@ -1019,7 +1030,8 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
             if(has_points){
                 uint32_t new_total_points = point_cpt + node->node.points_counter;
                 uint32_t nb_new_points = node->node.points_counter;
-                srcs_host.push_back((CUdeviceptr)node->points.data());
+                // srcs_host.push_back((CUdeviceptr)node->points.data());
+                srcs_host.push_back((CUdeviceptr)node->points);
                 dsts_device.push_back((CUdeviceptr)hostStaging.renderedPoints + (CUdeviceptr)(point_cpt * sizeof(CPoint)));
                 sizes.push_back(nb_new_points * sizeof(CPoint));
                 point_cpt = new_total_points;
@@ -1111,6 +1123,12 @@ void GpuVersion::updateHostCache(){
             OctreeNodeSerializable::serializeV2(node);
         });
     }
+
+    // Deallocate old points
+    std::for_each(nodes_to_store.begin(), nodes_to_store.end(), [](std::shared_ptr<HostStorageNode>& node){
+        PointsAllocator::deallocate(node->points);
+        node->points = nullptr;
+    });
 }
 
 
