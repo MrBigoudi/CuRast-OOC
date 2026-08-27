@@ -30,6 +30,26 @@ struct ChunkSerializable {
     void serialize(const std::string& filepath) const;
     static ChunkSerializable deserialize(const std::string& filepath);
     Chunk* toChunk() const;
+
+    static void serializeV2(
+        const std::string& filepath, const CPoint* points, 
+        uint32_t nb_old_points, uint32_t nb_new_points
+    );
+    static void deserializeV2(
+        const std::string& filepath, CPoint* points, 
+        uint32_t nb_points
+    );
+};
+
+struct OccupancyGridSerializable {
+    static void serializeV2(
+        const std::string& filepath, const std::vector<uint64_t>& indices, 
+        uint32_t nb_old_voxels, uint32_t nb_new_voxels
+    );
+    static void deserializeV2(
+        const std::string& filepath, std::vector<uint64_t>& indices, 
+        uint32_t nb_voxels
+    );
 };
 
 /// A serializable node
@@ -39,6 +59,7 @@ struct OctreeNodeSerializable {
 	uint8_t children_ids = 0b00000000;
 	std::string points = "";
 	std::string voxels = "";
+    std::string occupancy = "";
     IdAABB aabb_index = {};
 
     friend CPUFallbackCache;
@@ -73,7 +94,6 @@ struct CPUFallbackCache {
         Entry(){}
 		/// A constructor from an existing node
 		Entry(const OctreeNode* node);
-		Entry(const std::shared_ptr<HostStorageNode> node);
         /// A constructor which is deserialized from an aabb
         static Entry deserialize(const IdAABB& aabb_index);
 

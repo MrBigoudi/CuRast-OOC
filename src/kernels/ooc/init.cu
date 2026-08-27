@@ -17,6 +17,7 @@ void kernel_init_global_buffers(){
         globalVariables.relationshipMap[thread_id] = CGlobalVariables::Relationship();
         globalVariables.packedNodes[thread_id] = nullptr;
         globalVariables.resetFlags(thread_id);
+        globalVariables.gridsToInitExchangedIndex[thread_id] = -1;
     }
 
 
@@ -253,6 +254,7 @@ void kernel_fill_new_grids(){
 
     for(uint32_t node_id = block_id; node_id < globalVariables.nbGridsToInit; node_id += nb_blocks){
         COctreeNode* node = globalVariables.gridsToInit[node_id];
+        uint32_t exchanged_index = globalVariables.gridsToInitExchangedIndex[node_id];
         COccupancyGrid* occupancy = node->occupancy;
         
 #ifdef ASSERT_ENABLED
@@ -267,15 +269,15 @@ void kernel_fill_new_grids(){
             occupancy->values[i] = 0;
         }
 
-        // Loop over it's voxels if already have some
-        CChunk* cur_chunk = node->voxels;
-        const CAABB& aabb = globalVariables.relationshipMap[node->aabb_index].aabb;
-        while(cur_chunk){
-            for(uint32_t i=thread_id; i<cur_chunk->size; i+=nb_threads_per_block){
-                COccupancyGrid::GridIndex index = COccupancyGrid::getCellIndices(aabb, cur_chunk->points[i]);
-                occupancy->markCellAsFilled(index);
+        // Refill the grid on need
+        if(exchanged_index != -1){
+            uint64_t* grids_indices = globalVariables.exchangedGrids[exchanged_index];
+            for(uint32_t index_id = thread_id; index_id < node->voxels_last_stored; index_id += nb_threads_per_block){
+                uint64_t grid_index = grids_indices[index_id];
+                uint32_t word = uint32_t(grid_index >> 32);
+                uint32_t bit = uint32_t(grid_index);
+                __nv_atomic_fetch_or(&occupancy->values[word], (1u << bit), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_BLOCK);
             }
-            cur_chunk = cur_chunk->next;
         }
     }
 }

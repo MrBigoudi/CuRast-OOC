@@ -6,39 +6,46 @@
 
 #include <list>
 
-
-struct SVONode {
-    std::shared_ptr<SVONode> children[8] = {
-        nullptr, nullptr, nullptr, nullptr,
-        nullptr, nullptr, nullptr, nullptr
-    };
-
-    static bool insertVoxelIntoSVO(
-        std::shared_ptr<SVONode>& node,
-        const COccupancyGrid::GridIndex& index,
-        uint32_t depth = std::log2(OocSimLodSettings::GRID_SIZE_PER_DIMENSION)
-    ){
-        if(depth == 0){
-            bool already_present = (node != nullptr);
-            if(!already_present){node = std::make_shared<SVONode>();}
-            return !already_present;
+struct PointsAllocator {
+    static inline std::unordered_set<CPoint*> free_points = {};
+    static inline std::unordered_set<CPoint*> used_points = {};
+    static CPoint* allocate() {
+        for(CPoint* points : free_points){
+            used_points.insert(points);
+            free_points.erase(points);
+            return points;
         }
-
-        if(!node){node = std::make_shared<SVONode>();}
-
-        uint32_t bit = depth - 1;
-        uint32_t octant = ((index.grid.x >> bit) & 1u)
-            | (((index.grid.y >> bit) & 1u) << 1)
-            | (((index.grid.z >> bit) & 1u) << 2);
-        return insertVoxelIntoSVO(node->children[octant], index, depth - 1);
+        printf("ERROR: no more point list can be created\n");
+        throw(EXIT_FAILURE);
+    }
+    static void deallocate(CPoint* points) {
+        used_points.erase(points);
+        free_points.insert(points);
+    }
+    static void init() {
+        uint32_t allocable = 2 * OocSimLodSettings::LRU_CPU_CACHE_SIZE + OocSimLodSettings::MAX_NB_NODES_TO_EXCHANGE;
+        for(uint32_t i = 0; i < allocable; i++){
+            CPoint* allocable = (CPoint*)malloc(OocSimLodSettings::MAX_POINTS_PER_LEAF * sizeof(CPoint));
+            free_points.insert(allocable);
+        }
+    }
+    static void destroy() {
+        for(CPoint* points : free_points){free(points);}
+        for(CPoint* points : used_points){free(points);}
     }
 };
 
+
 struct HostStorageNode {
-	COctreeNode node;
+	COctreeNode node = {};
+	// CPoint* points = nullptr;
 	std::vector<CPoint> points = {};
 	std::vector<CPoint> voxels = {};
-    std::shared_ptr<SVONode> svo = nullptr;
+    std::vector<uint64_t> occupancy_indices = {};
+
+    // HostStorageNode() {
+    //     points = PointsAllocator::allocate();
+    // }
 };
 
 /// The LRU caches for the nodes
@@ -205,22 +212,14 @@ struct GpuVersion {
     static inline std::unordered_map<CIdAABB, std::shared_ptr<HostStorageNode>> persistentStoredNodes = {};
     static void updateHostCache();
 
-    // static inline std::unordered_set<CIdAABB> recentlyUsedNodesFromUpdates = {};
-    // static inline std::unordered_set<CIdAABB> removedNodes = {};
-    // static inline std::mutex syncAABBStorageAccessMtx;
-    // static inline std::mutex syncHostStorageNodesAccessMtx;
-    // static inline std::mutex syncVisibilityUpdateMtx;
-
-    // static inline std::vector<CIdAABB> previouslyVisible = {};
-    // static inline std::vector<std::shared_ptr<HostStorageNode>> newlyVisible = {};
-    // static inline std::vector<bool> newlyVisibleToDelete = {};
-
     // Visibility cache
     static inline std::unordered_set<CIdAABB> storedNodes = {}; 
     static inline std::unordered_set<CIdAABB> currentlyInUpdatesCache = {}; 
     static void visibilityUpdate(CuRast* editor, CUcontext* context);
 
-
+    static inline std::vector<CUdeviceptr> exchangedPointsPointers = {};
+	static inline std::vector<CUdeviceptr> exchangedVoxelsPointers = {};
+	static inline std::vector<CUdeviceptr> exchangedGridsPointers = {};
 	static inline void* batchesToAddPointsPointers = nullptr;
     static inline void* nbExchangedNodes = nullptr;
     static inline uint32_t curNbNodes = 0;
@@ -231,8 +230,15 @@ struct GpuVersion {
     static inline void* isDoneIterating = nullptr;
     static inline bool firstBatchSent = false;
     static inline bool isInitialised = false;
-    static inline void* nbPointsExchanged = nullptr;
-    static inline void* nbVoxelsExchanged = nullptr;
+    // static inline void* nbPointsExchanged = nullptr;
+    // static inline void* nbVoxelsExchanged = nullptr;
+
+    static inline void* exchangedIds = nullptr;
+    static inline void* exchangedParentsIds = nullptr;
+    static inline void* exchangedChildrenIds = nullptr;
+    static inline void* exchangedAABBs = nullptr;
+    static inline void* exchangedPointsCounters = nullptr;
+    static inline void* exchangedVoxelsCounters = nullptr;
 
     static inline uint32_t randomOffset = 0;
 
@@ -261,13 +267,6 @@ struct GpuVersion {
     static inline std::vector<uint64_t> batchStoringAttributesIndices = {0};
     static void storeNodes(uint32_t nb_nodes_to_store);
 
-
-    // static inline std::mutex renderSubmissionMutex;
-    // static inline void* isTemporarySwitching = nullptr;
-    // static inline CUevent eventUpdateCompleted;
-    // static inline CUevent eventSwapCompleted;
-    // static inline CUevent eventRenderingStreamInformed;
-
     /// Initialises everything needed on device memory
     static void init(CuRast* editor, CUcontext* context);
     static void destroy(CuRast* editor, CUcontext* context);
@@ -290,6 +289,7 @@ struct GpuVersion {
 
 
         static inline std::vector<CUdeviceptr> pointers = {};
+        static void initConstraints(CuRast* editor, CUcontext* context);
         static void initHostSide(CuRast* editor, CUcontext* context);
         static void initBuffers(CuRast* editor, CUcontext* context);
         static void initAllocators(CuRast* editor, CUcontext* context, CUstream* stream);
@@ -302,6 +302,14 @@ struct GpuVersion {
             CURuntime::assertCudaSuccess(cuMemAlloc(&new_ptr, real_size));
             pointers.push_back(new_ptr);
             return reinterpret_cast<T*>(new_ptr);
+        }
+
+        template<typename T>
+        static void* allocHost(uint32_t size){
+            void* new_ptr = nullptr;
+            uint64_t real_size = size * sizeof(T);
+            CURuntime::assertCudaSuccess(cuMemAllocHost(&new_ptr, real_size));
+            return new_ptr;
         }
 
         template<typename T>

@@ -140,7 +140,6 @@ void kernel_simlod_load_part_2_rebuilding_nodes(){
         }
 #endif
 
-            
         COctreeNode* loaded_node = globalAllocator.newOctreeNode(aabb_index, true);
         uint32_t node_index = __nv_atomic_fetch_add(&globalVariables.curNbNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
 
@@ -171,6 +170,7 @@ void kernel_simlod_load_part_2_rebuilding_nodes(){
 #endif
 
             globalVariables.gridsToInit[grid_index] = loaded_node;
+            globalVariables.gridsToInitExchangedIndex[grid_index] = exchanged_index;
         }
 
  
@@ -516,6 +516,7 @@ void kernel_simlod_count_split_part_1_5_prefix_sum(){
 #endif
 
             globalVariables.gridsToInit[grid_index] = spilling_node;
+            globalVariables.gridsToInitExchangedIndex[grid_index] = -1;
         }
         
         // Create the needed children

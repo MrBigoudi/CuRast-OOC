@@ -600,20 +600,17 @@ struct CGlobalVariables {
 	/// Data exchanged from the host
 	uint32_t nbNodesExchanged = 0;
 	uint32_t maxNbNodesExchanged = 0;
-	uint32_t maxNbPointsExchanged= 0;
-	uint32_t maxNbVoxelsExchanged = 0;
-	uint32_t nbPointsExchanged = 0;
-	uint32_t nbVoxelsExchanged = 0;
+	uint32_t maxNbPointsChunksPerExchangedNode = 0;
+	uint32_t maxNbVoxelsChunksPerExchangedNode = 0;
 	CIdAABB* exchangedAABBIndices = nullptr;
 	CIdAABB* exchangedAABBParentsIndices = nullptr;
 	CAABB* exchangedAABBs = nullptr;
 	uint32_t* exchangedChildrenIds = nullptr;
 	uint32_t* exchangedPointsCounters = nullptr;
 	uint32_t* exchangedVoxelsCounters = nullptr;
-	CPoint* exchangedPoints = nullptr;
-	CIdAABB* exchangedPointsNodesIds = nullptr;
-	CPoint* exchangedVoxels = nullptr;
-	CIdAABB* exchangedVoxelsNodesIds = nullptr;
+	CPoint** exchangedPoints = nullptr;
+	CPoint** exchangedVoxels = nullptr;
+	uint64_t** exchangedGrids = nullptr;
 
 	bool isDoneLoading = true;
 	bool isDoneStoring = true;
@@ -622,6 +619,7 @@ struct CGlobalVariables {
 
 	uint32_t nbGridsToInit = 0;
 	COctreeNode** gridsToInit = nullptr;
+	uint32_t* gridsToInitExchangedIndex = nullptr;
 
     /// A mask to know which batches have been handled
     uint32_t maxNbBatches = 0;
