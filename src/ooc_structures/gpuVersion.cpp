@@ -116,6 +116,11 @@ void GpuVersion::initHostSide(CuRast* editor, CUcontext* context) {
     exchangedPointsCounters = allocHost<uint32_t>(hostStaging.maxNbNodesExchanged);
     exchangedVoxelsCounters = allocHost<uint32_t>(hostStaging.maxNbNodesExchanged);
 
+    visibilityCache = allocHost<CIdAABB>(OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE);
+    voxelsNodesToSend = allocHost<CIdAABB>(hostStaging.maxNbRenderedVoxels);
+    nbRenderedPoints = allocHost<uint32_t>(1);
+    nbRenderedVoxels = allocHost<uint32_t>(1);
+    nbRenderedNodes = allocHost<uint32_t>(1);
 
     PointsAllocator::init();
 }
@@ -321,6 +326,12 @@ void GpuVersion::destroy(CuRast *editor, CUcontext *context){
     CURuntime::assertCudaSuccess(cuMemFreeHost(exchangedChildrenIds));
     CURuntime::assertCudaSuccess(cuMemFreeHost(exchangedPointsCounters));
     CURuntime::assertCudaSuccess(cuMemFreeHost(exchangedVoxelsCounters));
+
+    CURuntime::assertCudaSuccess(cuMemFreeHost(visibilityCache));
+    CURuntime::assertCudaSuccess(cuMemFreeHost(voxelsNodesToSend));
+    CURuntime::assertCudaSuccess(cuMemFreeHost(nbRenderedPoints));
+    CURuntime::assertCudaSuccess(cuMemFreeHost(nbRenderedVoxels));
+    CURuntime::assertCudaSuccess(cuMemFreeHost(nbRenderedNodes));
 
 
     CURuntime::assertCudaSuccess(cuEventDestroy(eventLoadingComplete));
@@ -886,10 +897,8 @@ void GpuVersion::storeNodes(uint32_t nb_nodes_to_store){
             batchStoringAttributes.size(), 
             stream
         ));
+        CURuntime::assertCudaSuccess(cuEventRecord(eventStoringComplete, stream));
     }
-    CURuntime::assertCudaSuccess(cuEventRecord(eventStoringComplete, stream));
-    // cudaStreamWaitEvent(0, eventStoringComplete);
-    CURuntime::assertCudaSuccess(cuEventSynchronize(eventStoringComplete));
 }
 
 
@@ -904,8 +913,6 @@ void GpuVersion::storeNodes(uint32_t nb_nodes_to_store){
 #include "visibility.h"
 
 void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
-	cuCtxSetCurrent(*context);
-    
     // Get the frustum
     const mat4&  view = VKRenderer::view.view;
     const mat4&  proj = VKRenderer::view.proj;
@@ -976,15 +983,40 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
 
 
     // Gather the correct number of nodes to send to the device
-    std::vector<CIdAABB> visibility_cache_to_send(hostStaging.visibilityCacheSize);
-    std::vector<CIdAABB> voxels_nodes_to_send(hostStaging.maxNbRenderedVoxels, CINVALID_ID);
-    uint32_t cpt = 0;
-    uint32_t point_cpt = 0;
-    uint32_t voxel_cpt = 0;
+    CIdAABB* visibility_cache_to_send = static_cast<CIdAABB*>(visibilityCache);
+    CIdAABB* voxels_nodes_to_send = static_cast<CIdAABB*>(voxelsNodesToSend);
+    uint32_t* cpt = (uint32_t*)nbRenderedNodes;
+    uint32_t* point_cpt = (uint32_t*)nbRenderedPoints;
+    uint32_t* voxel_cpt = (uint32_t*)nbRenderedVoxels;
+    *cpt = 0;
+    *point_cpt = 0;
+    *voxel_cpt = 0;
 
-    std::vector<CUdeviceptr> srcs_host   = {};
-    std::vector<CUdeviceptr> dsts_device = {};
-    std::vector<uint64_t>    sizes       = {};
+    std::vector<CUdeviceptr> srcs_host = {
+        (CUdeviceptr)nbRenderedNodes,
+        (CUdeviceptr)nbRenderedPoints,
+        (CUdeviceptr)nbRenderedVoxels
+    };
+    CUdeviceptr dst_nb_nodes = deviceStaging + (
+        reinterpret_cast<uintptr_t>(&(hostStaging.visibilityCacheCurrentSize))
+        - reinterpret_cast<uintptr_t>(&hostStaging)
+    ); 
+    CUdeviceptr dst_nb_points = deviceStaging + (
+        reinterpret_cast<uintptr_t>(&(hostStaging.nbRenderedPoints))
+        - reinterpret_cast<uintptr_t>(&hostStaging)
+    ); 
+    CUdeviceptr dst_nb_voxels = deviceStaging + (
+        reinterpret_cast<uintptr_t>(&(hostStaging.nbRenderedVoxels))
+        - reinterpret_cast<uintptr_t>(&hostStaging)
+    ); 
+    std::vector<CUdeviceptr> dsts_device = {
+        dst_nb_nodes,
+        dst_nb_points,
+        dst_nb_voxels
+    };
+    std::vector<uint64_t> sizes = {
+        sizeof(uint32_t), sizeof(uint32_t), sizeof(uint32_t)
+    };
 
     // Get the LRU_VISIBILTY_CACHE closest nodes
     uint32_t loop_end = min(uint32_t(visible_nodes.size()), OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE);
@@ -1008,19 +1040,19 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
         bool has_voxels = (node->node.voxels_counter > 0);
         bool points_can_be_added = 
             // Only send if the maximum of voxels to send is not reached
-            (point_cpt < OocSimLodSettings::MAX_NB_RENDERED_POINTS)
+            (*point_cpt < OocSimLodSettings::MAX_NB_RENDERED_POINTS)
             // Only send if has points
             && (node->node.points_counter > 0)
             // Only send if all points are loaded
-            && (node->node.points_counter + point_cpt <= OocSimLodSettings::MAX_NB_RENDERED_POINTS)
+            && (node->node.points_counter + *point_cpt <= OocSimLodSettings::MAX_NB_RENDERED_POINTS)
         ;
         bool voxels_can_be_added =
             // Only send if the maximum of voxels to send is not reached
-            (voxel_cpt < OocSimLodSettings::MAX_NB_RENDERED_VOXELS)
+            (*voxel_cpt < OocSimLodSettings::MAX_NB_RENDERED_VOXELS)
             // Only send if has voxels
             && (node->node.voxels_counter > 0)
             // Only send if all voxels are loaded
-            && (node->node.voxels_counter + voxel_cpt <= OocSimLodSettings::MAX_NB_RENDERED_VOXELS)
+            && (node->node.voxels_counter + *voxel_cpt <= OocSimLodSettings::MAX_NB_RENDERED_VOXELS)
         ;
 
         bool points_ok = !has_points || points_can_be_added;
@@ -1028,74 +1060,68 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
         if(points_ok && voxels_ok){
             // Add points
             if(has_points){
-                uint32_t new_total_points = point_cpt + node->node.points_counter;
+                uint32_t new_total_points = *point_cpt + node->node.points_counter;
                 uint32_t nb_new_points = node->node.points_counter;
                 // srcs_host.push_back((CUdeviceptr)node->points.data());
                 srcs_host.push_back((CUdeviceptr)node->points);
-                dsts_device.push_back((CUdeviceptr)hostStaging.renderedPoints + (CUdeviceptr)(point_cpt * sizeof(CPoint)));
+                dsts_device.push_back((CUdeviceptr)hostStaging.renderedPoints + (CUdeviceptr)(*point_cpt * sizeof(CPoint)));
                 sizes.push_back(nb_new_points * sizeof(CPoint));
-                point_cpt = new_total_points;
+                *point_cpt = new_total_points;
             }
 
             // Add voxels
             if(has_voxels){
-                uint32_t new_total_voxels = voxel_cpt + node->node.voxels_counter;
+                uint32_t new_total_voxels = *voxel_cpt + node->node.voxels_counter;
                 uint32_t nb_new_voxels = node->node.voxels_counter;
                 srcs_host.push_back((CUdeviceptr)node->voxels.data());
-                dsts_device.push_back((CUdeviceptr)hostStaging.renderedVoxels + (CUdeviceptr)(voxel_cpt * sizeof(CPoint)));
+                dsts_device.push_back((CUdeviceptr)hostStaging.renderedVoxels + (CUdeviceptr)(*voxel_cpt * sizeof(CPoint)));
                 sizes.push_back(nb_new_voxels * sizeof(CPoint));
             
                 // Add other voxels properties
                 for(uint32_t voxel_id = 0; voxel_id < nb_new_voxels; voxel_id++){
-                    voxels_nodes_to_send[voxel_cpt + voxel_id] = cur_node;
+                    voxels_nodes_to_send[*voxel_cpt + voxel_id] = cur_node;
                 }
-                voxel_cpt = new_total_voxels;
+                *voxel_cpt = new_total_voxels;
             }
 
             // Add the node
-            visibility_cache_to_send[cpt] = cur_node;
-            cpt++;
+            visibility_cache_to_send[*cpt] = cur_node;
+            (*cpt)++;
         }
 
-        if(point_cpt >= OocSimLodSettings::MAX_NB_RENDERED_POINTS && voxel_cpt >= OocSimLodSettings::MAX_NB_RENDERED_VOXELS){
+        if(*point_cpt >= OocSimLodSettings::MAX_NB_RENDERED_POINTS && *voxel_cpt >= OocSimLodSettings::MAX_NB_RENDERED_VOXELS){
             break;
         }
-        if(cpt >= OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE){
+        if(*cpt >= OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE){
             break;
         }
     }
 
-    if(cpt > 0){
-        // Add other voxels properties
-        if(voxel_cpt > 0){
-            srcs_host.push_back((CUdeviceptr)voxels_nodes_to_send.data());
-            dsts_device.push_back((CUdeviceptr)hostStaging.renderedVoxelsNodes);
-            sizes.push_back(voxel_cpt * sizeof(CIdAABB));
-        }
+    // Add other voxels properties
+    if(*voxel_cpt > 0){
+        srcs_host.push_back((CUdeviceptr)voxels_nodes_to_send);
+        dsts_device.push_back((CUdeviceptr)hostStaging.renderedVoxelsNodes);
+        sizes.push_back(*voxel_cpt * sizeof(CIdAABB));
+    }
 
-        // Add visibility cache
-        srcs_host.push_back((CUdeviceptr)visibility_cache_to_send.data());
+    // Add visibility cache
+    if(*cpt > 0){
+        srcs_host.push_back((CUdeviceptr)visibility_cache_to_send);
         dsts_device.push_back((CUdeviceptr)hostStaging.visibilityCache);
-        sizes.push_back(cpt * sizeof(CIdAABB));
-
-        // Send the data to the device
-        uint64_t nb_copies = sizes.size();
-        CURuntime::assertCudaSuccess(cuMemcpyBatchAsync(
-            dsts_device.data(), srcs_host.data(), sizes.data(), nb_copies, 
-            batchLoadingAttributes.data(), 
-            batchLoadingAttributesIndices.data(), 
-            batchLoadingAttributes.size(), 
-            stream
-        ));
+        sizes.push_back(*cpt * sizeof(CIdAABB));
     }
-    COPY_TO_GPU_ASYNC(nbRenderedPoints, &point_cpt, uint32_t);
-    COPY_TO_GPU_ASYNC(nbRenderedVoxels, &voxel_cpt, uint32_t);
-    COPY_TO_GPU_ASYNC(visibilityCacheCurrentSize, &cpt, uint32_t);
-    CURuntime::assertCudaSuccess(cuEventRecord(eventVisibilityUpdateComplete, stream));
-    CURuntime::assertCudaSuccess(cuEventSynchronize(eventVisibilityUpdateComplete));
-    // cudaStreamWaitEvent(0, eventVisibilityUpdateComplete);
 
-    // println("Nb nodes: {}, nb voxels: {}, nb points: {}\n", cpt, voxel_cpt, point_cpt);
+    // Send the data to the device
+    uint64_t nb_copies = sizes.size();
+    CURuntime::assertCudaSuccess(cuMemcpyBatchAsync(
+        dsts_device.data(), srcs_host.data(), sizes.data(), nb_copies, 
+        batchLoadingAttributes.data(), 
+        batchLoadingAttributesIndices.data(), 
+        batchLoadingAttributes.size(), 
+        stream
+    ));
+    CURuntime::assertCudaSuccess(cuEventRecord(eventVisibilityUpdateComplete, stream));
+    // println("Nb nodes: {}, nb voxels: {}, nb points: {}\n", *cpt, *voxel_cpt, *point_cpt);
 }
 
 
@@ -1112,6 +1138,9 @@ void GpuVersion::updateHostCache(){
             it++;
         }
     }
+
+    CURuntime::assertCudaSuccess(cuEventSynchronize(eventStoringComplete));
+    CURuntime::assertCudaSuccess(cuEventSynchronize(eventVisibilityUpdateComplete));
 
     // Store all nodes in parallel
     if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
@@ -1136,6 +1165,7 @@ void GpuVersion::updateHostCache(){
 
 
 void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
+    if(isTakingScreenshots){return;}
 	cuCtxSetCurrent(*context);
 
     GpuVersionUI::lastUpdateStart = high_resolution_clock::now();
@@ -1222,9 +1252,7 @@ void GpuVersion::renderOctree(RenderTarget& target){
             .blocksize = block_size
         };
 
-        if(CuRastSettings::bruteForceRendering){
-            // TODO: to remove
-            // randomOffset = rand();
+        if(isTakingScreenshots){
             prog->launch("kernel_test_multi_resolution", {&real_target, &real_settings, &randomOffset}, launch_settings);
         } else {
             prog->launch("kernel_visibilityPass", {&real_target, &real_settings}, launch_settings);
@@ -1236,109 +1264,6 @@ void GpuVersion::renderOctree(RenderTarget& target){
                 prog->launch("kernel_render_bounding_boxes", {&real_target, &real_settings}, launch_settings);
             }
         }
-    }
-}
-
-
-
-
-
-
-
-
-
-/// For another project
-void GpuVersion::takeRandomScreenShots(){
-    const uint32_t NB_SCREENSHOTS = 1024;
-
-    static bool oldSettingsIsLeftDown = false;
-    static double oldSettingsScroll = 0;
-    static double oldSettingsPosX = 0;
-    static double oldSettingsPosY = 0;
-    static uint32_t oldSettingsNbPointsPerAxis = 0;
-    static vec4 oldSettingsBackgroundColor = {};
-
-    static uint32_t screenshotCounter = NB_SCREENSHOTS;
-    static bool buttonWasPressed = false;
-
-    static vec4 lastBg = {};
-    static double lastScroll = 0;
-    static double lastPosX = 0;
-    static double lastPosY = 0;
-
-    // Begin screenshots
-    if(CuRastSettings::bruteForceRendering && !buttonWasPressed){
-        // Start screenshots
-        buttonWasPressed = true;
-        screenshotCounter = 0;
-        // Save old settings
-        oldSettingsBackgroundColor = CuRastSettings::background;
-        oldSettingsIsLeftDown = Runtime::controls->isLeftDown;
-        oldSettingsScroll = Runtime::mouseEvents.wheel_y;
-        oldSettingsPosX = Runtime::mouseEvents.pos_x;
-        oldSettingsPosY = Runtime::mouseEvents.pos_y;
-        oldSettingsNbPointsPerAxis = uint32_t(CuRastSettings::voxelsPointsPerAxis);
-    }
-
-    // Reset screenshots
-    if(buttonWasPressed && screenshotCounter == NB_SCREENSHOTS){
-        Runtime::controls->isLeftDown = oldSettingsIsLeftDown;
-        Runtime::mouseEvents.wheel_y = oldSettingsScroll;
-        Runtime::mouseEvents.pos_x = oldSettingsPosX;
-        Runtime::mouseEvents.pos_y = oldSettingsPosY;
-        CuRastSettings::background = oldSettingsBackgroundColor;
-        CuRastSettings::voxelsPointsPerAxis = int32_t(oldSettingsNbPointsPerAxis);
-        buttonWasPressed = false;
-        CuRastSettings::bruteForceRendering = false;
-    }
-
-    // If screenshots
-    if(screenshotCounter < NB_SCREENSHOTS){
-        fs::create_directories("./screenshots");
-        Runtime::controls->isLeftDown = true;
-
-        // Half of the screenshots are for the ground truth
-        if(screenshotCounter % 2 == 1){
-            CuRastSettings::requestScreenshot = std::make_shared<string>(
-                format(
-                    "./screenshots/id_{}_target.png", 
-                    uint32_t(screenshotCounter / 2)
-                )
-            );
-            CuRastSettings::voxelsPointsPerAxis = 1;
-            randomOffset = 0;
-            // Runtime::mouseEvents.wheel_y = lastScroll;
-            // Runtime::mouseEvents.pos_x = lastPosX;
-            // Runtime::mouseEvents.pos_y = lastPosY;
-            CuRastSettings::background = lastBg;
-        } else {
-            Runtime::mouseEvents.wheel_y = pow(-1, rand()%2) * (rand() % 100);
-            lastScroll = Runtime::mouseEvents.wheel_y;
-
-            double max = 8192.0;
-            Runtime::mouseEvents.pos_x = (double(rand()) / double(RAND_MAX)) * max;
-            Runtime::mouseEvents.pos_y = (double(rand()) / double(RAND_MAX)) * max;
-            lastPosX = Runtime::mouseEvents.pos_x;
-            lastPosY = Runtime::mouseEvents.pos_y;
-
-            CuRastSettings::background.r = (double(rand()) / double(RAND_MAX));
-            CuRastSettings::background.g = (double(rand()) / double(RAND_MAX));
-            CuRastSettings::background.b = (double(rand()) / double(RAND_MAX));
-            lastBg = CuRastSettings::background;
-
-            CuRastSettings::voxelsPointsPerAxis = rand() % 128 + 1; 
-            randomOffset = rand();
-
-            CuRastSettings::requestScreenshot = std::make_shared<string>(
-                format("./screenshots/id_{}_perturbed_{}.png", 
-                    uint32_t(screenshotCounter / 2),
-                    CuRastSettings::voxelsPointsPerAxis
-                )
-            );
-
-        }
-
-        screenshotCounter++;
     }
 }
 
@@ -1414,4 +1339,264 @@ void GpuVersionUI::update() {
     const uint64_t cur_updates_per_seconds = static_cast<uint64_t>(1000.0 * static_cast<uint64_t>(nbTotalUpdates) / total_duration);
     updateStats(cur_updates_per_seconds, minNbUpdatesPerSecond, maxNbUpdatesPerSecond, avgNbUpdatesPerSecond);
 
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/// For another project
+void GpuVersion::takeRandomScreenShots(){
+    static const uint32_t NB_RESOLUTIONS = 4;
+    static const uint32_t NB_SCREENSHOTS = 256;
+    static const uint32_t NB_TOTAL_SCREENSHOTS = NB_SCREENSHOTS * NB_RESOLUTIONS * 2;
+
+    // How far the camera sphere's radius can range, relative to the AABB diagonal.
+    const double MIN_RADIUS_FACTOR = 0.;
+    const double MAX_RADIUS_FACTOR = 1.;
+    const double TWO_PI = 6.283185307179586;
+
+    static bool oldSettingsIsLeftDown = false;
+    static double oldSettingsScroll = 0;
+    static double oldSettingsPosX = 0;
+    static double oldSettingsPosY = 0;
+    static uint32_t oldSettingsNbPointsPerAxis = 0;
+    static vec4 oldSettingsBackgroundColor = {};
+    static double oldSettingsYaw = 0;
+    static double oldSettingsPitch = 0;
+    static double oldSettingsRadius = 0;
+    static glm::dvec3 oldSettingsTarget = {};
+
+    static uint32_t screenshotCounter = NB_TOTAL_SCREENSHOTS;
+    static bool buttonWasPressed = false;
+
+    // Camera + background shared within one (perturbed, target) pair.
+    static double pairYaw = 0;
+    static double pairPitch = 0;
+    static double pairRadius = 0;
+    static vec4 pairBg = {};
+
+    static CAABB mainAABB = {};
+
+    static uint32_t old_width = VKRenderer::width;
+    static uint32_t old_height = VKRenderer::height;
+
+    static uint32_t INITIAL_ID = 768;
+
+    // Begin screenshots
+    if(CuRastSettings::bruteForceRendering && !buttonWasPressed){
+        buttonWasPressed = true;
+        screenshotCounter = 0;
+
+        // Save old settings
+        oldSettingsBackgroundColor = CuRastSettings::background;
+        oldSettingsIsLeftDown      = Runtime::controls->isLeftDown;
+        oldSettingsScroll          = Runtime::mouseEvents.wheel_y;
+        oldSettingsPosX            = Runtime::mouseEvents.pos_x;
+        oldSettingsPosY            = Runtime::mouseEvents.pos_y;
+        oldSettingsYaw             = Runtime::controls->yaw;
+        oldSettingsPitch           = Runtime::controls->pitch;
+        oldSettingsRadius          = Runtime::controls->radius;
+        oldSettingsTarget          = Runtime::controls->target;
+
+        // // Get the bounding box of the scene
+        // CUdeviceptr main_octree = 0;
+        // CIdAABB main_id = CINVALID_ID;
+        // CGlobalVariables::Relationship main_relationship = {};
+        // COPY_FROM_GPU(mainOctree, &main_octree, CUdeviceptr);
+        // COctreeNode tmp = {};
+        // const uint64_t pad =
+        //     reinterpret_cast<uintptr_t>(&(tmp.aabb_index)) -
+        //     reinterpret_cast<uintptr_t>(&tmp);
+        // CUdeviceptr src_device = main_octree + pad;
+        // CURuntime::assertCudaSuccess(
+        //     cuMemcpyDtoH(&main_id, src_device, sizeof(CIdAABB))
+        // );
+        // src_device = reinterpret_cast<CUdeviceptr>(hostStaging.relationshipMap) 
+        //     + static_cast<CUdeviceptr>(main_id * sizeof(CGlobalVariables::Relationship))
+        // ;
+        // CURuntime::assertCudaSuccess(
+        //     cuMemcpyDtoH(&main_relationship, src_device, sizeof(CGlobalVariables::Relationship))
+        // );
+        // mainAABB = main_relationship.aabb;
+
+        for(auto& [id, node] : GpuVersion::persistentStoredNodes){
+            for(uint32_t i = 0; i < node->node.points_counter; i++){
+                const CPoint& point = node->points[i];
+                mainAABB.mins.x = min(mainAABB.mins.x, point.position.x);
+                mainAABB.mins.y = min(mainAABB.mins.y, point.position.y);
+                mainAABB.mins.z = min(mainAABB.mins.z, point.position.z);
+                mainAABB.maxs.x = max(mainAABB.maxs.x, point.position.x);
+                mainAABB.maxs.y = max(mainAABB.maxs.y, point.position.y);
+                mainAABB.maxs.z = max(mainAABB.maxs.z, point.position.z);
+            }
+        }
+
+        // println("HOST: .mins = ({}, {}, {}), .maxs = ({}, {}, {})", 
+        //     mainAABB.mins.x, mainAABB.mins.y, mainAABB.mins.z,
+        //     mainAABB.maxs.x, mainAABB.maxs.y, mainAABB.maxs.z
+        // );
+        // throw(EXIT_FAILURE);
+
+        for(int i = INITIAL_ID; i <= 10'000'000; i++){
+			fs::create_directories("./screenshots");
+			std::string path = format("./screenshots/id_{}_res_{}x{}_perturbed.png",
+                i, VKRenderer::width, VKRenderer::height
+            );
+            INITIAL_ID = i;
+			if(!fs::exists(path)) break;
+		}
+
+
+        GpuVersion::isTakingScreenshots = true;
+    }
+
+    // Reset after screenshots are done
+    if(buttonWasPressed && screenshotCounter == NB_TOTAL_SCREENSHOTS){
+        Runtime::controls->isLeftDown = oldSettingsIsLeftDown;
+        Runtime::mouseEvents.wheel_y  = oldSettingsScroll;
+        Runtime::mouseEvents.pos_x    = oldSettingsPosX;
+        Runtime::mouseEvents.pos_y    = oldSettingsPosY;
+        CuRastSettings::background    = oldSettingsBackgroundColor;
+
+        Runtime::controls->yaw    = oldSettingsYaw;
+        Runtime::controls->pitch  = oldSettingsPitch;
+        Runtime::controls->radius = oldSettingsRadius;
+        Runtime::controls->target = oldSettingsTarget;
+        Runtime::controls->update();
+
+        buttonWasPressed = false;
+        CuRastSettings::bruteForceRendering = false;
+
+        VKRenderer::width = old_width;
+        VKRenderer::height = old_height;
+
+        GpuVersion::isTakingScreenshots = false;
+    }
+
+    // If screenshots
+    if(screenshotCounter < NB_TOTAL_SCREENSHOTS){
+        fs::create_directories("./screenshots");
+
+        // We drive yaw/pitch/radius directly now, so no fake dragging needed,
+        // and zero out any leftover real scroll so it can't sneak a zoom in
+        // on a frame while we wait for the screenshot request to be handled.
+        Runtime::controls->isLeftDown = false;
+        Runtime::mouseEvents.wheel_x = 0;
+        Runtime::mouseEvents.wheel_y = 0;
+
+        vec3 aabbMin = mainAABB.mins;
+        vec3 aabbMax = mainAABB.maxs;
+        glm::dvec3 center = glm::dvec3((aabbMin + aabbMax) * 0.5f);
+        double diagonal = double(glm::length(aabbMax - aabbMin));
+
+        uint32_t pairId = screenshotCounter / (2*NB_RESOLUTIONS) + INITIAL_ID;
+
+        if(screenshotCounter % (2*NB_RESOLUTIONS) == 0){
+            // First half of the pair: roll a fresh random sphere radius and a
+            // random position on that sphere, plus a random background. This
+            // camera gets reused by the matching "target" shot right after it.
+            double u1 = double(rand()) / double(RAND_MAX);
+            double u2 = double(rand()) / double(RAND_MAX);
+            double u3 = double(rand()) / double(RAND_MAX);
+
+            double radiusFactor = MIN_RADIUS_FACTOR + u1 * (MAX_RADIUS_FACTOR - MIN_RADIUS_FACTOR);
+            pairRadius = radiusFactor * diagonal;
+
+            pairYaw = u2 * TWO_PI;
+            // uniform sampling on the sphere surface (avoids bunching near the poles)
+            pairPitch = std::asin(2.0 * u3 - 1.0);
+
+            // pairBg.r = float(double(rand()) / double(RAND_MAX));
+            // pairBg.g = float(double(rand()) / double(RAND_MAX));
+            // pairBg.b = float(double(rand()) / double(RAND_MAX));
+            pairBg.r = 1.0f;
+            pairBg.g = 1.0f;
+            pairBg.b = 1.0f;
+            pairBg.a = 1.0f;
+
+            Runtime::controls->target = center;
+            Runtime::controls->radius = pairRadius;
+            Runtime::controls->yaw    = pairYaw;
+            Runtime::controls->pitch  = pairPitch;
+            Runtime::controls->update();
+
+            randomOffset = 1 + rand();
+
+            VKRenderer::width = old_width;
+            VKRenderer::height = old_height;
+            CuRastSettings::background = pairBg;
+
+            CuRastSettings::requestScreenshot = std::make_shared<string>(
+                format("./screenshots/id_{}_res_{}x{}_perturbed.png",
+                    pairId,
+                    VKRenderer::width, VKRenderer::height
+                )
+            );
+
+        } else if(screenshotCounter % (2*NB_RESOLUTIONS) == NB_RESOLUTIONS) {
+            // Second half of the pair: ground-truth shot, same camera and
+            // background as the perturbed shot above — only voxelsPointsPerAxis differs.
+            Runtime::controls->target = center;
+            Runtime::controls->radius = pairRadius;
+            Runtime::controls->yaw    = pairYaw;
+            Runtime::controls->pitch  = pairPitch;
+            Runtime::controls->update();
+
+            randomOffset = 0;
+
+            VKRenderer::width = old_width;
+            VKRenderer::height = old_height;
+            CuRastSettings::background = pairBg;
+
+            CuRastSettings::requestScreenshot = std::make_shared<string>(
+                format("./screenshots/id_{}_res_{}x{}_target.png",
+                    pairId,
+                    VKRenderer::width, VKRenderer::height
+                )
+            );
+        } else if(screenshotCounter % (2*NB_RESOLUTIONS) < NB_RESOLUTIONS) {
+            VKRenderer::width = (old_width >> (screenshotCounter % (2*NB_RESOLUTIONS)));
+            VKRenderer::height = (old_height >> (screenshotCounter % (2*NB_RESOLUTIONS)));
+            CuRastSettings::background = pairBg;
+
+            CuRastSettings::requestScreenshot = std::make_shared<string>(
+                format("./screenshots/id_{}_res_{}x{}_perturbed.png",
+                    pairId,
+                    VKRenderer::width, VKRenderer::height
+                )
+            );
+        } else if(screenshotCounter % (2*NB_RESOLUTIONS) > NB_RESOLUTIONS) {
+            VKRenderer::width = (old_width >> (screenshotCounter % NB_RESOLUTIONS));
+            VKRenderer::height = (old_height >> (screenshotCounter % NB_RESOLUTIONS));
+            CuRastSettings::background = pairBg;
+
+            CuRastSettings::requestScreenshot = std::make_shared<string>(
+                format("./screenshots/id_{}_res_{}x{}_target.png",
+                    pairId,
+                    VKRenderer::width, VKRenderer::height
+                )
+            );
+        }
+
+        screenshotCounter++;
+    }
 }

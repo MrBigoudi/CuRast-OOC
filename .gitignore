@@ -521,6 +521,7 @@ _project/
 make.bat
 dbg.glb.json
 screenshots/*
+screenshotsBck/*
 benchmarks/*
 
 out/

@@ -201,6 +201,7 @@ struct GpuVersion {
     static inline CUdeviceptr deviceStaging = 0;
     static inline CUstream stream;
     static inline uint64_t totalAllocatedMemory = 0;
+    static inline bool isTakingScreenshots = false;
 
     static inline std::vector<CIdAABB> parentsMap = {};
     static inline std::vector<CAABB> aabbsMap = {};
@@ -238,6 +239,12 @@ struct GpuVersion {
     static inline void* exchangedAABBs = nullptr;
     static inline void* exchangedPointsCounters = nullptr;
     static inline void* exchangedVoxelsCounters = nullptr;
+
+    static inline void* visibilityCache = nullptr;
+    static inline void* voxelsNodesToSend = nullptr;
+    static inline void* nbRenderedPoints = nullptr;
+    static inline void* nbRenderedVoxels = nullptr;
+    static inline void* nbRenderedNodes = nullptr;
 
     static inline uint32_t randomOffset = 0;
 

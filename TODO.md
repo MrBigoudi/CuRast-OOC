@@ -2,12 +2,8 @@
 
 
 - Make things faster:
-    - Remove spilled points + do not load points, just the counter (this will reduce bandwith + memory on device side)
-    - Better handling for voxels as well ?? maybe a compressed octree (building DAGs on CPU side in the background) ?
-
-    - Make the "exchangedVoxels / Points" unrelated to the number of nodes that can be exchanged; instead just have a fixed number of exchangeable chunks (this might reduce the sizes of the structures, allowing for more nbExchangeable nodes)
-
     - Find better launching values
+    - Check if some COPY_TO / COPY_FROM can be made async
 
 
 - Aim for 100M points / seconds ??
