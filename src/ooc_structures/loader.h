@@ -48,12 +48,26 @@ struct LoaderGpuVersion {
 	static inline std::deque<std::mutex> batchesQueueMutexes = {};
 
     static inline std::vector<uint32_t> batchesOnGpu = {};
-    static inline std::vector<uint32_t> batchesOnGpuStatus = {};
+    static inline void* batchesOnGpuStatus = nullptr;
+
+    static inline CUstream stream;
+    static inline CUevent eventLoadComplete;
+
+    static inline std::vector<CUmemcpyAttributes> loadingAttributes = {
+        CUmemcpyAttributes {
+            .srcAccessOrder = CU_MEMCPY_SRC_ACCESS_ORDER_ANY,
+            .srcLocHint = {CU_MEM_LOCATION_TYPE_HOST},
+            .dstLocHint = {CU_MEM_LOCATION_TYPE_DEVICE},
+            .flags = CU_MEMCPY_FLAG_DEFAULT
+        }
+    };
+    static inline std::vector<uint64_t> loadingAttributesIndices = {0};
 
     static void createNewBatches(string file);
     static bool run(CuRast* editor, CUcontext* context);
 
     static void init();
+    static void destroy();
     static void fetchFromDevice();
     static bool sendToDevice();
 

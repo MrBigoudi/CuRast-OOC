@@ -6,6 +6,8 @@
 
 #include <list>
 
+struct LoaderGpuVersion;
+
 struct PointsAllocator {
     static inline std::unordered_set<CPoint*> free_points = {};
     static inline std::unordered_set<CPoint*> used_points = {};
@@ -23,7 +25,11 @@ struct PointsAllocator {
         free_points.insert(points);
     }
     static void init() {
-        uint32_t allocable = 2 * OocSimLodSettings::LRU_CPU_CACHE_SIZE + OocSimLodSettings::MAX_NB_NODES_TO_EXCHANGE;
+        uint32_t allocable = OocSimLodSettings::LRU_CPU_CACHE_SIZE // Cache size
+            + OocSimLodSettings::MAX_NB_NODES_TO_EXCHANGE    // Current update loaded node points
+            + OocSimLodSettings::MAX_NB_NODES_TO_EXCHANGE    // Current update stored node points
+            + OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE   // Current update rendered points
+        ;
         for(uint32_t i = 0; i < allocable; i++){
             CPoint* allocable = (CPoint*)malloc(OocSimLodSettings::MAX_POINTS_PER_LEAF * sizeof(CPoint));
             free_points.insert(allocable);
@@ -230,8 +236,6 @@ struct GpuVersion {
     static inline void* isDoneIterating = nullptr;
     static inline bool firstBatchSent = false;
     static inline bool isInitialised = false;
-    // static inline void* nbPointsExchanged = nullptr;
-    // static inline void* nbVoxelsExchanged = nullptr;
 
     static inline void* exchangedIds = nullptr;
     static inline void* exchangedParentsIds = nullptr;
@@ -272,6 +276,12 @@ struct GpuVersion {
     };
     static inline std::vector<uint64_t> batchStoringAttributesIndices = {0};
     static void storeNodes(uint32_t nb_nodes_to_store);
+    static inline uint32_t MAX_NB_VOXELS = 0;
+
+
+    static inline std::thread* updateHostCacheComplete = nullptr;
+
+
 
     /// Initialises everything needed on device memory
     static void init(CuRast* editor, CUcontext* context);
@@ -281,6 +291,8 @@ struct GpuVersion {
 
     /// For another project
     static void takeRandomScreenShots();
+
+    friend LoaderGpuVersion;
 
     private:
         static void octreeUpdateInit(CuRast* editor, CUcontext* context);

@@ -487,7 +487,7 @@ void OctreeNodeSerializable::deserializeV2(HostStorageNode* node, const CIdAABB&
         std::string node_filepath = getNodeFilePathV2(node->node.aabb_index);
         std::ifstream file(node_filepath, std::ios::binary);
         if(!file.is_open()){
-            println("Failed to open the file {} to deserialize an octree node: from {}", node_filepath, msg);
+            println("Failed to open the file {} to deserialize an octree node: {}", node_filepath, msg);
             if(!GlobalVariables::mainLoopIsTerminating){
                 throw(EXIT_FAILURE);
             }

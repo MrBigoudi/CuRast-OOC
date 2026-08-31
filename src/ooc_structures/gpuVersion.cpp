@@ -122,6 +122,8 @@ void GpuVersion::initHostSide(CuRast* editor, CUcontext* context) {
     nbRenderedVoxels = allocHost<uint32_t>(1);
     nbRenderedNodes = allocHost<uint32_t>(1);
 
+
+    MAX_NB_VOXELS = hostStaging.maxNbVoxelsChunksPerExchangedNode * OocSimLodSettings::NB_POINTS_PER_CHUNK;
     PointsAllocator::init();
 }
 
@@ -338,6 +340,7 @@ void GpuVersion::destroy(CuRast *editor, CUcontext *context){
     CURuntime::assertCudaSuccess(cuEventDestroy(eventStoringComplete));
     CURuntime::assertCudaSuccess(cuEventDestroy(eventVisibilityUpdateComplete));
 
+    LoaderGpuVersion::destroy();
     PointsAllocator::destroy();
 
     cudaDeviceSynchronize();
@@ -451,11 +454,11 @@ void GpuVersion::octreeUpdateFillNewGrids(CuRast* editor, CUcontext* context){
 
 void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
     if(*(bool*)isDoneLoading){
-        COPY_TO_GPU(nbNodesExchangedBeforeLoadComplete, &RESET, uint32_t);
+        COPY_TO_GPU_ASYNC(nbNodesExchangedBeforeLoadComplete, &RESET, uint32_t);
     }
     *(bool*)isDoneLoading = true;
-    COPY_TO_GPU(isDoneLoading, isDoneLoading, bool);
-    COPY_TO_GPU(nbNodesExchanged, &RESET, uint32_t);
+    COPY_TO_GPU_ASYNC(isDoneLoading, isDoneLoading, bool);
+    COPY_TO_GPU_ASYNC(nbNodesExchanged, &RESET, uint32_t);
 
     // launch_settings = {
     //     .gridsize  = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_GRID_SIZE_FOR_MAX_BLOCK_SIZE,
@@ -485,44 +488,28 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
 		(CUdeviceptr)hostStaging.exchangedAABBIndices,
 		nb_nodes_to_load * sizeof(CIdAABB)
 	));
-
-    // Load the nodes from disk
-    std::vector<std::shared_ptr<HostStorageNode>> loaded(nb_nodes_to_load, nullptr);
     
     // Load from CPU cache
-    {
-        CIdAABB* ids = static_cast<CIdAABB*>(exchangedIds);
-        struct TmpToLoadStruct {
-            CIdAABB id;
-            std::shared_ptr<HostStorageNode> node;
-            uint32_t loaded_id;
-        };
-        std::vector<TmpToLoadStruct> to_load = {};
-        for(uint32_t i = 0; i < nb_nodes_to_load; i++){
-            if(!persistentStoredNodes.contains(ids[i])){
-                to_load.push_back({
-                    ids[i], std::make_shared<HostStorageNode>(), i
-                });
-            } else {
-                loaded[i] = persistentStoredNodes[ids[i]];
-            }
+    CIdAABB* ids = static_cast<CIdAABB*>(exchangedIds);
+    // Deserialise in parallel
+    std::vector<CIdAABB> to_deserialise = {};
+    for(uint32_t i=0; i < nb_nodes_to_load; i++){
+        const CIdAABB& id = ids[i];
+        hostCache->add(id);
+        currentlyInUpdatesCache.insert(id);
+        if(!persistentStoredNodes.contains(id)){
+            persistentStoredNodes[id] = std::make_shared<HostStorageNode>();
+            to_deserialise.push_back(id);
         }
-
-        auto load_node = [&](TmpToLoadStruct& to_load){
-            OctreeNodeSerializable::deserializeV2(to_load.node.get(), to_load.id, "From simlod load");
-            loaded[to_load.loaded_id] = to_load.node;
-        };
-        if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-            std::for_each(std::execution::par, to_load.begin(), to_load.end(), load_node);
-        } else {
-            std::for_each(to_load.begin(), to_load.end(), load_node);
-        }
-
-        for(uint32_t i=0; i<nb_nodes_to_load; i++){
-            CIdAABB id = ids[i];
-            hostCache->add(id);
-            persistentStoredNodes[id] = loaded[i];
-        }
+    }
+    if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+        std::for_each(std::execution::par, to_deserialise.begin(), to_deserialise.end(), [&](const CIdAABB& id){
+            OctreeNodeSerializable::deserializeV2(persistentStoredNodes[id].get(), id, "From simlod load");
+        });
+    } else {
+        std::for_each(to_deserialise.begin(), to_deserialise.end(), [&](const CIdAABB& id){
+            OctreeNodeSerializable::deserializeV2(persistentStoredNodes[id].get(), id, "From simlod load");
+        });
     }
 
     // Send the nodes back to the device
@@ -542,19 +529,21 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
         nb_nodes_to_load * sizeof(uint32_t)
     };
 
-    const uint32_t MAX_NB_VOXELS = hostStaging.maxNbVoxelsChunksPerExchangedNode * OocSimLodSettings::NB_POINTS_PER_CHUNK;
     for(uint32_t i = 0; i<nb_nodes_to_load; i++){
-        currentlyInUpdatesCache.insert(loaded[i]->node.aabb_index);
-        static_cast<uint32_t*>(exchangedChildrenIds)[i] = loaded[i]->node.children_ids;
-        static_cast<uint32_t*>(exchangedPointsCounters)[i] = loaded[i]->node.points_counter;
-        static_cast<uint32_t*>(exchangedVoxelsCounters)[i] = loaded[i]->node.voxels_counter;
+        HostStorageNode* cur_node = persistentStoredNodes[ids[i]].get();
+        static_cast<uint32_t*>(exchangedChildrenIds)[i] = cur_node->node.children_ids;
+        static_cast<uint32_t*>(exchangedPointsCounters)[i] = cur_node->node.points_counter;
+        static_cast<uint32_t*>(exchangedVoxelsCounters)[i] = cur_node->node.voxels_counter;
 
         // Send grids info
-        if(loaded[i]->node.voxels_counter > 0){
-            srcs_host.push_back((CUdeviceptr)loaded[i]->occupancy_indices.data());
+        if(cur_node->node.voxels_counter > 0){
+            srcs_host.push_back((CUdeviceptr)cur_node->occupancy_indices.data());
             dsts_device.push_back(exchangedGridsPointers[i]);
-            // TODO: warn
-            sizes.push_back(min(loaded[i]->node.voxels_counter, MAX_NB_VOXELS) * sizeof(uint64_t));
+            uint32_t nb_voxels = min(cur_node->node.voxels_counter, MAX_NB_VOXELS);
+            if(nb_voxels != cur_node->node.voxels_counter){
+                println("WARN: Host side, simlodLoad too many voxels to send; some will be skipped\n");
+            }
+            sizes.push_back(min(cur_node->node.voxels_counter, MAX_NB_VOXELS) * sizeof(uint64_t));
         }
     }
 
@@ -835,17 +824,39 @@ void GpuVersion::storeNodes(uint32_t nb_nodes_to_store){
     dsts_host.clear();
     sizes.clear();
 
+    // Deserialise in parallel
+    std::vector<CIdAABB> to_deserialise = {};
     for(uint32_t i=0; i < nb_nodes_to_store; i++){
-        CIdAABB id = ids[i];
-        // Load or create the nodes
-        if(!persistentStoredNodes.contains(id)){
-            std::shared_ptr<HostStorageNode> new_node = std::make_shared<HostStorageNode>();
-            new_node->node.aabb_index = id;
-            if(storedNodes.contains(id)){
-                OctreeNodeSerializable::deserializeV2(new_node.get(), id, "From update cache");
-            }
-            persistentStoredNodes[id] = new_node;
+        const CIdAABB& id = ids[i];
+        for(uint32_t j = 0; j<nb_nodes_to_store; j++){
+            if(j == i){continue;}
+            if(ids[i] == ids[j]){println("WTFFF, this should never happen\n");}
         }
+        hostCache->add(id);
+        currentlyInUpdatesCache.erase(id);
+
+        if(!persistentStoredNodes.contains(id)){
+            persistentStoredNodes[id] = std::make_shared<HostStorageNode>();
+            persistentStoredNodes[id]->node.aabb_index = id;
+            if(storedNodes.contains(id)){
+                to_deserialise.push_back(id);
+            }
+        }
+        storedNodes.insert(id);
+    }
+
+    if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+        std::for_each(std::execution::par, to_deserialise.begin(), to_deserialise.end(), [&](const CIdAABB& id){
+            OctreeNodeSerializable::deserializeV2(persistentStoredNodes[id].get(), id, "From update cache");
+        });
+    } else {
+        std::for_each(to_deserialise.begin(), to_deserialise.end(), [&](const CIdAABB& id){
+            OctreeNodeSerializable::deserializeV2(persistentStoredNodes[id].get(), id, "From update cache");
+        });
+    }
+
+    for(uint32_t i=0; i < nb_nodes_to_store; i++){
+        const CIdAABB& id = ids[i];
 
         // Update node properties
         HostStorageNode* cur_node = persistentStoredNodes[id].get();
@@ -862,10 +873,7 @@ void GpuVersion::storeNodes(uint32_t nb_nodes_to_store){
         if(nbs_points[i] > 0){
             uint32_t old_counter = cur_node->node.points_counter;
             cur_node->node.points_counter += nbs_points[i];
-            // cur_node->points.resize(cur_node->node.points_counter);
-
             srcs_device.push_back(exchangedPointsPointers[i]);
-            // dsts_host.push_back((CUdeviceptr)(cur_node->points.data() + old_counter));
             dsts_host.push_back((CUdeviceptr)(cur_node->points + old_counter));
             sizes.push_back(nbs_points[i] * sizeof(CPoint));
         }
@@ -900,7 +908,6 @@ void GpuVersion::storeNodes(uint32_t nb_nodes_to_store){
         CURuntime::assertCudaSuccess(cuEventRecord(eventStoringComplete, stream));
     }
 }
-
 
 
 
@@ -1018,23 +1025,38 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
         sizeof(uint32_t), sizeof(uint32_t), sizeof(uint32_t)
     };
 
-    // Get the LRU_VISIBILTY_CACHE closest nodes
+    
     uint32_t loop_end = min(uint32_t(visible_nodes.size()), OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE);
+
+    // Deserialise the LRU_VISIBILITY_CACHE closest nodes
+    std::vector<CIdAABB> to_deserialise = {};
+    for(uint32_t i=0; i < loop_end; i++){
+        const CIdAABB& id = visible_nodes[i].first;
+        hostCache->add(id);
+        if(!persistentStoredNodes.contains(id)){
+            persistentStoredNodes[id] = std::make_shared<HostStorageNode>();
+            to_deserialise.push_back(id);
+        }
+    }
+    if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+        std::for_each(std::execution::par, to_deserialise.begin(), to_deserialise.end(), [&](const CIdAABB& id){
+            OctreeNodeSerializable::deserializeV2(persistentStoredNodes[id].get(), id, "From simlod load");
+        });
+    } else {
+        std::for_each(to_deserialise.begin(), to_deserialise.end(), [&](const CIdAABB& id){
+            OctreeNodeSerializable::deserializeV2(persistentStoredNodes[id].get(), id, "From simlod load");
+        });
+    }
+
+
+    // Get the LRU_VISIBILTY_CACHE closest nodes
     for(uint32_t i = 0; i < loop_end; i++){
         const std::pair<CIdAABB, float>& visible_node = visible_nodes[i];
         CIdAABB cur_node = visible_node.first;
         // if(currentlyInUpdatesCache.contains(cur_node)){continue;}
 
         hostCache->add(cur_node);
-        std::shared_ptr<HostStorageNode> node = nullptr;
-        // Load wanted node
-        if(persistentStoredNodes.contains(cur_node)){
-            node = persistentStoredNodes[cur_node];
-        } else {
-            node = std::make_shared<HostStorageNode>();
-            OctreeNodeSerializable::deserializeV2(node.get(), cur_node, "From vis update");
-            persistentStoredNodes[cur_node] = node;
-        }
+        HostStorageNode* node = persistentStoredNodes[cur_node].get();
 
         bool has_points = (node->node.points_counter > 0);
         bool has_voxels = (node->node.voxels_counter > 0);
@@ -1142,22 +1164,31 @@ void GpuVersion::updateHostCache(){
     CURuntime::assertCudaSuccess(cuEventSynchronize(eventStoringComplete));
     CURuntime::assertCudaSuccess(cuEventSynchronize(eventVisibilityUpdateComplete));
 
-    // Store all nodes in parallel
     if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-        std::for_each(std::execution::par, nodes_to_store.begin(), nodes_to_store.end(), [](std::shared_ptr<HostStorageNode>& node){
-            OctreeNodeSerializable::serializeV2(node);
+        updateHostCacheComplete = new std::thread([nodes_to_store = std::move(nodes_to_store)]() mutable {
+            std::for_each(std::execution::par, nodes_to_store.begin(), nodes_to_store.end(), 
+                [](std::shared_ptr<HostStorageNode>& node){
+                    OctreeNodeSerializable::serializeV2(node);
+                }
+            );
+            std::for_each(nodes_to_store.begin(), nodes_to_store.end(), 
+                [](std::shared_ptr<HostStorageNode>& node){
+                    PointsAllocator::deallocate(node->points);
+                    node->points = nullptr;
+                }
+            );
         });
     } else {
         std::for_each(nodes_to_store.begin(), nodes_to_store.end(), [](std::shared_ptr<HostStorageNode>& node){
             OctreeNodeSerializable::serializeV2(node);
         });
+        // Deallocate old points
+        std::for_each(nodes_to_store.begin(), nodes_to_store.end(), [](std::shared_ptr<HostStorageNode>& node){
+            PointsAllocator::deallocate(node->points);
+            node->points = nullptr;
+        });
     }
-
-    // Deallocate old points
-    std::for_each(nodes_to_store.begin(), nodes_to_store.end(), [](std::shared_ptr<HostStorageNode>& node){
-        PointsAllocator::deallocate(node->points);
-        node->points = nullptr;
-    });
+    
 }
 
 
@@ -1192,6 +1223,13 @@ void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
             octreeUpdateBottomUp(editor, context);
         }
 
+        // Wait for previous host cache clean
+        // Must happen before the first deserialisation
+        if(updateHostCacheComplete){
+            updateHostCacheComplete->join();
+            delete(updateHostCacheComplete);
+        }
+
         octreeUpdateSimLOD(editor, context);
 
         if(*(bool*)isDoneLoading && *(bool*)isDoneIterating){
@@ -1207,6 +1245,13 @@ void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
         }
 
         GpuVersionUI::update();
+    } else {
+        // Wait for previous host cache clean
+        // Must happen before the first deserialisation
+        if(updateHostCacheComplete){
+            updateHostCacheComplete->join();
+            delete(updateHostCacheComplete);
+        }
     }
 
     if(isInitialised){
@@ -1255,10 +1300,12 @@ void GpuVersion::renderOctree(RenderTarget& target){
         if(isTakingScreenshots){
             prog->launch("kernel_test_multi_resolution", {&real_target, &real_settings, &randomOffset}, launch_settings);
         } else {
-            prog->launch("kernel_visibilityPass", {&real_target, &real_settings}, launch_settings);
-            prog->launch("kernel_drawVisibilityCache", {&real_target, &real_settings}, launch_settings);
-            prog->launch("kernel_drawOctreeLarge", {&real_target, &real_settings}, launch_settings);
-            prog->launch("kernel_drawOctreeSmall", {&real_target, &real_settings}, launch_settings);
+            prog->launch("kernel_visibility_pass", {&real_target, &real_settings}, launch_settings);
+            prog->launch("kernel_replace_unloaded_nodes", {&real_target, &real_settings}, launch_settings);
+            prog->launch("kernel_draw_visibility_cache", {&real_target, &real_settings}, launch_settings);
+            prog->launch("kernel_draw_octree_large", {&real_target, &real_settings}, launch_settings);
+            prog->launch("kernel_draw_octree_small", {&real_target, &real_settings}, launch_settings);
+            
             // Render bounding boxes
             if(CuRastSettings::showBoundingBoxes){
                 prog->launch("kernel_render_bounding_boxes", {&real_target, &real_settings}, launch_settings);
@@ -1399,7 +1446,7 @@ void GpuVersion::takeRandomScreenShots(){
     static uint32_t old_width = VKRenderer::width;
     static uint32_t old_height = VKRenderer::height;
 
-    static uint32_t INITIAL_ID = 768;
+    static uint32_t INITIAL_ID = 1024;
 
     // Begin screenshots
     if(CuRastSettings::bruteForceRendering && !buttonWasPressed){

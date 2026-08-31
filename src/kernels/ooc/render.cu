@@ -223,7 +223,6 @@ void drawAllVoxels(
     const CAABB& aabb = globalVariables.relationshipMap[node->aabb_index].aabb;
     vec3 voxel_size = (aabb.maxs - aabb.mins) / float(OocSimLodSettings::GRID_SIZE_PER_DIMENSION);
 
-    // uint32_t depth = globalVariables.isTemporarySwitching ? globalVariables.octreeDepth : globalVariables.renderingOctreeDepth;
     uint32_t depth = globalVariables.octreeDepth;
 
     float color_factor = float(node->level) / float(max(depth, 1));
@@ -442,7 +441,7 @@ void kernel_render_bounding_boxes(
 
 /// Run on "NB SMs" blocks of size min("Max threads per SM", "Max block dim")
 extern "C" __global__
-void kernel_visibilityPass(
+void kernel_visibility_pass(
 	CRenderTarget target,
     CRenderingSettings settings
 ){
@@ -468,18 +467,13 @@ void kernel_visibilityPass(
         const CIdAABB& id = globalVariables.visibilityCache[node_index];
         globalVariables.setFlagSync(id, CFlagIsInVisibilityCache);
     }
-    // for(uint32_t voxel_id = thread_id; voxel_id < globalVariables.nbRenderedVoxels; voxel_id += nb_threads){
-    //     const CPoint& voxel = globalVariables.renderedVoxels[voxel_id];
-    //     const CIdAABB& node_id = globalVariables.renderedVoxelsNodes[voxel_id];
-    //     globalVariables.setFlag(node_id, CFlagIsFromVoxelsInVisibilityCache);
-    // }
 }
 
 
 
 /// Run on "NB SMs" blocks of size min("Max threads per SM", "Max block dim")
 extern "C" __global__
-void kernel_drawVisibilityCache(
+void kernel_draw_visibility_cache(
 	CRenderTarget target,
     CRenderingSettings settings
 ){
@@ -504,42 +498,39 @@ void kernel_drawVisibilityCache(
         const CAABB& node_aabb = globalVariables.relationshipMap[node_id].aabb;
         const CNodePosition next_child_pos = node_aabb.getNextChildIndex(voxel.position);
         const CIdAABB& child_index = globalVariables.relationshipMap[node_id].children[next_child_pos];
-        const vec3& voxel_size = globalVariables.relationshipMap[node_id].aabb.getSize() / float(OocSimLodSettings::GRID_SIZE_PER_DIMENSION);
         if(child_index == CINVALID_ID){continue;}
+
+        const vec3& voxel_size = globalVariables.relationshipMap[node_id].aabb.getSize() / float(OocSimLodSettings::GRID_SIZE_PER_DIMENSION);
 
         // Only render the voxel if the corresponding child is not present
         if(globalVariables.isInVisibilityCache(child_index)){continue;}
+        
         bool child_is_visible = globalVariables.isVisible(child_index);
         bool child_has_enough_points = globalVariables.hasEnoughPoints(child_index);
-        // bool child_has_enough_voxels = globalVariables.hasEnoughVoxels(child_index);
-        
-        if(!child_is_visible || !child_has_enough_points){
-        // if(!child_is_visible){
-            const vec3 root_aabb_size = globalVariables.relationshipMap[globalVariables.mainOctree->aabb_index].aabb.getSize();
-            float root_size = max(root_aabb_size.x, max(root_aabb_size.y, root_aabb_size.z));
-            float cur_size = max(voxel_size.x, max(voxel_size.y, voxel_size.z));
-            uint32_t nb_points_per_axis = clamp(uint32_t(root_size / cur_size), 1u, 8u);
+        bool child_has_enough_voxels = globalVariables.hasEnoughVoxels(child_index);
+        if(child_is_visible && child_has_enough_points && child_has_enough_voxels){continue;}
 
-            drawVoxel(
-                target, 
-                voxel.position, 
-                settings.use_voxels_debug_color ? 0xffff00ff : voxel.color, 
-                voxel_size, 
-                nb_points_per_axis
-            );
+        const vec3 root_aabb_size = globalVariables.relationshipMap[globalVariables.mainOctree->aabb_index].aabb.getSize();
+        float root_size = max(root_aabb_size.x, max(root_aabb_size.y, root_aabb_size.z));
+        float cur_size = max(voxel_size.x, max(voxel_size.y, voxel_size.z));
+        uint32_t nb_points_per_axis = clamp(uint32_t(root_size / cur_size), 1u, 8u);
 
-        }
+        drawVoxel(
+            target, 
+            voxel.position, 
+            settings.use_voxels_debug_color ? 0xffff00ff : voxel.color, 
+            voxel_size, 
+            nb_points_per_axis
+        );
+
     }
 }
 
 
 
-
-
-
 /// Run on "NB SMs" blocks of size min("Max threads per SM", "Max block dim")
 extern "C" __global__
-void kernel_drawOctreeLarge(
+void kernel_replace_unloaded_nodes(
 	CRenderTarget target,
     CRenderingSettings settings
 ){
@@ -559,38 +550,82 @@ void kernel_drawOctreeLarge(
     for(uint32_t node_index = block_id; node_index < nb_nodes; node_index += nb_blocks){
         COctreeNode* node = globalVariables.packedNodes[node_index];
 
-        // Render unloaded nodes
-        {
-            uint32_t flags = 0b00000000;
-            for(uint32_t i=0; i<8; i++){
-                CIdAABB child_index = globalVariables.relationshipMap[node->aabb_index].children[i];
-                if(child_index == CINVALID_ID){continue;}
+        CChunk* cur_voxels = node->voxels;
+        const CAABB& aabb = globalVariables.relationshipMap[node->aabb_index].aabb;
+        vec3 voxel_size = (aabb.maxs - aabb.mins) / float(OocSimLodSettings::GRID_SIZE_PER_DIMENSION);
 
-                bool child_is_in_vis_cache = globalVariables.isInVisibilityCache(child_index);
-                if(child_is_in_vis_cache){
-                    flags |= ((0x01) << i);
-                    continue;
+        uint32_t depth = globalVariables.octreeDepth;
+        float color_factor = float(node->level) / float(max(depth, 1));
+        color_factor = clamp(color_factor, 0.0f, 1.0f);
+        uint32_t min_level_color = 0xffffff00; // cyan
+        uint32_t max_level_color = 0xff00ffff; // yellow
+        uint32_t color = linearGradient(color_factor, min_level_color, max_level_color);   
+
+        while(cur_voxels){
+            for(uint32_t i = thread_id; i < cur_voxels->size; i += nb_threads_per_block){
+                const CPoint& voxel = cur_voxels->points[i];
+
+                // Check if a subchild containing the voxel is already drawn
+                CNodePosition index = aabb.getNextChildIndex(voxel.position);
+                CIdAABB child = globalVariables.relationshipMap[node->aabb_index].children[index];
+                bool can_render = true;
+
+                while(child != CINVALID_ID){
+                    if(globalVariables.isInVisibilityCache(child)){
+                        can_render = false;
+                        break;
+                    }
+
+                    bool child_is_visible = globalVariables.isVisible(child);
+                    bool child_has_enough_points = globalVariables.hasEnoughPoints(child);
+                    bool child_has_enough_voxels = globalVariables.hasEnoughVoxels(child);
+                    if(child_is_visible && child_has_enough_points && child_has_enough_voxels){
+                        can_render = false;
+                        break;
+                    }
+
+                    index = globalVariables.relationshipMap[child].aabb.getNextChildIndex(voxel.position);
+                    child = globalVariables.relationshipMap[child].children[index];
                 }
-                if(!node->children[i]){continue;}
-                
-                bool child_has_enough_points = globalVariables.hasEnoughPoints(child_index);
-                // bool child_has_enough_points = true;
-                // bool child_has_enough_voxels = globalVariables.hasEnoughVoxels(child_index);
-                bool child_has_enough_voxels = true;
-                if(child_has_enough_points && child_has_enough_voxels){
-                    flags |= ((0x01) << i);
-                    continue;
-                }
+                if(!can_render){continue;}
+
+                uint32_t voxel_color = settings.use_voxels_debug_color ? color : voxel.color;
+                uint32_t nb_points_per_axis = min(8, depth + 1 - node->level);
+
+                drawVoxel(target, voxel.position, voxel_color,
+                    voxel_size, nb_points_per_axis, node->level + 1
+                );
             }
-
-            uint32_t nb_points_per_axis = min(8, depth + 1 - node->level);
-            drawAllVoxels(
-                target, settings, node, nb_points_per_axis,
-                flags ^ 0b11111111, 
-                // true
-                false
-            );
+            
+            cur_voxels = cur_voxels->next;
         }
+    }
+}
+
+
+
+
+/// Run on "NB SMs" blocks of size min("Max threads per SM", "Max block dim")
+extern "C" __global__
+void kernel_draw_octree_large(
+	CRenderTarget target,
+    CRenderingSettings settings
+){
+    if(settings.debug_lod_to_render != -1){return;}
+	auto grid = cg::this_grid();
+    auto block = cg::this_thread_block();
+    uint32_t nb_blocks = grid.num_blocks();
+
+    uint32_t block_id = grid.block_rank();
+    uint32_t thread_id = block.thread_rank();
+    uint32_t nb_threads_per_block = block.num_threads();
+
+    uint32_t nb_nodes = globalVariables.curNbNodes;
+    uint32_t depth = globalVariables.octreeDepth;
+
+    // Assign each node to one thread block
+    for(uint32_t node_index = block_id; node_index < nb_nodes; node_index += nb_blocks){
+        COctreeNode* node = globalVariables.packedNodes[node_index];
 
         if(!globalVariables.isLarge(node->aabb_index)){continue;}
 
@@ -620,7 +655,7 @@ void kernel_drawOctreeLarge(
 
 /// Run on "NB SMs" blocks of size min("Max threads per SM", "Max block dim")
 extern "C" __global__
-void kernel_drawOctreeSmall(
+void kernel_draw_octree_small(
 	CRenderTarget target,
     CRenderingSettings settings
 ){
