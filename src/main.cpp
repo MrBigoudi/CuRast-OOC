@@ -603,7 +603,7 @@ int main(int argc, char** argv){
 		println("GPU Memory Usage Before update:\n{}", GlobalVariables::getGpuMemoryUsage());
 
 		if(OocSimLodSettings::IS_USING_GPU_VERSION){
-			LoaderGpuVersion::createNewBatches("./lion.laz");
+			// LoaderGpuVersion::createNewBatches("./lion.laz");
 			// LoaderGpuVersion::createNewBatches("./banyo.las");
 			Runtime::controls->yaw    = -5.582;
 			Runtime::controls->pitch  = -0.294;
@@ -695,7 +695,8 @@ int main(int argc, char** argv){
 						// GpuVersion::updateOctree(CuRast::instance, &context);
 						// GpuVersion::visibilityUpdate(CuRast::instance, &context);
 					}
-					GpuVersion::takeRandomScreenShots();
+					// GpuVersion::takeRandomScreenShots();
+					GpuVersion::takeSingleScreenShot();
 				}
 
 

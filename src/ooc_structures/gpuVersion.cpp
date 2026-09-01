@@ -3,6 +3,27 @@
 #include "loader.h"
 #include "outOfCore.h"
 
+
+void PointsAllocator::init() {
+    uint32_t allocable = OocSimLodSettings::LRU_CPU_CACHE_SIZE // Cache size
+        + OocSimLodSettings::MAX_NB_NODES_TO_EXCHANGE    // Current update loaded node points
+        + OocSimLodSettings::MAX_NB_NODES_TO_EXCHANGE    // Current update stored node points
+        + OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE   // Current update rendered points
+    ;
+    for(uint32_t i = 0; i < allocable; i++){
+        CPoint* allocable = (CPoint*)GpuVersion::allocHost<CPoint>(OocSimLodSettings::MAX_POINTS_PER_LEAF);
+        free_points.insert(allocable);
+    }
+}
+void PointsAllocator::destroy() {
+    for(CPoint* points : free_points){
+        CURuntime::assertCudaSuccess(cuMemFreeHost(points));
+    }
+    for(CPoint* points : used_points){
+        CURuntime::assertCudaSuccess(cuMemFreeHost(points));
+    }
+}
+
 #ifndef COPY_FROM_GPU
 #define COPY_FROM_GPU(member, value, type)                                     \
     {                                                                          \
@@ -828,10 +849,6 @@ void GpuVersion::storeNodes(uint32_t nb_nodes_to_store){
     std::vector<CIdAABB> to_deserialise = {};
     for(uint32_t i=0; i < nb_nodes_to_store; i++){
         const CIdAABB& id = ids[i];
-        for(uint32_t j = 0; j<nb_nodes_to_store; j++){
-            if(j == i){continue;}
-            if(ids[i] == ids[j]){println("WTFFF, this should never happen\n");}
-        }
         hostCache->add(id);
         currentlyInUpdatesCache.erase(id);
 
@@ -1166,6 +1183,7 @@ void GpuVersion::updateHostCache(){
 
     if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
         updateHostCacheComplete = new std::thread([nodes_to_store = std::move(nodes_to_store)]() mutable {
+
             std::for_each(std::execution::par, nodes_to_store.begin(), nodes_to_store.end(), 
                 [](std::shared_ptr<HostStorageNode>& node){
                     OctreeNodeSerializable::serializeV2(node);
@@ -1179,6 +1197,9 @@ void GpuVersion::updateHostCache(){
             );
         });
     } else {
+        CURuntime::assertCudaSuccess(cuEventSynchronize(eventStoringComplete));
+        CURuntime::assertCudaSuccess(cuEventSynchronize(eventVisibilityUpdateComplete));
+
         std::for_each(nodes_to_store.begin(), nodes_to_store.end(), [](std::shared_ptr<HostStorageNode>& node){
             OctreeNodeSerializable::serializeV2(node);
         });
@@ -1310,6 +1331,8 @@ void GpuVersion::renderOctree(RenderTarget& target){
             if(CuRastSettings::showBoundingBoxes){
                 prog->launch("kernel_render_bounding_boxes", {&real_target, &real_settings}, launch_settings);
             }
+
+            // prog->launch("kernel_test_multi_resolution_v2", {&real_target, &real_settings, &randomOffset}, launch_settings);
         }
     }
 }
@@ -1636,6 +1659,168 @@ void GpuVersion::takeRandomScreenShots(){
             VKRenderer::height = (old_height >> (screenshotCounter % NB_RESOLUTIONS));
             CuRastSettings::background = pairBg;
 
+            CuRastSettings::requestScreenshot = std::make_shared<string>(
+                format("./screenshots/id_{}_res_{}x{}_target.png",
+                    pairId,
+                    VKRenderer::width, VKRenderer::height
+                )
+            );
+        }
+
+        screenshotCounter++;
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/// For another project
+void GpuVersion::takeSingleScreenShot(){
+    static const uint32_t NB_RESOLUTIONS = 4;
+    static const uint32_t NB_SCREENSHOTS = 5;
+    static const uint32_t NB_TOTAL_SCREENSHOTS = NB_SCREENSHOTS * NB_RESOLUTIONS * 2;
+
+    static bool oldSettingsIsLeftDown = false;
+    static double oldSettingsScroll = 0;
+    static double oldSettingsPosX = 0;
+    static double oldSettingsPosY = 0;
+    static uint32_t oldSettingsNbPointsPerAxis = 0;
+    static vec4 oldSettingsBackgroundColor = {};
+    static double oldSettingsYaw = 0;
+    static double oldSettingsPitch = 0;
+    static double oldSettingsRadius = 0;
+    static glm::dvec3 oldSettingsTarget = {};
+
+    static uint32_t screenshotCounter = NB_TOTAL_SCREENSHOTS;
+    static bool buttonWasPressed = false;
+
+    static uint32_t old_width = VKRenderer::width;
+    static uint32_t old_height = VKRenderer::height;
+
+    static uint32_t cpt = 0;
+    static uint32_t density[5] = {16, 32, 64, 96, 128};
+
+    static uint32_t INITIAL_ID = 0;
+
+    // Begin screenshots
+    if(CuRastSettings::bruteForceRendering && !buttonWasPressed){
+        buttonWasPressed = true;
+        screenshotCounter = 0;
+
+        // Save old settings
+        oldSettingsBackgroundColor = CuRastSettings::background;
+        oldSettingsIsLeftDown      = Runtime::controls->isLeftDown;
+        oldSettingsScroll          = Runtime::mouseEvents.wheel_y;
+        oldSettingsPosX            = Runtime::mouseEvents.pos_x;
+        oldSettingsPosY            = Runtime::mouseEvents.pos_y;
+        oldSettingsYaw             = Runtime::controls->yaw;
+        oldSettingsPitch           = Runtime::controls->pitch;
+        oldSettingsRadius          = Runtime::controls->radius;
+        oldSettingsTarget          = Runtime::controls->target;
+
+        for(int i = INITIAL_ID; i <= 10'000'000; i++){
+			fs::create_directories("./screenshots");
+			std::string path = format("./screenshots/id_{}_res_{}x{}_perturbed.png",
+                i, VKRenderer::width, VKRenderer::height
+            );
+            INITIAL_ID = i;
+			if(!fs::exists(path)) break;
+		}
+
+
+        GpuVersion::isTakingScreenshots = true;
+        cpt = 0;
+    }
+
+    // Reset after screenshots are done
+    if(buttonWasPressed && screenshotCounter == NB_TOTAL_SCREENSHOTS){
+        Runtime::controls->isLeftDown = oldSettingsIsLeftDown;
+        Runtime::mouseEvents.wheel_y  = oldSettingsScroll;
+        Runtime::mouseEvents.pos_x    = oldSettingsPosX;
+        Runtime::mouseEvents.pos_y    = oldSettingsPosY;
+        CuRastSettings::background    = oldSettingsBackgroundColor;
+
+        Runtime::controls->yaw    = oldSettingsYaw;
+        Runtime::controls->pitch  = oldSettingsPitch;
+        Runtime::controls->radius = oldSettingsRadius;
+        Runtime::controls->target = oldSettingsTarget;
+        Runtime::controls->update();
+
+        buttonWasPressed = false;
+        CuRastSettings::bruteForceRendering = false;
+
+        VKRenderer::width = old_width;
+        VKRenderer::height = old_height;
+
+        GpuVersion::isTakingScreenshots = false;
+    }
+
+    // If screenshots
+    if(screenshotCounter < NB_TOTAL_SCREENSHOTS){
+        fs::create_directories("./screenshots");
+
+        Runtime::controls->isLeftDown = oldSettingsIsLeftDown;
+        Runtime::mouseEvents.wheel_y  = oldSettingsScroll;
+        Runtime::mouseEvents.pos_x    = oldSettingsPosX;
+        Runtime::mouseEvents.pos_y    = oldSettingsPosY;
+        CuRastSettings::background = vec4(1.,1.,1.,1.);
+
+        Runtime::controls->yaw    = oldSettingsYaw;
+        Runtime::controls->pitch  = oldSettingsPitch;
+        Runtime::controls->radius = oldSettingsRadius;
+        Runtime::controls->target = oldSettingsTarget;
+        Runtime::controls->update();
+
+        uint32_t pairId = screenshotCounter / (2*NB_RESOLUTIONS) + INITIAL_ID;
+
+        if(screenshotCounter % (2*NB_RESOLUTIONS) == 0){
+            // randomOffset = 1 + rand();
+            randomOffset = density[cpt]; cpt++;
+
+            VKRenderer::width = old_width;
+            VKRenderer::height = old_height;
+            CuRastSettings::requestScreenshot = std::make_shared<string>(
+                format("./screenshots/id_{}_res_{}x{}_perturbed.png",
+                    pairId,
+                    VKRenderer::width, VKRenderer::height
+                )
+            );
+        } else if(screenshotCounter % (2*NB_RESOLUTIONS) == NB_RESOLUTIONS) {
+            randomOffset = 0;
+            VKRenderer::width = old_width;
+            VKRenderer::height = old_height;
+            CuRastSettings::requestScreenshot = std::make_shared<string>(
+                format("./screenshots/id_{}_res_{}x{}_target.png",
+                    pairId,
+                    VKRenderer::width, VKRenderer::height
+                )
+            );
+        } else if(screenshotCounter % (2*NB_RESOLUTIONS) < NB_RESOLUTIONS) {
+            VKRenderer::width = (old_width >> (screenshotCounter % (2*NB_RESOLUTIONS)));
+            VKRenderer::height = (old_height >> (screenshotCounter % (2*NB_RESOLUTIONS)));
+            CuRastSettings::requestScreenshot = std::make_shared<string>(
+                format("./screenshots/id_{}_res_{}x{}_perturbed.png",
+                    pairId,
+                    VKRenderer::width, VKRenderer::height
+                )
+            );
+        } else if(screenshotCounter % (2*NB_RESOLUTIONS) > NB_RESOLUTIONS) {
+            VKRenderer::width = (old_width >> (screenshotCounter % NB_RESOLUTIONS));
+            VKRenderer::height = (old_height >> (screenshotCounter % NB_RESOLUTIONS));
             CuRastSettings::requestScreenshot = std::make_shared<string>(
                 format("./screenshots/id_{}_res_{}x{}_target.png",
                     pairId,

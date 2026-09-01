@@ -734,45 +734,37 @@ void kernel_test_multi_resolution(
     CRenderingSettings settings, 
     uint32_t random_offset
 ){
-    // auto grid = cg::this_grid();
-    // auto block = cg::this_thread_block();
-    // uint32_t nb_blocks = grid.num_blocks();
-
-    // uint32_t block_id = grid.block_rank();
-    // uint32_t thread_id = block.thread_rank();
-    // uint32_t nb_threads_per_block = block.num_threads();
-
-    // uint32_t nb_nodes = globalVariables.curNbNodes;
-
-    // for(uint32_t node_index = 0; node_index < nb_nodes; node_index++){
-    //     COctreeNode* node = globalVariables.packedNodes[node_index];
-
-    //     CChunk* cur_points = node->points;
-
-    //     uint32_t offset = (random_offset == 0) ? 1 : (1 + random_offset + node_index) % 128;
-
-    //     while(cur_points){
-    //         for(uint32_t i = thread_id; i < cur_points->size; i += nb_threads_per_block){
-    //             // if(i % settings.voxels_nb_points_per_axis != 0){continue;}
-    //             if(i % offset != 0){continue;}
-
-    //             const CPoint& point = cur_points->points[i];
-    //             drawPoint(target, point.position, point.color, uint8_t(offset));
-    //         }
-    //         cur_points = cur_points->next;
-    //     }
-
-    //     if(thread_id == 0){
-    //         globalVariables.unsetFlag(node->aabb_index, CFlagIsVisible);
-    //     }
-    // }
-
     auto grid = cg::this_grid();
     uint32_t block_id = grid.block_rank();
     uint32_t thread_id = grid.thread_rank();
     uint32_t nb_threads = grid.num_threads();
 
-    uint32_t offset = (random_offset == 0) ? 1 : (random_offset + block_id) % 128;
+    // uint32_t offset = (random_offset == 0) ? 1 : (random_offset + block_id) % 128;
+    uint32_t offset = (random_offset == 0) ? 1 : random_offset % 129;
+    for(uint32_t point_id = thread_id; point_id < globalVariables.nbRenderedPoints; point_id += nb_threads){
+        if(point_id % offset != 0){continue;}
+
+        const CPoint& point = globalVariables.renderedPoints[point_id];
+        drawPoint(
+            target, point.position, point.color, uint8_t(offset)
+        );
+    }
+}
+
+
+/// Run on "NB SMs" blocks of size min("Max threads per SM", "Max block dim")
+extern "C" __global__
+void kernel_test_multi_resolution_v2(
+	CRenderTarget target,
+    CRenderingSettings settings
+){
+    auto grid = cg::this_grid();
+    uint32_t block_id = grid.block_rank();
+    uint32_t thread_id = grid.thread_rank();
+    uint32_t nb_threads = grid.num_threads();
+
+    uint32_t random_offset = uint32_t(max(0, settings.debug_lod_to_render));
+    uint32_t offset = (random_offset == 0) ? 1 : random_offset % 129;
     for(uint32_t point_id = thread_id; point_id < globalVariables.nbRenderedPoints; point_id += nb_threads){
         if(point_id % offset != 0){continue;}
 

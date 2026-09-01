@@ -24,21 +24,8 @@ struct PointsAllocator {
         used_points.erase(points);
         free_points.insert(points);
     }
-    static void init() {
-        uint32_t allocable = OocSimLodSettings::LRU_CPU_CACHE_SIZE // Cache size
-            + OocSimLodSettings::MAX_NB_NODES_TO_EXCHANGE    // Current update loaded node points
-            + OocSimLodSettings::MAX_NB_NODES_TO_EXCHANGE    // Current update stored node points
-            + OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE   // Current update rendered points
-        ;
-        for(uint32_t i = 0; i < allocable; i++){
-            CPoint* allocable = (CPoint*)malloc(OocSimLodSettings::MAX_POINTS_PER_LEAF * sizeof(CPoint));
-            free_points.insert(allocable);
-        }
-    }
-    static void destroy() {
-        for(CPoint* points : free_points){free(points);}
-        for(CPoint* points : used_points){free(points);}
-    }
+    static void init();
+    static void destroy();
 };
 
 
@@ -291,8 +278,27 @@ struct GpuVersion {
 
     /// For another project
     static void takeRandomScreenShots();
+    static void takeSingleScreenShot();
 
     friend LoaderGpuVersion;
+
+    template<typename T>
+    static T* alloc(uint32_t size){
+        CUdeviceptr new_ptr = 0;
+        uint64_t real_size = size * sizeof(T);
+        totalAllocatedMemory += real_size;
+        CURuntime::assertCudaSuccess(cuMemAlloc(&new_ptr, real_size));
+        pointers.push_back(new_ptr);
+        return reinterpret_cast<T*>(new_ptr);
+    }
+
+    template<typename T>
+    static void* allocHost(uint32_t size){
+        void* new_ptr = nullptr;
+        uint64_t real_size = size * sizeof(T);
+        CURuntime::assertCudaSuccess(cuMemAllocHost(&new_ptr, real_size));
+        return new_ptr;
+    }
 
     private:
         static void octreeUpdateInit(CuRast* editor, CUcontext* context);
@@ -311,24 +317,6 @@ struct GpuVersion {
         static void initHostSide(CuRast* editor, CUcontext* context);
         static void initBuffers(CuRast* editor, CUcontext* context);
         static void initAllocators(CuRast* editor, CUcontext* context, CUstream* stream);
-
-        template<typename T>
-        static T* alloc(uint32_t size){
-            CUdeviceptr new_ptr = 0;
-            uint64_t real_size = size * sizeof(T);
-            totalAllocatedMemory += real_size;
-            CURuntime::assertCudaSuccess(cuMemAlloc(&new_ptr, real_size));
-            pointers.push_back(new_ptr);
-            return reinterpret_cast<T*>(new_ptr);
-        }
-
-        template<typename T>
-        static void* allocHost(uint32_t size){
-            void* new_ptr = nullptr;
-            uint64_t real_size = size * sizeof(T);
-            CURuntime::assertCudaSuccess(cuMemAllocHost(&new_ptr, real_size));
-            return new_ptr;
-        }
 
         template<typename T>
         static CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>* allocAllocatorElements(
