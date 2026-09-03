@@ -644,12 +644,9 @@ void kernel_simlod_count_split_part_4_reset(){
 
 
 __device__
-// void sampleVoxel(const CPoint& point, uint32_t thread_id, uint32_t nb_threads){
 void sampleVoxel(const CPoint& point){
     COctreeNode* cur_node = globalVariables.mainOctree;
     
-    uint32_t level = 0;
-
     if(point.position == vec3(0,0,0)){
         return;
     }
@@ -658,7 +655,7 @@ void sampleVoxel(const CPoint& point){
         if(!cur_node->occupancy){return;}
 
         // Find next child
-        const CAABB& aabb = globalVariables.relationshipMap[cur_node->aabb_index].aabb;
+        const CAABB aabb = globalVariables.relationshipMap[cur_node->aabb_index].aabb;
         
 #ifdef ASSERT_ENABLED
         if(!aabb.contains(point.position)){
@@ -668,40 +665,57 @@ void sampleVoxel(const CPoint& point){
 #endif
 
         CNodePosition child_position = aabb.getNextChildIndex(point.position);
-        if(!cur_node->children[child_position]){return;}
+        COctreeNode* next_child = cur_node->children[child_position];
+        if(!next_child){return;}
 
         // Sample voxel occupancy grid at this location if the node is inner for this point
         COccupancyGrid::GridIndex grid_index = COccupancyGrid::getCellIndices(aabb, point);
-        bool is_cell_occupied = cur_node->occupancy->markCellAsFilled(grid_index);
+        uint32_t* values = cur_node->occupancy->values;
+        uint32_t bitmask = 1 << grid_index.bit;
+        uint32_t old_nonatomic = values[grid_index.word];
+        if((old_nonatomic & bitmask) == 0){
 
-        if(!is_cell_occupied){
-            // Create corresponding voxel using this point
-            vec3 voxel_centroid = COccupancyGrid::getCellCentroid(aabb, grid_index);
-            CPoint new_voxel = {};
-            new_voxel.position = voxel_centroid;
-            new_voxel.color = point.color;
-
-            // Add voxel to backlog buffers
-            __nv_atomic_add(&cur_node->voxels_counter, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-            uint32_t backlog_index = __nv_atomic_fetch_add(&globalVariables.nbBacklogVoxels, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            uint32_t old_value = __nv_atomic_fetch_or(&values[grid_index.word], bitmask, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            bool is_cell_occupied = (old_value & bitmask);
             
-            if(backlog_index >= globalVariables.maxNbBacklogVoxels){
-                printf("ERROR: Max nb backlog buffer reached: i = %d / %d\n", backlog_index, globalVariables.maxNbBacklogVoxels);
-                customAssert();
-            }
+            if(!is_cell_occupied){
+                // Avoid uncoalsced atomic
+                uint64_t nodeptr = uint64_t(cur_node);
+                auto warp = cg::coalesced_threads();
+                auto group = cg::labeled_partition(warp, nodeptr);
 
-            globalVariables.backlogVoxels[backlog_index] = new_voxel;
-            globalVariables.backlogVoxelsNodes[backlog_index] = cur_node;
+                uint32_t backlog_base = 0;
+                if(group.thread_rank() == 0){
+                    __nv_atomic_add(&cur_node->voxels_counter, group.num_threads(), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+                    
+                    backlog_base = __nv_atomic_fetch_add(&globalVariables.nbBacklogVoxels, group.num_threads(), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+                    if(backlog_base + group.num_threads() > globalVariables.maxNbBacklogVoxels){
+                        printf("ERROR: Max nb backlog buffer reached\n");
+                        customAssert();
+                    }
+                }
+
+                // Create corresponding voxel using this point
+                vec3 voxel_centroid = COccupancyGrid::getCellCentroid(aabb, grid_index);
+                CPoint new_voxel = {};
+                new_voxel.position = voxel_centroid;
+                new_voxel.color = point.color;
+
+                backlog_base = group.shfl(backlog_base, 0);
+                uint32_t backlog_index = backlog_base + group.thread_rank();
+
+                globalVariables.backlogVoxels[backlog_index] = new_voxel;
+                globalVariables.backlogVoxelsNodes[backlog_index] = cur_node;
+            }
         }
 
-        cur_node = cur_node->children[child_position];
-        level++;
+        cur_node = next_child;
     }
 };
 
 
 
-/// Run on floor("NB SMs" * "Max threads per SM" / 32) blocks of size 32
+/// Run on floor("NB SMs" * "Max threads per SM" / 256) blocks of size 256
 extern "C" __global__
 void kernel_simlod_voxel_sampling(){
     // To reset before "kernel_simlod_insertion_part_1_chunks_allocations"
@@ -730,19 +744,15 @@ void kernel_simlod_voxel_sampling(){
         }
 #endif
 
-        // for(uint32_t i=block_id; i<nb_new_points; i+=nb_blocks){
         for(uint32_t i=thread_id; i<nb_new_points; i+=nb_threads){
             const CPoint& point = new_points[i];
-            // sampleVoxel(point, thread_id, nb_threads_per_block);
             sampleVoxel(point);
         }
     }
 
     // Sample voxels for spilled points
-    // for(uint32_t i=block_id; i<globalVariables.nbSpilledPoints; i+=nb_blocks){
     for(uint32_t i=thread_id; i<globalVariables.nbSpilledPoints; i+=nb_threads){
         const CPoint& point = globalVariables.spilledPoints[i];
-        // sampleVoxel(point, thread_id, nb_threads_per_block);
         sampleVoxel(point);
     }
 }

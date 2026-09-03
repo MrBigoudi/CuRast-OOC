@@ -662,13 +662,13 @@ void GpuVersion::octreeUpdateSimLODVoxelSampling(CuRast* editor, CUcontext* cont
 
     if(!(bool*)isDoneIterating){return;}
 
-    uint32_t block_size = 32;
-    uint32_t num_sms = OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM;
-    uint32_t max_threads_per_sm = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM;
-    uint32_t grid_size = (num_sms * max_threads_per_sm + block_size - 1) / block_size;
-
+    uint32_t block_size = 256;
+    uint32_t grid_size =
+        (OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM + block_size - 1) 
+        / block_size
+    ;
     OptionalLaunchSettings launch_settings = {
-        .gridsize = grid_size,
+        .gridsize  = grid_size,
         .blocksize = block_size
     };
     prog->launch("kernel_simlod_voxel_sampling", {}, launch_settings);
