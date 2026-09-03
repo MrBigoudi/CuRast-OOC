@@ -37,6 +37,7 @@ void kernel_init_global_buffers(){
         CIdAABB id = createNewNodeId();
         globalVariables.mainOctree = globalAllocator.newOctreeNode(id);
         globalVariables.packedNodes[0] = globalVariables.mainOctree;
+        globalVariables.mainOctree->cur_id = 0;
         globalVariables.curNbNodes = 1;
     }
 }

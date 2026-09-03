@@ -325,6 +325,7 @@ void packNodes(){
 #endif
 
             globalVariables.packedNodes[begin] = last_non_empty;
+            last_non_empty->cur_id = begin;
             globalVariables.packedNodes[end] = nullptr;
         }
     }

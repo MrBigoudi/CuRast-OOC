@@ -138,6 +138,7 @@ void kernel_bottom_up_update_part_2_instancing(){
 #endif
 
         globalVariables.packedNodes[node_index] = new_parent;
+        new_parent->cur_id = node_index;
 
         // Create the new AABB
         CAABB new_parent_aabb = globalVariables.relationshipMap[cur_child->aabb_index].aabb;

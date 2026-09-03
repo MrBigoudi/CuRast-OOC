@@ -396,6 +396,8 @@ struct COctreeNode {
 	uint32_t children_ids = 0;
 	uint8_t level = 0;
 
+	uint32_t cur_id = 0;
+
 	__device__ __forceinline__ COctreeNode(): points(nullptr), voxels(nullptr), occupancy(nullptr),
 		aabb_index(CINVALID_ID), points_counter(0), voxels_counter(0),
 		points_stored(0), voxels_stored(0), children_ids(0), level(0)
@@ -512,11 +514,13 @@ struct CAllocationPlan {
     uint32_t points_first_new;
     uint32_t points_nb_new;
     uint32_t points_last_size;
+	uint32_t points_existing_count;
 
     CChunk* voxels_attach;   // chunk to append new voxels chunks to (nullptr if none needed)
     uint32_t voxels_first_new;
     uint32_t voxels_nb_new;
     uint32_t voxels_last_size;
+	uint32_t voxels_existing_count;
 };
 
 
