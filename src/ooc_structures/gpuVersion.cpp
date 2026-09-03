@@ -269,13 +269,13 @@ void GpuVersion::initAllocators(CuRast* editor, CUcontext* context, CUstream* st
     CMemoryAllocator hostStaging = {};
 
     hostStaging.chunksAllocator = allocAllocator<CChunk>(
-        OocSimLodSettings::NB_ALLOCABLE_CHUNKS, AllocatorId::ChunkAllocator, stream
+        OocSimLodSettings::NB_ALLOCABLE_CHUNKS, AllocatorId::ChunkAllocator
     );
     hostStaging.gridsAllocator = allocAllocator<COccupancyGrid>(
-        OocSimLodSettings::NB_ALLOCABLE_GRIDS, AllocatorId::OccupancyGridAllocator, stream
+        OocSimLodSettings::NB_ALLOCABLE_GRIDS, AllocatorId::OccupancyGridAllocator
     );
     hostStaging.nodesAllocator = allocAllocator<COctreeNode>(
-        OocSimLodSettings::NB_ALLOCABLE_NODES, AllocatorId::OctreeNodeAllocator, stream
+        OocSimLodSettings::NB_ALLOCABLE_NODES, AllocatorId::OctreeNodeAllocator
     );
 
     CUdeviceptr global_allocator_ptr = prog->getGlobalsPointer("globalAllocator");

@@ -90,13 +90,13 @@ __device__ void addNewVoxels(
                 new_voxel.color = point.color;
                 
                 // Add voxel to voxels chunk list
-                if(!new_parent->voxels){new_parent->voxels = globalAllocator.newChunk(false);}
+                if(!new_parent->voxels){new_parent->voxels = globalAllocator.newChunk();}
 
                 CChunk* parent_chunk_list = new_parent->voxels;
                 while(parent_chunk_list->next){parent_chunk_list = parent_chunk_list->next;}
 
                 if(parent_chunk_list->size == OocSimLodSettings::NB_POINTS_PER_CHUNK){
-                    parent_chunk_list->next =  globalAllocator.newChunk(false);
+                    parent_chunk_list->next =  globalAllocator.newChunk();
                     parent_chunk_list = parent_chunk_list->next;
                 }
                 parent_chunk_list->points[parent_chunk_list->size] = new_voxel;
@@ -126,7 +126,7 @@ void kernel_bottom_up_update_part_2_instancing(){
 
         // printf("\n\n\n\n\n\n\nFrom bottom up: %d\n\n\n\n\n\n\n", parent_aabb_index);
 
-		COctreeNode* new_parent = globalAllocator.newOctreeNode(parent_aabb_index, false);
+		COctreeNode* new_parent = globalAllocator.newOctreeNode(parent_aabb_index);
 		uint32_t node_index = globalVariables.curNbNodes;
         globalVariables.curNbNodes++;
 
@@ -144,7 +144,7 @@ void kernel_bottom_up_update_part_2_instancing(){
 		new_parent_aabb.extend(node_position);
         
         // Create the occupancy
-		new_parent->occupancy = globalAllocator.newOccupancyGrid(false);
+		new_parent->occupancy = globalAllocator.newOccupancyGrid();
         uint32_t grid_index = globalVariables.nbGridsToInit;
         globalVariables.nbGridsToInit++;
         globalVariables.gridsToInit[grid_index] = new_parent;

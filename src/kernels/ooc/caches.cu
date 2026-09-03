@@ -230,7 +230,7 @@ void kernel_prepare_store_part_1_filling_buffers(){
             if(thread_id == 0){
                 // TODO: slow, refactor to let each thread delete a chunk
                 // Deleting the node
-                globalAllocator.delOctreeNode(node, true, true);
+                globalAllocator.delOctreeNode(node, true);
                 globalVariables.packedNodes[node_index] = nullptr;
 
                 // UI values
@@ -357,10 +357,6 @@ void kernel_prepare_store_part_3_updating_levels(){
     
     if(is_first){
         packNodes();
-        // Because "delOctreeNode" was called in kernel_prepare_store_part_1_filling_buffers
-        globalAllocator.chunksAllocator->reset_temporary_deallocations();
-        globalAllocator.gridsAllocator->reset_temporary_deallocations();
-        globalAllocator.nodesAllocator->reset_temporary_deallocations();
     }
     grid.sync();
 

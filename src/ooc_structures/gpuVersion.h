@@ -512,42 +512,47 @@ struct GpuVersion {
         }
 
         template<typename T>
-        static CAllocatorPool<T>* allocAllocator(uint32_t size, AllocatorId type, CUstream* stream){
+        static CAllocatorPool<T>* allocAllocator(uint32_t size, AllocatorId type){
             uint64_t real_size = 0;
 
             CUdeviceptr allocator_ptr = 0;
             real_size = sizeof(CAllocatorPool<T>);
             totalAllocatedMemory += real_size;
             CURuntime::assertCudaSuccess(cuMemAlloc(&allocator_ptr, real_size));
-            CAllocatorPool<T> tmp = CAllocatorPool<T>(size, type);
+            pointers.push_back(allocator_ptr);
 
-            // Allocate the memory pool FIRST so every slot's address is known up front
-            uint64_t alignment = alignof(T);
+            uint64_t alignment   = alignof(T);
             uint64_t aligned_size = sizeof(T) + ((alignment - (sizeof(T) % alignment)) % alignment);
-            CUdeviceptr allocation_pool_ptr = 0;
+            CUdeviceptr pool_ptr = 0;
             real_size = (uint64_t)size * aligned_size;
             totalAllocatedMemory += real_size;
-            CURuntime::assertCudaSuccess(cuMemAlloc(&allocation_pool_ptr, real_size));
-            tmp.allocated_memory = reinterpret_cast<T*>(allocation_pool_ptr);
+            CURuntime::assertCudaSuccess(cuMemAlloc(&pool_ptr, real_size));
+            pointers.push_back(pool_ptr);
 
-            std::vector<CUdeviceptr> entries_it_ptr;
-            tmp.elements = allocAllocatorElements<T>(size, allocation_pool_ptr, aligned_size, stream, entries_it_ptr);
-
-            // Fully pre-built map — no device malloc/hashing needed at init anymore
-            tmp.elements_map = allocAllocatorElementsMap<T>(size, allocation_pool_ptr, aligned_size, entries_it_ptr, stream);
-
-            CUdeviceptr deallocation_pool_ptr = 0;
-            real_size = size * sizeof(typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::Iterator*);
+            CUdeviceptr stack_ptr = 0;
+            real_size = (uint64_t)size * sizeof(uint32_t);
             totalAllocatedMemory += real_size;
-            CURuntime::assertCudaSuccess(cuMemAlloc(&deallocation_pool_ptr, real_size));
-            CURuntime::assertCudaSuccess(cuMemsetD8Async(deallocation_pool_ptr, 0, real_size, *stream));
-            tmp.deallocated_memory = reinterpret_cast<typename CDoubleLinkedList<typename CAllocatorPool<T>::Entry*>::Iterator**>(deallocation_pool_ptr);
+            CURuntime::assertCudaSuccess(cuMemAlloc(&stack_ptr, real_size));
+            pointers.push_back(stack_ptr);
 
-            CURuntime::assertCudaSuccess(cuMemcpyHtoD(allocator_ptr, &tmp, sizeof(CAllocatorPool<T>)));
+            std::vector<uint32_t> stack_host(size);
+            for(uint32_t i = 0; i < size; i++) {
+                stack_host[i] = i;   // slot i owns &memory[i]
+            }
+            CURuntime::assertCudaSuccess(
+                cuMemcpyHtoD(stack_ptr, stack_host.data(), real_size)
+            );
 
-            pointers.push_back(deallocation_pool_ptr);
-            pointers.push_back(allocation_pool_ptr);
-            pointers.push_back(allocator_ptr);
+            CAllocatorPool<T> tmp(size, type);
+            tmp.allocated_memory     = reinterpret_cast<T*>(pool_ptr);
+            tmp.free_stack = reinterpret_cast<uint32_t*>(stack_ptr);
+            tmp.free_top   = size;
+            tmp.nb_allocated_elements = 0;
+
+            CURuntime::assertCudaSuccess(
+                cuMemcpyHtoD(allocator_ptr, &tmp, sizeof(CAllocatorPool<T>))
+            );
+
             return reinterpret_cast<CAllocatorPool<T>*>(allocator_ptr);
         };
 };

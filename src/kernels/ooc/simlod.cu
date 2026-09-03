@@ -140,7 +140,7 @@ void kernel_simlod_load_part_2_rebuilding_nodes(){
         }
 #endif
 
-        COctreeNode* loaded_node = globalAllocator.newOctreeNode(aabb_index, true);
+        COctreeNode* loaded_node = globalAllocator.newOctreeNode(aabb_index);
         uint32_t node_index = __nv_atomic_fetch_add(&globalVariables.curNbNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
 
 #ifdef ASSERT_ENABLED
@@ -159,7 +159,7 @@ void kernel_simlod_load_part_2_rebuilding_nodes(){
 
         // Allocate the occupancy grid
         if(nb_voxels > 0){
-            loaded_node->occupancy = globalAllocator.newOccupancyGrid(true);
+            loaded_node->occupancy = globalAllocator.newOccupancyGrid();
             uint32_t grid_index = __nv_atomic_fetch_add(&globalVariables.nbGridsToInit, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
             
 #ifdef ASSERT_ENABLED
@@ -243,13 +243,6 @@ void kernel_simlod_load_part_3_rebuilding_children(){
     // if(thread_id == 0){
     //     printf("kernel_simlod_load_part_3_rebuilding_children\n");
     // }
-
-    if(thread_id == 0){
-        // Because "newOctreeNode" was called in part 2
-        globalAllocator.nodesAllocator->reset_temporary_allocations();
-        // Because "newOccupancyGrid" was called in part 2
-        globalAllocator.gridsAllocator->reset_temporary_allocations();
-    }
 
     if(!globalVariables.isDoneLoading){return;}
 
@@ -505,7 +498,7 @@ void kernel_simlod_count_split_part_1_5_prefix_sum(){
 
         // Rebuild the occupancy
         if(!spilling_node->occupancy){
-            spilling_node->occupancy = globalAllocator.newOccupancyGrid(false);
+            spilling_node->occupancy = globalAllocator.newOccupancyGrid();
             uint32_t grid_index = __nv_atomic_fetch_add(&globalVariables.nbGridsToInit, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
 
 #ifdef ASSERT_ENABLED
@@ -526,7 +519,7 @@ void kernel_simlod_count_split_part_1_5_prefix_sum(){
             if(can_be_spilled && (globalVariables.relationshipMap[spilling_node_id].children[child_index] == CINVALID_ID)){
                 // Create the new node
                 CIdAABB new_child_id = createNewNodeId();
-                COctreeNode* new_child = globalAllocator.newOctreeNode(new_child_id, false);
+                COctreeNode* new_child = globalAllocator.newOctreeNode(new_child_id);
                 uint32_t node_index = __nv_atomic_fetch_add(&globalVariables.curNbNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
 
 #ifdef ASSERT_ENABLED
@@ -610,16 +603,13 @@ void kernel_simlod_count_split_part_3_chunks_delete(){
     uint32_t nb_spilling_chunks = globalVariables.nbSpillingChunks;
     CChunk** spilling_chunks = globalVariables.spillingChunks;
     for(uint32_t i=thread_id; i < nb_spilling_chunks; i += nb_threads){
-        globalAllocator.delChunkSingle(spilling_chunks[i], true);
+        globalAllocator.delChunkSingle(spilling_chunks[i]);
     }
 }
 
 // Run on a single thread
 extern "C" __global__
 void kernel_simlod_count_split_part_4_reset(){
-    // Because "delChunk" was called in kernel_simlod_count_split_part_3_chunks_delete
-    globalAllocator.chunksAllocator->reset_temporary_deallocations();
-
     for(uint32_t i=0; i < globalVariables.nbSpillingNodes; i++){
         COctreeNode* spilling_node = globalVariables.spillingNodes[i];
         spilling_node->points = nullptr;
@@ -799,7 +789,7 @@ void kernel_simlod_insertion_part_1_1_chunks_allocations_plan(){
         uint32_t required_chunks = (real_points_counter + OocSimLodSettings::NB_POINTS_PER_CHUNK - 1) / OocSimLodSettings::NB_POINTS_PER_CHUNK;
         if(required_chunks > 0){
             if(!cur_node->points){
-                cur_node->points = globalAllocator.newChunk(true);
+                cur_node->points = globalAllocator.newChunk();
             }
 
             CChunk* cur_chunk = cur_node->points;
@@ -833,7 +823,7 @@ void kernel_simlod_insertion_part_1_1_chunks_allocations_plan(){
         required_chunks = (cur_node->voxels_counter + OocSimLodSettings::NB_POINTS_PER_CHUNK - 1) / OocSimLodSettings::NB_POINTS_PER_CHUNK;
         if(required_chunks > 0){
             if(!cur_node->voxels){
-                cur_node->voxels = globalAllocator.newChunk(true);
+                cur_node->voxels = globalAllocator.newChunk();
             }
 
             CChunk* cur_chunk = cur_node->voxels;
@@ -884,11 +874,11 @@ void kernel_simlod_insertion_part_1_2_chunks_allocations_alloc(){
 
         // Allocate the missing chunks in parallel
         for(uint32_t i = thread_id; i < plan.points_nb_new; i += nb_threads_per_block){
-            globalVariables.allocatedChunks[plan.points_first_new + i] = globalAllocator.newChunk(true);
+            globalVariables.allocatedChunks[plan.points_first_new + i] = globalAllocator.newChunk();
             globalVariables.allocatedChunks[plan.points_first_new + i]->size = OocSimLodSettings::NB_POINTS_PER_CHUNK;
         }
         for(uint32_t i = thread_id; i < plan.voxels_nb_new; i += nb_threads_per_block){
-            globalVariables.allocatedChunks[plan.voxels_first_new + i] = globalAllocator.newChunk(true);
+            globalVariables.allocatedChunks[plan.voxels_first_new + i] = globalAllocator.newChunk();
             globalVariables.allocatedChunks[plan.voxels_first_new + i]->size = OocSimLodSettings::NB_POINTS_PER_CHUNK;
         }
     }
@@ -1136,11 +1126,5 @@ void kernel_simlod_insertion_part_2_filling(){
         __nv_atomic_add(&globalVariables.nbNewVoxelsThisUpdate, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
         __nv_atomic_add(&globalVariables.nbTotalVoxels, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
         __nv_atomic_add(&globalVariables.currentNbVoxels, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-    }
-
-
-    if(thread_id == 0){
-        // Because "newChunk" was called in part 1
-        globalAllocator.chunksAllocator->reset_temporary_allocations();
     }
 }

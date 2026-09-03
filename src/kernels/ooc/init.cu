@@ -35,7 +35,7 @@ void kernel_init_global_buffers(){
     if(thread_id == 0){
         // Create the main octree
         CIdAABB id = createNewNodeId();
-        globalVariables.mainOctree = globalAllocator.newOctreeNode(id, false);
+        globalVariables.mainOctree = globalAllocator.newOctreeNode(id);
         globalVariables.packedNodes[0] = globalVariables.mainOctree;
         globalVariables.curNbNodes = 1;
     }
