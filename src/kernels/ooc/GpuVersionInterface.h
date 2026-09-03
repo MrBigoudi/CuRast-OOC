@@ -507,6 +507,20 @@ struct CRenderTarget{
 
 
 
+struct CAllocationPlan {
+	CChunk* points_attach;   // chunk to append new points chunks to (nullptr if none needed)
+    uint32_t points_first_new;
+    uint32_t points_nb_new;
+    uint32_t points_last_size;
+
+    CChunk* voxels_attach;   // chunk to append new voxels chunks to (nullptr if none needed)
+    uint32_t voxels_first_new;
+    uint32_t voxels_nb_new;
+    uint32_t voxels_last_size;
+};
+
+
+
 
 struct CSemaphore {
 #ifdef __CUDACC__
@@ -585,9 +599,11 @@ struct CGlobalVariables {
 	uint32_t chunksAllocatorCounter = 0;
 	uint32_t maxAllocatedChunks = 0;
 	CChunk** allocatedChunks = nullptr;
+	CAllocationPlan* allocationPlans = nullptr;
 	
 	COctreeNode** memoizedBatchPointsNodes = nullptr; 
 	COctreeNode** memoizedSpilledPointsNodes = nullptr; 
+
 
 	uint32_t nbOrderedNodes = 0;
 

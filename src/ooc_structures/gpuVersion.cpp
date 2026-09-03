@@ -241,6 +241,8 @@ void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
     hostStaging.spillingChunks = alloc<CChunk*>(hostStaging.maxNbSpilledPoints);
     hostStaging.allocatedChunks = alloc<CChunk*>(hostStaging.maxAllocatedChunks);
 
+    hostStaging.allocationPlans = alloc<CAllocationPlan>(hostStaging.maxNbConcurrentNodes);
+
     hostStaging.backlogVoxels = alloc<CPoint>(hostStaging.maxNbBacklogVoxels);
     hostStaging.backlogVoxelsNodes = alloc<COctreeNode*>(hostStaging.maxNbBacklogVoxels);
 
@@ -699,7 +701,9 @@ void GpuVersion::octreeUpdateSimLODInsertion(CuRast* editor, CUcontext* context)
         .blocksize = block_size
     };
 
-    prog->launch("kernel_simlod_insertion_part_1_chunks_allocations", {}, launch_settings);
+    prog->launch("kernel_simlod_insertion_part_1_1_chunks_allocations_plan", {}, launch_settings);
+    prog->launch("kernel_simlod_insertion_part_1_2_chunks_allocations_alloc", {}, launch_settings);
+    prog->launch("kernel_simlod_insertion_part_1_3_chunks_allocations_link", {}, launch_settings);
     prog->launch("kernel_simlod_insertion_part_2_filling", {}, launch_settings);
 }
 
@@ -1276,65 +1280,65 @@ void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
     }
 
     if(isInitialised){
-        GpuVersion::visibilityUpdate(editor, context);
+        // GpuVersion::visibilityUpdate(editor, context);
         updateHostCache();
     }
 }
 
 
 void GpuVersion::renderOctree(RenderTarget& target){
-    CRenderTarget real_target = {};
-    real_target.framebuffer = target.framebuffer;
-    real_target.colorbuffer = target.colorbuffer;
-    real_target.width = target.width;
-    real_target.height = target.height;
-    real_target.view = target.view;
-    real_target.proj = target.proj;
-    real_target.camera_pos = target.cameraPos;
+    // CRenderTarget real_target = {};
+    // real_target.framebuffer = target.framebuffer;
+    // real_target.colorbuffer = target.colorbuffer;
+    // real_target.width = target.width;
+    // real_target.height = target.height;
+    // real_target.view = target.view;
+    // real_target.proj = target.proj;
+    // real_target.camera_pos = target.cameraPos;
 
-    CRenderingSettings real_settings = {};
-    real_settings.debug_lod_to_render = CuRastSettings::debugLodToRender;
-    real_settings.use_voxels_debug_color = CuRastSettings::voxelsDebugColor;
-    real_settings.min_pixel_span = CuRastSettings::minPixelSpan;
-    real_settings.voxels_nb_points_per_axis = uint32_t(CuRastSettings::voxelsPointsPerAxis);
+    // CRenderingSettings real_settings = {};
+    // real_settings.debug_lod_to_render = CuRastSettings::debugLodToRender;
+    // real_settings.use_voxels_debug_color = CuRastSettings::voxelsDebugColor;
+    // real_settings.min_pixel_span = CuRastSettings::minPixelSpan;
+    // real_settings.voxels_nb_points_per_axis = uint32_t(CuRastSettings::voxelsPointsPerAxis);
 
-    // Render nodes
-    {
-        // uint32_t block_size = min(
-        //     OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM,
-        //     OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X
-        // );
-        // OptionalLaunchSettings launch_settings = {
-        //     .gridsize = OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM,
-        //     .blocksize = block_size
-        // };
-        uint32_t block_size = 256;
-        uint32_t grid_size =
-            (OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM + block_size - 1) 
-            / block_size
-        ;
-        OptionalLaunchSettings launch_settings = {
-            .gridsize  = grid_size,
-            .blocksize = block_size
-        };
+    // // Render nodes
+    // {
+    //     // uint32_t block_size = min(
+    //     //     OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM,
+    //     //     OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X
+    //     // );
+    //     // OptionalLaunchSettings launch_settings = {
+    //     //     .gridsize = OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM,
+    //     //     .blocksize = block_size
+    //     // };
+    //     uint32_t block_size = 256;
+    //     uint32_t grid_size =
+    //         (OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM + block_size - 1) 
+    //         / block_size
+    //     ;
+    //     OptionalLaunchSettings launch_settings = {
+    //         .gridsize  = grid_size,
+    //         .blocksize = block_size
+    //     };
 
-        if(isTakingScreenshots){
-            prog->launch("kernel_test_multi_resolution", {&real_target, &real_settings, &randomOffset}, launch_settings);
-        } else {
-            prog->launch("kernel_visibility_pass", {&real_target, &real_settings}, launch_settings);
-            prog->launch("kernel_replace_unloaded_nodes", {&real_target, &real_settings}, launch_settings);
-            prog->launch("kernel_draw_visibility_cache", {&real_target, &real_settings}, launch_settings);
-            prog->launch("kernel_draw_octree_large", {&real_target, &real_settings}, launch_settings);
-            prog->launch("kernel_draw_octree_small", {&real_target, &real_settings}, launch_settings);
+    //     if(isTakingScreenshots){
+    //         prog->launch("kernel_test_multi_resolution", {&real_target, &real_settings, &randomOffset}, launch_settings);
+    //     } else {
+    //         prog->launch("kernel_visibility_pass", {&real_target, &real_settings}, launch_settings);
+    //         prog->launch("kernel_replace_unloaded_nodes", {&real_target, &real_settings}, launch_settings);
+    //         prog->launch("kernel_draw_visibility_cache", {&real_target, &real_settings}, launch_settings);
+    //         prog->launch("kernel_draw_octree_large", {&real_target, &real_settings}, launch_settings);
+    //         prog->launch("kernel_draw_octree_small", {&real_target, &real_settings}, launch_settings);
             
-            // Render bounding boxes
-            if(CuRastSettings::showBoundingBoxes){
-                prog->launch("kernel_render_bounding_boxes", {&real_target, &real_settings}, launch_settings);
-            }
+    //         // Render bounding boxes
+    //         if(CuRastSettings::showBoundingBoxes){
+    //             prog->launch("kernel_render_bounding_boxes", {&real_target, &real_settings}, launch_settings);
+    //         }
 
-            // prog->launch("kernel_test_multi_resolution_v2", {&real_target, &real_settings, &randomOffset}, launch_settings);
-        }
-    }
+    //         // prog->launch("kernel_test_multi_resolution_v2", {&real_target, &real_settings, &randomOffset}, launch_settings);
+    //     }
+    // }
 }
 
 

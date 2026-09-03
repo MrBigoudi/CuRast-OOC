@@ -139,6 +139,7 @@ void kernel_prepare_store_part_1_filling_buffers(){
     //     printf("kernel_prepare_store_part_1_filling_buffers\n");
     // }
 
+    const uint32_t MAX_NB_VOXELS = globalVariables.maxNbVoxelsChunksPerExchangedNode * OocSimLodSettings::NB_POINTS_PER_CHUNK;
     __shared__ uint32_t shExchangedIndex;
 
     for(uint32_t node_index = block_id; node_index < globalVariables.curNbNodes; node_index += nb_blocks){
@@ -180,10 +181,8 @@ void kernel_prepare_store_part_1_filling_buffers(){
             globalVariables.exchangedAABBs[shExchangedIndex] = globalVariables.relationshipMap[node->aabb_index].aabb;
             globalVariables.exchangedChildrenIds[shExchangedIndex] = node->children_ids;
             globalVariables.exchangedPointsCounters[shExchangedIndex] = (node->points_counter - node->points_last_stored);
-            globalVariables.exchangedVoxelsCounters[shExchangedIndex] = node->voxels_counter;
+            globalVariables.exchangedVoxelsCounters[shExchangedIndex] = min(MAX_NB_VOXELS, node->voxels_counter);
 
-            const uint32_t MAX_NB_POINTS = globalVariables.maxNbPointsChunksPerExchangedNode * OocSimLodSettings::NB_POINTS_PER_CHUNK;
-            const uint32_t MAX_NB_VOXELS = globalVariables.maxNbVoxelsChunksPerExchangedNode * OocSimLodSettings::NB_POINTS_PER_CHUNK;
             CPoint* exchanged_points = globalVariables.exchangedPoints[shExchangedIndex];
             CPoint* exchanged_voxels = globalVariables.exchangedVoxels[shExchangedIndex];
             uint64_t* exchanged_grids = globalVariables.exchangedGrids[shExchangedIndex];
@@ -206,10 +205,11 @@ void kernel_prepare_store_part_1_filling_buffers(){
             while(cur_chunk){
                 for(uint32_t i = thread_id; i < cur_chunk->size; i += nb_threads_per_block){
                     if(cur_point_index >= MAX_NB_VOXELS){
-                        printf("ERROR: Too many voxels in the node, some will be skipped to store it: index %d / %d\n",
+                        printf("WARN: Too many voxels in the node, some will be skipped to store it: index %d / %d\n",
                             cur_point_index, MAX_NB_VOXELS
                         );
-                        customAssert();
+                        cur_chunk = nullptr;
+                        break;
                     }
 
                     const CPoint& cur_voxel = cur_chunk->points[i];

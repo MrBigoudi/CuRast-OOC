@@ -8,6 +8,8 @@
 
 - Aim for 100M points / seconds ??
 
+<!-- regex:^(?!kernel_clearFramebuffer$|kernel_dummy$|kernel_resolve_colorbuffer_to_opengl_2D$|kernel_resolve_visbuffer_to_colorbuffer2D$|kernel_init_availableMcuSlots$).*kernel_ -->
+
 
 
 
