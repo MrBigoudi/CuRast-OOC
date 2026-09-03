@@ -967,8 +967,6 @@ void insertPoint(const CPoint& point, COctreeNode* cur_node){
         base_index = __nv_atomic_fetch_add(&cur_node->points_stored, group.num_threads(),
             __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
     }
-
-    uint32_t first_new = globalVariables.allocationPlans[cur_node->cur_id].points_first_new
     base_index = group.shfl(base_index, 0);
     uint32_t point_index = base_index + group.thread_rank();
             
@@ -981,7 +979,9 @@ void insertPoint(const CPoint& point, COctreeNode* cur_node){
 #endif
 
     uint32_t chunk_index = point_index / OocSimLodSettings::NB_POINTS_PER_CHUNK;
-    CChunk* cur_chunk = globalVariables.allocatedChunks[first_new + chunk_index];
+    CChunk* cur_chunk = globalVariables.allocatedChunks[
+        globalVariables.allocationPlans[cur_node->cur_id].points_first_new + chunk_index
+    ];
 
 #ifdef ASSERT_ENABLED
     if(!cur_chunk){
@@ -1026,13 +1026,13 @@ void insertVoxel(const CPoint& voxel, COctreeNode* cur_node){
         base_index = __nv_atomic_fetch_add(&cur_node->voxels_stored, group.num_threads(),
             __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
     }
-
-    uint32_t first_new = globalVariables.allocationPlans[cur_node->cur_id].voxels_first_new
     base_index = group.shfl(base_index, 0);
     uint32_t voxel_index = base_index + group.thread_rank();
 
     uint32_t chunk_index = voxel_index / OocSimLodSettings::NB_POINTS_PER_CHUNK;
-    CChunk* cur_chunk = globalVariables.allocatedChunks[first_new + chunk_index];
+    CChunk* cur_chunk = globalVariables.allocatedChunks[
+        globalVariables.allocationPlans[cur_node->cur_id].voxels_first_new + chunk_index
+    ];
 
 #ifdef ASSERT_ENABLED
     if(!cur_chunk){
