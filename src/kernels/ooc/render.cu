@@ -457,14 +457,14 @@ void kernel_visibility_pass(
         }
 
         if(isLargerThanMinSpanning(target, settings, node)){
-            __nv_atomic_or(&node->flags, (0x01 << CFlagIsLarge), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            node->flags |= (0x01 << CFlagIsLarge);
         }
     }
 
     // Also flag the nodes from the visibility cache
     for(uint32_t node_index = thread_id; node_index < globalVariables.visibilityCacheCurrentSize; node_index += nb_threads){
         const CIdAABB& id = globalVariables.visibilityCache[node_index];
-        globalVariables.setFlagSync(id, CFlagIsInVisibilityCache);
+        globalVariables.setFlag(id, CFlagIsInVisibilityCache);
     }
 }
 
@@ -769,5 +769,236 @@ void kernel_test_multi_resolution_v2(
         drawPoint(
             target, point.position, point.color, uint8_t(offset)
         );
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/// Run on "NB SMs" blocks of size min("Max threads per SM", "Max block dim")
+extern "C" __global__
+void kernel_draw_visibility_cache_v2(
+	CRenderTarget target,
+    CRenderingSettings settings
+){
+    auto grid = cg::this_grid();
+    uint32_t thread_id = grid.thread_rank();
+    uint32_t nb_threads = grid.num_threads();
+
+    // Render points
+    for(uint32_t point_id = thread_id; point_id < globalVariables.nbRenderedPoints; point_id += nb_threads){
+        const CPoint& point = globalVariables.renderedPoints[point_id];
+        drawPoint(
+            target, point.position, 
+            settings.use_voxels_debug_color ? 0xff00ffff : point.color
+        );
+    }
+
+    // Render voxels
+    for(uint32_t voxel_id = thread_id; voxel_id < globalVariables.nbRenderedVoxels; voxel_id += nb_threads){
+        const CPoint& voxel = globalVariables.renderedVoxels[voxel_id];
+        const CIdAABB& node_id = globalVariables.renderedVoxelsNodes[voxel_id];
+
+        const CAABB& node_aabb = globalVariables.relationshipMap[node_id].aabb;
+        const CNodePosition next_child_pos = node_aabb.getNextChildIndex(voxel.position);
+        const CIdAABB& child_index = globalVariables.relationshipMap[node_id].children[next_child_pos];
+        if(child_index == CINVALID_ID){continue;}
+
+        // Only render the voxel if the corresponding child is not present
+        if(globalVariables.isInVisibilityCache(child_index)){continue;}
+
+        drawPoint(target, voxel.position, settings.use_voxels_debug_color ? 0xffff00ff : voxel.color);
+    }
+}
+
+
+
+/// Run on "NB SMs" blocks of size min("Max threads per SM", "Max block dim")
+extern "C" __global__
+void kernel_replace_unloaded_nodes_v2(
+	CRenderTarget target,
+    CRenderingSettings settings
+){
+    if(settings.debug_lod_to_render != -1){return;}
+	auto grid = cg::this_grid();
+    auto block = cg::this_thread_block();
+    uint32_t nb_blocks = grid.num_blocks();
+
+    uint32_t block_id = grid.block_rank();
+    uint32_t thread_id = block.thread_rank();
+    uint32_t nb_threads_per_block = block.num_threads();
+
+    uint32_t nb_nodes = globalVariables.curNbNodes;
+    uint32_t depth = globalVariables.octreeDepth;
+
+    // Assign each node to one thread block
+    for(uint32_t node_index = block_id; node_index < nb_nodes; node_index += nb_blocks){
+        COctreeNode* node = globalVariables.packedNodes[node_index];
+
+        CChunk* cur_voxels = node->voxels;
+        const CAABB& aabb = globalVariables.relationshipMap[node->aabb_index].aabb;
+        vec3 voxel_size = (aabb.maxs - aabb.mins) / float(OocSimLodSettings::GRID_SIZE_PER_DIMENSION);
+
+        uint32_t depth = globalVariables.octreeDepth;
+        float color_factor = float(node->level) / float(max(depth, 1));
+        color_factor = clamp(color_factor, 0.0f, 1.0f);
+        uint32_t min_level_color = 0xffffff00; // cyan
+        uint32_t max_level_color = 0xff00ffff; // yellow
+        uint32_t color = linearGradient(color_factor, min_level_color, max_level_color);   
+
+        while(cur_voxels){
+            for(uint32_t i = thread_id; i < cur_voxels->size; i += nb_threads_per_block){
+                const CPoint& voxel = cur_voxels->points[i];
+
+                // Check if a subchild containing the voxel is already drawn
+                CNodePosition index = aabb.getNextChildIndex(voxel.position);
+                CIdAABB child_id = globalVariables.relationshipMap[node->aabb_index].children[index];
+                COctreeNode* child = node->children[index];
+                bool can_render = true;
+
+                while(child_id != CINVALID_ID){
+                    if(globalVariables.isInVisibilityCache(child_id)){
+                        can_render = false;
+                        break;
+                    }
+
+
+                    index = globalVariables.relationshipMap[child_id].aabb.getNextChildIndex(voxel.position);
+                    child_id = globalVariables.relationshipMap[child_id].children[index];
+
+                    if(child){
+                        bool child_has_enough_points = child->flags & (0x01 << CFlagHasEnoughPoints);
+                        bool child_has_enough_voxels = child->flags & (0x01 << CFlagHasEnoughVoxels);
+                        if(child_has_enough_points && child_has_enough_voxels){
+                            can_render = false;
+                            break;
+                        }
+                        child = child->children[index];
+                    }
+
+                }
+                if(!can_render){continue;}
+
+                uint32_t voxel_color = settings.use_voxels_debug_color ? color : voxel.color;
+                uint32_t nb_points_per_axis = min(8, depth + 1 - node->level);
+
+                drawPoint(target, voxel.position, voxel_color, node->level);
+            }
+            
+            cur_voxels = cur_voxels->next;
+        }
+    }
+}
+
+
+
+
+__device__
+void drawAllVoxelsV2(
+	const CRenderTarget& target,
+	CRenderingSettings settings,
+    COctreeNode* node
+){
+    auto block = cg::this_thread_block();
+    uint32_t thread_id = block.thread_rank();
+    uint32_t nb_threads_per_block = block.num_threads();
+
+    CChunk* cur_voxels = node->voxels;
+
+    uint32_t depth = globalVariables.octreeDepth;
+    float color_factor = float(node->level) / float(max(depth, 1));
+    color_factor = clamp(color_factor, 0.0f, 1.0f);
+    uint32_t min_level_color = 0xffffff00; // cyan
+    uint32_t max_level_color = 0xff00ffff; // yellow
+    uint32_t color = linearGradient(color_factor, min_level_color, max_level_color);   
+
+    while(cur_voxels){
+        for(uint32_t i = thread_id; i < cur_voxels->size; i += nb_threads_per_block){
+            const CPoint& voxel = cur_voxels->points[i];
+            uint32_t voxel_color = settings.use_voxels_debug_color ? color : voxel.color;
+            drawPoint(target, voxel.position, voxel_color,
+                node->level + 1
+            );
+        }
+        
+        cur_voxels = cur_voxels->next;
+    }
+}
+
+
+
+
+
+
+/// Run on "NB SMs" blocks of size min("Max threads per SM", "Max block dim")
+extern "C" __global__
+void kernel_draw_octree_small_v2(
+	CRenderTarget target,
+    CRenderingSettings settings
+){
+	auto grid = cg::this_grid();
+    auto block = cg::this_thread_block();
+    uint32_t nb_blocks = grid.num_blocks();
+
+    uint32_t block_id = grid.block_rank();
+    uint32_t thread_id = block.thread_rank();
+    uint32_t nb_threads_per_block = block.num_threads();
+
+    uint32_t nb_nodes = globalVariables.curNbNodes;
+
+    // Assign each node to one thread block
+    for(uint32_t node_index = block_id; node_index < nb_nodes; node_index += nb_blocks){
+        COctreeNode* node = globalVariables.packedNodes[node_index];
+
+        if(settings.debug_lod_to_render != -1){
+            if(node->level <= settings.debug_lod_to_render){
+                drawAllVoxelsV2(target, settings, node);
+                drawAllPoints(target, node);
+            }
+        } else {
+            bool is_minimal_draw = (node->level == 0) && !(node->flags & (0x01 << CFlagIsLarge));
+            if((node->flags & (0x01 << CFlagIsCut)) || is_minimal_draw){
+                drawAllVoxelsV2(target, settings, node);
+                drawAllPoints(target, node);
+            }
+        }
+
+        __syncthreads();
+        if(thread_id == 0){
+            __nv_atomic_and(&node->flags, ~(1u << CFlagIsLarge), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            __nv_atomic_and(&node->flags, ~(1u << CFlagIsCut), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+        }
+    }
+
+    // Also unflag the nodes from the cache
+    uint32_t first_point = block_id * nb_threads_per_block + thread_id;
+    uint32_t step = nb_blocks * nb_threads_per_block;
+    for(uint32_t node_index = first_point; node_index < globalVariables.visibilityCacheCurrentSize; node_index += step){
+        const CIdAABB& id = globalVariables.visibilityCache[node_index];
+        globalVariables.unsetFlagSync(id, CFlagIsInVisibilityCache);
     }
 }
