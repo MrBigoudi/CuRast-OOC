@@ -334,7 +334,8 @@ void updateLeafCounter(
     uint32_t max_spilling_nodes = globalVariables.maxNbSpilledPoints;
 
     while(true){
-        CAABB aabb = globalVariables.relationshipMap[leaf->aabb_index].aabb;
+        CIdAABB leaf_id = leaf->aabb_index;
+        CAABB aabb = globalVariables.relationshipMap[leaf_id].aabb;
         
         if(!aabb.contains(point.position)){
             memoisation_buffer[memoisation_index] = root;
@@ -342,7 +343,7 @@ void updateLeafCounter(
             return;
         }
         
-        globalVariables.setFlag(leaf->aabb_index, CFlagIsUpdated);
+        leaf->flagAsUpdated();
         CNodePosition child_position = aabb.getNextChildIndex(point.position);
 
         if(leaf->children[child_position]){
@@ -351,10 +352,10 @@ void updateLeafCounter(
         } else {
 
 #ifdef ASSERT_ENABLED
-            if(globalVariables.relationshipMap[leaf->aabb_index].children[child_position] != CINVALID_ID){
+            if(globalVariables.relationshipMap[leaf_id].children[child_position] != CINVALID_ID){
                 printf("ERROR: on count; the node %d should not have an unloaded child[%d]; node %d should be loaded\n",
-                    leaf->aabb_index, child_position, 
-                    globalVariables.relationshipMap[leaf->aabb_index].children[child_position]
+                    leaf_id, child_position, 
+                    globalVariables.relationshipMap[leaf_id].children[child_position]
                 );
                 customAssert();
             }

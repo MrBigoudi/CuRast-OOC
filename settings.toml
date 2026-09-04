@@ -24,8 +24,8 @@ IS_USING_GPU_VERSION = true
 
 
 ### Tells if need to find automatic properties
-DERIVE_AUTOMATIC_PROPERTIES = true
-# DERIVE_AUTOMATIC_PROPERTIES = false
+# DERIVE_AUTOMATIC_PROPERTIES = true
+DERIVE_AUTOMATIC_PROPERTIES = false
 
 
 #########################################################################

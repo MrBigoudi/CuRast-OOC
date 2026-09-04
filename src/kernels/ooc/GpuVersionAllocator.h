@@ -214,6 +214,8 @@ struct CMemoryAllocator {
         node->voxels_stored = 0;
         node->children_ids = 0;
         node->level = 0;
+        node->cur_id = 0;
+        node->flags = 0;
 
         nodesAllocator->deallocate(node);
     }

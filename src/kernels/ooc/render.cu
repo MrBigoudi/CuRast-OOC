@@ -451,14 +451,13 @@ void kernel_visibility_pass(
 
     for(uint32_t node_index = thread_id; node_index < globalVariables.curNbNodes; node_index += nb_threads){
         COctreeNode* node = globalVariables.packedNodes[node_index];
-        globalVariables.setFlagSync(node->aabb_index, CFlagIsVisible);
 
         if(settings.debug_lod_to_render != -1){
             continue;
         }
 
         if(isLargerThanMinSpanning(target, settings, node)){
-            globalVariables.setFlagSync(node->aabb_index, CFlagIsLarge);
+            __nv_atomic_or(&node->flags, (0x01 << CFlagIsLarge), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
         }
     }
 
@@ -505,10 +504,10 @@ void kernel_draw_visibility_cache(
         // Only render the voxel if the corresponding child is not present
         if(globalVariables.isInVisibilityCache(child_index)){continue;}
         
-        bool child_is_visible = globalVariables.isVisible(child_index);
-        bool child_has_enough_points = globalVariables.hasEnoughPoints(child_index);
-        bool child_has_enough_voxels = globalVariables.hasEnoughVoxels(child_index);
-        if(child_is_visible && child_has_enough_points && child_has_enough_voxels){continue;}
+        // bool child_is_visible = globalVariables.isVisible(child_index);
+        // bool child_has_enough_points = globalVariables.hasEnoughPoints(child_index);
+        // bool child_has_enough_voxels = globalVariables.hasEnoughVoxels(child_index);
+        // if(child_is_visible && child_has_enough_points && child_has_enough_voxels){continue;}
 
         const vec3 root_aabb_size = globalVariables.relationshipMap[globalVariables.mainOctree->aabb_index].aabb.getSize();
         float root_size = max(root_aabb_size.x, max(root_aabb_size.y, root_aabb_size.z));
@@ -567,25 +566,30 @@ void kernel_replace_unloaded_nodes(
 
                 // Check if a subchild containing the voxel is already drawn
                 CNodePosition index = aabb.getNextChildIndex(voxel.position);
-                CIdAABB child = globalVariables.relationshipMap[node->aabb_index].children[index];
+                CIdAABB child_id = globalVariables.relationshipMap[node->aabb_index].children[index];
+                COctreeNode* child = node->children[index];
                 bool can_render = true;
 
-                while(child != CINVALID_ID){
-                    if(globalVariables.isInVisibilityCache(child)){
+                while(child_id != CINVALID_ID){
+                    if(globalVariables.isInVisibilityCache(child_id)){
                         can_render = false;
                         break;
                     }
 
-                    bool child_is_visible = globalVariables.isVisible(child);
-                    bool child_has_enough_points = globalVariables.hasEnoughPoints(child);
-                    bool child_has_enough_voxels = globalVariables.hasEnoughVoxels(child);
-                    if(child_is_visible && child_has_enough_points && child_has_enough_voxels){
-                        can_render = false;
-                        break;
+
+                    index = globalVariables.relationshipMap[child_id].aabb.getNextChildIndex(voxel.position);
+                    child_id = globalVariables.relationshipMap[child_id].children[index];
+
+                    if(child){
+                        bool child_has_enough_points = child->flags & (0x01 << CFlagHasEnoughPoints);
+                        bool child_has_enough_voxels = child->flags & (0x01 << CFlagHasEnoughVoxels);
+                        if(child_has_enough_points && child_has_enough_voxels){
+                            can_render = false;
+                            break;
+                        }
+                        child = child->children[index];
                     }
 
-                    index = globalVariables.relationshipMap[child].aabb.getNextChildIndex(voxel.position);
-                    child = globalVariables.relationshipMap[child].children[index];
                 }
                 if(!can_render){continue;}
 
@@ -627,18 +631,17 @@ void kernel_draw_octree_large(
     for(uint32_t node_index = block_id; node_index < nb_nodes; node_index += nb_blocks){
         COctreeNode* node = globalVariables.packedNodes[node_index];
 
-        if(!globalVariables.isLarge(node->aabb_index)){continue;}
+        if(!(node->flags & (0x01 << CFlagIsLarge))){continue;}
 
         drawAllPoints(target, node);
 
         // Update flags
         if(thread_id == 0){
             for(uint32_t i=0; i<8; i++){
-                CIdAABB child_index = globalVariables.relationshipMap[node->aabb_index].children[i];
-                if(child_index == CINVALID_ID){continue;}
-                if(globalVariables.isLarge(child_index)){continue;}
-                if(!globalVariables.isVisible(child_index)){continue;}
-                globalVariables.setFlag(child_index, CFlagIsCut);
+                COctreeNode* child = node->children[i];
+                if(!child){continue;}
+                if(child->flags & (0x01 << CFlagIsLarge)){continue;}
+                child->flags |= (0x01 << CFlagIsCut);
             }
         }
     }
@@ -673,10 +676,6 @@ void kernel_draw_octree_small(
     for(uint32_t node_index = block_id; node_index < nb_nodes; node_index += nb_blocks){
         COctreeNode* node = globalVariables.packedNodes[node_index];
 
-        if(!globalVariables.isVisible(node->aabb_index)){
-            continue;
-        }
-
         if(settings.debug_lod_to_render != -1){
             if(node->level == settings.debug_lod_to_render){
                 drawAllVoxels(
@@ -687,8 +686,8 @@ void kernel_draw_octree_small(
                 drawAllPoints(target, node);
             }
         } else {
-            bool is_minimal_draw = (node->level == 0) && !globalVariables.isLarge(node->aabb_index);
-            if(globalVariables.isCut(node->aabb_index) || is_minimal_draw){
+            bool is_minimal_draw = (node->level == 0) && !(node->flags & (0x01 << CFlagIsLarge));
+            if((node->flags & (0x01 << CFlagIsCut)) || is_minimal_draw){
                 drawAllPoints(target, node);
                 drawAllVoxels(
                     target, settings, node,
@@ -702,9 +701,8 @@ void kernel_draw_octree_small(
 
         __syncthreads();
         if(thread_id == 0){
-            globalVariables.unsetFlagSync(node->aabb_index, CFlagIsVisible);
-            globalVariables.unsetFlagSync(node->aabb_index, CFlagIsLarge);
-            globalVariables.unsetFlagSync(node->aabb_index, CFlagIsCut);
+            __nv_atomic_and(&node->flags, ~(1u << CFlagIsLarge), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            __nv_atomic_and(&node->flags, ~(1u << CFlagIsCut), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
         }
     }
 
@@ -714,7 +712,6 @@ void kernel_draw_octree_small(
     for(uint32_t node_index = first_point; node_index < globalVariables.visibilityCacheCurrentSize; node_index += step){
         const CIdAABB& id = globalVariables.visibilityCache[node_index];
         globalVariables.unsetFlagSync(id, CFlagIsInVisibilityCache);
-        globalVariables.unsetFlagSync(id, CFlagIsFromVoxelsInVisibilityCache);
     }
 }
 

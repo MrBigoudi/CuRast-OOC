@@ -14,16 +14,16 @@ void kernel_update_updates_cache_part_1_counting(){
     // Count updated children
     for(uint32_t node_index = thread_id; node_index < globalVariables.curNbNodes; node_index += nb_threads){
         COctreeNode* node = globalVariables.packedNodes[node_index];
-        if(!globalVariables.isUpdated(node->aabb_index)){continue;}
+        if(!node->isUpdated()){continue;}
 
         uint8_t nb_updated_children = 0;
         for(uint32_t i=0; i<8; i++){
-            if(node->children[i] && globalVariables.isUpdated(node->children[i]->aabb_index)){
+            if(node->children[i] && node->children[i]->isUpdated()){
                 nb_updated_children++;
             }
         }
         globalVariables.temporaryIdBuffer[node->aabb_index] = uint32_t(nb_updated_children);
-        globalVariables.setCounterFlag(node->aabb_index, nb_updated_children);
+        node->setCounterFlag(nb_updated_children);
     }
     
     globalVariables.nbOrderedNodes = 0;
@@ -43,9 +43,10 @@ void kernel_update_updates_cache_part_2_sorting(){
     for(uint32_t node_index = thread_id; node_index < globalVariables.curNbNodes; node_index += nb_threads){
         COctreeNode* node = globalVariables.packedNodes[node_index];
         CIdAABB cur_id = node->aabb_index;
-        if(!globalVariables.isUpdated(cur_id)){continue;}
+        if(!node->isUpdated()){continue;}
+        
         globalVariables.setFlagSync(cur_id, CFlagWillBeInUpdatesCache);
-        if(globalVariables.getCounterFlag(cur_id) != 0){continue;}
+        if(node->getCounterFlag() != 0){continue;}
 
         while(true){
             uint32_t position = __nv_atomic_fetch_add(
@@ -156,7 +157,7 @@ void kernel_prepare_store_part_1_filling_buffers(){
         bool is_in_cache = globalVariables.isInUpdatesCache(node->aabb_index);
         // Unset all the flags except the isInUpdatesCache flag
         if(thread_id == 0){ // Only one thread per block
-            // globalVariables.resetFlags(node->aabb_index);
+            node->flags = 0;
             uint32_t flags = uint32_t(is_in_cache) << CFlagIsInUpdatesCache;
             globalVariables.setFlags(node->aabb_index, flags);
         }
@@ -282,13 +283,13 @@ void kernel_prepare_store_part_2_resetting_children(){
         uint32_t threshold_points = uint32_t(float(node->points_counter) * (X_POINTS * 0.01));
         uint32_t available_points = (node->points_counter - node->points_last_stored);
         if(available_points >= threshold_points){
-            globalVariables.setFlag(node->aabb_index, CFlagHasEnoughPoints);
+            node->flagAsHavingEnoughPoints();
         }
         const float X_VOXELS = 50.;
         uint32_t threshold_voxels = uint32_t(float(node->voxels_counter + node->voxels_last_stored) * (X_VOXELS * 0.01));
         uint32_t available_voxels = node->voxels_counter;
         if(available_voxels >= threshold_voxels){
-            globalVariables.setFlag(node->aabb_index, CFlagHasEnoughVoxels);
+            node->flagAsHavingEnoughVoxels();
         }
     }
 }
@@ -364,7 +365,7 @@ void kernel_prepare_store_part_3_updating_levels(){
         // No need to sync "counterFlag" accesses because of this specific kernel
         COctreeNode* node = globalVariables.packedNodes[node_index];
         node->level = 0;
-        globalVariables.resetCounterFlag(node->aabb_index);
+        node->resetCounterFlag();
     }
 
     // The number of grid.sync() should be the same for each thread in a cooperative group
@@ -372,7 +373,7 @@ void kernel_prepare_store_part_3_updating_levels(){
         // Update all child levels
         for(uint32_t node_index = first_point; node_index < globalVariables.curNbNodes; node_index += step){
             COctreeNode* node = globalVariables.packedNodes[node_index];
-            uint32_t new_child_level = globalVariables.getCounterFlag(node->aabb_index) + 1;
+            uint32_t new_child_level = node->getCounterFlag() + 1;
             // Update max depth
             __nv_atomic_max(&globalVariables.octreeDepth, new_child_level, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
             for(uint32_t i=0; i<8; i++){
@@ -397,9 +398,9 @@ void kernel_prepare_store_part_3_updating_levels(){
         bool is_updated = false;
         for(uint32_t node_index = first_point; node_index < globalVariables.curNbNodes; node_index += step){
             COctreeNode* node = globalVariables.packedNodes[node_index];
-            uint32_t saved_level = globalVariables.getCounterFlag(node->aabb_index); 
+            uint32_t saved_level = node->getCounterFlag(); 
             if(saved_level < node->level){
-                globalVariables.increaseCounterFlag(node->aabb_index);
+                node->increaseCounterFlag();
                 is_updated = true;
             }
         }
