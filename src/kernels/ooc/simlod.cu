@@ -469,68 +469,49 @@ void kernel_simlod_count_split_part_1_count(uint32_t loop, bool is_first_iterati
     simlodCount(thread_id, nb_threads, loop, is_first_iteration);
 }
 
-/// Fillup the spilling nodes counter and creating children
-extern "C" __global__
-void kernel_simlod_count_split_part_1_5_prefix_sum(){
-    uint32_t last = globalVariables.nbSpilledPoints;
-    uint32_t nb_chunks = 0;
 
-    for(uint32_t i=0; i<globalVariables.nbSpillingNodes; i++){
+/// Fillup the spilling nodes counter and create children
+extern "C" __global__
+void kernel_simlod_count_split_part_1_5_prefix_sum_1(){
+    auto grid = cg::this_grid();
+    uint32_t thread_id = grid.thread_rank();
+    uint32_t nb_threads = grid.num_threads();
+    
+    uint32_t nb_spilling_nodes = globalVariables.nbSpillingNodes;
+
+    // Count
+    for(uint32_t i = thread_id; i < nb_spilling_nodes; i += nb_threads){
         COctreeNode* spilling_node = globalVariables.spillingNodes[i];
 
+        uint32_t nb_chunks = 0;
         CChunk* cur_chunk = spilling_node->points;
         while(cur_chunk){
-            uint32_t new_value = last + cur_chunk->size;
-            if(new_value >= globalVariables.maxNbSpilledPoints){
-                printf("ERROR: reached the maximum of spilling points\n");
-                customAssert();
-            }
-            globalVariables.spilledChunksCounter[nb_chunks] = last;
-            globalVariables.spillingChunks[nb_chunks] = cur_chunk;
-            last = new_value;
             nb_chunks++;
             cur_chunk = cur_chunk->next;
         }
+        // Store per-node chunk count for the prefix sum
+        globalVariables.temporaryIdBuffer[i] = nb_chunks;
 
+        // Setup
         CIdAABB spilling_node_id = spilling_node->aabb_index;
         uint32_t spilling_node_children = spilling_node->children_ids;
-
-        // UI values
-        __nv_atomic_add(&globalVariables.nbSplitNodesThisUpdate, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-        __nv_atomic_add(&globalVariables.nbTotalSplitNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
 
         // Rebuild the occupancy
         if(!spilling_node->occupancy){
             spilling_node->occupancy = globalAllocator.newOccupancyGrid();
-            uint32_t grid_index = __nv_atomic_fetch_add(&globalVariables.nbGridsToInit, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-
-#ifdef ASSERT_ENABLED
-            if(grid_index >= globalVariables.maxNbConcurrentNodes){
-                printf("ERROR: failed to split the node %d; can't recreate more grids\n", spilling_node->aabb_index);
-                customAssert();
-            }
-#endif
-
+            uint32_t grid_index = __nv_atomic_fetch_add(&globalVariables.nbGridsToInit, 1,
+                __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
             globalVariables.gridsToInit[grid_index] = spilling_node;
             globalVariables.gridsToInitExchangedIndex[grid_index] = -1;
         }
         
         // Create the needed children
         for(uint32_t child_index = 0; child_index < 8; child_index++){
-            // Create necessary empty children
             bool can_be_spilled = (1u << child_index) & spilling_node_children;
-            if(can_be_spilled && (globalVariables.relationshipMap[spilling_node_id].children[child_index] == CINVALID_ID)){
-                // Create the new node
+            if(can_be_spilled && globalVariables.relationshipMap[spilling_node_id].children[child_index] == CINVALID_ID){
                 CIdAABB new_child_id = createNewNodeId();
                 COctreeNode* new_child = globalAllocator.newOctreeNode(new_child_id);
                 uint32_t node_index = __nv_atomic_fetch_add(&globalVariables.curNbNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-
-#ifdef ASSERT_ENABLED
-                if(node_index >= globalVariables.maxNbConcurrentNodes){
-                    printf("ERROR: failed to split the node %d; can't add more nodes to the octree\n");
-                    customAssert();
-                }
-#endif
 
                 globalVariables.packedNodes[node_index] = new_child;
                 new_child->cur_id = node_index;
@@ -538,13 +519,42 @@ void kernel_simlod_count_split_part_1_5_prefix_sum(){
                 spilling_node->children[child_index] = new_child;
                 globalVariables.relationshipMap[spilling_node_id].children[child_index] = new_child_id;
                 globalVariables.relationshipMap[new_child_id].parent = spilling_node_id;
-
-                // Create the new AABB
                 globalVariables.relationshipMap[new_child_id].aabb = globalVariables.relationshipMap[spilling_node_id].aabb;
                 globalVariables.relationshipMap[new_child_id].aabb.shrink((CNodePosition)child_index);
                 new_child->level = spilling_node->level + 1;
             }
         }
+    }
+}
+
+/// Run on a single thread
+extern "C" __global__
+void kernel_simlod_count_split_part_1_5_prefix_sum_2(){
+    // Prefix sum
+    uint32_t nb_spilling_nodes = globalVariables.nbSpillingNodes;
+    uint32_t last = globalVariables.nbSpilledPoints;
+    uint32_t nb_chunks = 0;
+
+    for(uint32_t i = 0; i < nb_spilling_nodes; i++){
+        COctreeNode* spilling_node = globalVariables.spillingNodes[i];
+        uint32_t node_chunk_count = globalVariables.temporaryIdBuffer[i];
+
+        CChunk* cur_chunk = spilling_node->points;
+        for(uint32_t c = 0; c < node_chunk_count; c++){
+            if(last + cur_chunk->size >= globalVariables.maxNbSpilledPoints){
+                printf("ERROR: reached the maximum of spilling points\n");
+                customAssert();
+            }
+            globalVariables.spilledChunksCounter[nb_chunks] = last;
+            globalVariables.spillingChunks[nb_chunks] = cur_chunk;
+            last += cur_chunk->size;
+            nb_chunks++;
+            cur_chunk = cur_chunk->next;
+        }
+
+        // UI values (single thread, no atomic needed)
+        globalVariables.nbSplitNodesThisUpdate++;
+        globalVariables.nbTotalSplitNodes++;
     }
 
     globalVariables.nbSpilledPoints = last;

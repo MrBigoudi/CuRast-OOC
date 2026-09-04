@@ -338,6 +338,7 @@ void packNodes(){
 
 
 
+
 /// Run on "MaxActiveBlocksPerMultiprocessor" cooperative blocks of size "Max block size"
 extern "C" __global__
 void kernel_prepare_store_part_3_updating_levels(){

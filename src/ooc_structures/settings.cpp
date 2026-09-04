@@ -137,7 +137,7 @@ void OocSimLodSettings::init_default(){
     MAX_POINTS_PER_BATCHES = 1'048'576;
     double fixed_memory = 1.25 * 1024 * 1024 * 1024;
 
-    double available_memory = (DEVICE_AVAILABLE_MEMORY * 0.8) - fixed_memory - sizeof(CGlobalVariables);
+    double available_memory = (DEVICE_AVAILABLE_MEMORY * 0.9) - fixed_memory - sizeof(CGlobalVariables);
     
     // Allocable memory
     double allocable_memory = 0.75 * available_memory;
@@ -154,7 +154,7 @@ void OocSimLodSettings::init_default(){
 
     // Other properties
     available_memory = (available_memory - chunk_memory - grids_memory - nodes_memory - lru_memory);
-    double batches_memory = 0.25 * available_memory;
+    double batches_memory = 0.125 * available_memory;
     double batches_factor = (8 + 9 * MAX_POINTS_PER_BATCHES);
     MAX_BATCHES_PER_OCTREE_UPDATE = std::bit_floor(uint32_t(batches_memory / batches_factor));
     batches_memory = MAX_BATCHES_PER_OCTREE_UPDATE * batches_factor;
