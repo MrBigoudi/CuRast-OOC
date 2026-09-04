@@ -356,9 +356,7 @@ void kernel_prepare_store_part_3_updating_levels(){
     //     printf("kernel_prepare_store_part_3_updating_levels\n");
     // }
     
-    if(is_first){
-        packNodes();
-    }
+    if(is_first){packNodes();}
     grid.sync();
 
     for(uint32_t node_index = first_point; node_index < globalVariables.curNbNodes; node_index += step){

@@ -10,7 +10,7 @@
 
 <!-- regex:^(?!kernel_clearFramebuffer$|kernel_dummy$|kernel_resolve_colorbuffer_to_opengl_2D$|kernel_resolve_visbuffer_to_colorbuffer2D$|kernel_init_availableMcuSlots$).*kernel_ -->
 
-
+- Fix issue on "too many voxels to store"
 
 
 ## Next steps (in priority order)

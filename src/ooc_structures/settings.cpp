@@ -1,6 +1,7 @@
 #include "settings.h"
 
 #include "CuRast.h"
+#include "kernels/ooc/GpuVersionAllocator.h"
 #include <toml/toml.hpp>
 
 /// Fixed element declarations
@@ -18,9 +19,7 @@ T init_field(const std::string& toml_entry, const T default_value) {
 }
 
 
-
-/// Initialises the settings
-void OocSimLodSettings::init(){
+void OocSimLodSettings::init_device_properties(){
     /// Device properties
     CUdevice device;
     cuCtxGetDevice(&device);
@@ -50,44 +49,24 @@ void OocSimLodSettings::init(){
         / DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK
     ;
 
+    uint64_t free_byte, total_byte = 0;
+    CURuntime::assertCudaSuccess(cuMemGetInfo(&free_byte, &total_byte));
+    DEVICE_TOTAL_MEMORY = double(total_byte);
+    DEVICE_AVAILABLE_MEMORY = double(free_byte);
+}
+
+
+
+void OocSimLodSettings::init_miscellaneous(){
     /// Miscellaneous
     IS_RUNNING_IN_PARALLEL = init_field<bool>("IS_RUNNING_IN_PARALLEL", false);
     NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE = init_field<uint32_t>("NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE", 60);
     MEASURE_TIMINGS = init_field<bool>("MEASURE_TIMINGS", false);
     IS_USING_GPU_VERSION = init_field<bool>("IS_USING_GPU_VERSION", false);
+    DERIVE_AUTOMATIC_PROPERTIES = init_field<bool>("DERIVE_AUTOMATIC_PROPERTIES", false);
+}
 
-    /// Batch sizes
-    BATCHES_LIST_SIZE = init_field<uint32_t>("BATCHES_LIST_SIZE", 1'024);
-    MAX_POINTS_PER_BATCHES = init_field<uint32_t>("MAX_POINTS_PER_BATCHES", 1'000'000);
-    MIN_BATCHES_PER_LOAD = init_field<uint32_t>("MIN_BATCHES_PER_LOAD", 1);
-    MAX_BATCHES_PER_LOAD = init_field<uint32_t>( "MAX_BATCHES_PER_LOAD", 1);
-    MIN_BATCHES_PER_GPU_LOAD = init_field<uint32_t>( "MIN_BATCHES_PER_GPU_LOAD", 1);
-    MAX_BATCHES_PER_GPU_LOAD = init_field<uint32_t>("MAX_BATCHES_PER_GPU_LOAD", 1);
-    MIN_BATCHES_PER_OCTREE_UPDATE = init_field<uint32_t>("MIN_BATCHES_PER_OCTREE_UPDATE", 1);
-    MAX_BATCHES_PER_OCTREE_UPDATE = init_field<uint32_t>("MAX_BATCHES_PER_OCTREE_UPDATE", 1);
-    MAX_ATTEMPTS_BEFORE_IGNORING_MIN_VARIABLES = init_field<uint32_t>("MAX_ATTEMPTS_BEFORE_IGNORING_MIN_VARIABLES", 1);
-
-    /// Octree properties
-    MAX_POINTS_PER_LEAF = init_field<uint32_t>("MAX_POINTS_PER_LEAF", 50'000);
-    LRU_UPDATES_CACHE_SIZE = init_field<uint32_t>("LRU_UPDATES_CACHE_SIZE", 128);
-    LRU_VISIBILITY_CACHE_SIZE = init_field<uint32_t>("LRU_VISIBILITY_CACHE_SIZE", 512);
-    LRU_CPU_CACHE_SIZE = init_field<uint32_t>("LRU_CPU_CACHE_SIZE", 2048);
-    NB_ALLOCABLE_CHUNKS = init_field<uint32_t>("NB_ALLOCABLE_CHUNKS", 32'000);
-    NB_ALLOCABLE_GRIDS = init_field<uint32_t>("NB_ALLOCABLE_GRIDS", 2048);
-    NB_ALLOCABLE_NODES = init_field<uint32_t>("NB_ALLOCABLE_NODES", 2048);
-
-    /// GPU Version buffers
-    MAX_NB_NODES = init_field<uint32_t>("MAX_NB_NODES", 1'000'000);
-    MAX_NB_NODES_TO_EXCHANGE = init_field<uint32_t>("MAX_NB_NODES_TO_EXCHANGE", 128);
-    MAX_NB_SPILLING_POINTS = init_field<uint32_t>("MAX_NB_SPILLING_POINTS", 1'000'000);
-    MAX_NB_BACKLOG_VOXELS = init_field<uint32_t>("MAX_NB_BACKLOG_VOXELS", 1'000'000);
-
-    MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE = init_field<uint32_t>("MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE", 256);
-    MAX_NB_RENDERED_POINTS = init_field<uint32_t>("MAX_NB_RENDERED_POINTS", 1'000'000);
-    MAX_NB_RENDERED_VOXELS = init_field<uint32_t>("MAX_NB_RENDERED_VOXELS", 1'000'000);
-    MAX_NB_COUNT_SPLIT_ITERATION = init_field<uint32_t>("MAX_NB_COUNT_SPLIT_ITERATION", 8);
-
-
+void OocSimLodSettings::init_ui_params(){
     /// Ui initial parameters
     SHOW_BOUNDING_BOXES_AT_STARTUP = init_field<bool>("SHOW_BOUNDING_BOXES_AT_STARTUP", false);
     CuRastSettings::showBoundingBoxes = SHOW_BOUNDING_BOXES_AT_STARTUP;
@@ -105,6 +84,108 @@ void OocSimLodSettings::init(){
     CuRastSettings::autoFreeOldOctreeMemoryOnGPU = USE_AUTO_FREE_OLD_OCTREE_ON_GPU_AT_STARTUP;
     DISPLAY_VISIBLE_NODES_AABB_AT_STARTUP = init_field<bool>("DIFFERENTIATE_VISIBLE_NODES_AABB_AT_STARTUP", false);
     CuRastSettings::showVisibleNodes = DISPLAY_VISIBLE_NODES_AABB_AT_STARTUP;
+}
+
+
+void OocSimLodSettings::init_batch_sizes(){
+    /// Batch sizes
+    BATCHES_LIST_SIZE = init_field<uint32_t>("BATCHES_LIST_SIZE", 1'024);
+    MAX_POINTS_PER_BATCHES = init_field<uint32_t>("MAX_POINTS_PER_BATCHES", 1'000'000);
+    MIN_BATCHES_PER_LOAD = init_field<uint32_t>("MIN_BATCHES_PER_LOAD", 1);
+    MAX_BATCHES_PER_LOAD = init_field<uint32_t>( "MAX_BATCHES_PER_LOAD", 1);
+    MIN_BATCHES_PER_GPU_LOAD = init_field<uint32_t>( "MIN_BATCHES_PER_GPU_LOAD", 1);
+    MAX_BATCHES_PER_GPU_LOAD = init_field<uint32_t>("MAX_BATCHES_PER_GPU_LOAD", 1);
+    MIN_BATCHES_PER_OCTREE_UPDATE = init_field<uint32_t>("MIN_BATCHES_PER_OCTREE_UPDATE", 1);
+    MAX_BATCHES_PER_OCTREE_UPDATE = init_field<uint32_t>("MAX_BATCHES_PER_OCTREE_UPDATE", 1);
+    MAX_ATTEMPTS_BEFORE_IGNORING_MIN_VARIABLES = init_field<uint32_t>("MAX_ATTEMPTS_BEFORE_IGNORING_MIN_VARIABLES", 1);
+}
+
+void OocSimLodSettings::init_octree_properties(){
+    /// Octree properties
+    MAX_POINTS_PER_LEAF = init_field<uint32_t>("MAX_POINTS_PER_LEAF", 50'000);
+    LRU_UPDATES_CACHE_SIZE = init_field<uint32_t>("LRU_UPDATES_CACHE_SIZE", 128);
+    LRU_VISIBILITY_CACHE_SIZE = init_field<uint32_t>("LRU_VISIBILITY_CACHE_SIZE", 512);
+    LRU_CPU_CACHE_SIZE = init_field<uint32_t>("LRU_CPU_CACHE_SIZE", 2048);
+    NB_ALLOCABLE_CHUNKS = init_field<uint32_t>("NB_ALLOCABLE_CHUNKS", 32'000);
+    NB_ALLOCABLE_GRIDS = init_field<uint32_t>("NB_ALLOCABLE_GRIDS", 2048);
+    NB_ALLOCABLE_NODES = init_field<uint32_t>("NB_ALLOCABLE_NODES", 2048);
+}
+
+
+void OocSimLodSettings::init_gpu_version_buffers(){
+    /// GPU Version buffers
+    MAX_NB_NODES = init_field<uint32_t>("MAX_NB_NODES", 1'000'000);
+    MAX_NB_NODES_TO_EXCHANGE = init_field<uint32_t>("MAX_NB_NODES_TO_EXCHANGE", 128);
+    MAX_NB_SPILLING_POINTS = init_field<uint32_t>("MAX_NB_SPILLING_POINTS", 1'000'000);
+    MAX_NB_BACKLOG_VOXELS = init_field<uint32_t>("MAX_NB_BACKLOG_VOXELS", 1'000'000);
+
+    MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE = init_field<uint32_t>("MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE", 256);
+    MAX_NB_RENDERED_POINTS = init_field<uint32_t>("MAX_NB_RENDERED_POINTS", 1'000'000);
+    MAX_NB_RENDERED_VOXELS = init_field<uint32_t>("MAX_NB_RENDERED_VOXELS", 1'000'000);
+    MAX_NB_COUNT_SPLIT_ITERATION = init_field<uint32_t>("MAX_NB_COUNT_SPLIT_ITERATION", 8);
+}
+
+void OocSimLodSettings::init_default(){
+    // 1Gb fixed
+    MAX_NB_NODES = 1'048'576;
+    MAX_NB_RENDERED_POINTS = 8'388'608;
+    MAX_NB_RENDERED_VOXELS = 4'194'304;
+    MAX_NB_SPILLING_POINTS = 8'388'608;
+    MAX_NB_BACKLOG_VOXELS = 8'388'608;
+    MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE = 128;
+    MAX_POINTS_PER_LEAF = 65'536;
+    MAX_POINTS_PER_BATCHES = 1'048'576;
+    double fixed_memory = 1.25 * 1024 * 1024 * 1024;
+
+    double available_memory = (DEVICE_AVAILABLE_MEMORY * 0.8) - fixed_memory - sizeof(CGlobalVariables);
+    
+    // Allocable memory
+    double allocable_memory = 0.75 * available_memory;
+    double chunk_memory = 0.8 * allocable_memory;
+    double chunk_size = 64 * sizeof(CChunk); // 64 because nbChunks should be 64 * LRU_CACHE
+    LRU_UPDATES_CACHE_SIZE = std::bit_floor(uint32_t(chunk_memory / chunk_size));
+    NB_ALLOCABLE_CHUNKS = 64 * LRU_UPDATES_CACHE_SIZE;
+    NB_ALLOCABLE_GRIDS = LRU_UPDATES_CACHE_SIZE;
+    NB_ALLOCABLE_NODES = 4 * LRU_UPDATES_CACHE_SIZE;
+    chunk_memory = (NB_ALLOCABLE_CHUNKS * (sizeof(CChunk) + 4)) + sizeof(CAllocatorPool<CChunk>);
+    double grids_memory = (NB_ALLOCABLE_GRIDS * (sizeof(COccupancyGrid) + 4)) + sizeof(CAllocatorPool<COccupancyGrid>);
+    double nodes_memory = (NB_ALLOCABLE_NODES * (sizeof(COctreeNode) + 4)) + sizeof(CAllocatorPool<COctreeNode>);
+    double lru_memory = LRU_UPDATES_CACHE_SIZE * sizeof(CIdAABB);
+
+    // Other properties
+    available_memory = (available_memory - chunk_memory - grids_memory - nodes_memory - lru_memory);
+    double batches_memory = 0.25 * available_memory;
+    double batches_factor = (8 + 9 * MAX_POINTS_PER_BATCHES);
+    MAX_BATCHES_PER_OCTREE_UPDATE = std::bit_floor(uint32_t(batches_memory / batches_factor));
+    batches_memory = MAX_BATCHES_PER_OCTREE_UPDATE * batches_factor;
+
+    double exchangeable_memory = 0.25 * available_memory;
+    double exchangeable_factor =  44 + 16 * (MAX_POINTS_PER_LEAF + NB_POINTS_PER_CHUNK * MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE);
+    MAX_NB_NODES_TO_EXCHANGE = std::bit_floor(uint32_t(exchangeable_memory / exchangeable_factor));
+    exchangeable_memory = MAX_NB_NODES_TO_EXCHANGE * exchangeable_factor;
+
+    double spilling_memory = available_memory - batches_memory - exchangeable_memory;
+    uint32_t new_spilling = 0.5 * std::bit_floor(uint32_t(spilling_memory / 64));
+    MAX_NB_SPILLING_POINTS += new_spilling;
+    MAX_NB_BACKLOG_VOXELS += new_spilling;
+    
+    available_memory = (available_memory - batches_memory - exchangeable_memory - spilling_memory);
+}
+
+
+
+/// Initialises the settings
+void OocSimLodSettings::init(){
+    init_device_properties();
+    init_miscellaneous();
+    init_ui_params();
+    init_batch_sizes();
+    init_octree_properties();
+    init_gpu_version_buffers();
+    
+    if(DERIVE_AUTOMATIC_PROPERTIES){
+        init_default();
+    }
 }
 
 

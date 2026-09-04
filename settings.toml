@@ -23,6 +23,11 @@ IS_USING_GPU_VERSION = true
 # IS_USING_GPU_VERSION = false
 
 
+### Tells if need to find automatic properties
+DERIVE_AUTOMATIC_PROPERTIES = true
+# DERIVE_AUTOMATIC_PROPERTIES = false
+
+
 #########################################################################
 ############################## BATCH SIZES ##############################
 #########################################################################

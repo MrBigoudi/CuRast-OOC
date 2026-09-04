@@ -51,6 +51,9 @@ struct OocSimLodSettings {
     static inline uint32_t DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y;
     static inline uint32_t DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z;
     static inline uint32_t DEVICE_ATTRIBUTE_MAX_GRID_SIZE_FOR_MAX_BLOCK_SIZE;
+    /// The maximum available vram
+    static inline double DEVICE_TOTAL_MEMORY;
+    static inline double DEVICE_AVAILABLE_MEMORY;
 
 
 
@@ -66,6 +69,8 @@ struct OocSimLodSettings {
     static inline bool MEASURE_TIMINGS;
     /// Run the GPU version
     static inline bool IS_USING_GPU_VERSION;
+    /// Tells if need to find automatic properties
+    static inline bool DERIVE_AUTOMATIC_PROPERTIES;
 
 
 
@@ -178,5 +183,13 @@ struct OocSimLodSettings {
     static void display();
     
     /// Constructor from the toml `SETTINGS_TOML_FILE' file
+    static void init_device_properties();
+    static void init_miscellaneous();
+    static void init_ui_params();
+    static void init_batch_sizes();
+    static void init_octree_properties();
+    static void init_gpu_version_buffers();
+    static void init_default();
+
     static void init();
 };

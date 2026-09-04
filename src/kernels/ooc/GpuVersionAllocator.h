@@ -15,14 +15,6 @@ enum AllocatorId {
 /// A pre-allocated pool of elements
 template <typename T>
 struct CAllocatorPool {
-    /// An entry in the double linked list of pre-allocated elements
-    struct Entry {
-        /// True if the entry is available for use
-        bool is_free = true;
-        /// A pointer to its inner element
-        T* value = nullptr;
-    };
-
     /// The pool capacity
     const uint32_t CAPACITY;
     const AllocatorId ALLOCATOR_ID;
