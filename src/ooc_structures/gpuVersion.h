@@ -279,6 +279,7 @@ struct GpuVersion {
     /// For another project
     static void takeRandomScreenShots();
     static void takeSingleScreenShot();
+    static void tryToCenterTarget();
 
     friend LoaderGpuVersion;
 

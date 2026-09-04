@@ -147,16 +147,14 @@ void CuRast::makeToolbar(){
 				ImGui::Checkbox("Bounding boxes", &CuRastSettings::showBoundingBoxes);
 				ImGui::SameLine();
 				ImGui::Checkbox("Use voxel debug color", &CuRastSettings::voxelsDebugColor);
-				ImGui::SameLine();
-				ImGui::Checkbox("Brute force rendering", &CuRastSettings::bruteForceRendering);
 
-				ImGui::Checkbox("Auto-free GPU memory", &CuRastSettings::autoFreeOldOctreeMemoryOnGPU);
-				ImGui::SameLine();
-				ImGui::BeginDisabled(CuRastSettings::autoFreeOldOctreeMemoryOnGPU);
-					ImGui::Checkbox("Manual-free GPU memory", &CuRastSettings::freeOldOctreeMemoryOnGPU);
-				ImGui::EndDisabled();
-				ImGui::SameLine();
-				ImGui::Checkbox("Get real GPU memory usage", &CuRastSettings::getGpuMemoryUsage);
+				// ImGui::Checkbox("Auto-free GPU memory", &CuRastSettings::autoFreeOldOctreeMemoryOnGPU);
+				// ImGui::SameLine();
+				// ImGui::BeginDisabled(CuRastSettings::autoFreeOldOctreeMemoryOnGPU);
+				// 	ImGui::Checkbox("Manual-free GPU memory", &CuRastSettings::freeOldOctreeMemoryOnGPU);
+				// ImGui::EndDisabled();
+				// ImGui::SameLine();
+				// ImGui::Checkbox("Get real GPU memory usage", &CuRastSettings::getGpuMemoryUsage);
 
 				// ImGui::SetNextItemWidth(200.0f);
 				// ImGui::SliderInt("Max batches per update", &CuRastSettings::maxBatchesPerUpdate, 1, 64);
@@ -168,11 +166,11 @@ void CuRast::makeToolbar(){
 				// ImGui::SameLine();
 				// ImGui::Checkbox("Load octree from disk", &CuRastSettings::loadOctree);
 
-				ImGui::BeginDisabled(!CuRastSettings::showBoundingBoxes);
-					ImGui::Checkbox("Show visible nodes", &CuRastSettings::showVisibleNodes);
-					ImGui::SameLine();
-					ImGui::Checkbox("Freeze visible nodes", &CuRastSettings::freezeVisibleNodes);
-				ImGui::EndDisabled();
+				// ImGui::BeginDisabled(!CuRastSettings::showBoundingBoxes);
+				// 	ImGui::Checkbox("Show visible nodes", &CuRastSettings::showVisibleNodes);
+				// 	ImGui::SameLine();
+				// 	ImGui::Checkbox("Freeze visible nodes", &CuRastSettings::freezeVisibleNodes);
+				// ImGui::EndDisabled();
 				// ImGui::BeginDisabled(true);
 				// 	ImGui::Checkbox("Use unified memory", &CuRastSettings::useUnifiedMemory);
 				// ImGui::EndDisabled();
@@ -189,6 +187,18 @@ void CuRast::makeToolbar(){
 				ImGui::SetNextItemWidth(200.0f);
 				ImGui::SliderInt("LOD to render", &CuRastSettings::debugLodToRender, -1, 20);
 
+				ImGui::SetNextItemWidth(200.0f);
+				ImGui::SliderInt("First screenshot LOD", &CuRastSettings::firstScreenshotValue, 0, 19);
+				ImGui::SameLine();
+				ImGui::SetNextItemWidth(200.0f);
+				ImGui::SliderInt("Last screenshot LOD", &CuRastSettings::lastScreenshotValue, CuRastSettings::firstScreenshotValue+1, 20);
+
+				ImGui::Checkbox("Try to center target", &CuRastSettings::tryToCenterTarget);
+				ImGui::SameLine();
+				ImGui::SetNextItemWidth(200.0f);
+				ImGui::SliderFloat("Diagonal factor", &CuRastSettings::tryToCenterTargetDiagonal, 0.01f, 1.f);
+				ImGui::SameLine();
+				ImGui::Checkbox("Take screenshots", &CuRastSettings::bruteForceRendering);
 				// ImGui::SetNextItemWidth(200.0f);
 				// ImGui::SliderFloat("Min pixel span", &CuRastSettings::minPixelSpan, 32.0f, 1024.0f);
 				// ImGui::SameLine();

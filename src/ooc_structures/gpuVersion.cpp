@@ -84,8 +84,8 @@ void GpuVersion::initConstraints(CuRast* editor, CUcontext* context) {
     hostStaging.maxCountSplitIterations = OocSimLodSettings::MAX_NB_COUNT_SPLIT_ITERATION;
 
     hostStaging.maxNbNodesExchanged = OocSimLodSettings::MAX_NB_NODES_TO_EXCHANGE;
-    hostStaging.maxNbPointsChunksPerExchangedNode = 
-        (OocSimLodSettings::MAX_POINTS_PER_LEAF + OocSimLodSettings::NB_POINTS_PER_CHUNK - 1) 
+    hostStaging.maxNbPointsChunksPerExchangedNode =
+        (OocSimLodSettings::MAX_POINTS_PER_LEAF + OocSimLodSettings::NB_POINTS_PER_CHUNK - 1)
         / OocSimLodSettings::NB_POINTS_PER_CHUNK
     ;
     hostStaging.maxNbVoxelsChunksPerExchangedNode = OocSimLodSettings::MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE;
@@ -168,7 +168,7 @@ void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
     hostStaging.exchangedGrids = alloc<uint64_t*>(hostStaging.maxNbNodesExchanged);
     for(uint32_t i=0; i<hostStaging.maxNbNodesExchanged; i++){
         uint64_t real_size = 0;
-    
+
         CUdeviceptr new_ptr = 0;
         real_size = OocSimLodSettings::NB_POINTS_PER_CHUNK * hostStaging.maxNbPointsChunksPerExchangedNode * sizeof(CPoint);
         totalAllocatedMemory += real_size;
@@ -224,7 +224,7 @@ void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
         batchesToAddPointsPointers,
         hostStaging.maxNbBatches * sizeof(CUdeviceptr)
     ));
-    
+
 
     // Lru caches
     hostStaging.updatesCache = alloc<CIdAABB>(hostStaging.updatesCacheSize * 2); // Times 2 for prefix scan
@@ -233,7 +233,7 @@ void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
     hostStaging.renderedVoxels = alloc<CPoint>(hostStaging.maxNbRenderedVoxels);
     hostStaging.renderedVoxelsNodes = alloc<CIdAABB>(hostStaging.maxNbRenderedVoxels);
 
-    
+
     // Temporary buffers
     hostStaging.spilledPoints = alloc<CPoint>(hostStaging.maxNbSpilledPoints);
     hostStaging.spillingNodes = alloc<COctreeNode*>(hostStaging.maxNbSpilledPoints);
@@ -254,7 +254,7 @@ void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
     hostStaging.temporaryIdBuffer2 = alloc<CIdAABB>(hostStaging.temporaryBufferSize);
     hostStaging.temporaryNodeBuffer = alloc<COctreeNode*>(hostStaging.temporaryBufferSize);
 
-    
+
 
     // Final allocation
     deviceStaging = prog->getGlobalsPointer("globalVariables");
@@ -316,7 +316,7 @@ void GpuVersion::init(CuRast* editor, CUcontext* context) {
 
     uint32_t block_size = 256;
     uint32_t grid_size =
-        (OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM + block_size - 1) 
+        (OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM + block_size - 1)
         / block_size
     ;
     OptionalLaunchSettings launch_settings = {
@@ -390,7 +390,7 @@ void GpuVersion::octreeUpdateInit(CuRast* editor, CUcontext* context){
 
     uint32_t block_size = 256;
     uint32_t grid_size =
-        (OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM + block_size - 1) 
+        (OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM + block_size - 1)
         / block_size
     ;
     OptionalLaunchSettings launch_settings = {
@@ -428,7 +428,7 @@ void GpuVersion::octreeUpdateBottomUp(CuRast* editor, CUcontext* context){
 
     uint32_t block_size = 256;
     uint32_t grid_size =
-        (OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM + block_size - 1) 
+        (OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM + block_size - 1)
         / block_size
     ;
     OptionalLaunchSettings launch_settings = {
@@ -489,7 +489,7 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
     // };
     uint32_t block_size = 256;
     uint32_t grid_size =
-        (OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM + block_size - 1) 
+        (OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM + block_size - 1)
         / block_size
     ;
     OptionalLaunchSettings launch_settings = {
@@ -507,11 +507,11 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
 
     // Get the ids of the nodes to load
     CURuntime::assertCudaSuccess(cuMemcpyDtoH(
-		exchangedIds, 
+		exchangedIds,
 		(CUdeviceptr)hostStaging.exchangedAABBIndices,
 		nb_nodes_to_load * sizeof(CIdAABB)
 	));
-    
+
     // Load from CPU cache
     CIdAABB* ids = static_cast<CIdAABB*>(exchangedIds);
     // Deserialise in parallel
@@ -572,10 +572,10 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
 
     uint64_t nb_copies = sizes.size();
     CURuntime::assertCudaSuccess(cuMemcpyBatchAsync(
-        dsts_device.data(), srcs_host.data(), sizes.data(), nb_copies, 
-        batchLoadingAttributes.data(), 
-        batchLoadingAttributesIndices.data(), 
-        batchLoadingAttributes.size(), 
+        dsts_device.data(), srcs_host.data(), sizes.data(), nb_copies,
+        batchLoadingAttributes.data(),
+        batchLoadingAttributesIndices.data(),
+        batchLoadingAttributes.size(),
         stream
     ));
     CURuntime::assertCudaSuccess(cuEventRecord(eventLoadingComplete, stream));
@@ -619,7 +619,7 @@ void GpuVersion::octreeUpdateSimLODCountSplit(CuRast* editor, CUcontext* context
 
     uint32_t block_size = 256;
     uint32_t grid_size =
-        (OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM + block_size - 1) 
+        (OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM + block_size - 1)
         / block_size
     ;
     OptionalLaunchSettings launch_settings = {
@@ -665,7 +665,7 @@ void GpuVersion::octreeUpdateSimLODVoxelSampling(CuRast* editor, CUcontext* cont
 
     uint32_t block_size = 256;
     uint32_t grid_size =
-        (OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM + block_size - 1) 
+        (OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM + block_size - 1)
         / block_size
     ;
     OptionalLaunchSettings launch_settings = {
@@ -694,7 +694,7 @@ void GpuVersion::octreeUpdateSimLODInsertion(CuRast* editor, CUcontext* context)
 
     uint32_t block_size = 256;
     uint32_t grid_size =
-        (OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM + block_size - 1) 
+        (OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM + block_size - 1)
         / block_size
     ;
     OptionalLaunchSettings launch_settings = {
@@ -758,7 +758,7 @@ void GpuVersion::octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context){
     COPY_TO_GPU(nbNodesExchanged, &RESET, uint32_t);
     uint32_t block_size = 256;
     uint32_t grid_size =
-        (OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM + block_size - 1) 
+        (OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM + block_size - 1)
         / block_size
     ;
     OptionalLaunchSettings launch_settings = {
@@ -831,10 +831,10 @@ void GpuVersion::storeNodes(uint32_t nb_nodes_to_store){
     // Wait for the node properties
     uint64_t nb_copies = sizes.size();
     CURuntime::assertCudaSuccess(cuMemcpyBatchAsync(
-        dsts_host.data(), srcs_device.data(), sizes.data(), nb_copies, 
-        batchStoringAttributes.data(), 
-        batchStoringAttributesIndices.data(), 
-        batchStoringAttributes.size(), 
+        dsts_host.data(), srcs_device.data(), sizes.data(), nb_copies,
+        batchStoringAttributes.data(),
+        batchStoringAttributesIndices.data(),
+        batchStoringAttributes.size(),
         stream
     ));
     CURuntime::assertCudaSuccess(cuEventRecord(eventStoringComplete, stream));
@@ -907,7 +907,7 @@ void GpuVersion::storeNodes(uint32_t nb_nodes_to_store){
             cur_node->node.voxels_counter += nbs_voxels[i];
             cur_node->voxels.resize(cur_node->node.voxels_counter);
             cur_node->occupancy_indices.resize(cur_node->node.voxels_counter);
-            
+
             srcs_device.push_back(exchangedVoxelsPointers[i]);
             dsts_host.push_back((CUdeviceptr)(cur_node->voxels.data() + old_counter));
             sizes.push_back(nbs_voxels[i] * sizeof(CPoint));
@@ -922,10 +922,10 @@ void GpuVersion::storeNodes(uint32_t nb_nodes_to_store){
     nb_copies = sizes.size();
     if(nb_copies > 0){
         CURuntime::assertCudaSuccess(cuMemcpyBatchAsync(
-            dsts_host.data(), srcs_device.data(), sizes.data(), nb_copies, 
-            batchStoringAttributes.data(), 
-            batchStoringAttributesIndices.data(), 
-            batchStoringAttributes.size(), 
+            dsts_host.data(), srcs_device.data(), sizes.data(), nb_copies,
+            batchStoringAttributes.data(),
+            batchStoringAttributesIndices.data(),
+            batchStoringAttributes.size(),
             stream
         ));
         CURuntime::assertCudaSuccess(cuEventRecord(eventStoringComplete, stream));
@@ -960,9 +960,9 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
     }
 
     // Order the nodes with respect to the camera
-    std::sort(visible_nodes.begin(), visible_nodes.end(), 
+    std::sort(visible_nodes.begin(), visible_nodes.end(),
         [](const std::pair<CIdAABB, float>& lhs, const std::pair<CIdAABB, float>& rhs){
-            return lhs.second < rhs.second; // From closest to furthest 
+            return lhs.second < rhs.second; // From closest to furthest
         }
     );
 
@@ -1030,15 +1030,15 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
     CUdeviceptr dst_nb_nodes = deviceStaging + (
         reinterpret_cast<uintptr_t>(&(hostStaging.visibilityCacheCurrentSize))
         - reinterpret_cast<uintptr_t>(&hostStaging)
-    ); 
+    );
     CUdeviceptr dst_nb_points = deviceStaging + (
         reinterpret_cast<uintptr_t>(&(hostStaging.nbRenderedPoints))
         - reinterpret_cast<uintptr_t>(&hostStaging)
-    ); 
+    );
     CUdeviceptr dst_nb_voxels = deviceStaging + (
         reinterpret_cast<uintptr_t>(&(hostStaging.nbRenderedVoxels))
         - reinterpret_cast<uintptr_t>(&hostStaging)
-    ); 
+    );
     std::vector<CUdeviceptr> dsts_device = {
         dst_nb_nodes,
         dst_nb_points,
@@ -1048,7 +1048,7 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
         sizeof(uint32_t), sizeof(uint32_t), sizeof(uint32_t)
     };
 
-    
+
     uint32_t loop_end = min(uint32_t(visible_nodes.size()), OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE);
 
     // Deserialise the LRU_VISIBILITY_CACHE closest nodes
@@ -1083,7 +1083,7 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
 
         bool has_points = (node->node.points_counter > 0);
         bool has_voxels = (node->node.voxels_counter > 0);
-        bool points_can_be_added = 
+        bool points_can_be_added =
             // Only send if the maximum of voxels to send is not reached
             (*point_cpt < OocSimLodSettings::MAX_NB_RENDERED_POINTS)
             // Only send if has points
@@ -1121,7 +1121,7 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
                 srcs_host.push_back((CUdeviceptr)node->voxels.data());
                 dsts_device.push_back((CUdeviceptr)hostStaging.renderedVoxels + (CUdeviceptr)(*voxel_cpt * sizeof(CPoint)));
                 sizes.push_back(nb_new_voxels * sizeof(CPoint));
-            
+
                 // Add other voxels properties
                 for(uint32_t voxel_id = 0; voxel_id < nb_new_voxels; voxel_id++){
                     voxels_nodes_to_send[*voxel_cpt + voxel_id] = cur_node;
@@ -1159,10 +1159,10 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
     // Send the data to the device
     uint64_t nb_copies = sizes.size();
     CURuntime::assertCudaSuccess(cuMemcpyBatchAsync(
-        dsts_device.data(), srcs_host.data(), sizes.data(), nb_copies, 
-        batchLoadingAttributes.data(), 
-        batchLoadingAttributesIndices.data(), 
-        batchLoadingAttributes.size(), 
+        dsts_device.data(), srcs_host.data(), sizes.data(), nb_copies,
+        batchLoadingAttributes.data(),
+        batchLoadingAttributesIndices.data(),
+        batchLoadingAttributes.size(),
         stream
     ));
     CURuntime::assertCudaSuccess(cuEventRecord(eventVisibilityUpdateComplete, stream));
@@ -1190,12 +1190,12 @@ void GpuVersion::updateHostCache(){
     if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
         updateHostCacheComplete = new std::thread([nodes_to_store = std::move(nodes_to_store)]() mutable {
 
-            std::for_each(std::execution::par, nodes_to_store.begin(), nodes_to_store.end(), 
+            std::for_each(std::execution::par, nodes_to_store.begin(), nodes_to_store.end(),
                 [](std::shared_ptr<HostStorageNode>& node){
                     OctreeNodeSerializable::serializeV2(node);
                 }
             );
-            std::for_each(nodes_to_store.begin(), nodes_to_store.end(), 
+            std::for_each(nodes_to_store.begin(), nodes_to_store.end(),
                 [](std::shared_ptr<HostStorageNode>& node){
                     PointsAllocator::deallocate(node->points);
                     node->points = nullptr;
@@ -1215,7 +1215,7 @@ void GpuVersion::updateHostCache(){
             node->points = nullptr;
         });
     }
-    
+
 }
 
 
@@ -1316,7 +1316,7 @@ void GpuVersion::renderOctree(RenderTarget& target){
         // };
         uint32_t block_size = 256;
         uint32_t grid_size =
-            (OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM + block_size - 1) 
+            (OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM + block_size - 1)
             / block_size
         ;
         OptionalLaunchSettings launch_settings = {
@@ -1337,11 +1337,11 @@ void GpuVersion::renderOctree(RenderTarget& target){
             // prog->launch("kernel_draw_visibility_cache", {&real_target, &real_settings}, launch_settings);
             // prog->launch("kernel_draw_octree_large", {&real_target, &real_settings}, launch_settings);
             // prog->launch("kernel_draw_octree_small", {&real_target, &real_settings}, launch_settings);
-            
-            // // Render bounding boxes
-            // if(CuRastSettings::showBoundingBoxes){
-            //     prog->launch("kernel_render_bounding_boxes", {&real_target, &real_settings}, launch_settings);
-            // }
+
+            // Render bounding boxes
+            if(CuRastSettings::showBoundingBoxes){
+                prog->launch("kernel_render_bounding_boxes", {&real_target, &real_settings}, launch_settings);
+            }
 
             prog->launch("kernel_visibility_pass", {&real_target, &real_settings}, launch_settings);
             prog->launch("kernel_replace_unloaded_nodes_v2", {&real_target, &real_settings}, launch_settings);
@@ -1384,7 +1384,7 @@ void GpuVersionUI::update() {
     COPY_FROM_GPU(nbTotalLoadedNodes, &nbTotalLoadedNodes, uint32_t);
     COPY_FROM_GPU(nbTotalSplitNodes, &nbTotalSplitNodes, uint32_t);
     COPY_FROM_GPU(nbTotalStoredNodes, &nbTotalStoredNodes, uint32_t);
-    
+
     COPY_FROM_GPU(nbNewPointsThisUpdate, &nbNewPointsThisUpdate, uint32_t);
     COPY_FROM_GPU(nbNewVoxelsThisUpdate, &nbNewVoxelsThisUpdate, uint32_t);
     COPY_FROM_GPU(nbNewNodesThisUpdate, &nbNewNodesThisUpdate, uint32_t);
@@ -1445,6 +1445,51 @@ void GpuVersionUI::update() {
 
 
 
+void GpuVersion::tryToCenterTarget(){
+    if(!CuRastSettings::tryToCenterTarget){return;}
+
+    // Get the bounding box of the scene
+    CUdeviceptr main_octree = 0;
+    CIdAABB main_id = CINVALID_ID;
+    CGlobalVariables::Relationship main_relationship = {};
+    COPY_FROM_GPU(mainOctree, &main_octree, CUdeviceptr);
+    COctreeNode tmp = {};
+    const uint64_t pad =
+        reinterpret_cast<uintptr_t>(&(tmp.aabb_index)) -
+        reinterpret_cast<uintptr_t>(&tmp);
+    CUdeviceptr src_device = main_octree + pad;
+    CURuntime::assertCudaSuccess(
+        cuMemcpyDtoH(&main_id, src_device, sizeof(CIdAABB))
+    );
+    src_device = reinterpret_cast<CUdeviceptr>(hostStaging.relationshipMap)
+        + static_cast<CUdeviceptr>(main_id * sizeof(CGlobalVariables::Relationship))
+    ;
+    CURuntime::assertCudaSuccess(
+        cuMemcpyDtoH(&main_relationship, src_device, sizeof(CGlobalVariables::Relationship))
+    );
+    CAABB main_aabb = main_relationship.aabb;
+
+    // for(auto& [id, node] : GpuVersion::persistentStoredNodes){
+    //     for(uint32_t i = 0; i < node->node.points_counter; i++){
+    //         const CPoint& point = node->points[i];
+    //         mainAABB.mins.x = min(mainAABB.mins.x, point.position.x);
+    //         mainAABB.mins.y = min(mainAABB.mins.y, point.position.y);
+    //         mainAABB.mins.z = min(mainAABB.mins.z, point.position.z);
+    //         mainAABB.maxs.x = max(mainAABB.maxs.x, point.position.x);
+    //         mainAABB.maxs.y = max(mainAABB.maxs.y, point.position.y);
+    //         mainAABB.maxs.z = max(mainAABB.maxs.z, point.position.z);
+    //     }
+    // }
+
+    glm::dvec3 center = glm::dvec3((main_aabb.mins + main_aabb.maxs) * 0.5f);
+    double diagonal = double(glm::length(main_aabb.maxs - main_aabb.mins));
+
+    Runtime::controls->target = center;
+    Runtime::controls->radius = CuRastSettings::tryToCenterTargetDiagonal * diagonal;
+    Runtime::controls->update();
+
+    CuRastSettings::tryToCenterTarget = false;
+}
 
 
 
@@ -1516,7 +1561,7 @@ void GpuVersion::takeRandomScreenShots(){
         // CURuntime::assertCudaSuccess(
         //     cuMemcpyDtoH(&main_id, src_device, sizeof(CIdAABB))
         // );
-        // src_device = reinterpret_cast<CUdeviceptr>(hostStaging.relationshipMap) 
+        // src_device = reinterpret_cast<CUdeviceptr>(hostStaging.relationshipMap)
         //     + static_cast<CUdeviceptr>(main_id * sizeof(CGlobalVariables::Relationship))
         // ;
         // CURuntime::assertCudaSuccess(
@@ -1536,7 +1581,7 @@ void GpuVersion::takeRandomScreenShots(){
             }
         }
 
-        // println("HOST: .mins = ({}, {}, {}), .maxs = ({}, {}, {})", 
+        // println("HOST: .mins = ({}, {}, {}), .maxs = ({}, {}, {})",
         //     mainAABB.mins.x, mainAABB.mins.y, mainAABB.mins.z,
         //     mainAABB.maxs.x, mainAABB.maxs.y, mainAABB.maxs.z
         // );
@@ -1707,8 +1752,8 @@ void GpuVersion::takeRandomScreenShots(){
 /// For another project
 void GpuVersion::takeSingleScreenShot(){
     static const uint32_t NB_RESOLUTIONS = 4;
-    static const uint32_t NB_SCREENSHOTS = 5;
-    static const uint32_t NB_TOTAL_SCREENSHOTS = NB_SCREENSHOTS * NB_RESOLUTIONS * 2;
+    static uint32_t NB_SCREENSHOTS = 4;
+    static uint32_t NB_TOTAL_SCREENSHOTS = NB_SCREENSHOTS * NB_RESOLUTIONS * 2;
 
     static bool oldSettingsIsLeftDown = false;
     static double oldSettingsScroll = 0;
@@ -1728,9 +1773,10 @@ void GpuVersion::takeSingleScreenShot(){
     static uint32_t old_height = VKRenderer::height;
 
     static uint32_t cpt = 0;
-    static uint32_t density[5] = {16, 32, 64, 96, 128};
+    static std::vector<int32_t> density = {};
 
     static uint32_t INITIAL_ID = 0;
+    static int32_t old_lod = -1;
 
     // Begin screenshots
     if(CuRastSettings::bruteForceRendering && !buttonWasPressed){
@@ -1747,16 +1793,21 @@ void GpuVersion::takeSingleScreenShot(){
         oldSettingsPitch           = Runtime::controls->pitch;
         oldSettingsRadius          = Runtime::controls->radius;
         oldSettingsTarget          = Runtime::controls->target;
+        old_lod                    = CuRastSettings::debugLodToRender;
 
         for(int i = INITIAL_ID; i <= 10'000'000; i++){
 			fs::create_directories("./screenshots");
-			std::string path = format("./screenshots/id_{}_res_{}x{}_perturbed.png",
+			std::string path = format("./screenshots/id_{}_res_{}x{}_target.png",
                 i, VKRenderer::width, VKRenderer::height
             );
             INITIAL_ID = i;
 			if(!fs::exists(path)) break;
 		}
 
+        NB_SCREENSHOTS = CuRastSettings::lastScreenshotValue - CuRastSettings::firstScreenshotValue + 1;
+        NB_TOTAL_SCREENSHOTS = NB_SCREENSHOTS * NB_RESOLUTIONS * 2;
+        density.resize(NB_SCREENSHOTS);
+        std::iota(density.begin(), density.end(), CuRastSettings::firstScreenshotValue);
 
         GpuVersion::isTakingScreenshots = true;
         cpt = 0;
@@ -1804,19 +1855,20 @@ void GpuVersion::takeSingleScreenShot(){
         uint32_t pairId = screenshotCounter / (2*NB_RESOLUTIONS) + INITIAL_ID;
 
         if(screenshotCounter % (2*NB_RESOLUTIONS) == 0){
-            // randomOffset = 1 + rand();
-            randomOffset = density[cpt]; cpt++;
+            CuRastSettings::debugLodToRender = int32_t(density[cpt]);
+            cpt++;
 
             VKRenderer::width = old_width;
             VKRenderer::height = old_height;
             CuRastSettings::requestScreenshot = std::make_shared<string>(
-                format("./screenshots/id_{}_res_{}x{}_perturbed.png",
+                format("./screenshots/id_{}_res_{}x{}_lod_{}_perturbed.png",
                     pairId,
-                    VKRenderer::width, VKRenderer::height
+                    VKRenderer::width, VKRenderer::height,
+                    CuRastSettings::debugLodToRender
                 )
             );
         } else if(screenshotCounter % (2*NB_RESOLUTIONS) == NB_RESOLUTIONS) {
-            randomOffset = 0;
+            CuRastSettings::debugLodToRender = -1;
             VKRenderer::width = old_width;
             VKRenderer::height = old_height;
             CuRastSettings::requestScreenshot = std::make_shared<string>(
@@ -1829,9 +1881,10 @@ void GpuVersion::takeSingleScreenShot(){
             VKRenderer::width = (old_width >> (screenshotCounter % (2*NB_RESOLUTIONS)));
             VKRenderer::height = (old_height >> (screenshotCounter % (2*NB_RESOLUTIONS)));
             CuRastSettings::requestScreenshot = std::make_shared<string>(
-                format("./screenshots/id_{}_res_{}x{}_perturbed.png",
+                format("./screenshots/id_{}_res_{}x{}_lod_{}_perturbed.png",
                     pairId,
-                    VKRenderer::width, VKRenderer::height
+                    VKRenderer::width, VKRenderer::height,
+                    CuRastSettings::debugLodToRender
                 )
             );
         } else if(screenshotCounter % (2*NB_RESOLUTIONS) > NB_RESOLUTIONS) {

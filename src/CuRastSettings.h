@@ -15,6 +15,10 @@ struct CuRastSettings{
 	static inline bool loadOctree = false;
 	static inline bool useUnifiedMemory = false;
 	static inline bool getGpuMemoryUsage = false;
+	static inline int32_t firstScreenshotValue = 2;
+	static inline int32_t lastScreenshotValue = 5;
+	static inline bool tryToCenterTarget = false;
+	static inline float tryToCenterTargetDiagonal = 0.5f;
 
 	static inline bool showVisibleNodes = false;
 	static inline bool freezeVisibleNodes = false;

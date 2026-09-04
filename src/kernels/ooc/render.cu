@@ -809,6 +809,8 @@ void kernel_draw_visibility_cache_v2(
     uint32_t thread_id = grid.thread_rank();
     uint32_t nb_threads = grid.num_threads();
 
+    if(settings.debug_lod_to_render != -1){return;}
+
     // Render points
     for(uint32_t point_id = thread_id; point_id < globalVariables.nbRenderedPoints; point_id += nb_threads){
         const CPoint& point = globalVariables.renderedPoints[point_id];
@@ -881,10 +883,10 @@ void kernel_replace_unloaded_nodes_v2(
                 bool can_render = true;
 
                 while(child_id != CINVALID_ID){
-                    if(globalVariables.isInVisibilityCache(child_id)){
-                        can_render = false;
-                        break;
-                    }
+                    // if(globalVariables.isInVisibilityCache(child_id)){
+                    //     can_render = false;
+                    //     break;
+                    // }
 
 
                     index = globalVariables.relationshipMap[child_id].aabb.getNextChildIndex(voxel.position);

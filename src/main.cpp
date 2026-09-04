@@ -697,6 +697,7 @@ int main(int argc, char** argv){
 					}
 					// GpuVersion::takeRandomScreenShots();
 					GpuVersion::takeSingleScreenShot();
+					GpuVersion::tryToCenterTarget();
 				}
 
 
