@@ -784,12 +784,13 @@ void GpuVersion::octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context){
     prog->launch("kernel_prepare_store_part_1_filling_buffers", {}, launch_settings);
     prog->launch("kernel_prepare_store_part_2_resetting_children", {}, launch_settings);
 
+    prog->launch("kernel_prepare_store_part_3_pack_nodes", {}, single_launch);
     launch_settings = {
         .gridsize = 0,
         // .blocksize = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK,
         .blocksize = 256,
     };
-    prog->launchCooperative("kernel_prepare_store_part_3_updating_levels", {}, launch_settings);
+    prog->launchCooperative("kernel_prepare_store_part_4_updating_levels", {}, launch_settings);
     COPY_FROM_GPU(isDoneStoring, isDoneStoring, bool);
 
     COPY_FROM_GPU(nbNodesExchanged, nbExchangedNodes, uint32_t);

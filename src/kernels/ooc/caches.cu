@@ -298,8 +298,9 @@ void kernel_prepare_store_part_2_resetting_children(){
 
 
 
-__device__
-void packNodes(){
+/// Run on a single thread
+extern "C" __global__
+void kernel_prepare_store_part_3_pack_nodes(){
     // Better packing strategy with children close to parents
     uint32_t nb_nodes = 0;
     uint32_t begin = 0;
@@ -341,7 +342,7 @@ void packNodes(){
 
 /// Run on "MaxActiveBlocksPerMultiprocessor" cooperative blocks of size "Max block size"
 extern "C" __global__
-void kernel_prepare_store_part_3_updating_levels(){
+void kernel_prepare_store_part_4_updating_levels(){
     auto grid = cg::this_grid();
     auto block = cg::this_thread_block();
     uint32_t nb_blocks = grid.num_blocks();
@@ -357,9 +358,6 @@ void kernel_prepare_store_part_3_updating_levels(){
     // if(is_first){
     //     printf("kernel_prepare_store_part_3_updating_levels\n");
     // }
-    
-    if(is_first){packNodes();}
-    grid.sync();
 
     for(uint32_t node_index = first_point; node_index < globalVariables.curNbNodes; node_index += step){
         // Reset the correct node levels
