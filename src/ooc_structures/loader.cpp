@@ -28,11 +28,13 @@ void initLoadPointBatches(string file,
 		return;
 	}
 	laszip_BOOL is_compressed = 0;
-	if(laszip_open_reader(laszip_reader, file.c_str(), &is_compressed)){
-		println("ERROR: opening laszip reader for '{}'", file);
-		laszip_destroy(laszip_reader);
-		return;
-	}
+	{
+        std::lock_guard<std::mutex> lock(LoaderGpuVersion::laszipReaderMtx);
+        if(laszip_open_reader(laszip_reader, file.c_str(), &is_compressed)){
+            laszip_destroy(laszip_reader);
+            return;
+        }
+    }
 	laszip_header* header;
 	if(laszip_get_header_pointer(laszip_reader, &header)){
 		println("ERROR: getting laszip header pointer for '{}'", file);
@@ -48,7 +50,13 @@ void initLoadPointBatches(string file,
 
 	for(uint64_t first_point = 0; first_point < num_points; first_point += OocSimLodSettings::MAX_POINTS_PER_BATCHES){
 
-		uint32_t free_index = 0;
+		std::shared_ptr<PointBatch> new_batch = std::make_shared<PointBatch>();
+		new_batch->file = shared_file;
+		new_batch->header = shared_header;
+		new_batch->first = first_point;
+		new_batch->count = std::min(num_points - first_point, uint64_t(OocSimLodSettings::MAX_POINTS_PER_BATCHES));
+		new_batch->state = BatchState::ToLoad;
+
 		// Find the index where to put the new batch
 		// If no space is free on the queue, wait until space is found
 		while(true){
@@ -56,7 +64,7 @@ void initLoadPointBatches(string file,
 			for(uint32_t i=0; i<OocSimLodSettings::BATCHES_LIST_SIZE; i++){
 				std::lock_guard<std::mutex> lock(batches_queue_mutexes[i]);
 				if(batches_queue[i]){continue;}
-				free_index = i;
+				batches_queue[i] = new_batch;
 				found = true;
 				break;
 			}
@@ -72,16 +80,6 @@ void initLoadPointBatches(string file,
 				std::this_thread::sleep_for(std::chrono::milliseconds(1));
 			}
 		}
-
-		std::shared_ptr<PointBatch> new_batch = std::make_shared<PointBatch>();
-		new_batch->file = shared_file;
-		new_batch->header = shared_header;
-		new_batch->first = first_point;
-		new_batch->count = std::min(num_points - first_point, uint64_t(OocSimLodSettings::MAX_POINTS_PER_BATCHES));
-		new_batch->state = BatchState::ToLoad;
-	
-		std::lock_guard<std::mutex> lock(batches_queue_mutexes[free_index]);
-		batches_queue[free_index] = new_batch;
 	}
 
     timing->stop_clock();
@@ -127,9 +125,12 @@ void loadPointsInBatches(
 			return;
 		}
 		laszip_BOOL is_compressed = 0;
-		if(laszip_open_reader(laszip_reader, (*batch->file).c_str(), &is_compressed)){
-			laszip_destroy(laszip_reader);
-			return;
+		{
+			std::lock_guard<std::mutex> lock(LoaderGpuVersion::laszipReaderMtx);
+			if(laszip_open_reader(laszip_reader, (*batch->file).c_str(), &is_compressed)){
+				laszip_destroy(laszip_reader);
+				return;
+			}
 		}
 		laszip_point* laz_point;
 		if(laszip_get_point_pointer(laszip_reader, &laz_point)){

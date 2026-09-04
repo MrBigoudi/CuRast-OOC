@@ -47,6 +47,8 @@ struct LoaderGpuVersion {
     static inline std::deque<std::shared_ptr<PointBatch>> batchesQueue = {};
 	static inline std::deque<std::mutex> batchesQueueMutexes = {};
 
+    static inline std::mutex laszipReaderMtx;
+
     static inline std::vector<uint32_t> batchesOnGpu = {};
     static inline void* batchesOnGpuStatus = nullptr;
 
@@ -62,6 +64,7 @@ struct LoaderGpuVersion {
         }
     };
     static inline std::vector<uint64_t> loadingAttributesIndices = {0};
+
 
     static void createNewBatches(string file);
     static bool run(CuRast* editor, CUcontext* context);
