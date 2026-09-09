@@ -1180,6 +1180,7 @@ void GpuVersion::updateHostCache(){
 
     CURuntime::assertCudaSuccess(cuEventSynchronize(eventStoringComplete));
     CURuntime::assertCudaSuccess(cuEventSynchronize(eventVisibilityUpdateComplete));
+    if(nodes_to_store.empty()){return;}
 
     if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
         updateHostCacheComplete = new std::thread([nodes_to_store = std::move(nodes_to_store)]() mutable {
@@ -1192,9 +1193,11 @@ void GpuVersion::updateHostCache(){
             std::for_each(nodes_to_store.begin(), nodes_to_store.end(),
                 [](std::shared_ptr<HostStorageNode>& node){
                     HostStorageNode::points_allocator.deallocate(node->points);
-                    HostStorageNode::voxels_allocator.deallocate(node->voxels);
-                    HostStorageNode::indices_allocator.deallocate(node->occupancy_indices);
                     node->points = nullptr;
+                    HostStorageNode::voxels_allocator.deallocate(node->voxels);
+                    node->voxels = nullptr;
+                    HostStorageNode::indices_allocator.deallocate(node->occupancy_indices);
+                    node->occupancy_indices = nullptr;
                 }
             );
         });
@@ -1253,6 +1256,7 @@ void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
         if(updateHostCacheComplete){
             updateHostCacheComplete->join();
             delete(updateHostCacheComplete);
+            updateHostCacheComplete = nullptr;
         }
 
         octreeUpdateSimLOD(editor, context);
@@ -1276,6 +1280,7 @@ void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
         if(updateHostCacheComplete){
             updateHostCacheComplete->join();
             delete(updateHostCacheComplete);
+            updateHostCacheComplete = nullptr;
         }
     }
 
