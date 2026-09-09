@@ -66,6 +66,184 @@ std::string getChunkFilePathV2(const CIdAABB& aabb_index, bool is_voxel){
 
 
 
+void OctreeNodeSerializable::serializeV2(const std::shared_ptr<HostStorageNode> node){
+    // Store node
+    {
+        std::string node_filepath = getNodeFilePathV2(node->node.aabb_index);
+        std::ofstream file(node_filepath, std::ios::binary | std::ios::trunc);
+        if(!file.is_open()){
+            println("Failed to open the file {} to serialize an octree node", node_filepath);
+            if(!GlobalVariables::mainLoopIsTerminating){
+                throw(EXIT_FAILURE);
+            }
+        }
+        file.write(reinterpret_cast<const char*>(&node->node.aabb_index), sizeof(CIdAABB));
+        file.write(reinterpret_cast<const char*>(&node->node.children_ids), sizeof(uint32_t));
+        file.write(reinterpret_cast<const char*>(&node->node.points_counter), sizeof(uint32_t));
+        file.write(reinterpret_cast<const char*>(&node->node.voxels_counter), sizeof(uint32_t));
+        file.close();
+    }
+
+    // Store points
+    if(node->node.points_counter > 0){
+        std::string points_filepath = getChunkFilePathV2(node->node.aabb_index, false);
+        uint32_t nb_old_points = node->node.points_last_stored;
+        uint32_t nb_new_points = node->node.points_counter - nb_old_points;
+        // ChunkSerializable::serializeV2(points_filepath, node->points.data(), 
+        ChunkSerializable::serializeV2(points_filepath, node->points,
+            nb_old_points, nb_new_points
+        );
+    }
+
+    // Store voxels
+    if(node->node.voxels_counter > 0){
+        std::string voxels_filepath = getChunkFilePathV2(node->node.aabb_index, true);
+        std::string grid_filepath = getOccupancyFilePathV2(node->node.aabb_index);
+
+        uint32_t nb_old_voxels = node->node.voxels_last_stored;
+        uint32_t nb_new_voxels = node->node.voxels_counter - nb_old_voxels;
+        ChunkSerializable::serializeV2(voxels_filepath, node->voxels.data(), 
+            nb_old_voxels, nb_new_voxels
+        );
+        OccupancyGridSerializable::serializeV2(grid_filepath, node->occupancy_indices, 
+            nb_old_voxels, nb_new_voxels
+        );
+    }
+}
+
+/// A constructor which is deserialized from an aabb
+void OctreeNodeSerializable::deserializeV2(HostStorageNode* node, const CIdAABB& aabb_index, const std::string& msg){
+    node->node.aabb_index = aabb_index;
+    
+    // Read node
+    {
+        std::string node_filepath = getNodeFilePathV2(node->node.aabb_index);
+        std::ifstream file(node_filepath, std::ios::binary);
+        if(!file.is_open()){
+            println("Failed to open the file {} to deserialize an octree node: {}", node_filepath, msg);
+            if(!GlobalVariables::mainLoopIsTerminating){
+                throw(EXIT_FAILURE);
+            }
+        }
+        file.read(reinterpret_cast<char*>(&node->node.aabb_index), sizeof(CIdAABB));
+        file.read(reinterpret_cast<char*>(&node->node.children_ids), sizeof(uint32_t));
+        file.read(reinterpret_cast<char*>(&node->node.points_counter), sizeof(uint32_t));
+        file.read(reinterpret_cast<char*>(&node->node.voxels_counter), sizeof(uint32_t));
+        file.close();
+    }
+    node->node.points_last_stored = node->node.points_counter;
+    node->node.voxels_last_stored = node->node.voxels_counter;
+
+
+    // Read points
+    if(node->node.points_counter > 0){
+        // node->points = std::vector<CPoint>(node->node.points_counter);
+        std::string points_filepath = getChunkFilePathV2(node->node.aabb_index, false);
+        // ChunkSerializable::deserializeV2(points_filepath, node->points.data(), node->node.points_counter);
+        ChunkSerializable::deserializeV2(points_filepath, node->points, node->node.points_counter);
+    }
+
+    // Read voxels
+    if(node->node.voxels_counter > 0){
+        node->voxels = std::vector<CPoint>(node->node.voxels_counter);
+        node->occupancy_indices = std::vector<uint64_t>(node->node.voxels_counter);
+        std::string voxels_filepath = getChunkFilePathV2(node->node.aabb_index, true);
+        std::string grid_filepath = getOccupancyFilePathV2(node->node.aabb_index);
+        ChunkSerializable::deserializeV2(voxels_filepath, node->voxels.data(), node->node.voxels_counter);
+        OccupancyGridSerializable::deserializeV2(grid_filepath, node->occupancy_indices, node->node.voxels_counter);
+    }
+}
+
+void ChunkSerializable::serializeV2(
+    const std::string& filepath, const CPoint* points, 
+    uint32_t nb_old_points, uint32_t nb_new_points
+){
+    ofstream file(filepath, ios::binary | std::ios::app);
+    if(!file.is_open()){
+        println("Failed to open the file {} to serialize a chunk", filepath);
+        if(!GlobalVariables::mainLoopIsTerminating){
+            throw(EXIT_FAILURE);
+        }
+    }
+
+    file.write(
+        reinterpret_cast<const char*>(points + nb_old_points),
+        nb_new_points * sizeof(CPoint)
+    );
+
+    file.close();
+}
+
+void ChunkSerializable::deserializeV2(
+    const std::string& filepath, CPoint* points, 
+    uint32_t nb_points
+){
+    ifstream file(filepath, ios::binary);
+    if(!file.is_open()){
+        println("Failed to open the file {} to deserialize a chunk", filepath);
+        if(!GlobalVariables::mainLoopIsTerminating){
+            throw(EXIT_FAILURE);
+        }
+    }
+
+    file.read(
+        reinterpret_cast<char*>(points),
+        nb_points * sizeof(CPoint)
+    );
+    
+    file.close();
+}
+
+void OccupancyGridSerializable::serializeV2(
+    const std::string& filepath, const std::vector<uint64_t>& indices, 
+    uint32_t nb_old_voxels, uint32_t nb_new_voxels
+){
+    ofstream file(filepath, ios::binary | std::ios::app);
+    if(!file.is_open()){
+        println("Failed to open the file {} to serialize a grid", filepath);
+        if(!GlobalVariables::mainLoopIsTerminating){
+            throw(EXIT_FAILURE);
+        }
+    }
+
+    file.write(
+        reinterpret_cast<const char*>(indices.data() + nb_old_voxels),
+        nb_new_voxels * sizeof(uint64_t)
+    );
+
+    file.close();
+}
+
+
+void OccupancyGridSerializable::deserializeV2(
+    const std::string& filepath, std::vector<uint64_t>& indices, 
+    uint32_t nb_voxels
+){
+    ifstream file(filepath, ios::binary);
+    if(!file.is_open()){
+        println("Failed to open the file {} to deserialize a grid", filepath);
+        if(!GlobalVariables::mainLoopIsTerminating){
+            throw(EXIT_FAILURE);
+        }
+    }
+
+    file.read(
+        reinterpret_cast<char*>(indices.data()),
+        nb_voxels * sizeof(uint64_t)
+    );
+    
+    file.close();
+}
+
+
+
+
+
+
+
+
+
+
 
 /// A constructor from an existing node
 CPUFallbackCache::Entry::Entry(const OctreeNode* node){
@@ -247,86 +425,7 @@ void ChunkSerializable::serialize(const std::string& filepath) const {
     file.close();
 }
 
-void ChunkSerializable::serializeV2(
-    const std::string& filepath, const CPoint* points, 
-    uint32_t nb_old_points, uint32_t nb_new_points
-){
-    ofstream file(filepath, ios::binary | std::ios::app);
-    if(!file.is_open()){
-        println("Failed to open the file {} to serialize a chunk", filepath);
-        if(!GlobalVariables::mainLoopIsTerminating){
-            throw(EXIT_FAILURE);
-        }
-    }
 
-    file.write(
-        reinterpret_cast<const char*>(points + nb_old_points),
-        nb_new_points * sizeof(CPoint)
-    );
-
-    file.close();
-}
-
-void ChunkSerializable::deserializeV2(
-    const std::string& filepath, CPoint* points, 
-    uint32_t nb_points
-){
-    ifstream file(filepath, ios::binary);
-    if(!file.is_open()){
-        println("Failed to open the file {} to deserialize a chunk", filepath);
-        if(!GlobalVariables::mainLoopIsTerminating){
-            throw(EXIT_FAILURE);
-        }
-    }
-
-    file.read(
-        reinterpret_cast<char*>(points),
-        nb_points * sizeof(CPoint)
-    );
-    
-    file.close();
-}
-
-void OccupancyGridSerializable::serializeV2(
-    const std::string& filepath, const std::vector<uint64_t>& indices, 
-    uint32_t nb_old_voxels, uint32_t nb_new_voxels
-){
-    ofstream file(filepath, ios::binary | std::ios::app);
-    if(!file.is_open()){
-        println("Failed to open the file {} to serialize a grid", filepath);
-        if(!GlobalVariables::mainLoopIsTerminating){
-            throw(EXIT_FAILURE);
-        }
-    }
-
-    file.write(
-        reinterpret_cast<const char*>(indices.data() + nb_old_voxels),
-        nb_new_voxels * sizeof(uint64_t)
-    );
-
-    file.close();
-}
-
-
-void OccupancyGridSerializable::deserializeV2(
-    const std::string& filepath, std::vector<uint64_t>& indices, 
-    uint32_t nb_voxels
-){
-    ifstream file(filepath, ios::binary);
-    if(!file.is_open()){
-        println("Failed to open the file {} to deserialize a grid", filepath);
-        if(!GlobalVariables::mainLoopIsTerminating){
-            throw(EXIT_FAILURE);
-        }
-    }
-
-    file.read(
-        reinterpret_cast<char*>(indices.data()),
-        nb_voxels * sizeof(uint64_t)
-    );
-    
-    file.close();
-}
 
 
 ChunkSerializable ChunkSerializable::deserialize(const std::string& filepath){
@@ -433,93 +532,7 @@ void OctreeNodeSerializable::serialize(const OctreeNode* node){
     stored_node.serialize(getNodeFilePath(aabb));
 }
 
-void OctreeNodeSerializable::serializeV2(const std::shared_ptr<HostStorageNode> node){
-    // Store node
-    {
-        std::string node_filepath = getNodeFilePathV2(node->node.aabb_index);
-        std::ofstream file(node_filepath, std::ios::binary | std::ios::trunc);
-        if(!file.is_open()){
-            println("Failed to open the file {} to serialize an octree node", node_filepath);
-            if(!GlobalVariables::mainLoopIsTerminating){
-                throw(EXIT_FAILURE);
-            }
-        }
-        file.write(reinterpret_cast<const char*>(&node->node.aabb_index), sizeof(CIdAABB));
-        file.write(reinterpret_cast<const char*>(&node->node.children_ids), sizeof(uint32_t));
-        file.write(reinterpret_cast<const char*>(&node->node.points_counter), sizeof(uint32_t));
-        file.write(reinterpret_cast<const char*>(&node->node.voxels_counter), sizeof(uint32_t));
-        file.close();
-    }
 
-    // Store points
-    if(node->node.points_counter > 0){
-        std::string points_filepath = getChunkFilePathV2(node->node.aabb_index, false);
-        uint32_t nb_old_points = node->node.points_last_stored;
-        uint32_t nb_new_points = node->node.points_counter - nb_old_points;
-        // ChunkSerializable::serializeV2(points_filepath, node->points.data(), 
-        ChunkSerializable::serializeV2(points_filepath, node->points,
-            nb_old_points, nb_new_points
-        );
-    }
-
-    // Store voxels
-    if(node->node.voxels_counter > 0){
-        std::string voxels_filepath = getChunkFilePathV2(node->node.aabb_index, true);
-        std::string grid_filepath = getOccupancyFilePathV2(node->node.aabb_index);
-
-        uint32_t nb_old_voxels = node->node.voxels_last_stored;
-        uint32_t nb_new_voxels = node->node.voxels_counter - nb_old_voxels;
-        ChunkSerializable::serializeV2(voxels_filepath, node->voxels.data(), 
-            nb_old_voxels, nb_new_voxels
-        );
-        OccupancyGridSerializable::serializeV2(grid_filepath, node->occupancy_indices, 
-            nb_old_voxels, nb_new_voxels
-        );
-    }
-}
-
-/// A constructor which is deserialized from an aabb
-void OctreeNodeSerializable::deserializeV2(HostStorageNode* node, const CIdAABB& aabb_index, const std::string& msg){
-    node->node.aabb_index = aabb_index;
-    
-    // Read node
-    {
-        std::string node_filepath = getNodeFilePathV2(node->node.aabb_index);
-        std::ifstream file(node_filepath, std::ios::binary);
-        if(!file.is_open()){
-            println("Failed to open the file {} to deserialize an octree node: {}", node_filepath, msg);
-            if(!GlobalVariables::mainLoopIsTerminating){
-                throw(EXIT_FAILURE);
-            }
-        }
-        file.read(reinterpret_cast<char*>(&node->node.aabb_index), sizeof(CIdAABB));
-        file.read(reinterpret_cast<char*>(&node->node.children_ids), sizeof(uint32_t));
-        file.read(reinterpret_cast<char*>(&node->node.points_counter), sizeof(uint32_t));
-        file.read(reinterpret_cast<char*>(&node->node.voxels_counter), sizeof(uint32_t));
-        file.close();
-    }
-    node->node.points_last_stored = node->node.points_counter;
-    node->node.voxels_last_stored = node->node.voxels_counter;
-
-
-    // Read points
-    if(node->node.points_counter > 0){
-        // node->points = std::vector<CPoint>(node->node.points_counter);
-        std::string points_filepath = getChunkFilePathV2(node->node.aabb_index, false);
-        // ChunkSerializable::deserializeV2(points_filepath, node->points.data(), node->node.points_counter);
-        ChunkSerializable::deserializeV2(points_filepath, node->points, node->node.points_counter);
-    }
-
-    // Read voxels
-    if(node->node.voxels_counter > 0){
-        node->voxels = std::vector<CPoint>(node->node.voxels_counter);
-        node->occupancy_indices = std::vector<uint64_t>(node->node.voxels_counter);
-        std::string voxels_filepath = getChunkFilePathV2(node->node.aabb_index, true);
-        std::string grid_filepath = getOccupancyFilePathV2(node->node.aabb_index);
-        ChunkSerializable::deserializeV2(voxels_filepath, node->voxels.data(), node->node.voxels_counter);
-        OccupancyGridSerializable::deserializeV2(grid_filepath, node->occupancy_indices, node->node.voxels_counter);
-    }
-}
 
 
 

@@ -39,6 +39,7 @@ void updateNodePosition(NodePosition& position);
 enum BatchState {
 	Empty,
 	ToLoad,
+	Loading,
 	Loaded,
 	Sent,
 	Inserted,

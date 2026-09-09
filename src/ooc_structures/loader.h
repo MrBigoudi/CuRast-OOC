@@ -48,6 +48,8 @@ struct LoaderGpuVersion {
 	static inline std::deque<std::mutex> batchesQueueMutexes = {};
 
     static inline std::mutex laszipReaderMtx;
+    static inline std::unordered_map<std::string, std::mutex> perFileMutexes;
+    static inline std::mutex perFileMutexesMtx;
 
     static inline std::vector<uint32_t> batchesOnGpu = {};
     static inline void* batchesOnGpuStatus = nullptr;
@@ -65,6 +67,11 @@ struct LoaderGpuVersion {
     };
     static inline std::vector<uint64_t> loadingAttributesIndices = {0};
 
+    static inline std::deque<std::shared_ptr<PointBatch>> batchesToEnqueue = {};
+    static inline std::mutex batchesToEnqueueMtx;
+
+    static inline std::mutex loadedBatchesMtx;
+    static inline std::vector<std::pair<uint32_t, std::shared_ptr<PointBatch>>> loadedBatches;
 
     static void createNewBatches(string file);
     static bool run(CuRast* editor, CUcontext* context);
@@ -75,4 +82,5 @@ struct LoaderGpuVersion {
     static bool sendToDevice();
 
     static void loadingRoutine();
+    static void enqueueBatches();
 };
