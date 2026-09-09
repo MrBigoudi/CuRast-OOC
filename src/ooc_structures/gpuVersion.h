@@ -7,38 +7,7 @@
 #include <list>
 
 struct LoaderGpuVersion;
-
-struct PointsAllocator {
-    static inline std::unordered_set<CPoint*> free_points = {};
-    static inline std::unordered_set<CPoint*> used_points = {};
-    static CPoint* allocate() {
-        for(CPoint* points : free_points){
-            used_points.insert(points);
-            free_points.erase(points);
-            return points;
-        }
-        printf("ERROR: no more point list can be created\n");
-        throw(EXIT_FAILURE);
-    }
-    static void deallocate(CPoint* points) {
-        used_points.erase(points);
-        free_points.insert(points);
-    }
-    static void init();
-    static void destroy();
-};
-
-
-struct HostStorageNode {
-	COctreeNode node = {};
-	CPoint* points = nullptr;
-	std::vector<CPoint> voxels = {};
-    std::vector<uint64_t> occupancy_indices = {};
-
-    HostStorageNode() {
-        points = PointsAllocator::allocate();
-    }
-};
+struct HostStorageNode;
 
 /// The LRU caches for the nodes
 /// https://www.geeksforgeeks.org/dsa/lru-cache-implementation-using-double-linked-lists/ + ChatGPT
@@ -556,4 +525,67 @@ struct GpuVersion {
 
             return reinterpret_cast<CAllocatorPool<T>*>(allocator_ptr);
         };
+};
+
+
+
+
+
+template <typename T>
+struct PinnedMemoryAllocator {
+    std::unordered_set<T*> free_data = {};
+    std::unordered_set<T*> used_data = {};
+    T* allocate() {
+        for(T* data : free_data){
+            used_data.insert(data);
+            free_data.erase(data);
+            return data;
+        }
+        printf("ERROR: no more point list can be created\n");
+        throw(EXIT_FAILURE);
+    }
+    void deallocate(T* data) {
+        used_data.erase(data);
+        free_data.insert(data);
+    }
+    void init(uint32_t node_count, uint32_t data_count) {
+        for(uint32_t i = 0; i < node_count; i++){
+            T* allocable = (T*)GpuVersion::allocHost<T>(data_count);
+            free_data.insert(allocable);
+        }
+    }
+    void destroy(){
+        for(T* data : free_data){
+            CURuntime::assertCudaSuccess(cuMemFreeHost(data));
+        }
+        for(T* data : used_data){
+            CURuntime::assertCudaSuccess(cuMemFreeHost(data));
+        }
+    }
+};
+
+
+struct HostStorageNode {
+	COctreeNode node = {};
+	CPoint* points = nullptr;
+	CPoint* voxels = {};
+    uint64_t* occupancy_indices = {};
+
+    static inline PinnedMemoryAllocator<CPoint> points_allocator = {};
+    static inline PinnedMemoryAllocator<CPoint> voxels_allocator = {};
+    static inline PinnedMemoryAllocator<uint64_t> indices_allocator = {};
+
+    static void init();
+
+    static void destroy(){
+        points_allocator.destroy();
+        voxels_allocator.destroy();
+        indices_allocator.destroy();
+    }
+
+    HostStorageNode() {
+        points = points_allocator.allocate();
+        voxels = voxels_allocator.allocate();
+        occupancy_indices = indices_allocator.allocate();
+    }
 };

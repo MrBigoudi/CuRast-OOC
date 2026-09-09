@@ -102,7 +102,7 @@ void OctreeNodeSerializable::serializeV2(const std::shared_ptr<HostStorageNode> 
 
         uint32_t nb_old_voxels = node->node.voxels_last_stored;
         uint32_t nb_new_voxels = node->node.voxels_counter - nb_old_voxels;
-        ChunkSerializable::serializeV2(voxels_filepath, node->voxels.data(), 
+        ChunkSerializable::serializeV2(voxels_filepath, node->voxels, 
             nb_old_voxels, nb_new_voxels
         );
         OccupancyGridSerializable::serializeV2(grid_filepath, node->occupancy_indices, 
@@ -145,11 +145,9 @@ void OctreeNodeSerializable::deserializeV2(HostStorageNode* node, const CIdAABB&
 
     // Read voxels
     if(node->node.voxels_counter > 0){
-        node->voxels = std::vector<CPoint>(node->node.voxels_counter);
-        node->occupancy_indices = std::vector<uint64_t>(node->node.voxels_counter);
         std::string voxels_filepath = getChunkFilePathV2(node->node.aabb_index, true);
         std::string grid_filepath = getOccupancyFilePathV2(node->node.aabb_index);
-        ChunkSerializable::deserializeV2(voxels_filepath, node->voxels.data(), node->node.voxels_counter);
+        ChunkSerializable::deserializeV2(voxels_filepath, node->voxels, node->node.voxels_counter);
         OccupancyGridSerializable::deserializeV2(grid_filepath, node->occupancy_indices, node->node.voxels_counter);
     }
 }
@@ -195,7 +193,7 @@ void ChunkSerializable::deserializeV2(
 }
 
 void OccupancyGridSerializable::serializeV2(
-    const std::string& filepath, const std::vector<uint64_t>& indices, 
+    const std::string& filepath, const uint64_t* indices, 
     uint32_t nb_old_voxels, uint32_t nb_new_voxels
 ){
     ofstream file(filepath, ios::binary | std::ios::app);
@@ -207,7 +205,7 @@ void OccupancyGridSerializable::serializeV2(
     }
 
     file.write(
-        reinterpret_cast<const char*>(indices.data() + nb_old_voxels),
+        reinterpret_cast<const char*>(indices + nb_old_voxels),
         nb_new_voxels * sizeof(uint64_t)
     );
 
@@ -216,7 +214,7 @@ void OccupancyGridSerializable::serializeV2(
 
 
 void OccupancyGridSerializable::deserializeV2(
-    const std::string& filepath, std::vector<uint64_t>& indices, 
+    const std::string& filepath, uint64_t* indices, 
     uint32_t nb_voxels
 ){
     ifstream file(filepath, ios::binary);
@@ -228,7 +226,7 @@ void OccupancyGridSerializable::deserializeV2(
     }
 
     file.read(
-        reinterpret_cast<char*>(indices.data()),
+        reinterpret_cast<char*>(indices),
         nb_voxels * sizeof(uint64_t)
     );
     

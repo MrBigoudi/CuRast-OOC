@@ -229,16 +229,16 @@ void kernel_prepare_store_part_1_filling_buffers(){
 
             __syncthreads(); // Needed to sync before deletion
             if(thread_id == 0){
+                // UI values
+                __nv_atomic_add(&globalVariables.nbStoredNodesThisUpdate, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+                __nv_atomic_add(&globalVariables.nbTotalStoredNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+                __nv_atomic_sub(&globalVariables.currentNbPoints, node->points_stored, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+                __nv_atomic_sub(&globalVariables.currentNbVoxels, node->voxels_counter, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+
                 // TODO: slow, refactor to let each thread delete a chunk
                 // Deleting the node
                 globalAllocator.delOctreeNode(node, true);
                 globalVariables.packedNodes[node_index] = nullptr;
-
-                // UI values
-                __nv_atomic_add(&globalVariables.nbStoredNodesThisUpdate, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-                __nv_atomic_add(&globalVariables.nbTotalStoredNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-                __nv_atomic_sub(&globalVariables.currentNbPoints, node->points_counter, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-                __nv_atomic_sub(&globalVariables.currentNbVoxels, node->voxels_counter, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
             }
             __syncthreads(); // Needed to sync after deletion
 

@@ -129,7 +129,12 @@ void loadPointsInBatches(
 		std::mutex* file_mutex = nullptr;
 		{
 			std::lock_guard<std::mutex> lock(LoaderGpuVersion::perFileMutexesMtx);
-			file_mutex = &LoaderGpuVersion::perFileMutexes[*batch->file];
+			auto it = LoaderGpuVersion::perFileMutexes.find(*batch->file);
+			if(it == LoaderGpuVersion::perFileMutexes.end()){
+				printf("ERROR: no file mutex for '%s' — was createNewBatches called?\n", batch->file->c_str());
+				throw(EXIT_FAILURE);
+			}
+			file_mutex = &it->second;
 		}
 
 		laszip_POINTER laszip_reader;
@@ -564,6 +569,11 @@ void LoaderGpuVersion::createNewBatches(std::string file){
 	}
 	std::shared_ptr<laszip_header> shared_header = std::make_shared<laszip_header>(*header);
 	std::shared_ptr<string> shared_file = std::make_shared<string>(file);
+
+	{
+		std::lock_guard<std::mutex> lock(perFileMutexesMtx);
+		perFileMutexes.try_emplace(*shared_file);
+	}
 
 	// Create batches
 	uint64_t num_points = header->number_of_point_records ? header->number_of_point_records : header->extended_number_of_point_records;

@@ -43,11 +43,11 @@ struct ChunkSerializable {
 
 struct OccupancyGridSerializable {
     static void serializeV2(
-        const std::string& filepath, const std::vector<uint64_t>& indices, 
+        const std::string& filepath, const uint64_t* indices, 
         uint32_t nb_old_voxels, uint32_t nb_new_voxels
     );
     static void deserializeV2(
-        const std::string& filepath, std::vector<uint64_t>& indices, 
+        const std::string& filepath, uint64_t* indices, 
         uint32_t nb_voxels
     );
 };

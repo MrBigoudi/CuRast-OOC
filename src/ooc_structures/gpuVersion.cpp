@@ -3,25 +3,17 @@
 #include "loader.h"
 #include "outOfCore.h"
 
-
-void PointsAllocator::init() {
-    uint32_t allocable = OocSimLodSettings::LRU_CPU_CACHE_SIZE // Cache size
+void HostStorageNode::init(){
+    uint32_t node_count = OocSimLodSettings::LRU_CPU_CACHE_SIZE // Cache size
         + OocSimLodSettings::MAX_NB_NODES_TO_EXCHANGE    // Current update loaded node points
         + OocSimLodSettings::MAX_NB_NODES_TO_EXCHANGE    // Current update stored node points
         + OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE   // Current update rendered points
     ;
-    for(uint32_t i = 0; i < allocable; i++){
-        CPoint* allocable = (CPoint*)GpuVersion::allocHost<CPoint>(OocSimLodSettings::MAX_POINTS_PER_LEAF);
-        free_points.insert(allocable);
-    }
-}
-void PointsAllocator::destroy() {
-    for(CPoint* points : free_points){
-        CURuntime::assertCudaSuccess(cuMemFreeHost(points));
-    }
-    for(CPoint* points : used_points){
-        CURuntime::assertCudaSuccess(cuMemFreeHost(points));
-    }
+    uint32_t data_count = OocSimLodSettings::MAX_POINTS_PER_LEAF;
+
+    points_allocator.init(node_count, data_count);
+    voxels_allocator.init(node_count, data_count);
+    indices_allocator.init(node_count, data_count);
 }
 
 #ifndef COPY_FROM_GPU
@@ -145,7 +137,7 @@ void GpuVersion::initHostSide(CuRast* editor, CUcontext* context) {
 
 
     MAX_NB_VOXELS = hostStaging.maxNbVoxelsChunksPerExchangedNode * OocSimLodSettings::NB_POINTS_PER_CHUNK;
-    PointsAllocator::init();
+    HostStorageNode::init();
 }
 
 void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
@@ -364,7 +356,7 @@ void GpuVersion::destroy(CuRast *editor, CUcontext *context){
     CURuntime::assertCudaSuccess(cuEventDestroy(eventVisibilityUpdateComplete));
 
     LoaderGpuVersion::destroy();
-    PointsAllocator::destroy();
+    HostStorageNode::destroy();
 
     cudaDeviceSynchronize();
     CURuntime::assertCudaSuccess(cuStreamDestroy(stream));
@@ -560,7 +552,7 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
 
         // Send grids info
         if(cur_node->node.voxels_counter > 0){
-            srcs_host.push_back((CUdeviceptr)cur_node->occupancy_indices.data());
+            srcs_host.push_back((CUdeviceptr)cur_node->occupancy_indices);
             dsts_device.push_back(exchangedGridsPointers[i]);
             uint32_t nb_voxels = min(cur_node->node.voxels_counter, MAX_NB_VOXELS);
             if(nb_voxels != cur_node->node.voxels_counter){
@@ -904,17 +896,19 @@ void GpuVersion::storeNodes(uint32_t nb_nodes_to_store){
         // Prepare to load voxels and grids
         if(nbs_voxels[i] > 0){
             uint32_t old_counter = cur_node->node.voxels_counter;
-            cur_node->node.voxels_counter += nbs_voxels[i];
-            cur_node->voxels.resize(cur_node->node.voxels_counter);
-            cur_node->occupancy_indices.resize(cur_node->node.voxels_counter);
+            uint32_t new_counter = old_counter + nbs_voxels[i];
+            cur_node->node.voxels_counter = min(OocSimLodSettings::MAX_POINTS_PER_LEAF, new_counter);
+            uint32_t nb_voxels_to_load = cur_node->node.voxels_counter - old_counter;
 
-            srcs_device.push_back(exchangedVoxelsPointers[i]);
-            dsts_host.push_back((CUdeviceptr)(cur_node->voxels.data() + old_counter));
-            sizes.push_back(nbs_voxels[i] * sizeof(CPoint));
+            if(nb_voxels_to_load > 0){
+                srcs_device.push_back(exchangedVoxelsPointers[i]);
+                dsts_host.push_back((CUdeviceptr)(cur_node->voxels + old_counter));
+                sizes.push_back(nb_voxels_to_load * sizeof(CPoint));
 
-            srcs_device.push_back(exchangedGridsPointers[i]);
-            dsts_host.push_back((CUdeviceptr)(cur_node->occupancy_indices.data() + old_counter));
-            sizes.push_back(nbs_voxels[i] * sizeof(uint64_t));
+                srcs_device.push_back(exchangedGridsPointers[i]);
+                dsts_host.push_back((CUdeviceptr)(cur_node->occupancy_indices + old_counter));
+                sizes.push_back(nb_voxels_to_load * sizeof(uint64_t));
+            }
         }
     }
 
@@ -1118,7 +1112,7 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
             if(has_voxels){
                 uint32_t new_total_voxels = *voxel_cpt + node->node.voxels_counter;
                 uint32_t nb_new_voxels = node->node.voxels_counter;
-                srcs_host.push_back((CUdeviceptr)node->voxels.data());
+                srcs_host.push_back((CUdeviceptr)node->voxels);
                 dsts_device.push_back((CUdeviceptr)hostStaging.renderedVoxels + (CUdeviceptr)(*voxel_cpt * sizeof(CPoint)));
                 sizes.push_back(nb_new_voxels * sizeof(CPoint));
 
@@ -1197,7 +1191,9 @@ void GpuVersion::updateHostCache(){
             );
             std::for_each(nodes_to_store.begin(), nodes_to_store.end(),
                 [](std::shared_ptr<HostStorageNode>& node){
-                    PointsAllocator::deallocate(node->points);
+                    HostStorageNode::points_allocator.deallocate(node->points);
+                    HostStorageNode::voxels_allocator.deallocate(node->voxels);
+                    HostStorageNode::indices_allocator.deallocate(node->occupancy_indices);
                     node->points = nullptr;
                 }
             );
@@ -1211,7 +1207,9 @@ void GpuVersion::updateHostCache(){
         });
         // Deallocate old points
         std::for_each(nodes_to_store.begin(), nodes_to_store.end(), [](std::shared_ptr<HostStorageNode>& node){
-            PointsAllocator::deallocate(node->points);
+            HostStorageNode::points_allocator.deallocate(node->points);
+            HostStorageNode::voxels_allocator.deallocate(node->voxels);
+            HostStorageNode::indices_allocator.deallocate(node->occupancy_indices);
             node->points = nullptr;
         });
     }
