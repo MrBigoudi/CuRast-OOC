@@ -132,13 +132,13 @@ void GpuVersion::initHostSide(CuRast* editor, CUcontext* context) {
     exchangedPointsCounters = allocHost<uint32_t>(hostStaging.maxNbNodesExchanged);
     exchangedVoxelsCounters = allocHost<uint32_t>(hostStaging.maxNbNodesExchanged);
 
-    visibilityCache = allocHost<CIdAABB>(OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE);
+    visibilityCache = allocHost<CIdAABB>(hostStaging.visibilityCacheSize);
     voxelsNodesToSend = allocHost<CIdAABB>(hostStaging.maxNbRenderedVoxels);
     nbRenderedPoints = allocHost<uint32_t>(1);
     nbRenderedVoxels = allocHost<uint32_t>(1);
     nbRenderedNodes = allocHost<uint32_t>(1);
 
-    visibilityCache2 = allocHost<CIdAABB>(OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE);
+    visibilityCache2 = allocHost<CIdAABB>(hostStaging.visibilityCacheSize);
     voxelsNodesToSend2 = allocHost<CIdAABB>(hostStaging.maxNbRenderedVoxels);
     nbRenderedPoints2 = allocHost<uint32_t>(1);
     nbRenderedVoxels2 = allocHost<uint32_t>(1);
@@ -148,6 +148,9 @@ void GpuVersion::initHostSide(CuRast* editor, CUcontext* context) {
     MAX_NB_VOXELS = hostStaging.maxNbVoxelsChunksPerExchangedNode * OocSimLodSettings::NB_POINTS_PER_CHUNK;
     HostStorageNode::init();
     GpuVersionUI::init();
+
+    visibleNodes.resize(hostStaging.maxNbConcurrentNodes);
+    visibleNodesOrdered.resize(hostStaging.maxNbConcurrentNodes);
 }
 
 void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
@@ -1013,17 +1016,18 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
     vec3 camera_pos = vec3(glm::inverse(view) * vec4(0.0f, 0.0f, 0.0f, 1.0f));
 
     // Get all visible nodes and initialise their distances to the camera
-    std::vector<std::pair<CIdAABB, float>> visible_nodes = {};
+    uint32_t nb_visible_nodes = 0;
     for(const CIdAABB& id : storedNodes){
         const CAABB& aabb = aabbsMap[id];
         if(frustum.doesIntersect(aabb, camera_pos)){
             float dist = glm::length(aabb.getCentroid() - camera_pos);
-            visible_nodes.push_back({id, dist});
+            visibleNodes[nb_visible_nodes] = {id, dist};
+            nb_visible_nodes++;
         }
     }
 
     // Order the nodes with respect to the camera
-    std::sort(visible_nodes.begin(), visible_nodes.end(),
+    std::sort(visibleNodes.begin(), visibleNodes.begin() + nb_visible_nodes,
         [](const std::pair<CIdAABB, float>& lhs, const std::pair<CIdAABB, float>& rhs){
             return lhs.second < rhs.second; // From closest to furthest
         }
@@ -1033,23 +1037,22 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
     // From claude
     {
         std::unordered_map<CIdAABB, size_t> indexOf = {};
-        indexOf.reserve(visible_nodes.size());
-        for(size_t i = 0; i < visible_nodes.size(); i++){
-            indexOf[visible_nodes[i].first] = i;
+        indexOf.reserve(nb_visible_nodes);
+        for(size_t i = 0; i < nb_visible_nodes; i++){
+            indexOf[visibleNodes[i].first] = i;
         }
 
-        std::vector<std::pair<CIdAABB, float>> ordered = {};
-        ordered.reserve(visible_nodes.size());
-        std::vector<bool> placed(visible_nodes.size(), false);
+        std::vector<bool> placed(nb_visible_nodes, false);
+        uint32_t ordered_size = 0;
 
         std::vector<CIdAABB> ancestorChain; // scratch, reused per node
-        for(size_t i = 0; i < visible_nodes.size(); i++){
+        for(size_t i = 0; i < nb_visible_nodes; i++){
             if(placed[i]){continue;}
 
             // Climb from this node's parent upward, collecting ancestors
             // that are themselves in visible_nodes and not yet placed.
             ancestorChain.clear();
-            CIdAABB parent = parentsMap[visible_nodes[i].first];
+            CIdAABB parent = parentsMap[visibleNodes[i].first];
             while(parent != CINVALID_ID){
                 auto it = indexOf.find(parent);
                 if(it == indexOf.end()){break;} // parent isn't in the visible set, stop
@@ -1063,15 +1066,15 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
             // emit the outermost ancestor first, then down to the immediate parent.
             for(auto it = ancestorChain.rbegin(); it != ancestorChain.rend(); ++it){
                 size_t idx = indexOf[*it];
-                ordered.push_back(visible_nodes[idx]);
+                visibleNodesOrdered[ordered_size] = visibleNodes[idx].first;
+                ordered_size++;
                 placed[idx] = true;
             }
 
-            ordered.push_back(visible_nodes[i]);
+            visibleNodesOrdered[ordered_size] = visibleNodes[i].first;
+            ordered_size++;
             placed[i] = true;
         }
-
-        visible_nodes = std::move(ordered);
     }
 
 
@@ -1098,12 +1101,12 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
     };
 
 
-    uint32_t loop_end = min(uint32_t(visible_nodes.size()), OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE);
+    uint32_t loop_end = min(nb_visible_nodes, hostStaging.visibilityCacheSize);
 
     // Deserialise the LRU_VISIBILITY_CACHE closest nodes
     std::vector<CIdAABB> to_deserialise = {};
     for(uint32_t i=0; i < loop_end; i++){
-        const CIdAABB& id = visible_nodes[i].first;
+        const CIdAABB& id = visibleNodesOrdered[i];
         hostCache->add(id);
         if(!persistentStoredNodes.contains(id)){
             persistentStoredNodes[id] = std::make_shared<HostStorageNode>();
@@ -1123,8 +1126,7 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
 
     // Get the LRU_VISIBILTY_CACHE closest nodes
     for(uint32_t i = 0; i < loop_end; i++){
-        const std::pair<CIdAABB, float>& visible_node = visible_nodes[i];
-        CIdAABB cur_node = visible_node.first;
+        const CIdAABB& cur_node = visibleNodesOrdered[i];
         // if(currentlyInUpdatesCache.contains(cur_node)){continue;}
 
         hostCache->add(cur_node);
@@ -1133,11 +1135,11 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
         bool has_points = (node->node.points_counter > 0);
         bool has_voxels = (node->node.voxels_counter > 0);
         bool points_can_be_added =
-            // Only send if the maximum of voxels to send is not reached
+            // Only send if the maximum of points to send is not reached
             (*point_cpt < OocSimLodSettings::MAX_NB_RENDERED_POINTS)
             // Only send if has points
             && (node->node.points_counter > 0)
-            // Only send if all points are loaded
+            // Only send if all points can be loaded
             && (node->node.points_counter + *point_cpt <= OocSimLodSettings::MAX_NB_RENDERED_POINTS)
         ;
         bool voxels_can_be_added =
@@ -1145,7 +1147,7 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
             (*voxel_cpt < OocSimLodSettings::MAX_NB_RENDERED_VOXELS)
             // Only send if has voxels
             && (node->node.voxels_counter > 0)
-            // Only send if all voxels are loaded
+            // Only send if all voxels can be loaded
             && (node->node.voxels_counter + *voxel_cpt <= OocSimLodSettings::MAX_NB_RENDERED_VOXELS)
         ;
 
@@ -1181,7 +1183,7 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
         if(*point_cpt >= OocSimLodSettings::MAX_NB_RENDERED_POINTS && *voxel_cpt >= OocSimLodSettings::MAX_NB_RENDERED_VOXELS){
             break;
         }
-        if(*cpt >= OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE){
+        if(*cpt >= hostStaging.visibilityCacheSize){
             break;
         }
     }

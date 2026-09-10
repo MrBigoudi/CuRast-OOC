@@ -846,10 +846,12 @@ void kernel_draw_visibility_cache_v2(
         const CAABB& node_aabb = globalVariables.relationshipMap[node_id].aabb;
         const CNodePosition next_child_pos = node_aabb.getNextChildIndex(voxel.position);
         const CIdAABB& child_index = globalVariables.relationshipMap[node_id].children[next_child_pos];
-        if(child_index == CINVALID_ID){continue;}
+        // if(child_index == CINVALID_ID){continue;}
 
         // Only render the voxel if the corresponding child is not present
-        if(globalVariables.isInVisibilityCache(child_index)){continue;}
+        if((child_index != CINVALID_ID) && globalVariables.isInVisibilityCache(child_index)){
+            continue;
+        }
 
         drawPoint(target, voxel.position, settings.use_voxels_debug_color ? 0xffff00ff : voxel.color);
     }

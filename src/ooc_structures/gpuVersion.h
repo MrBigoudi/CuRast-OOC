@@ -216,6 +216,8 @@ struct GpuVersion {
     static inline std::unordered_set<CIdAABB> storedNodes = {}; 
     static inline std::unordered_set<CIdAABB> currentlyInUpdatesCache = {}; 
     static void visibilityUpdate(CuRast* editor, CUcontext* context);
+    static inline std::vector<std::pair<CIdAABB, float>> visibleNodes = {};
+    static inline std::vector<CIdAABB> visibleNodesOrdered = {};
 
     static inline std::vector<CUdeviceptr> exchangedPointsPointers = {};
 	static inline std::vector<CUdeviceptr> exchangedVoxelsPointers = {};
