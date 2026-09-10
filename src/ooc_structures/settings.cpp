@@ -135,7 +135,7 @@ void OocSimLodSettings::init_default(){
     MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE = 128;
     MAX_POINTS_PER_LEAF = 65'536;
     MAX_POINTS_PER_BATCHES = 1'048'576;
-    double fixed_memory = 1.25 * 1024 * 1024 * 1024;
+    double fixed_memory = 2. * 1024 * 1024 * 1024;
 
     double available_memory = (DEVICE_AVAILABLE_MEMORY * 0.9) - fixed_memory - sizeof(CGlobalVariables);
     

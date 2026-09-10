@@ -3,6 +3,7 @@
 /// Run on a single thread
 extern "C" __global__
 void kernel_bottom_up_update_part_0_flagging(){
+    globalVariables.isUpdating = false;
     for(uint32_t batch = 0; batch < globalVariables.maxNbBatches; batch++){
         if(globalVariables.batchesAddedMask[batch] == BatchHandled){continue;}
 #ifdef ASSERT_ENABLED

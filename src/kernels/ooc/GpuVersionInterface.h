@@ -751,16 +751,27 @@ struct CGlobalVariables {
 
 
 
-	/// The rendering budget
-	uint32_t nbRenderedPoints = 0;
+	///////////////////////////////////////////////////////////////////////
+    ////////////////////////////// RENDERING //////////////////////////////
+    ///////////////////////////////////////////////////////////////////////
 	uint32_t maxNbRenderedPoints = 0;
-	CPoint* renderedPoints = nullptr;
-	uint32_t nbRenderedVoxels = 0;
 	uint32_t maxNbRenderedVoxels = 0;
+	uint32_t nbRenderedPoints = 0;
+	uint32_t nbRenderedPoints2 = 0;
+	CPoint* renderedPoints = nullptr;
+	CPoint* renderedPoints2 = nullptr;
+	uint32_t nbRenderedVoxels = 0;
+	uint32_t nbRenderedVoxels2 = 0;
 	CPoint* renderedVoxels = nullptr;
-	// glm::vec3* renderedVoxelsSizes = nullptr;
-	// CNodePosition* renderedVoxelsNextChildIndex = nullptr;
+	CPoint* renderedVoxels2 = nullptr;
 	CIdAABB* renderedVoxelsNodes = nullptr;
+	CIdAABB* renderedVoxelsNodes2 = nullptr;
+	uint32_t visibilityCacheSize = 0;
+	uint32_t visibilityCacheCurrentSize = 0;
+	CIdAABB* visibilityCache = nullptr;
+	uint32_t visibilityCacheCurrentSize2 = 0;
+	CIdAABB* visibilityCache2 = nullptr;
+	bool isUsingSecondRenderingBuffer = false;
 
 
 
@@ -769,10 +780,6 @@ struct CGlobalVariables {
     ///////////////////////////////////////////////////////////////////////
     uint32_t updatesCacheSize = 0;
     CIdAABB* updatesCache = nullptr;
-	
-	uint32_t visibilityCacheSize = 0;
-	uint32_t visibilityCacheCurrentSize = 0;
-	CIdAABB* visibilityCache = nullptr;
 	
 
 

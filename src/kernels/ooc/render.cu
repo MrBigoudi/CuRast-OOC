@@ -461,9 +461,16 @@ void kernel_visibility_pass(
         }
     }
 
-    // Also flag the nodes from the visibility cache
-    for(uint32_t node_index = thread_id; node_index < globalVariables.visibilityCacheCurrentSize; node_index += nb_threads){
-        const CIdAABB& id = globalVariables.visibilityCache[node_index];
+    // Select the active visibility cache
+    CIdAABB* vis_cache = globalVariables.isUsingSecondRenderingBuffer
+        ? globalVariables.visibilityCache2
+        : globalVariables.visibilityCache;
+    uint32_t vis_cache_size = globalVariables.isUsingSecondRenderingBuffer
+        ? globalVariables.visibilityCacheCurrentSize2
+        : globalVariables.visibilityCacheCurrentSize;
+
+    for(uint32_t node_index = thread_id; node_index < vis_cache_size; node_index += nb_threads){
+        const CIdAABB& id = vis_cache[node_index];
         globalVariables.setFlag(id, CFlagIsInVisibilityCache);
     }
 }
@@ -811,19 +818,30 @@ void kernel_draw_visibility_cache_v2(
 
     if(settings.debug_lod_to_render != -1){return;}
 
+    // Select active buffer
+    CPoint* rendered_points = globalVariables.isUsingSecondRenderingBuffer
+        ? globalVariables.renderedPoints2 : globalVariables.renderedPoints;
+    uint32_t nb_points = globalVariables.isUsingSecondRenderingBuffer
+        ? globalVariables.nbRenderedPoints2 : globalVariables.nbRenderedPoints;
+    CPoint* rendered_voxels = globalVariables.isUsingSecondRenderingBuffer
+        ? globalVariables.renderedVoxels2 : globalVariables.renderedVoxels;
+    uint32_t nb_voxels = globalVariables.isUsingSecondRenderingBuffer
+        ? globalVariables.nbRenderedVoxels2 : globalVariables.nbRenderedVoxels;
+    CIdAABB* rendered_voxels_nodes = globalVariables.isUsingSecondRenderingBuffer
+        ? globalVariables.renderedVoxelsNodes2 : globalVariables.renderedVoxelsNodes;
+
     // Render points
-    for(uint32_t point_id = thread_id; point_id < globalVariables.nbRenderedPoints; point_id += nb_threads){
-        const CPoint& point = globalVariables.renderedPoints[point_id];
-        drawPoint(
-            target, point.position, 
+    for(uint32_t point_id = thread_id; point_id < nb_points; point_id += nb_threads){
+        const CPoint& point = rendered_points[point_id];
+        drawPoint(target, point.position,
             settings.use_voxels_debug_color ? 0xff00ffff : point.color
         );
     }
 
     // Render voxels
-    for(uint32_t voxel_id = thread_id; voxel_id < globalVariables.nbRenderedVoxels; voxel_id += nb_threads){
-        const CPoint& voxel = globalVariables.renderedVoxels[voxel_id];
-        const CIdAABB& node_id = globalVariables.renderedVoxelsNodes[voxel_id];
+    for(uint32_t voxel_id = thread_id; voxel_id < nb_voxels; voxel_id += nb_threads){
+        const CPoint& voxel = rendered_voxels[voxel_id];
+        const CIdAABB& node_id = rendered_voxels_nodes[voxel_id];
 
         const CAABB& node_aabb = globalVariables.relationshipMap[node_id].aabb;
         const CNodePosition next_child_pos = node_aabb.getNextChildIndex(voxel.position);
@@ -997,10 +1015,15 @@ void kernel_draw_octree_small_v2(
     }
 
     // Also unflag the nodes from the cache
+    CIdAABB* vis_cache = globalVariables.isUsingSecondRenderingBuffer
+        ? globalVariables.visibilityCache2 : globalVariables.visibilityCache;
+    uint32_t vis_cache_size = globalVariables.isUsingSecondRenderingBuffer
+        ? globalVariables.visibilityCacheCurrentSize2 : globalVariables.visibilityCacheCurrentSize;
+
     uint32_t first_point = block_id * nb_threads_per_block + thread_id;
     uint32_t step = nb_blocks * nb_threads_per_block;
-    for(uint32_t node_index = first_point; node_index < globalVariables.visibilityCacheCurrentSize; node_index += step){
-        const CIdAABB& id = globalVariables.visibilityCache[node_index];
+    for(uint32_t node_index = first_point; node_index < vis_cache_size; node_index += step){
+        const CIdAABB& id = vis_cache[node_index];
         globalVariables.unsetFlagSync(id, CFlagIsInVisibilityCache);
     }
 }
