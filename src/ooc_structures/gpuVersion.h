@@ -232,6 +232,8 @@ struct GpuVersion {
     static inline void* isInitialised = nullptr;
     static inline void* isUpdating = nullptr;
 
+    static inline bool isDoneUpdatingHostCache = true;
+
     static inline void* exchangedIds = nullptr;
     static inline void* exchangedParentsIds = nullptr;
     static inline void* exchangedChildrenIds = nullptr;

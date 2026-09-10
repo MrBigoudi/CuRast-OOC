@@ -1216,6 +1216,7 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
 
 
 void GpuVersion::updateHostCache(){
+    if(!isDoneUpdatingHostCache){return;}
     std::vector<std::shared_ptr<HostStorageNode>> nodes_to_store = {};
     for(auto it = persistentStoredNodes.begin(); it != persistentStoredNodes.end();){
         const CIdAABB& id = it->first;
@@ -1230,12 +1231,11 @@ void GpuVersion::updateHostCache(){
 
     CURuntime::assertCudaSuccess(cuEventSynchronize(eventStoringComplete));
     CURuntime::assertCudaSuccess(cuEventSynchronize(eventVisibilityUpdateComplete));
-    if(nodes_to_store.empty()){
-        return;
-    }
+    if(nodes_to_store.empty()){return;}
+    isDoneUpdatingHostCache = false;
 
     if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-        updateHostCacheComplete = new std::thread([nodes_to_store = std::move(nodes_to_store)]() mutable {
+        std::thread update_host_cache_thread([nodes_to_store = std::move(nodes_to_store)]() mutable {
             std::for_each(std::execution::par, nodes_to_store.begin(), nodes_to_store.end(),
                 [](std::shared_ptr<HostStorageNode>& node){
                     OctreeNodeSerializable::serializeV2(node);
@@ -1251,7 +1251,9 @@ void GpuVersion::updateHostCache(){
                     node->occupancy_indices = nullptr;
                 }
             );
+            isDoneUpdatingHostCache = true;
         });
+        update_host_cache_thread.detach();
     } else {
         std::for_each(nodes_to_store.begin(), nodes_to_store.end(), [](std::shared_ptr<HostStorageNode>& node){
             OctreeNodeSerializable::serializeV2(node);
@@ -1263,6 +1265,7 @@ void GpuVersion::updateHostCache(){
             HostStorageNode::indices_allocator.deallocate(node->occupancy_indices);
             node->points = nullptr;
         });
+        isDoneUpdatingHostCache = true;
     }
 
 }
@@ -1301,10 +1304,8 @@ void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
 
     // Wait for previous host cache clean
     // Must happen before the first deserialisation
-    if(updateHostCacheComplete){
-        updateHostCacheComplete->join();
-        delete(updateHostCacheComplete);
-        updateHostCacheComplete = nullptr;
+    if(!isDoneUpdatingHostCache){
+        return;
     }
     COPY_TO_GPU(isUsingSecondRenderingBuffer, &isUsingSecondRenderingBuffer, bool);
 
