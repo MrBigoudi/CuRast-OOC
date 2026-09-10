@@ -149,7 +149,45 @@ struct GpuVersionUI {
     static inline std::chrono::time_point<std::chrono::high_resolution_clock> lastUpdateStart;
     static inline std::chrono::time_point<std::chrono::high_resolution_clock> firstUpdateStart;
 
+    struct UIStats {
+        uint32_t nbTotalUpdates;
+        uint32_t curNbNodes;
+        uint32_t currentNbChunks;
+        uint32_t currentNbGrids;
+        uint32_t currentNbPoints;
+        uint32_t currentNbVoxels;
+        uint32_t nbTotalPoints;
+        uint32_t nbTotalVoxels;
+        uint32_t nbTotalNewNodes;
+        uint32_t nbTotalNewGrids;
+        uint32_t nbTotalNewChunks;
+        uint32_t nbTotalDeletedNodes;
+        uint32_t nbTotalDeletedGrids;
+        uint32_t nbTotalDeletedChunks;
+        uint32_t nbTotalLoadedNodes;
+        uint32_t nbTotalSplitNodes;
+        uint32_t nbTotalStoredNodes;
+        uint32_t nbNewPointsThisUpdate;
+        uint32_t nbNewVoxelsThisUpdate;
+        uint32_t nbNewNodesThisUpdate;
+        uint32_t nbLoadedNodesThisUpdate;
+        uint32_t nbStoredNodesThisUpdate;
+        uint32_t nbSplitNodesThisUpdate;
+        uint32_t nbDeletedNodesThisUpdate;
+        uint32_t nbDeletedChunksThisUpdate;
+        uint32_t nbDeletedGridsThisUpdate;
+        uint32_t nbNewChunksThisUpdate;
+        uint32_t nbNewGridsThisUpdate;
+    };
+    static inline UIStats* pinnedStats = nullptr;
+    static inline CUevent eventStatsReady;
+    static inline bool statsCopyInFlight = false;
+    static inline CUstream uiStream;
+
     static void update();
+    static void init();
+    static void destroy();
+    static void kickoffStatsCopy();
 };
 
 
@@ -191,7 +229,8 @@ struct GpuVersion {
     static inline void* isDoneStoring = nullptr;
     static inline void* isDoneIterating = nullptr;
     static inline bool firstBatchSent = false;
-    static inline bool isInitialised = false;
+    static inline void* isInitialised = nullptr;
+    static inline void* isUpdating = nullptr;
 
     static inline void* exchangedIds = nullptr;
     static inline void* exchangedParentsIds = nullptr;

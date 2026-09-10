@@ -22,7 +22,7 @@ void kernel_init_global_buffers(){
 
 
     for(uint32_t i = thread_id; i < globalVariables.maxNbBatches; i += nb_threads){
-        globalVariables.batchesAddedMask[thread_id] = true;
+        globalVariables.batchesAddedMask[thread_id] = BatchHandled;
         globalVariables.batchesToAddCounts[thread_id] = 0;
     }
 
@@ -95,7 +95,7 @@ void kernel_init_octree_part_1_aabb_measuring(){
     bool is_init = false;
 
     for(uint32_t batch = 0; batch < globalVariables.maxNbBatches; batch++){
-        if(globalVariables.batchesAddedMask[batch]){continue;}
+        if(globalVariables.batchesAddedMask[batch] != BatchToHandle){continue;}
         
         CPoint* new_points = globalVariables.batchesToAddPoints[batch];
         uint32_t nb_new_points = globalVariables.batchesToAddCounts[batch];
@@ -113,6 +113,7 @@ void kernel_init_octree_part_1_aabb_measuring(){
         for(uint32_t i = first_point; i < nb_new_points; i += step){
             CPoint& point = new_points[i];
             if(!is_init){
+                globalVariables.isInitialised = true;
                 tmp_aabb.mins = new_points[i].position;
                 tmp_aabb.maxs = new_points[i].position;
                 is_init = true;
@@ -227,8 +228,6 @@ void kernel_init_octree_part_2_refining(){
             globalVariables.relationshipMap[globalVariables.mainOctree->aabb_index].aabb.maxs.x += half_sizes_z.x;
         }
     }
-
-    globalVariables.isInitialised = true;
 
     // UI values
     globalVariables.nbNewNodesThisUpdate = 1;

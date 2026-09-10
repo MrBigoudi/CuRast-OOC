@@ -440,6 +440,8 @@ extern "C" __global__
 void kernel_reset_batches(){
     // printf("kernel_reset_batches\n");
     for(uint32_t i=0; i<globalVariables.maxNbBatches; i++){
-        globalVariables.batchesAddedMask[i] = true;
+        if(globalVariables.batchesAddedMask[i] == BatchInUse){
+            globalVariables.batchesAddedMask[i] = BatchHandled;
+        }
     }
 }

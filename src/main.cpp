@@ -750,7 +750,10 @@ int main(int argc, char** argv){
 
 			},
 			[&]() {CuRast::instance->render();},
-			[&]() {CuRast::instance->postFrame();}
+			[&]() {
+				CuRast::instance->postFrame();
+				GpuVersion::updateHostCache();
+			}
 		);
 
 		// Destruction procedure

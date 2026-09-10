@@ -18,7 +18,7 @@ void kernel_simlod_load_part_1_flagging(){
     // }
 
     for(uint32_t batch = 0; batch < globalVariables.maxNbBatches; batch++){
-        if(globalVariables.batchesAddedMask[batch]){continue;}
+        if(globalVariables.batchesAddedMask[batch] != BatchInUse){continue;}
         CPoint* new_points = globalVariables.batchesToAddPoints[batch];
         uint32_t nb_new_points = globalVariables.batchesToAddCounts[batch];
 
@@ -412,7 +412,7 @@ void simlodCount(uint32_t first_point, uint32_t step, uint32_t iteration, bool i
 
     // Count new points
     for(uint32_t batch = 0; batch < max_nb_batches; batch++){
-        if(globalVariables.batchesAddedMask[batch]){continue;}
+        if(globalVariables.batchesAddedMask[batch] != BatchInUse){continue;}
         CPoint* new_points = globalVariables.batchesToAddPoints[batch];
         uint32_t nb_new_points = globalVariables.batchesToAddCounts[batch];
 
@@ -745,7 +745,7 @@ void kernel_simlod_voxel_sampling(){
     
     // Sample voxels for new points
     for(uint32_t batch = 0; batch < globalVariables.maxNbBatches; batch++){
-        if(globalVariables.batchesAddedMask[batch]){continue;}
+        if(globalVariables.batchesAddedMask[batch] != BatchInUse){continue;}
         CPoint* new_points = globalVariables.batchesToAddPoints[batch];
         uint32_t nb_new_points = globalVariables.batchesToAddCounts[batch];
 
@@ -1077,7 +1077,7 @@ void kernel_simlod_insertion_part_2_filling(){
 
     // Insert new points
     for(uint32_t batch = 0; batch < globalVariables.maxNbBatches; batch++){
-        if(globalVariables.batchesAddedMask[batch]){continue;}
+        if(globalVariables.batchesAddedMask[batch] != BatchInUse){continue;}
         CPoint* new_points = globalVariables.batchesToAddPoints[batch];
         uint32_t nb_new_points = globalVariables.batchesToAddCounts[batch];
 

@@ -114,10 +114,13 @@ void GpuVersion::initHostSide(CuRast* editor, CUcontext* context) {
     parentsMap = std::vector<CIdAABB>(OocSimLodSettings::MAX_NB_NODES, CINVALID_ID);
     aabbsMap = std::vector<CAABB>(OocSimLodSettings::MAX_NB_NODES, CAABB());
 
+    CURuntime::assertCudaSuccess(cuMemAllocHost(&isInitialised, sizeof(bool)));
+    CURuntime::assertCudaSuccess(cuMemAllocHost(&isUpdating, sizeof(bool)));
     CURuntime::assertCudaSuccess(cuMemAllocHost(&isDoneLoading, sizeof(bool)));
     CURuntime::assertCudaSuccess(cuMemAllocHost(&isDoneStoring, sizeof(bool)));
     CURuntime::assertCudaSuccess(cuMemAllocHost(&isDoneIterating, sizeof(bool)));
-    isInitialised = false;
+    *(bool*)isInitialised = false;
+    *(bool*)isUpdating = false;
     *(bool*)isDoneLoading = true;
     *(bool*)isDoneStoring = true;
     *(bool*)isDoneIterating = true;
@@ -138,6 +141,7 @@ void GpuVersion::initHostSide(CuRast* editor, CUcontext* context) {
 
     MAX_NB_VOXELS = hostStaging.maxNbVoxelsChunksPerExchangedNode * OocSimLodSettings::NB_POINTS_PER_CHUNK;
     HostStorageNode::init();
+    GpuVersionUI::init();
 }
 
 void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
@@ -357,6 +361,7 @@ void GpuVersion::destroy(CuRast *editor, CUcontext *context){
 
     LoaderGpuVersion::destroy();
     HostStorageNode::destroy();
+    GpuVersionUI::destroy();
 
     cudaDeviceSynchronize();
     CURuntime::assertCudaSuccess(cuStreamDestroy(stream));
@@ -391,6 +396,8 @@ void GpuVersion::octreeUpdateInit(CuRast* editor, CUcontext* context){
     };
 
     prog->launch("kernel_init_octree_part_1_aabb_measuring", {}, launch_settings);
+    COPY_FROM_GPU(isInitialised, isInitialised, bool);
+    if(!isInitialised){return;}
 
     launch_settings = {
         .gridsize = 1,
@@ -413,6 +420,8 @@ void GpuVersion::octreeUpdateInit(CuRast* editor, CUcontext* context){
 
 
 void GpuVersion::octreeUpdateBottomUp(CuRast* editor, CUcontext* context){
+    COPY_TO_GPU_ASYNC(isUpdating, &RESET, bool);
+
     // OptionalLaunchSettings launch_settings = {
     //     .gridsize  = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_GRID_SIZE_FOR_MAX_BLOCK_SIZE,
     //     .blocksize = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK
@@ -427,14 +436,16 @@ void GpuVersion::octreeUpdateBottomUp(CuRast* editor, CUcontext* context){
         .gridsize  = grid_size,
         .blocksize = block_size
     };
-
-    prog->launch("kernel_bottom_up_update_part_1_counting", {}, launch_settings);
-
-    launch_settings = {
-        .gridsize = 1,
+    OptionalLaunchSettings single_launch = {
+        .gridsize  = 1,
         .blocksize = 1
     };
-    prog->launch("kernel_bottom_up_update_part_2_instancing", {}, launch_settings);
+
+    prog->launch("kernel_bottom_up_update_part_0_flagging", {}, single_launch);
+    COPY_FROM_GPU(isUpdating, isUpdating, bool);
+    if(!isUpdating){return;}
+    prog->launch("kernel_bottom_up_update_part_1_counting", {}, launch_settings);
+    prog->launch("kernel_bottom_up_update_part_2_instancing", {}, single_launch);
 }
 
 
@@ -1184,7 +1195,6 @@ void GpuVersion::updateHostCache(){
 
     if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
         updateHostCacheComplete = new std::thread([nodes_to_store = std::move(nodes_to_store)]() mutable {
-
             std::for_each(std::execution::par, nodes_to_store.begin(), nodes_to_store.end(),
                 [](std::shared_ptr<HostStorageNode>& node){
                     OctreeNodeSerializable::serializeV2(node);
@@ -1202,9 +1212,6 @@ void GpuVersion::updateHostCache(){
             );
         });
     } else {
-        CURuntime::assertCudaSuccess(cuEventSynchronize(eventStoringComplete));
-        CURuntime::assertCudaSuccess(cuEventSynchronize(eventVisibilityUpdateComplete));
-
         std::for_each(nodes_to_store.begin(), nodes_to_store.end(), [](std::shared_ptr<HostStorageNode>& node){
             OctreeNodeSerializable::serializeV2(node);
         });
@@ -1232,33 +1239,34 @@ void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
         GpuVersionUI::firstUpdateStart = GpuVersionUI::lastUpdateStart;
     }
 
-    bool skip_update = false;
-    // Only load new points if previous points have been handled
-    if(*(bool*)isDoneLoading && *(bool*)isDoneStoring && *(bool*)isDoneIterating){
-        // Only run the update if the first batch has been loaded
-        skip_update = !LoaderGpuVersion::run(editor, context);
+    // bool skip_update = false;
+    // // Only load new points if previous points have been handled
+    // if(*(bool*)isDoneLoading && *(bool*)isDoneStoring && *(bool*)isDoneIterating){
+    //     // Only run the update if the first batch has been loaded
+    //     skip_update = !LoaderGpuVersion::run(editor, context);
+    // }
+    LoaderGpuVersion::run(editor, context);
+
+    // Only run the initialisation kernel once
+    if(!*(bool*)isInitialised){
+        octreeUpdateInit(editor, context);
+        if(!*(bool*)isInitialised){return;}
     }
 
-    if(!skip_update){
-        // Only run the initialisation kernel once
-        if(!isInitialised){
-            octreeUpdateInit(editor, context);
-            isInitialised = true;
-        }
+    // Only run the bottom up kernels if nothing else is stalling
+    if(*(bool*)isDoneLoading && *(bool*)isDoneStoring && *(bool*)isDoneIterating){
+        octreeUpdateBottomUp(editor, context);
+    }
 
-        // Only run the bottom up kernels if nothing else is stalling
-        if(*(bool*)isDoneLoading && *(bool*)isDoneStoring && *(bool*)isDoneIterating){
-            octreeUpdateBottomUp(editor, context);
-        }
+    // Wait for previous host cache clean
+    // Must happen before the first deserialisation
+    if(updateHostCacheComplete){
+        updateHostCacheComplete->join();
+        delete(updateHostCacheComplete);
+        updateHostCacheComplete = nullptr;
+    }
 
-        // Wait for previous host cache clean
-        // Must happen before the first deserialisation
-        if(updateHostCacheComplete){
-            updateHostCacheComplete->join();
-            delete(updateHostCacheComplete);
-            updateHostCacheComplete = nullptr;
-        }
-
+    if(*(bool*)isUpdating){
         octreeUpdateSimLOD(editor, context);
 
         if(*(bool*)isDoneLoading && *(bool*)isDoneIterating){
@@ -1274,17 +1282,9 @@ void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
         }
 
         GpuVersionUI::update();
-    } else {
-        // Wait for previous host cache clean
-        // Must happen before the first deserialisation
-        if(updateHostCacheComplete){
-            updateHostCacheComplete->join();
-            delete(updateHostCacheComplete);
-            updateHostCacheComplete = nullptr;
-        }
     }
 
-    if(isInitialised){
+    if(*(bool*)isInitialised){
         GpuVersion::visibilityUpdate(editor, context);
         updateHostCache();
     }
@@ -1359,75 +1359,116 @@ void GpuVersion::renderOctree(RenderTarget& target){
 
 
 
+void GpuVersionUI::init() {
+    CURuntime::assertCudaSuccess(cuMemAllocHost((void**)&pinnedStats, sizeof(UIStats)));
+    CURuntime::assertCudaSuccess(cuEventCreate(&eventStatsReady, CU_EVENT_DISABLE_TIMING));
+    CURuntime::assertCudaSuccess(cuStreamCreate(&uiStream, CU_STREAM_NON_BLOCKING));
+}
+
+void GpuVersionUI::destroy() {
+    CURuntime::assertCudaSuccess(cuMemFreeHost(pinnedStats));
+    CURuntime::assertCudaSuccess(cuEventDestroy(eventStatsReady));
+    CURuntime::assertCudaSuccess(cuStreamDestroy(uiStream));
+}
+
+void GpuVersionUI::kickoffStatsCopy(){
+    // Single batched async copy of all UI fields into pinned memory
+    // The fields must be contiguous in CGlobalVariables for this to work
+    const uint64_t pad = reinterpret_cast<uintptr_t>(&GpuVersion::hostStaging.nbTotalUpdates)
+                       - reinterpret_cast<uintptr_t>(&GpuVersion::hostStaging);
+    CURuntime::assertCudaSuccess(cuMemcpyDtoHAsync(
+        pinnedStats,
+        GpuVersion::deviceStaging + pad,
+        sizeof(UIStats),
+        uiStream
+    ));
+
+    CURuntime::assertCudaSuccess(cuEventRecord(eventStatsReady, uiStream));
+    statsCopyInFlight = true;
+}
 
 void GpuVersionUI::update() {
-    std::chrono::time_point<std::chrono::high_resolution_clock> now = high_resolution_clock::now();
-    uint64_t duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-        now - lastUpdateStart
-    ).count();
-
-    COPY_FROM_GPU(nbTotalUpdates, &nbTotalUpdates, uint32_t);
-    if(lastNbTotalUpdates == nbTotalUpdates){return;}
-    lastNbTotalUpdates = nbTotalUpdates;
-
-    COPY_FROM_GPU(curNbNodes, &currentNbNodes, uint32_t);
-    COPY_FROM_GPU(currentNbChunks, &currentNbChunks, uint32_t);
-    COPY_FROM_GPU(currentNbGrids, &currentNbGrids, uint32_t);
-    COPY_FROM_GPU(currentNbPoints, &currentNbPoints, uint32_t);
-    COPY_FROM_GPU(currentNbVoxels, &currentNbVoxels, uint32_t);
-
-    COPY_FROM_GPU(nbTotalPoints, &nbTotalPoints, uint32_t);
-    COPY_FROM_GPU(nbTotalVoxels, &nbTotalVoxels, uint32_t);
-    COPY_FROM_GPU(nbTotalNewNodes, &nbTotalNewNodes, uint32_t);
-    COPY_FROM_GPU(nbTotalNewGrids, &nbTotalNewGrids, uint32_t);
-    COPY_FROM_GPU(nbTotalNewChunks, &nbTotalNewChunks, uint32_t);
-    COPY_FROM_GPU(nbTotalDeletedNodes, &nbTotalDeletedNodes, uint32_t);
-    COPY_FROM_GPU(nbTotalDeletedGrids, &nbTotalDeletedGrids, uint32_t);
-    COPY_FROM_GPU(nbTotalDeletedChunks, &nbTotalDeletedChunks, uint32_t);
-    COPY_FROM_GPU(nbTotalLoadedNodes, &nbTotalLoadedNodes, uint32_t);
-    COPY_FROM_GPU(nbTotalSplitNodes, &nbTotalSplitNodes, uint32_t);
-    COPY_FROM_GPU(nbTotalStoredNodes, &nbTotalStoredNodes, uint32_t);
-
-    COPY_FROM_GPU(nbNewPointsThisUpdate, &nbNewPointsThisUpdate, uint32_t);
-    COPY_FROM_GPU(nbNewVoxelsThisUpdate, &nbNewVoxelsThisUpdate, uint32_t);
-    COPY_FROM_GPU(nbNewNodesThisUpdate, &nbNewNodesThisUpdate, uint32_t);
-    COPY_FROM_GPU(nbLoadedNodesThisUpdate, &nbLoadedNodesThisUpdate, uint32_t);
-    COPY_FROM_GPU(nbStoredNodesThisUpdate, &nbStoredNodesThisUpdate, uint32_t);
-    COPY_FROM_GPU(nbSplitNodesThisUpdate, &nbSplitNodesThisUpdate, uint32_t);
-    COPY_FROM_GPU(nbDeletedNodesThisUpdate, &nbDeletedNodesThisUpdate, uint32_t);
-    COPY_FROM_GPU(nbDeletedChunksThisUpdate, &nbDeletedChunksThisUpdate, uint32_t);
-    COPY_FROM_GPU(nbDeletedGridsThisUpdate, &nbDeletedGridsThisUpdate, uint32_t);
-    COPY_FROM_GPU(nbNewChunksThisUpdate, &nbNewChunksThisUpdate, uint32_t);
-    COPY_FROM_GPU(nbNewGridsThisUpdate, &nbNewGridsThisUpdate, uint32_t);
-
-    auto updateStats = [](uint32_t value, uint32_t& minValue, uint32_t& maxValue, uint32_t& avgValue) {
-        if (nbTotalUpdates == 1) {
-            minValue = value; maxValue = value; avgValue = value;
-        } else {
-            minValue = std::min(minValue, value);
-            maxValue = std::max(maxValue, value);
-            avgValue = static_cast<uint32_t>((static_cast<uint64_t>(avgValue) * (nbTotalUpdates - 1) + value) / nbTotalUpdates);
+    if(statsCopyInFlight){
+        CUresult res = cuEventQuery(eventStatsReady);
+        if(res == CUDA_ERROR_NOT_READY){ 
+            return;
         }
-    };
+        CURuntime::assertCudaSuccess(res);
+        statsCopyInFlight = false;
 
-    updateStats(nbNewPointsThisUpdate, minNbNewPointsPerUpdate, maxNbNewPointsPerUpdate, avgNbNewPointsPerUpdate);
-    updateStats(nbNewVoxelsThisUpdate, minNbNewVoxelsPerUpdate, maxNbNewVoxelsPerUpdate,avgNbNewVoxelsPerUpdate);
-    updateStats(nbNewNodesThisUpdate, minNbNewNodesPerUpdate, maxNbNewNodesPerUpdate, avgNbNewNodesPerUpdate);
-    updateStats(nbLoadedNodesThisUpdate, minNbLoadedNodesPerUpdate, maxNbLoadedNodesPerUpdate, avgNbLoadedNodesPerUpdate);
-    updateStats(nbStoredNodesThisUpdate, minNbStoredNodesPerUpdate, maxNbStoredNodesPerUpdate, avgNbStoredNodesPerUpdate);
-    updateStats(nbSplitNodesThisUpdate, minNbSplitNodesPerUpdate, maxNbSplitNodesPerUpdate, avgNbSplitNodesPerUpdate);
-    updateStats(nbDeletedNodesThisUpdate, minNbDeletedNodesPerUpdate, maxNbDeletedNodesPerUpdate, avgNbDeletedNodesPerUpdate);
-    updateStats(nbDeletedChunksThisUpdate, minNbDeletedChunksPerUpdate, maxNbDeletedChunksPerUpdate, avgNbDeletedChunksPerUpdate);
-    updateStats(nbDeletedGridsThisUpdate, minNbDeletedGridsPerUpdate, maxNbDeletedGridsPerUpdate, avgNbDeletedGridsPerUpdate);
-    updateStats(nbNewChunksThisUpdate, minNbNewChunksPerUpdate, maxNbNewChunksPerUpdate, avgNbNewChunksPerUpdate);
-    updateStats(nbNewGridsThisUpdate, minNbNewGridsPerUpdate, maxNbNewGridsPerUpdate, avgNbNewGridsPerUpdate);
+        if(lastNbTotalUpdates == pinnedStats->nbTotalUpdates){ 
+            kickoffStatsCopy();
+            return;
+        }
 
-    uint64_t total_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-        now - firstUpdateStart
-    ).count();
-    const uint64_t cur_updates_per_seconds = static_cast<uint64_t>(1000.0 * static_cast<uint64_t>(nbTotalUpdates) / total_duration);
-    updateStats(cur_updates_per_seconds, minNbUpdatesPerSecond, maxNbUpdatesPerSecond, avgNbUpdatesPerSecond);
+        std::chrono::time_point<std::chrono::high_resolution_clock> now = high_resolution_clock::now();
 
+        lastNbTotalUpdates       = pinnedStats->nbTotalUpdates;
+        nbTotalUpdates           = pinnedStats->nbTotalUpdates;
+        currentNbNodes           = pinnedStats->curNbNodes;
+        currentNbChunks          = pinnedStats->currentNbChunks;
+        currentNbGrids           = pinnedStats->currentNbGrids;
+        currentNbPoints          = pinnedStats->currentNbPoints;
+        currentNbVoxels          = pinnedStats->currentNbVoxels;
+        nbTotalPoints            = pinnedStats->nbTotalPoints;
+        nbTotalVoxels            = pinnedStats->nbTotalVoxels;
+        nbTotalNewNodes          = pinnedStats->nbTotalNewNodes;
+        nbTotalNewGrids          = pinnedStats->nbTotalNewGrids;
+        nbTotalNewChunks         = pinnedStats->nbTotalNewChunks;
+        nbTotalDeletedNodes      = pinnedStats->nbTotalDeletedNodes;
+        nbTotalDeletedGrids      = pinnedStats->nbTotalDeletedGrids;
+        nbTotalDeletedChunks     = pinnedStats->nbTotalDeletedChunks;
+        nbTotalLoadedNodes       = pinnedStats->nbTotalLoadedNodes;
+        nbTotalSplitNodes        = pinnedStats->nbTotalSplitNodes;
+        nbTotalStoredNodes       = pinnedStats->nbTotalStoredNodes;
+        nbNewPointsThisUpdate    = pinnedStats->nbNewPointsThisUpdate;
+        nbNewVoxelsThisUpdate    = pinnedStats->nbNewVoxelsThisUpdate;
+        nbNewNodesThisUpdate     = pinnedStats->nbNewNodesThisUpdate;
+        nbLoadedNodesThisUpdate  = pinnedStats->nbLoadedNodesThisUpdate;
+        nbStoredNodesThisUpdate  = pinnedStats->nbStoredNodesThisUpdate;
+        nbSplitNodesThisUpdate   = pinnedStats->nbSplitNodesThisUpdate;
+        nbDeletedNodesThisUpdate = pinnedStats->nbDeletedNodesThisUpdate;
+        nbDeletedChunksThisUpdate= pinnedStats->nbDeletedChunksThisUpdate;
+        nbDeletedGridsThisUpdate = pinnedStats->nbDeletedGridsThisUpdate;
+        nbNewChunksThisUpdate    = pinnedStats->nbNewChunksThisUpdate;
+        nbNewGridsThisUpdate     = pinnedStats->nbNewGridsThisUpdate;
+
+        auto updateStats = [](uint32_t value, uint32_t& minValue, uint32_t& maxValue, uint32_t& avgValue) {
+            if(nbTotalUpdates == 1){
+                minValue = value; maxValue = value; avgValue = value;
+            } else {
+                minValue = std::min(minValue, value);
+                maxValue = std::max(maxValue, value);
+                avgValue = static_cast<uint32_t>(
+                    (static_cast<uint64_t>(avgValue) * (nbTotalUpdates - 1) + value) / nbTotalUpdates
+                );
+            }
+        };
+
+        updateStats(nbNewPointsThisUpdate,    minNbNewPointsPerUpdate,    maxNbNewPointsPerUpdate,    avgNbNewPointsPerUpdate);
+        updateStats(nbNewVoxelsThisUpdate,    minNbNewVoxelsPerUpdate,    maxNbNewVoxelsPerUpdate,    avgNbNewVoxelsPerUpdate);
+        updateStats(nbNewNodesThisUpdate,     minNbNewNodesPerUpdate,     maxNbNewNodesPerUpdate,     avgNbNewNodesPerUpdate);
+        updateStats(nbLoadedNodesThisUpdate,  minNbLoadedNodesPerUpdate,  maxNbLoadedNodesPerUpdate,  avgNbLoadedNodesPerUpdate);
+        updateStats(nbStoredNodesThisUpdate,  minNbStoredNodesPerUpdate,  maxNbStoredNodesPerUpdate,  avgNbStoredNodesPerUpdate);
+        updateStats(nbSplitNodesThisUpdate,   minNbSplitNodesPerUpdate,   maxNbSplitNodesPerUpdate,   avgNbSplitNodesPerUpdate);
+        updateStats(nbDeletedNodesThisUpdate, minNbDeletedNodesPerUpdate, maxNbDeletedNodesPerUpdate, avgNbDeletedNodesPerUpdate);
+        updateStats(nbDeletedChunksThisUpdate,minNbDeletedChunksPerUpdate,maxNbDeletedChunksPerUpdate,avgNbDeletedChunksPerUpdate);
+        updateStats(nbDeletedGridsThisUpdate, minNbDeletedGridsPerUpdate, maxNbDeletedGridsPerUpdate, avgNbDeletedGridsPerUpdate);
+        updateStats(nbNewChunksThisUpdate,    minNbNewChunksPerUpdate,    maxNbNewChunksPerUpdate,    avgNbNewChunksPerUpdate);
+        updateStats(nbNewGridsThisUpdate,     minNbNewGridsPerUpdate,     maxNbNewGridsPerUpdate,     avgNbNewGridsPerUpdate);
+
+        uint64_t total_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - firstUpdateStart
+        ).count();
+        const uint64_t cur_updates_per_seconds = static_cast<uint64_t>(
+            1000.0 * static_cast<uint64_t>(nbTotalUpdates) / total_duration
+        );
+        updateStats(cur_updates_per_seconds, minNbUpdatesPerSecond, maxNbUpdatesPerSecond, avgNbUpdatesPerSecond);
+    }
+
+    if(!statsCopyInFlight){
+        kickoffStatsCopy();
+    }
 }
 
 

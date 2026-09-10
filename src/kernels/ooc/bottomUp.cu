@@ -1,5 +1,20 @@
 #include "utils.cuh"
 
+/// Run on a single thread
+extern "C" __global__
+void kernel_bottom_up_update_part_0_flagging(){
+    for(uint32_t batch = 0; batch < globalVariables.maxNbBatches; batch++){
+        if(globalVariables.batchesAddedMask[batch] == BatchHandled){continue;}
+#ifdef ASSERT_ENABLED
+        if(globalVariables.batchesAddedMask[batch] == BatchInUse){
+            printf("ERROR: at this point, all batches should be either to handle or handled\n");
+            customAssert();
+        }
+#endif
+        globalVariables.batchesAddedMask[batch] = BatchInUse;
+        globalVariables.isUpdating = true;
+    }
+}
 
 /// Run on floor("NB SMs" * "Max threads per SM" / "Max threads per block") blocks of size "Max threads per block"
 /// Each thread is filling independently it's own counter before combining all of them
@@ -18,7 +33,7 @@ void kernel_bottom_up_update_part_1_counting(){
     CAABB new_aabb = globalVariables.relationshipMap[globalVariables.mainOctree->aabb_index].aabb;
 
     for(uint32_t batch = 0; batch < globalVariables.maxNbBatches; batch++){
-        if(globalVariables.batchesAddedMask[batch]){continue;}
+        if(globalVariables.batchesAddedMask[batch] != BatchInUse){continue;}
 
         CPoint* new_points = globalVariables.batchesToAddPoints[batch];
         uint32_t nb_new_points = globalVariables.batchesToAddCounts[batch];
@@ -50,20 +65,6 @@ void kernel_bottom_up_update_part_1_counting(){
         __NV_ATOMIC_RELAXED, 
         __NV_THREAD_SCOPE_DEVICE
     );
-
-
-    // Reset UI values
-    globalVariables.nbNewPointsThisUpdate = 0;
-    globalVariables.nbNewVoxelsThisUpdate = 0;
-    globalVariables.nbNewNodesThisUpdate = 0;
-    globalVariables.nbLoadedNodesThisUpdate = 0;
-    globalVariables.nbStoredNodesThisUpdate = 0;
-    globalVariables.nbSplitNodesThisUpdate = 0;
-    globalVariables.nbDeletedNodesThisUpdate = 0;
-    globalVariables.nbDeletedChunksThisUpdate = 0;
-    globalVariables.nbDeletedGridsThisUpdate = 0;
-    globalVariables.nbNewChunksThisUpdate = 0;
-    globalVariables.nbNewGridsThisUpdate = 0;
 }
 
 
@@ -170,4 +171,17 @@ void kernel_bottom_up_update_part_2_instancing(){
     globalVariables.mainOctree = cur_child;
     globalVariables.mainOctree->level = 0;
     globalVariables.batchesToAddBottomUpCount = 0;
+
+    // Reset UI values
+    globalVariables.nbNewPointsThisUpdate = 0;
+    globalVariables.nbNewVoxelsThisUpdate = 0;
+    globalVariables.nbNewNodesThisUpdate = nb_new_levels;
+    globalVariables.nbLoadedNodesThisUpdate = 0;
+    globalVariables.nbStoredNodesThisUpdate = 0;
+    globalVariables.nbSplitNodesThisUpdate = 0;
+    globalVariables.nbDeletedNodesThisUpdate = 0;
+    globalVariables.nbDeletedChunksThisUpdate = 0;
+    globalVariables.nbDeletedGridsThisUpdate = 0;
+    globalVariables.nbNewChunksThisUpdate = 0;
+    globalVariables.nbNewGridsThisUpdate = 0;
 }

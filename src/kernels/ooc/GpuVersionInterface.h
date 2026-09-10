@@ -686,7 +686,6 @@ struct CGlobalVariables {
 	COctreeNode* mainOctree = nullptr;
 
 	/// The buffer of nodes for updates
-	uint32_t curNbNodes = 0;
 	COctreeNode** packedNodes = nullptr;
 
 	/// The buffer of nodes for rendering
@@ -807,6 +806,7 @@ struct CGlobalVariables {
     ///////////////////////////////////////////////////////////////////////
 
 	uint32_t nbTotalUpdates = 0;
+	uint32_t curNbNodes = 0;
 
 	uint32_t currentNbChunks = 0;
 	uint32_t currentNbGrids = 0;
@@ -915,4 +915,11 @@ struct CRenderingSettings {
 	bool use_voxels_debug_color = false;
 	uint32_t min_pixel_span = 0;
 	uint32_t voxels_nb_points_per_axis = 0;
+};
+
+
+enum SentBatchState {
+	BatchToHandle,
+	BatchInUse,
+	BatchHandled,
 };

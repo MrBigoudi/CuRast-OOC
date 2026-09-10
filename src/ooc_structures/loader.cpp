@@ -422,7 +422,7 @@ void LoaderGpuVersion::init(){
 	batchesOnGpu = std::vector<uint32_t>(OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE, -1);
 	batchesOnGpuStatus = GpuVersion::allocHost<uint32_t>(OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE);
 	for(uint32_t i = 0; i < OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE; i++){
-		((uint32_t*)(batchesOnGpuStatus))[i] = true;
+		((uint32_t*)(batchesOnGpuStatus))[i] = BatchHandled;
 	}
 }
 
@@ -433,6 +433,8 @@ void LoaderGpuVersion::destroy(){
 }
 
 void LoaderGpuVersion::fetchFromDevice(){
+	cudaStreamSynchronize(stream);
+
 	CURuntime::assertCudaSuccess(cuMemcpyDtoH(
 		batchesOnGpuStatus, 
 		(CUdeviceptr)GpuVersion::hostStaging.batchesAddedMask,
@@ -440,7 +442,7 @@ void LoaderGpuVersion::fetchFromDevice(){
 	));
 
 	for(uint32_t i=0; i<OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE; i++){
-		if(((uint32_t*)(batchesOnGpuStatus))[i]){
+		if(((uint32_t*)(batchesOnGpuStatus))[i] == BatchHandled){ 
 			uint32_t real_index = batchesOnGpu[i];
 			batchesOnGpu[i] = -1;
 			if(real_index != -1){
@@ -457,6 +459,9 @@ bool LoaderGpuVersion::sendToDevice(){
     std::vector<CUdeviceptr> srcs_host;
     std::vector<CUdeviceptr> dsts_device;
     std::vector<uint64_t> sizes;
+	std::vector<CUdeviceptr> mask_srcs_host;
+    std::vector<CUdeviceptr> mask_dsts_device;
+    std::vector<uint64_t> mask_sizes;
 
     std::vector<std::pair<uint32_t, std::shared_ptr<PointBatch>>> ready;
     {
@@ -466,12 +471,11 @@ bool LoaderGpuVersion::sendToDevice(){
 
     uint32_t ready_index = 0;
     for(uint32_t i = 0; i < OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE; i++){
-        if(batchesOnGpu[i] != -1 && !((uint32_t*)(batchesOnGpuStatus))[i]){ continue; }
-        if(ready_index >= ready.size()){ break; }
+        if(batchesOnGpu[i] != -1){continue;}
+        if(ready_index >= ready.size()){break;}
 
         auto& [slot, batch] = ready[ready_index++];
         batchesOnGpu[i] = slot;
-        ((uint32_t*)(batchesOnGpuStatus))[i] = false;
         batch->state = BatchState::Sent;
 
         dsts_device.push_back(((CUdeviceptr*)(GpuVersion::batchesToAddPointsPointers))[i]);
@@ -482,9 +486,9 @@ bool LoaderGpuVersion::sendToDevice(){
         srcs_host.push_back((CUdeviceptr)(&batch->count));
         sizes.push_back(sizeof(uint32_t));
 
-        dsts_device.push_back((CUdeviceptr)(GpuVersion::hostStaging.batchesAddedMask) + i * sizeof(uint32_t));
-        srcs_host.push_back((CUdeviceptr)&GpuVersion::RESET);
-        sizes.push_back(sizeof(uint32_t));
+        mask_dsts_device.push_back((CUdeviceptr)(GpuVersion::hostStaging.batchesAddedMask) + i * sizeof(uint32_t));
+        mask_srcs_host.push_back((CUdeviceptr)&GpuVersion::RESET); // == BatchToHandle
+        mask_sizes.push_back(sizeof(uint32_t));
 
         has_send_new_points = true;
     }
@@ -499,16 +503,24 @@ bool LoaderGpuVersion::sendToDevice(){
     }
 
     if(has_send_new_points){
-        uint64_t nb_copies = sizes.size();
         CURuntime::assertCudaSuccess(cuMemcpyBatchAsync(
-            dsts_device.data(), srcs_host.data(), sizes.data(), nb_copies,
+            dsts_device.data(), srcs_host.data(), sizes.data(), 
+			sizes.size(),
             loadingAttributes.data(),
             loadingAttributesIndices.data(),
             loadingAttributes.size(),
             stream
         ));
-        CURuntime::assertCudaSuccess(cuEventRecord(eventLoadComplete, stream));
-        cudaStreamWaitEvent(0, eventLoadComplete);
+		CURuntime::assertCudaSuccess(cuMemcpyBatchAsync(
+            mask_dsts_device.data(), mask_srcs_host.data(), mask_sizes.data(), 
+			mask_sizes.size(),
+            loadingAttributes.data(),
+            loadingAttributesIndices.data(),
+            loadingAttributes.size(),
+            stream
+        ));
+        // CURuntime::assertCudaSuccess(cuEventRecord(eventLoadComplete, stream));
+        // cudaStreamWaitEvent(0, eventLoadComplete);
     }
 
     return has_send_new_points;
