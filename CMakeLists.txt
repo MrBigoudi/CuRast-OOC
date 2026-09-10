@@ -17,6 +17,20 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 include(cmake/common.cmake)
 
+# Libtorch
+if (WIN32)
+    set(LIBTORCH_DIR "${CMAKE_SOURCE_DIR}/libs/libtorch/windows/libtorch")
+elseif (LINUX)
+    set(LIBTORCH_DIR "${CMAKE_SOURCE_DIR}/libs/libtorch/linux/libtorch")
+endif()
+
+list(APPEND CMAKE_PREFIX_PATH "${LIBTORCH_DIR}")
+find_package(Torch REQUIRED)
+message(STATUS "LibTorch found: ${Torch_DIR}")
+message(STATUS "LibTorch libraries: ${TORCH_LIBRARIES}")
+
+
+
 # Paths to TurboJPEG
 if (WIN32)
 	set(TURBOJPEG_LIBRARY "${CMAKE_SOURCE_DIR}/libs/jpg/turbojpeg-static.lib")
@@ -81,6 +95,7 @@ if (WIN32)
 	target_link_libraries(${TARGET_NAME} PRIVATE 
 		${TURBOJPEG_LIBRARY}
 		laszip
+		${TORCH_LIBRARIES}
 	)
 elseif (LINUX)
 	target_link_libraries(${TARGET_NAME} PRIVATE 
@@ -88,6 +103,7 @@ elseif (LINUX)
 		laszip
 		stdc++exp
 		TBB::tbb
+		${TORCH_LIBRARIES}
 	)
 endif()
 
@@ -125,6 +141,21 @@ add_executable(PlyToGlb
 	src/tools/PlyToGlb.cpp
 	src/unsuck_platform_specific.cpp
 )
+
+
+if (WIN32)
+    add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${LIBTORCH_DIR}/bin"
+            "$<TARGET_FILE_DIR:${TARGET_NAME}>"
+    )
+elseif (LINUX)
+    set_target_properties(${TARGET_NAME} PROPERTIES
+        BUILD_RPATH "${LIBTORCH_DIR}/lib"
+    )
+endif()
+
+
 # target_include_directories(PlyToGlb PRIVATE libs/glm)
 target_include_directories(PlyToGlb PRIVATE
 	./src

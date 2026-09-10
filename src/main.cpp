@@ -40,6 +40,7 @@
 #include "ooc_structures/settings.h"
 #include "ooc_structures/allocator.h"
 #include "ooc_structures/gpuVersion.h"
+#include "ooc_structures/neural.h"
 
 
 using namespace std; // YOLO
@@ -495,6 +496,10 @@ void update(){
 }
 
 int main(int argc, char** argv){
+	// NeuralNet::load("/home/ykedadry/Documents/Projects/PointCloudFaker/models_v2/epoch_0050.pth");
+	// throw(EXIT_FAILURE);
+
+	
 	std::thread* thread_points_loader = nullptr;
 	std::thread* thread_octree_visibility = nullptr;
 
@@ -750,9 +755,7 @@ int main(int argc, char** argv){
 
 			},
 			[&]() {CuRast::instance->render();},
-			[&]() {
-				CuRast::instance->postFrame();
-			}
+			[&]() {CuRast::instance->postFrame();}
 		);
 
 		// Destruction procedure
