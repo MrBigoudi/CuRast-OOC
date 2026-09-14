@@ -9,6 +9,7 @@
 
 #include "ooc_structures/globals.h"
 #include "ooc_structures/gpuVersion.h"
+#include "ooc_structures/neural.h"
 
 using namespace std;
 
@@ -52,128 +53,231 @@ void unmapCudaVk(MappedTextures& mappings){
 }
 
 void saveScreenshot(RenderTarget target, View view, CUdeviceptr cptr_ssaoShadebuffer, CudaModularProgram* prog_resolve){
+    uint64_t numPixels = uint64_t(target.width) * target.height;
+    CUdeviceptr cptr_screenshot = MemoryManager::alloc(numPixels * 4, "screenshot");
 
-	uint64_t numPixels = target.width * target.height;
-	CUdeviceptr cptr_screenshot = MemoryManager::alloc(numPixels * 4, "screenshot");
+    uint32_t backgroundColor = 0;
+    uint8_t* bgRgba = (uint8_t*)&backgroundColor;
+    bgRgba[0] = clamp(CuRastSettings::background.x * 256.0f, 0.0f, 255.0f);
+    bgRgba[1] = clamp(CuRastSettings::background.y * 256.0f, 0.0f, 255.0f);
+    bgRgba[2] = clamp(CuRastSettings::background.z * 256.0f, 0.0f, 255.0f);
+    bgRgba[3] = 255;
 
-	uint32_t backgroundColor = 0;
-	uint8_t* bgRgba = (uint8_t*)&backgroundColor;
-	bgRgba[0] = clamp(CuRastSettings::background.x * 256.0f, 0.0f, 255.0f);
-	bgRgba[1] = clamp(CuRastSettings::background.y * 256.0f, 0.0f, 255.0f);
-	bgRgba[2] = clamp(CuRastSettings::background.z * 256.0f, 0.0f, 255.0f);
-	bgRgba[3] = 255;
+    void* args[] = {
+        &target,
+        &cptr_screenshot,
+        &cptr_ssaoShadebuffer,
+        &CuRastSettings::enableEDL,
+        &CuRastSettings::enableSSAO,
+        &view.framebuffer->width,
+        &view.framebuffer->height,
+        &backgroundColor
+    };
+    prog_resolve->launch2D("kernel_resolve_colorbuffer_to_screenshot", args, target.width, target.height);
 
-	void* args[] = {
-		&target,
-		&cptr_screenshot,
-		&cptr_ssaoShadebuffer,
-		&CuRastSettings::enableEDL,
-		&CuRastSettings::enableSSAO,
-		&view.framebuffer->width,
-		&view.framebuffer->height,
-		&backgroundColor
-	};
-	prog_resolve->launch2D("kernel_resolve_colorbuffer_to_screenshot", args, target.width, target.height);
+    void* screenshot_host = nullptr;
+    cuMemAllocHost(&screenshot_host, 4 * numPixels);
+    cuMemcpyDtoH(screenshot_host, cptr_screenshot, 4 * numPixels);
 
-	void* screenshot_host = nullptr;
-	cuMemAllocHost(&screenshot_host, 4 * numPixels);
-	cuMemcpyDtoH(screenshot_host, cptr_screenshot, 4 * numPixels);
+    string basePath = *CuRastSettings::requestScreenshot;
+    println("Screenshot path: {}", basePath);
+    stbi_flip_vertically_on_write(1);
+    stbi_write_png(basePath.c_str(), target.width, target.height, 4, screenshot_host, target.width * 4);
 
-	string path = "";
-	if(*CuRastSettings::requestScreenshot == ""){
-		for(int i = 0; i <= 10'000'000; i++){
-			fs::create_directories("./screenshots");
-			path = format("./screenshots/screenshot_{}.png", i);
+    MemoryManager::free(cptr_screenshot);
+    cuMemFreeHost(screenshot_host);
 
-			if(!fs::exists(path)) break;
-		}
-	}else{
-		path = *CuRastSettings::requestScreenshot;
-	}
-	println("Screenshot path: {}", path);
+    if(CuRastSettings::useMultiScale){
+        string baseStr = basePath;
+        string oldRes  = format("res_{}x{}", target.width, target.height);
 
-	int stride_in_bytes = target.width * 4;
-	stbi_flip_vertically_on_write(1);
-	stbi_write_png(path.c_str(), target.width, target.height, 4, screenshot_host, stride_in_bytes);
+        uint64_t levelOffset = 0; // in uint64_t elements
+        for(uint32_t level = 0; level < CRenderingSettings::NB_PYRAMID_LEVELS; level++){
+            uint32_t w = target.width  >> level;
+            uint32_t h = target.height >> level;
+            uint64_t levelPixels = uint64_t(w) * h;
 
-	MemoryManager::free(cptr_screenshot);
-	cuMemFreeHost(screenshot_host);
+            if(level > 0){ // level 0 already saved above
+                // The colorbuffer at this level is a packed uint64_t (depth<<32 | color).
+                // Extract the lower 32 bits (RGBA color) for each pixel.
+                CUdeviceptr cptr_level = cvm_colorbuffer->cptr + levelOffset * sizeof(uint64_t);
+                CUdeviceptr cptr_rgba  = MemoryManager::alloc(levelPixels * 4, "screenshot_level");
+
+                // Reuse resolve kernel pointed at this level's sub-buffer.
+                // We need a temporary RenderTarget with adjusted width/height
+                // pointing into the pyramid offset.
+                RenderTarget level_target  = target;
+                level_target.colorbuffer   = (uint64_t*)cptr_level;
+                level_target.width         = w;
+                level_target.height        = h;
+
+				int levelW = (int)w;
+				int levelH = (int)h;
+
+                void* level_args[] = {
+                    &level_target,
+                    &cptr_rgba,
+                    &cptr_ssaoShadebuffer,
+                    &CuRastSettings::enableEDL,
+                    &CuRastSettings::enableSSAO,
+                    &levelW,
+                    &levelH,
+                    &backgroundColor
+                };
+                prog_resolve->launch2D("kernel_resolve_colorbuffer_to_screenshot",
+                    level_args, w, h);
+
+                void* host = nullptr;
+                cuMemAllocHost(&host, levelPixels * 4);
+                cuMemcpyDtoH(host, cptr_rgba, levelPixels * 4);
+
+                string newRes   = format("res_{}x{}", w, h);
+                string levelPath = baseStr;
+                levelPath.replace(levelPath.find(oldRes), oldRes.size(), newRes);
+
+                println("Screenshot path: {}", levelPath);
+                stbi_write_png(levelPath.c_str(), w, h, 4, host, w * 4);
+
+                cuMemFreeHost(host);
+                MemoryManager::free(cptr_rgba);
+            }
+
+            levelOffset += levelPixels;
+        }
+    }
 }
+
 
 void saveScreenshotDepth(RenderTarget target, CudaModularProgram* prog_resolve){
 
-	uint64_t numPixels = target.width * target.height;
-	CUdeviceptr cptr_screenshot = MemoryManager::alloc(numPixels * 4, "screenshot");
+    uint64_t numPixels = uint64_t(target.width) * target.height;
+    CUdeviceptr cptr_screenshot = MemoryManager::alloc(numPixels * 4, "screenshot");
 
-	void* args[] = {
-		&target,
-		&cptr_screenshot
-	};
-	prog_resolve->launch2D("kernel_resolve_depthbuffer_to_screenshot", args, target.width, target.height);
+    void* args[] = { &target, &cptr_screenshot };
+    prog_resolve->launch2D("kernel_resolve_depthbuffer_to_screenshot", args, target.width, target.height);
 
-	void* screenshot_host = nullptr;
-	cuMemAllocHost(&screenshot_host, 4 * numPixels);
-	cuMemcpyDtoH(screenshot_host, cptr_screenshot, 4 * numPixels);
+    void* screenshot_host = nullptr;
+    cuMemAllocHost(&screenshot_host, 4 * numPixels);
+    cuMemcpyDtoH(screenshot_host, cptr_screenshot, 4 * numPixels);
 
-	string path = "";
-	if(*CuRastSettings::requestScreenshot == ""){
-		for(int i = 0; i <= 10'000'000; i++){
-			fs::create_directories("./screenshots");
-			path = format("./screenshots/depth_screenshot_{}.png", i);
+    size_t lastindex = (*CuRastSettings::requestScreenshot).find_last_of(".");
+    string rawname   = (*CuRastSettings::requestScreenshot).substr(0, lastindex);
+    string basePath  = format("{}_depth.png", rawname);
 
-			if(!fs::exists(path)) break;
-		}
-	} else {
-		size_t lastindex = (*CuRastSettings::requestScreenshot).find_last_of("."); 
-		string rawname = (*CuRastSettings::requestScreenshot).substr(0, lastindex);
-		path = format("{}_depth.png", rawname);
-	}
-	println("Screenshot path: {}", path);
+    println("Screenshot path: {}", basePath);
+    stbi_flip_vertically_on_write(1);
+    stbi_write_png(basePath.c_str(), target.width, target.height, 4, screenshot_host, target.width * 4);
 
-	int stride_in_bytes = target.width * 4;
-	stbi_flip_vertically_on_write(1);
-	stbi_write_png(path.c_str(), target.width, target.height, 4, screenshot_host, stride_in_bytes);
+    MemoryManager::free(cptr_screenshot);
+    cuMemFreeHost(screenshot_host);
 
-	MemoryManager::free(cptr_screenshot);
-	cuMemFreeHost(screenshot_host);
+    if(CuRastSettings::useMultiScale){
+        string baseStr = basePath;
+        string oldRes  = format("res_{}x{}", target.width, target.height);
+
+        uint64_t levelOffset = 0;
+        for(uint32_t level = 0; level < CRenderingSettings::NB_PYRAMID_LEVELS; level++){
+            uint32_t w = target.width  >> level;
+            uint32_t h = target.height >> level;
+            uint64_t levelPixels = uint64_t(w) * h;
+
+            if(level > 0){
+                CUdeviceptr cptr_level = cvm_colorbuffer->cptr + levelOffset * sizeof(uint64_t);
+                CUdeviceptr cptr_rgba  = MemoryManager::alloc(levelPixels * 4, "screenshot_depth_level");
+
+                RenderTarget level_target  = target;
+                level_target.colorbuffer   = (uint64_t*)cptr_level;
+                level_target.width         = w;
+                level_target.height        = h;
+
+                void* level_args[] = { &level_target, &cptr_rgba };
+                prog_resolve->launch2D("kernel_resolve_depthbuffer_to_screenshot", level_args, w, h);
+
+                void* host = nullptr;
+                cuMemAllocHost(&host, levelPixels * 4);
+                cuMemcpyDtoH(host, cptr_rgba, levelPixels * 4);
+
+                string newRes    = format("res_{}x{}", w, h);
+                string levelPath = baseStr;
+                levelPath.replace(levelPath.find(oldRes), oldRes.size(), newRes);
+
+                println("Screenshot path: {}", levelPath);
+                stbi_write_png(levelPath.c_str(), w, h, 4, host, w * 4);
+
+                cuMemFreeHost(host);
+                MemoryManager::free(cptr_rgba);
+            }
+
+            levelOffset += levelPixels;
+        }
+    }
 }
+
 
 void saveScreenshotLod(RenderTarget target, CudaModularProgram* prog_resolve){
 
-	uint64_t numPixels = target.width * target.height;
-	CUdeviceptr cptr_screenshot = MemoryManager::alloc(numPixels * 4, "screenshot");
+    uint64_t numPixels = uint64_t(target.width) * target.height;
+    CUdeviceptr cptr_screenshot = MemoryManager::alloc(numPixels * 4, "screenshot");
 
-	void* args[] = {
-		&target,
-		&cptr_screenshot
-	};
-	prog_resolve->launch2D("kernel_resolve_lod_to_screenshot", args, target.width, target.height);
+    void* args[] = { &target, &cptr_screenshot };
+    prog_resolve->launch2D("kernel_resolve_lod_to_screenshot", args, target.width, target.height);
 
-	void* screenshot_host = nullptr;
-	cuMemAllocHost(&screenshot_host, 4 * numPixels);
-	cuMemcpyDtoH(screenshot_host, cptr_screenshot, 4 * numPixels);
+    void* screenshot_host = nullptr;
+    cuMemAllocHost(&screenshot_host, 4 * numPixels);
+    cuMemcpyDtoH(screenshot_host, cptr_screenshot, 4 * numPixels);
 
-	string path = "";
-	if(*CuRastSettings::requestScreenshot == ""){
-		for(int i = 0; i <= 10'000'000; i++){
-			fs::create_directories("./screenshots");
-			path = format("./screenshots/lod_screenshot_{}.png", i);
+    size_t lastindex = (*CuRastSettings::requestScreenshot).find_last_of(".");
+    string rawname   = (*CuRastSettings::requestScreenshot).substr(0, lastindex);
+    string basePath  = format("{}_lod.png", rawname);
 
-			if(!fs::exists(path)) break;
-		}
-	} else {
-		size_t lastindex = (*CuRastSettings::requestScreenshot).find_last_of("."); 
-		string rawname = (*CuRastSettings::requestScreenshot).substr(0, lastindex);
-		path = format("{}_lod.png", rawname);
-	}
-	println("Screenshot path: {}", path);
+    println("Screenshot path: {}", basePath);
+    stbi_flip_vertically_on_write(1);
+    stbi_write_png(basePath.c_str(), target.width, target.height, 4, screenshot_host, target.width * 4);
 
-	int stride_in_bytes = target.width * 4;
-	stbi_flip_vertically_on_write(1);
-	stbi_write_png(path.c_str(), target.width, target.height, 4, screenshot_host, stride_in_bytes);
+    MemoryManager::free(cptr_screenshot);
+    cuMemFreeHost(screenshot_host);
 
-	MemoryManager::free(cptr_screenshot);
-	cuMemFreeHost(screenshot_host);
+    if(CuRastSettings::useMultiScale){
+        string baseStr = basePath;
+        string oldRes  = format("res_{}x{}", target.width, target.height);
+
+        uint64_t levelOffset = 0;
+        for(uint32_t level = 0; level < CRenderingSettings::NB_PYRAMID_LEVELS; level++){
+            uint32_t w = target.width  >> level;
+            uint32_t h = target.height >> level;
+            uint64_t levelPixels = uint64_t(w) * h;
+
+            if(level > 0){
+                // LOD is stored in framebuffer (lower bits), not colorbuffer
+                CUdeviceptr cptr_level = cvm_framebuffer->cptr + levelOffset * sizeof(uint64_t);
+                CUdeviceptr cptr_rgba  = MemoryManager::alloc(levelPixels * 4, "screenshot_lod_level");
+
+                RenderTarget level_target  = target;
+                level_target.framebuffer   = (uint64_t*)cptr_level;
+                level_target.width         = w;
+                level_target.height        = h;
+
+                void* level_args[] = { &level_target, &cptr_rgba };
+                prog_resolve->launch2D("kernel_resolve_lod_to_screenshot", level_args, w, h);
+
+                void* host = nullptr;
+                cuMemAllocHost(&host, levelPixels * 4);
+                cuMemcpyDtoH(host, cptr_rgba, levelPixels * 4);
+
+                string newRes    = format("res_{}x{}", w, h);
+                string levelPath = baseStr;
+                levelPath.replace(levelPath.find(oldRes), oldRes.size(), newRes);
+
+                println("Screenshot path: {}", levelPath);
+                stbi_write_png(levelPath.c_str(), w, h, 4, host, w * 4);
+
+                cuMemFreeHost(host);
+                MemoryManager::free(cptr_rgba);
+            }
+
+            levelOffset += levelPixels;
+        }
+    }
 }
 
 
@@ -553,23 +657,46 @@ void CuRast::draw(Scene* scene, vector<View> views){
 			uint32_t clearColor = 0xff000000;
 			float clearDepth = Infinity;
 
-			uint64_t requiredBytes = numPixels * 8;
-			cvm_framebuffer->commit(requiredBytes);
-			cvm_colorbuffer->commit(requiredBytes);
+			if(CuRastSettings::useMultiScale){
+				uint64_t totalPixels = 0;
+				for(uint32_t level = 0; level < CRenderingSettings::NB_PYRAMID_LEVELS; level++){
+					totalPixels += uint64_t(target.width >> level) * uint64_t(target.height >> level);
+				}
+				cvm_framebuffer->commit(totalPixels * sizeof(uint64_t));
+				cvm_colorbuffer->commit(totalPixels * sizeof(uint64_t));
+			} else {
+				cvm_framebuffer->commit(numPixels * sizeof(uint64_t));
+				cvm_colorbuffer->commit(numPixels * sizeof(uint64_t));
+			}
 
-			prog->launch("kernel_clearFramebuffer", {
-				&cvm_framebuffer->cptr,
-				&numPixels,
-				&clearColor,
-				&clearDepth
-			}, numPixels);
+			if(CuRastSettings::useMultiScale){
+				uint64_t levelOffset = 0;
+				for(uint32_t level = 0; level < CRenderingSettings::NB_PYRAMID_LEVELS; level++){
+					uint32_t w = target.width  >> level;
+					uint32_t h = target.height >> level;
+					uint32_t levelPixels = w * h;
 
-			prog->launch("kernel_clearFramebuffer", {
-				&cvm_colorbuffer->cptr,
-				&numPixels,
-				&clearColor,
-				&clearDepth
-			}, numPixels);
+					CUdeviceptr fb_level = cvm_framebuffer->cptr + levelOffset * sizeof(uint64_t);
+					CUdeviceptr cb_level = cvm_colorbuffer->cptr + levelOffset * sizeof(uint64_t);
+
+					prog->launch("kernel_clearFramebuffer", {
+						&fb_level, &levelPixels, &clearColor, &clearDepth
+					}, levelPixels);
+					prog->launch("kernel_clearFramebuffer", {
+						&cb_level, &levelPixels, &clearColor, &clearDepth
+					}, levelPixels);
+
+					levelOffset += levelPixels;
+				}
+			} else {
+				// existing single clear
+				prog->launch("kernel_clearFramebuffer", {
+					&cvm_framebuffer->cptr, &numPixels, &clearColor, &clearDepth
+				}, numPixels);
+				prog->launch("kernel_clearFramebuffer", {
+					&cvm_colorbuffer->cptr, &numPixels, &clearColor, &clearDepth
+				}, numPixels);
+			}
 		}
 
 		drawTrianglesVisbuffer(
@@ -638,19 +765,19 @@ void CuRast::draw(Scene* scene, vector<View> views){
 		}
 
 
-		{ // RESOLVE VISIBILITY BUFFER (write colors to colorbuffer)
-			void* args[] = {
-				&cvm_instances->cptr,
-				&numInstances,
-				&cvm_triangleCountPrefixsum->cptr,
-				&mouse_X,
-				&mouse_Y,
-				&cptr_state,
-				&rasterSettings,
-				&jpp,
-			};
-			prog->launch2D("kernel_resolve_visbuffer_to_colorbuffer2D", args, target.width, target.height);
-		}
+		// { // RESOLVE VISIBILITY BUFFER (write colors to colorbuffer)
+		// 	void* args[] = {
+		// 		&cvm_instances->cptr,
+		// 		&numInstances,
+		// 		&cvm_triangleCountPrefixsum->cptr,
+		// 		&mouse_X,
+		// 		&mouse_Y,
+		// 		&cptr_state,
+		// 		&rasterSettings,
+		// 		&jpp,
+		// 	};
+		// 	prog->launch2D("kernel_resolve_visbuffer_to_colorbuffer2D", args, target.width, target.height);
+		// }
 
 		if(hasJpegCompressedTextures){
 			uint32_t toDecodeCounter;
@@ -767,6 +894,9 @@ void CuRast::draw(Scene* scene, vector<View> views){
 
 		if(OocSimLodSettings::IS_USING_GPU_VERSION){
 			GpuVersion::renderOctree(target);
+			// if(CuRastSettings::useMultiScale){
+			// 	NeuralNet::infer(target);
+			// }
 		} else {
 			if(CuRastSettings::bruteForceRendering){
 				drawPoints(scene, view, target);

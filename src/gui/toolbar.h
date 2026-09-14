@@ -147,6 +147,8 @@ void CuRast::makeToolbar(){
 				ImGui::Checkbox("Bounding boxes", &CuRastSettings::showBoundingBoxes);
 				ImGui::SameLine();
 				ImGui::Checkbox("Use voxel debug color", &CuRastSettings::voxelsDebugColor);
+				ImGui::SameLine();
+				ImGui::Checkbox("Use multiscale", &CuRastSettings::useMultiScale);
 
 				// ImGui::Checkbox("Auto-free GPU memory", &CuRastSettings::autoFreeOldOctreeMemoryOnGPU);
 				// ImGui::SameLine();

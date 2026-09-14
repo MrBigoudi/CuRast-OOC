@@ -19,6 +19,7 @@ struct CuRastSettings{
 	static inline int32_t lastScreenshotValue = 5;
 	static inline bool tryToCenterTarget = false;
 	static inline float tryToCenterTargetDiagonal = 0.5f;
+	static inline bool useMultiScale = false;
 
 	static inline bool showVisibleNodes = false;
 	static inline bool freezeVisibleNodes = false;

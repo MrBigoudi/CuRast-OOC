@@ -225,21 +225,21 @@ void kernel_clearFramebuffer(
 	// uint64_t udepth = __float_as_uint(clearDepth);
 	// uint64_t udepth = 0x00ffffff;
 	// uint64_t pixel = udepth << 40;
-	uint64_t pixel = 0xFFFFFFF0'00000000ULL;
-	framebuffer[pixelID] = pixel;
-
+	// uint64_t pixel = 0xFFFFFFF0'00000000ULL;
+	uint64_t pixel = (uint64_t)__float_as_uint(INFINITY) << 32 | 0;
+    pixel |= clearColor;
 	framebuffer[pixelID] = pixel;
 }
 
 
 __device__
-float getEdlShadingFactor(uint64_t* colorbuffer, float depth, int x, int y, int distance){
+float getEdlShadingFactor(uint64_t* colorbuffer, int width, int height, float depth, int x, int y, int distance){
 	auto getNeighborDepth = [&](int x, int y) -> float{
 
-		if(x < 0 || x >= c_target.width) return Infinity;
-		if(y < 0 || y >= c_target.height) return Infinity;
+		if(x < 0 || x >= width) return Infinity;
+		if(y < 0 || y >= height) return Infinity;
 
-		int pixelID = toFramebufferIndex(x, y, c_target.width);
+		int pixelID = toFramebufferIndex(x, y, width);
 		uint64_t pixel = colorbuffer[pixelID];
 
 		float d = __uint_as_float(pixel >> 32);
@@ -1174,7 +1174,7 @@ void kernel_resolve_colorbuffer_to_opengl_2D(
 		float ssao = 1.0f;
 
 		if(enableEDL){
-			edl = getEdlShadingFactor(c_target.colorbuffer, depth, x, y, 1);
+			edl = getEdlShadingFactor(c_target.colorbuffer, c_target.width, c_target.height, depth, x, y, 1);
 		}
 
 		if(enableSSAO){
@@ -1226,7 +1226,7 @@ void kernel_resolve_colorbuffer_to_opengl_2D(
 			}
 
 			if(enableEDL){
-				edl += getEdlShadingFactor(c_target.colorbuffer, depth, source_x, source_y, supersamplingFactor);
+				edl += getEdlShadingFactor(c_target.colorbuffer, c_target.width, c_target.height, depth, source_x, source_y, supersamplingFactor);
 			}
 			if(enableSSAO){
 				ssao += ssaoShadeBuffer[sourcePixelID];
@@ -1275,8 +1275,6 @@ void kernel_resolve_colorbuffer_to_screenshot(
 	auto grid = cg::this_grid();
 	auto block = cg::this_thread_block();
 
-	// RenderTarget& source = c_target;
-
 	int x = grid.thread_index().x;
 	int y = grid.thread_index().y;
 	int pixelID = toFramebufferIndex(x, y, source.width);
@@ -1284,7 +1282,7 @@ void kernel_resolve_colorbuffer_to_screenshot(
 	if(x >= source.width) return;
 	if(y >= source.height) return;
 
-	uint64_t pixel = c_target.colorbuffer[pixelID];
+	uint64_t pixel = source.colorbuffer[pixelID];
 	float depth = __uint_as_float(pixel >> 32);
 	uint32_t color = pixel & 0xffffffff;
 
@@ -1293,7 +1291,7 @@ void kernel_resolve_colorbuffer_to_screenshot(
 
 	if(enableEDL){
 		int supersamplingFactor = source.width / windowWidth;
-		edl = getEdlShadingFactor(c_target.colorbuffer, depth, x, y, supersamplingFactor);
+		edl = getEdlShadingFactor(source.colorbuffer, source.width, source.height, depth, x, y, supersamplingFactor);
 	}
 
 	if(enableSSAO){
@@ -1321,8 +1319,6 @@ void kernel_resolve_depthbuffer_to_screenshot(
 	auto grid = cg::this_grid();
 	auto block = cg::this_thread_block();
 
-	// RenderTarget& source = c_target;
-
 	int x = grid.thread_index().x;
 	int y = grid.thread_index().y;
 	int pixelID = toFramebufferIndex(x, y, source.width);
@@ -1330,7 +1326,7 @@ void kernel_resolve_depthbuffer_to_screenshot(
 	if(x >= source.width) return;
 	if(y >= source.height) return;
 
-	uint64_t pixel = c_target.colorbuffer[pixelID];
+	uint64_t pixel = source.colorbuffer[pixelID];
 	float depth = __uint_as_float(pixel >> 32);
 	uint8_t depth_b = pixel >> 32;
 	uint32_t depth_rgb = 0;
@@ -1353,8 +1349,6 @@ void kernel_resolve_lod_to_screenshot(
 	auto grid = cg::this_grid();
 	auto block = cg::this_thread_block();
 
-	// RenderTarget& source = c_target;
-
 	int x = grid.thread_index().x;
 	int y = grid.thread_index().y;
 	int pixelID = toFramebufferIndex(x, y, source.width);
@@ -1362,7 +1356,7 @@ void kernel_resolve_lod_to_screenshot(
 	if(x >= source.width) return;
 	if(y >= source.height) return;
 
-	uint64_t pixel = c_target.framebuffer[pixelID];
+	uint64_t pixel = source.framebuffer[pixelID];
 	uint8_t level = uint8_t(pixel >> 56);
 	uint32_t level_rgb = 0;
 

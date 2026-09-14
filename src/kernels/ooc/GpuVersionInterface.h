@@ -597,15 +597,7 @@ struct COctreeNodeUnified {
 
 
 
-struct CRenderTarget{
-	uint64_t* framebuffer;
-	uint64_t* colorbuffer;
-	int width;
-	int height;
-	glm::mat4 view;
-	glm::mat4 proj;
-	glm::vec3 camera_pos;
-};
+
 
 
 
@@ -917,16 +909,30 @@ enum PipelineLevel {
 };
 
 
+enum SentBatchState {
+	BatchToHandle,
+	BatchInUse,
+	BatchHandled,
+};
+
+
 struct CRenderingSettings {
 	int32_t debug_lod_to_render = 0;
 	bool use_voxels_debug_color = false;
 	uint32_t min_pixel_span = 0;
 	uint32_t voxels_nb_points_per_axis = 0;
+	bool use_multiscale = false;
+	static constexpr uint32_t NB_PYRAMID_LEVELS = 4;
 };
 
 
-enum SentBatchState {
-	BatchToHandle,
-	BatchInUse,
-	BatchHandled,
+struct CRenderTarget{
+	// Per-level framebuffers (finest to coarsest)
+    uint64_t* framebuffers[CRenderingSettings::NB_PYRAMID_LEVELS];
+    uint64_t* colorbuffers[CRenderingSettings::NB_PYRAMID_LEVELS];
+    uint32_t  width;
+    uint32_t  height;
+	glm::mat4 view;
+	glm::mat4 proj;
+	glm::vec3 camera_pos;
 };

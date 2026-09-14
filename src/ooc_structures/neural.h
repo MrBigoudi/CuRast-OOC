@@ -74,16 +74,13 @@ struct PyramidUNet : torch::nn::Module {
         uint32_t output_channels
     );
 
-    torch::Tensor forward(
-        torch::Tensor x,
-        const std::vector<torch::Tensor>& pyramid
-    );
+    torch::Tensor forward(const std::vector<torch::Tensor>& pyramid);
 };
 
 
 
 struct NeuralNet {
-    static inline std::shared_ptr<PyramidUNet> model = nullptr;
+    static inline torch::jit::script::Module model;
 
     static void load(const std::string& model_path);
 
@@ -91,4 +88,6 @@ struct NeuralNet {
         torch::Tensor& source,
         const torch::Tensor& target
     );
+
+    static void infer(RenderTarget& target);
 };

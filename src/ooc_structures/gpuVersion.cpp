@@ -1340,20 +1340,28 @@ void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
 
 
 void GpuVersion::renderOctree(RenderTarget& target){
-    CRenderTarget real_target = {};
-    real_target.framebuffer = target.framebuffer;
-    real_target.colorbuffer = target.colorbuffer;
-    real_target.width = target.width;
-    real_target.height = target.height;
-    real_target.view = target.view;
-    real_target.proj = target.proj;
-    real_target.camera_pos = target.cameraPos;
-
     CRenderingSettings real_settings = {};
     real_settings.debug_lod_to_render = CuRastSettings::debugLodToRender;
     real_settings.use_voxels_debug_color = CuRastSettings::voxelsDebugColor;
     real_settings.min_pixel_span = CuRastSettings::minPixelSpan;
     real_settings.voxels_nb_points_per_axis = uint32_t(CuRastSettings::voxelsPointsPerAxis);
+    real_settings.use_multiscale = CuRastSettings::useMultiScale;
+
+    CRenderTarget real_target = {};
+    real_target.view = target.view;
+    real_target.proj = target.proj;
+    real_target.camera_pos = target.cameraPos;
+    real_target.width = target.width;
+    real_target.height = target.height;
+
+    uint64_t offset = 0; // in units of uint64_t elements (8 bytes each)
+    for(uint32_t level = 0; level < CRenderingSettings::NB_PYRAMID_LEVELS; level++){
+        real_target.framebuffers[level] = target.framebuffer + offset;
+        real_target.colorbuffers[level] = target.colorbuffer + offset;
+        uint32_t w = target.width >> level;
+        uint32_t h = target.height >> level;
+        offset += w * h;
+    }
 
     // Render nodes
     {
@@ -1845,16 +1853,13 @@ void GpuVersion::takeRandomScreenShots(){
 
 /// For another project
 void GpuVersion::takeSingleScreenShot(){
-    static const uint32_t NB_RESOLUTIONS = 4;
     static uint32_t NB_SCREENSHOTS = 4;
-    static uint32_t NB_TOTAL_SCREENSHOTS = NB_SCREENSHOTS * NB_RESOLUTIONS * 2;
+    static uint32_t NB_TOTAL_SCREENSHOTS = NB_SCREENSHOTS * 2;
 
     static bool oldSettingsIsLeftDown = false;
     static double oldSettingsScroll = 0;
     static double oldSettingsPosX = 0;
     static double oldSettingsPosY = 0;
-    static uint32_t oldSettingsNbPointsPerAxis = 0;
-    static vec4 oldSettingsBackgroundColor = {};
     static double oldSettingsYaw = 0;
     static double oldSettingsPitch = 0;
     static double oldSettingsRadius = 0;
@@ -1877,8 +1882,6 @@ void GpuVersion::takeSingleScreenShot(){
         buttonWasPressed = true;
         screenshotCounter = 0;
 
-        // Save old settings
-        oldSettingsBackgroundColor = CuRastSettings::background;
         oldSettingsIsLeftDown      = Runtime::controls->isLeftDown;
         oldSettingsScroll          = Runtime::mouseEvents.wheel_y;
         oldSettingsPosX            = Runtime::mouseEvents.pos_x;
@@ -1890,19 +1893,20 @@ void GpuVersion::takeSingleScreenShot(){
         old_lod                    = CuRastSettings::debugLodToRender;
 
         for(int i = INITIAL_ID; i <= 10'000'000; i++){
-			fs::create_directories("./screenshots");
-			std::string path = format("./screenshots/id_{}_res_{}x{}_target.png",
+            fs::create_directories("./screenshots");
+            std::string path = format("./screenshots/id_{}_res_{}x{}_target.png",
                 i, VKRenderer::width, VKRenderer::height
             );
             INITIAL_ID = i;
-			if(!fs::exists(path)) break;
-		}
+            if(!fs::exists(path)) break;
+        }
 
         NB_SCREENSHOTS = CuRastSettings::lastScreenshotValue - CuRastSettings::firstScreenshotValue + 1;
-        NB_TOTAL_SCREENSHOTS = NB_SCREENSHOTS * NB_RESOLUTIONS * 2;
+        NB_TOTAL_SCREENSHOTS = NB_SCREENSHOTS * 2; // just perturbed + target per id
         density.resize(NB_SCREENSHOTS);
         std::iota(density.begin(), density.end(), CuRastSettings::firstScreenshotValue);
 
+        CuRastSettings::useMultiScale = true;
         GpuVersion::isTakingScreenshots = true;
         cpt = 0;
     }
@@ -1913,7 +1917,7 @@ void GpuVersion::takeSingleScreenShot(){
         Runtime::mouseEvents.wheel_y  = oldSettingsScroll;
         Runtime::mouseEvents.pos_x    = oldSettingsPosX;
         Runtime::mouseEvents.pos_y    = oldSettingsPosY;
-        CuRastSettings::background    = oldSettingsBackgroundColor;
+        CuRastSettings::debugLodToRender = old_lod;
 
         Runtime::controls->yaw    = oldSettingsYaw;
         Runtime::controls->pitch  = oldSettingsPitch;
@@ -1921,24 +1925,21 @@ void GpuVersion::takeSingleScreenShot(){
         Runtime::controls->target = oldSettingsTarget;
         Runtime::controls->update();
 
-        buttonWasPressed = false;
-        CuRastSettings::bruteForceRendering = false;
-
-        VKRenderer::width = old_width;
+        VKRenderer::width  = old_width;
         VKRenderer::height = old_height;
 
-        GpuVersion::isTakingScreenshots = false;
+        CuRastSettings::useMultiScale       = false;
+        CuRastSettings::bruteForceRendering = false;
+        GpuVersion::isTakingScreenshots     = false;
+        buttonWasPressed = false;
     }
 
-    // If screenshots
     if(screenshotCounter < NB_TOTAL_SCREENSHOTS){
         fs::create_directories("./screenshots");
 
-        Runtime::controls->isLeftDown = oldSettingsIsLeftDown;
-        Runtime::mouseEvents.wheel_y  = oldSettingsScroll;
-        Runtime::mouseEvents.pos_x    = oldSettingsPosX;
-        Runtime::mouseEvents.pos_y    = oldSettingsPosY;
-        CuRastSettings::background = vec4(1.,1.,1.,1.);
+        Runtime::controls->isLeftDown = false;
+        Runtime::mouseEvents.wheel_x  = 0;
+        Runtime::mouseEvents.wheel_y  = 0;
 
         Runtime::controls->yaw    = oldSettingsYaw;
         Runtime::controls->pitch  = oldSettingsPitch;
@@ -1946,49 +1947,24 @@ void GpuVersion::takeSingleScreenShot(){
         Runtime::controls->target = oldSettingsTarget;
         Runtime::controls->update();
 
-        uint32_t pairId = screenshotCounter / (2*NB_RESOLUTIONS) + INITIAL_ID;
+        VKRenderer::width  = old_width;
+        VKRenderer::height = old_height;
 
-        if(screenshotCounter % (2*NB_RESOLUTIONS) == 0){
+        uint32_t pairId   = screenshotCounter / 2 + INITIAL_ID;
+        bool isPerturbed  = (screenshotCounter % 2 == 0);
+
+        if(isPerturbed){
             CuRastSettings::debugLodToRender = int32_t(density[cpt]);
             cpt++;
-
-            VKRenderer::width = old_width;
-            VKRenderer::height = old_height;
             CuRastSettings::requestScreenshot = std::make_shared<string>(
-                format("./screenshots/id_{}_res_{}x{}_lod_{}_perturbed.png",
-                    pairId,
-                    VKRenderer::width, VKRenderer::height,
-                    CuRastSettings::debugLodToRender
-                )
+                format("./screenshots/id_{}_res_{}x{}_perturbed.png",
+                    pairId, old_width, old_height)
             );
-        } else if(screenshotCounter % (2*NB_RESOLUTIONS) == NB_RESOLUTIONS) {
+        } else {
             CuRastSettings::debugLodToRender = -1;
-            VKRenderer::width = old_width;
-            VKRenderer::height = old_height;
             CuRastSettings::requestScreenshot = std::make_shared<string>(
                 format("./screenshots/id_{}_res_{}x{}_target.png",
-                    pairId,
-                    VKRenderer::width, VKRenderer::height
-                )
-            );
-        } else if(screenshotCounter % (2*NB_RESOLUTIONS) < NB_RESOLUTIONS) {
-            VKRenderer::width = (old_width >> (screenshotCounter % (2*NB_RESOLUTIONS)));
-            VKRenderer::height = (old_height >> (screenshotCounter % (2*NB_RESOLUTIONS)));
-            CuRastSettings::requestScreenshot = std::make_shared<string>(
-                format("./screenshots/id_{}_res_{}x{}_lod_{}_perturbed.png",
-                    pairId,
-                    VKRenderer::width, VKRenderer::height,
-                    CuRastSettings::debugLodToRender
-                )
-            );
-        } else if(screenshotCounter % (2*NB_RESOLUTIONS) > NB_RESOLUTIONS) {
-            VKRenderer::width = (old_width >> (screenshotCounter % NB_RESOLUTIONS));
-            VKRenderer::height = (old_height >> (screenshotCounter % NB_RESOLUTIONS));
-            CuRastSettings::requestScreenshot = std::make_shared<string>(
-                format("./screenshots/id_{}_res_{}x{}_target.png",
-                    pairId,
-                    VKRenderer::width, VKRenderer::height
-                )
+                    pairId, old_width, old_height)
             );
         }
 

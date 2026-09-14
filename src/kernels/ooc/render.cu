@@ -56,7 +56,7 @@ void drawLine(const CRenderTarget& target, vec3 start, vec3 end, uint32_t color 
 		if(depth > 0.0f){
 			uint64_t udepth = __float_as_uint(depth);
 			uint64_t pixel = (udepth << 32) | color;
-			atomicMin(&target.colorbuffer[pixelID], pixel);
+			atomicMin(&target.colorbuffers[0][pixelID], pixel);
 		}
 
 	}
@@ -134,35 +134,51 @@ uint32_t linearGradient(float factor, uint32_t left_color, uint32_t right_color)
 __device__
 void drawPoint(
 	const CRenderTarget& target,
+    const CRenderingSettings settings,
 	vec3 position,
     uint32_t color,
     uint8_t lod = 0
 ){
 	vec4 projected = target.proj * target.view * vec4(position, 1.0f);
-	float depth = projected.w;
+    float depth = projected.w;
+    if(depth <= 0.0f) return;
 
-	int px = ((projected.x / depth) * 0.5f + 0.5f) * target.width;
-	int py = ((projected.y / depth) * 0.5f + 0.5f) * target.height;
-	int pixelID = px + py * target.width;
+    uint64_t udepth   = __float_as_uint(depth);
+    uint64_t fragment  = (udepth << 32) | color;
+    uint64_t lod_frag  = lod;
 
-	if(px < 0 || px >= target.width) return;
-	if(py < 0 || py >= target.height) return;
-	if(pixelID < 0 || pixelID >= target.width * target.height) return;
+    // Project at finest resolution, then scale down per level
+    float ndc_x = projected.x / depth;  // [-1, 1]
+    float ndc_y = projected.y / depth;
 
-	uint64_t udepth = __float_as_uint(depth);
-	uint64_t fragment = (udepth << 32) | color;
+    uint32_t loop_end = settings.use_multiscale ? CRenderingSettings::NB_PYRAMID_LEVELS : 1;
+    #pragma unroll
+    for(uint32_t level = 0; level < loop_end; level++){
+        uint64_t* colorbuffer  = target.colorbuffers[level];
+        uint64_t* framebuffer  = target.framebuffers[level];
 
-	uint64_t lod_fragment = lod;
+        uint32_t w = target.width >> level;
+        uint32_t h = target.height >> level;
 
-	if(fragment < target.colorbuffer[pixelID]){
-		atomicMin(&target.colorbuffer[pixelID], fragment);
-		atomicMin(&target.framebuffer[pixelID], lod_fragment);
-	}
+        int px = int((ndc_x * 0.5f + 0.5f) * float(w));
+        int py = int((ndc_y * 0.5f + 0.5f) * float(h));
+
+        if(px < 0 || px >= int(w)) continue;
+        if(py < 0 || py >= int(h)) continue;
+
+        int pixelID = px + py * w;
+
+        if(fragment < colorbuffer[pixelID]){
+            atomicMin(&colorbuffer[pixelID], fragment);
+            atomicMin(&framebuffer[pixelID], lod_frag);
+        }
+    }
 }
 
 __device__
 void drawVoxel(
     const CRenderTarget& target,
+    const CRenderingSettings settings,
 	vec3 voxel_position,
     uint32_t voxel_color,
     vec3 voxel_size,
@@ -172,7 +188,7 @@ void drawVoxel(
     // Draw the middle point
     // Usually 1 point is enough to represent a voxel from far away
     if(nb_points_per_axis % 2 == 1){
-        drawPoint(target, voxel_position, voxel_color);
+        drawPoint(target, settings, voxel_position, voxel_color);
     }
     if(nb_points_per_axis <= 1){
         return;
@@ -184,25 +200,25 @@ void drawVoxel(
     for(float cy = -0.5; cy <= 0.5; cy+=step)
     for(float cz = -0.5; cz <= 0.5; cz+=step){
         vec3 position = voxel_position + vec3(-0.5, cy, cz)*voxel_size;
-        drawPoint(target, position, voxel_color, node_level);
+        drawPoint(target, settings, position, voxel_color, node_level);
         position = voxel_position + vec3(0.5, cy, cz)*voxel_size;
-        drawPoint(target, position, voxel_color, node_level);
+        drawPoint(target, settings, position, voxel_color, node_level);
     }
     // Top-Down
     for(float cx = -0.5+step; cx <= 0.5-step; cx+=step)
     for(float cz = -0.5; cz <= 0.5; cz+=step){
         vec3 position = voxel_position + vec3(cx, -0.5, cz)*voxel_size;
-        drawPoint(target, position, voxel_color, node_level);
+        drawPoint(target, settings, position, voxel_color, node_level);
         position = voxel_position + vec3(cx, 0.5, cz)*voxel_size;
-        drawPoint(target, position, voxel_color, node_level);
+        drawPoint(target, settings, position, voxel_color, node_level);
     }
     // Front-Back
     for(float cx = -0.5+step; cx <= 0.5-step; cx+=step)
     for(float cy = -0.5+step; cy <= 0.5-step; cy+=step){
         vec3 position = voxel_position + vec3(cx, cy, -0.5)*voxel_size;
-        drawPoint(target, position, voxel_color, node_level);
+        drawPoint(target, settings, position, voxel_color, node_level);
         position = voxel_position + vec3(cx, cy, 0.5)*voxel_size;
-        drawPoint(target, position, voxel_color, node_level);
+        drawPoint(target, settings, position, voxel_color, node_level);
     }
 }
 
@@ -239,7 +255,7 @@ void drawAllVoxels(
             if(subtrees & (0x01 << index)){
                 uint32_t voxel_color = settings.use_voxels_debug_color ? color : voxel.color;
                 voxel_color = from_missing_nodes ? 0xff0000ff : voxel_color;
-                drawVoxel(target, voxel.position, voxel_color,
+                drawVoxel(target, settings, voxel.position, voxel_color,
                     voxel_size, nb_points_per_axis, node->level + 1
                 );
             }
@@ -252,6 +268,7 @@ void drawAllVoxels(
 __device__
 void drawAllPoints(
 	const CRenderTarget& target,
+    const CRenderingSettings settings,
 	COctreeNode* node
 ){
     auto block = cg::this_thread_block();
@@ -263,7 +280,7 @@ void drawAllPoints(
     while(cur_points){
         for(uint32_t i = thread_id; i < cur_points->size; i += nb_threads_per_block){
             const CPoint& point = cur_points->points[i];
-            drawPoint(target, point.position, point.color);
+            drawPoint(target, settings, point.position, point.color);
         }
         cur_points = cur_points->next;
     }
@@ -491,7 +508,7 @@ void kernel_draw_visibility_cache(
     for(uint32_t point_id = thread_id; point_id < globalVariables.nbRenderedPoints; point_id += nb_threads){
         const CPoint& point = globalVariables.renderedPoints[point_id];
         drawPoint(
-            target, point.position, 
+            target, settings, point.position, 
             settings.use_voxels_debug_color ? 0xff00ffff : point.color
         );
     }
@@ -522,7 +539,7 @@ void kernel_draw_visibility_cache(
         uint32_t nb_points_per_axis = clamp(uint32_t(root_size / cur_size), 1u, 8u);
 
         drawVoxel(
-            target, 
+            target, settings,
             voxel.position, 
             settings.use_voxels_debug_color ? 0xffff00ff : voxel.color, 
             voxel_size, 
@@ -603,7 +620,7 @@ void kernel_replace_unloaded_nodes(
                 uint32_t voxel_color = settings.use_voxels_debug_color ? color : voxel.color;
                 uint32_t nb_points_per_axis = min(8, depth + 1 - node->level);
 
-                drawVoxel(target, voxel.position, voxel_color,
+                drawVoxel(target, settings, voxel.position, voxel_color,
                     voxel_size, nb_points_per_axis, node->level + 1
                 );
             }
@@ -640,7 +657,7 @@ void kernel_draw_octree_large(
 
         if(!(node->flags & (0x01 << CFlagIsLarge))){continue;}
 
-        drawAllPoints(target, node);
+        drawAllPoints(target, settings, node);
 
         // Update flags
         if(thread_id == 0){
@@ -690,12 +707,12 @@ void kernel_draw_octree_small(
                     settings.voxels_nb_points_per_axis,
                     0b11111111, false
                 );
-                drawAllPoints(target, node);
+                drawAllPoints(target, settings, node);
             }
         } else {
             bool is_minimal_draw = (node->level == 0) && !(node->flags & (0x01 << CFlagIsLarge));
             if((node->flags & (0x01 << CFlagIsCut)) || is_minimal_draw){
-                drawAllPoints(target, node);
+                drawAllPoints(target, settings, node);
                 drawAllVoxels(
                     target, settings, node,
                     settings.voxels_nb_points_per_axis,
@@ -750,7 +767,7 @@ void kernel_test_multi_resolution(
 
         const CPoint& point = globalVariables.renderedPoints[point_id];
         drawPoint(
-            target, point.position, point.color, uint8_t(offset)
+            target, settings, point.position, point.color, uint8_t(offset)
         );
     }
 }
@@ -774,7 +791,7 @@ void kernel_test_multi_resolution_v2(
 
         const CPoint& point = globalVariables.renderedPoints[point_id];
         drawPoint(
-            target, point.position, point.color, uint8_t(offset)
+            target, settings, point.position, point.color, uint8_t(offset)
         );
     }
 }
@@ -833,7 +850,7 @@ void kernel_draw_visibility_cache_v2(
     // Render points
     for(uint32_t point_id = thread_id; point_id < nb_points; point_id += nb_threads){
         const CPoint& point = rendered_points[point_id];
-        drawPoint(target, point.position,
+        drawPoint(target, settings, point.position,
             settings.use_voxels_debug_color ? 0xff00ffff : point.color
         );
     }
@@ -853,7 +870,7 @@ void kernel_draw_visibility_cache_v2(
             continue;
         }
 
-        drawPoint(target, voxel.position, settings.use_voxels_debug_color ? 0xffff00ff : voxel.color);
+        drawPoint(target, settings, voxel.position, settings.use_voxels_debug_color ? 0xffff00ff : voxel.color);
     }
 }
 
@@ -928,7 +945,7 @@ void kernel_replace_unloaded_nodes_v2(
                 uint32_t voxel_color = settings.use_voxels_debug_color ? color : voxel.color;
                 uint32_t nb_points_per_axis = min(8, depth + 1 - node->level);
 
-                drawPoint(target, voxel.position, voxel_color, node->level);
+                drawPoint(target, settings, voxel.position, voxel_color, node->level);
             }
             
             cur_voxels = cur_voxels->next;
@@ -962,7 +979,7 @@ void drawAllVoxelsV2(
         for(uint32_t i = thread_id; i < cur_voxels->size; i += nb_threads_per_block){
             const CPoint& voxel = cur_voxels->points[i];
             uint32_t voxel_color = settings.use_voxels_debug_color ? color : voxel.color;
-            drawPoint(target, voxel.position, voxel_color,
+            drawPoint(target, settings, voxel.position, voxel_color,
                 node->level + 1
             );
         }
@@ -999,13 +1016,13 @@ void kernel_draw_octree_small_v2(
         if(settings.debug_lod_to_render != -1){
             if(node->level <= settings.debug_lod_to_render){
                 drawAllVoxelsV2(target, settings, node);
-                drawAllPoints(target, node);
+                drawAllPoints(target, settings, node);
             }
         } else {
             bool is_minimal_draw = (node->level == 0) && !(node->flags & (0x01 << CFlagIsLarge));
             if((node->flags & (0x01 << CFlagIsCut)) || is_minimal_draw){
                 drawAllVoxelsV2(target, settings, node);
-                drawAllPoints(target, node);
+                drawAllPoints(target, settings, node);
             }
         }
 
@@ -1028,4 +1045,194 @@ void kernel_draw_octree_small_v2(
         const CIdAABB& id = vis_cache[node_index];
         globalVariables.unsetFlagSync(id, CFlagIsInVisibilityCache);
     }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+__device__
+float getEdlShadingFactor(uint64_t* colorbuffer, int width, int height, float depth, int x, int y, int distance){
+	auto getNeighborDepth = [&](int x, int y) -> float{
+
+		if(x < 0 || x >= width) return INFINITY;
+		if(y < 0 || y >= height) return INFINITY;
+
+		int pixelID = x + width * y;
+		uint64_t pixel = colorbuffer[pixelID];
+
+		float d = __uint_as_float(pixel >> 32);
+
+		return d;
+	};
+
+	float sum = 0.0f;
+	int numSamples = 8;
+	for(int i = 0; i < numSamples; i++){
+		float u = 2.0f * 3.1415f * float(i) / float(numSamples);
+		float dx = float(distance) * cos(u);
+		float dy = float(distance) * sin(u);
+		
+		sum += max(log2f(depth) - log2f(getNeighborDepth(x + dx, y + dy)), 0.0f);
+	}
+
+	// float response = sum / 4.0f;
+	float response = sum / float(numSamples);
+	float edlStrength = 0.9f;
+	float shade = exp(-response * 300.0f * edlStrength);
+	shade = clamp(shade, 0.3f, 1.0f);
+
+	shade = shade * 0.8f + 0.2f;
+
+	return shade;
+}
+
+
+
+extern "C" __global__
+void kernel_resolve_colorbuffer_to_screenshot(
+	CRenderTarget source,
+	uint32_t* screenshot,
+	bool enableEDL,
+	int windowWidth,
+	int windowHeight,
+	uint32_t backgroundColor
+) {
+	auto grid = cg::this_grid();
+	auto block = cg::this_thread_block();
+
+	int x = grid.thread_index().x;
+	int y = grid.thread_index().y;
+	int pixelID = x + source.width * y;
+
+	if(x >= source.width) return;
+	if(y >= source.height) return;
+
+	uint64_t pixel = source.colorbuffers[0][pixelID];
+	float depth = __uint_as_float(pixel >> 32);
+	uint32_t color = pixel & 0xffffffff;
+
+	float edl = 1.0f;
+	float ssao = 1.0f;
+
+	if(enableEDL){
+		int supersamplingFactor = source.width / windowWidth;
+		edl = getEdlShadingFactor(source.colorbuffers[0], source.width, source.height, depth, x, y, supersamplingFactor);
+	}
+
+	if(isinf(depth)) color = backgroundColor;
+
+	float shade = edl * ssao;
+	uint8_t* rgba = (uint8_t*)&color;
+	rgba[0] = shade * float(rgba[0]);
+	rgba[1] = shade * float(rgba[1]);
+	rgba[2] = shade * float(rgba[2]);
+	rgba[3] = 255;
+
+	// surf2Dwrite(color, gl_desktop, x * 4, y);
+	screenshot[pixelID] = color;	
+}
+
+
+
+
+
+extern "C" __global__
+void kernel_unpack_resolved_pyramid_to_tensor(
+    uint32_t* resolved_level0,
+    uint32_t* resolved_level1,
+    uint32_t* resolved_level2,
+    uint32_t* resolved_level3,
+    uint64_t* framebuffer,
+    float*    out_tensor,
+    uint32_t  base_width,
+    uint32_t  base_height,
+    uint32_t  nb_levels,
+    uint64_t* level_fb_offsets,
+    uint64_t* level_tensor_offsets
+){
+    uint32_t thread_id     = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32_t total_threads = blockDim.x * gridDim.x;
+
+    uint32_t* resolved[4] = {
+        resolved_level0, resolved_level1,
+        resolved_level2, resolved_level3
+    };
+
+    for(uint32_t level = 0; level < nb_levels; level++){
+        uint32_t w = base_width  >> level;
+        uint32_t h = base_height >> level;
+        uint64_t levelPixels = uint64_t(w) * h;
+        uint64_t tensor_off  = level_tensor_offsets[level];
+        uint64_t fb_off      = level_fb_offsets[level];
+        uint64_t stride_c    = levelPixels;
+
+        for(uint64_t i = thread_id; i < levelPixels; i += total_threads){
+            uint32_t rgba = resolved[level][i];
+
+            // kernel_resolve_colorbuffer_to_screenshot writes via
+            // uint8_t* rgba = (uint8_t*)&color, so byte0=R, byte1=G, byte2=B
+            // which is exactly what PIL reads from the PNG — matches training
+            float r = float( rgba        & 0xff) / 255.0f;
+            float g = float((rgba >>  8) & 0xff) / 255.0f;
+            float b = float((rgba >> 16) & 0xff) / 255.0f;
+
+            uint64_t fb = framebuffer[fb_off + i];
+            float lod   = float(uint8_t(fb >> 56)) / 255.0f;
+
+            out_tensor[tensor_off + 0 * stride_c + i] = r;
+            out_tensor[tensor_off + 1 * stride_c + i] = g;
+            out_tensor[tensor_off + 2 * stride_c + i] = b;
+            out_tensor[tensor_off + 3 * stride_c + i] = lod;
+            out_tensor[tensor_off + 4 * stride_c + i] = 0.0f;
+        }
+    }
+}
+
+
+extern "C" __global__
+void kernel_pack_tensor_to_colorbuffer(
+    float*    tensor,
+    uint64_t* colorbuffer,
+    uint32_t  width,
+    uint32_t  height
+){
+    uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    uint64_t numPixels = uint64_t(width) * height;
+    if(i >= numPixels) return;
+
+    float r_f = __saturatef(tensor[0 * numPixels + i]);
+    float g_f = __saturatef(tensor[1 * numPixels + i]);
+    float b_f = __saturatef(tensor[2 * numPixels + i]);
+
+    uint8_t r = uint8_t(r_f * 255.0f);
+    uint8_t g = uint8_t(g_f * 255.0f);
+    uint8_t b = uint8_t(b_f * 255.0f);
+
+    // Pack to match what kernel_resolve_colorbuffer_to_screenshot reads:
+    // it does uint8_t* rgba = (uint8_t*)&color; rgba[0]=R, rgba[1]=G, rgba[2]=B
+    // So byte0=R -> uint32 bit0..7 = R
+    uint32_t color = uint32_t(r)
+                   | (uint32_t(g) << 8)
+                   | (uint32_t(b) << 16)
+                   | (0xffu       << 24);
+
+    // Write depth=1.0 so EDL and resolve treat this as a valid pixel
+    uint32_t depth_bits = __float_as_uint(1.0f);
+    colorbuffer[i] = (uint64_t(depth_bits) << 32) | uint64_t(color);
 }

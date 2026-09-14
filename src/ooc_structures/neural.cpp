@@ -1,5 +1,6 @@
 #include "neural.h"
 
+#include <torch/script.h>
 
 GatedConvolution::GatedConvolution(
     uint32_t in_channels,
@@ -175,10 +176,7 @@ PyramidUNet::PyramidUNet(
 }
 
 
-torch::Tensor PyramidUNet::forward(
-    torch::Tensor x,
-    const std::vector<torch::Tensor>& pyramid)
-{
+torch::Tensor PyramidUNet::forward(const std::vector<torch::Tensor>& pyramid){
     if (pyramid.size() != 4) {
         throw std::runtime_error("PyramidUNet expects 4 pyramid levels");
     }
@@ -192,7 +190,7 @@ torch::Tensor PyramidUNet::forward(
     auto skip0 = encoders[0]->forward(p0);
 
     // Encoder level 1
-    x = pool->forward(skip0);
+    torch::Tensor x = pool->forward(skip0);
     NeuralNet::resize_to_match(x, p1);
     x = torch::cat({x, p1}, 1);
 
@@ -270,6 +268,215 @@ void NeuralNet::resize_to_match(torch::Tensor &source, const torch::Tensor &targ
 
 
 void NeuralNet::load(const std::string& model_path){
-    model = std::make_shared<PyramidUNet>(5, 16, 3);
-    torch::load(model, model_path.c_str());
+    model = torch::jit::load(model_path);
+    model.dump(false, false, false);
+    model.eval();
+}
+
+
+void NeuralNet::infer(RenderTarget& target) {
+    uint32_t NB_LEVELS = CRenderingSettings::NB_PYRAMID_LEVELS;
+    uint32_t W0 = target.width;
+    uint32_t H0 = target.height;
+
+    // ---------------------------------------------------------------
+    // 1. Per-level resolve: run kernel_resolve_colorbuffer_to_screenshot
+    //    on each pyramid level into a uint32 RGBA buffer.
+    //    This guarantees byte order matches training (PIL RGB).
+    // ---------------------------------------------------------------
+    static CUdeviceptr d_resolved[CRenderingSettings::NB_PYRAMID_LEVELS] = {};
+    static uint64_t    d_resolved_capacity[CRenderingSettings::NB_PYRAMID_LEVELS] = {};
+
+    // Precompute colorbuffer/framebuffer offsets (same layout as renderOctree)
+    uint64_t level_cb_offsets_host[CRenderingSettings::NB_PYRAMID_LEVELS];
+    uint64_t level_fb_offsets_host[CRenderingSettings::NB_PYRAMID_LEVELS];
+    uint64_t level_tensor_offsets_host[CRenderingSettings::NB_PYRAMID_LEVELS];
+    {
+        uint64_t cb_off     = 0;
+        uint64_t tensor_off = 0;
+        for(uint32_t level = 0; level < NB_LEVELS; level++){
+            level_cb_offsets_host[level]     = cb_off;
+            level_fb_offsets_host[level]     = cb_off;  // framebuffer has same layout
+            level_tensor_offsets_host[level] = tensor_off;
+            uint32_t w = W0 >> level;
+            uint32_t h = H0 >> level;
+            uint64_t pixels = uint64_t(w) * h;
+            cb_off     += pixels;
+            tensor_off += 5 * pixels;
+        }
+    }
+
+    // Resolve each level
+    bool   noEDL  = false;
+    bool   noSSAO = false;
+    uint32_t backgroundColor = 0;
+    {
+        uint8_t* bg = (uint8_t*)&backgroundColor;
+        bg[0] = uint8_t(clamp(CuRastSettings::background.x * 256.0f, 0.0f, 255.0f));
+        bg[1] = uint8_t(clamp(CuRastSettings::background.y * 256.0f, 0.0f, 255.0f));
+        bg[2] = uint8_t(clamp(CuRastSettings::background.z * 256.0f, 0.0f, 255.0f));
+        bg[3] = 255;
+    }
+
+    for(uint32_t level = 0; level < NB_LEVELS; level++){
+        uint32_t w = W0 >> level;
+        uint32_t h = H0 >> level;
+        uint64_t pixels = uint64_t(w) * h;
+
+        // Grow buffer if needed
+        if(pixels > d_resolved_capacity[level]){
+            if(d_resolved[level]) cuMemFree(d_resolved[level]);
+            cuMemAlloc(&d_resolved[level], pixels * sizeof(uint32_t));
+            d_resolved_capacity[level] = pixels;
+        }
+
+        // Build a RenderTarget slice for this level
+        CRenderTarget level_target = {};
+        level_target.colorbuffers[0]  = target.colorbuffer + level_cb_offsets_host[level];
+        level_target.framebuffers[0]  = target.framebuffer + level_cb_offsets_host[level];
+        level_target.width        = w;
+        level_target.height       = h;
+
+        int levelW = (int)w;
+        int levelH = (int)h;
+        auto d_resolved_level = d_resolved[level];
+
+        void* args[] = {
+            &level_target,
+            &d_resolved_level,
+            &noEDL,
+            &levelW,
+            &levelH,
+            &backgroundColor
+        };
+        GpuVersion::prog->launch2D("kernel_resolve_colorbuffer_to_screenshot",
+            args, w, h);
+    }
+
+    // ---------------------------------------------------------------
+    // 2. Allocate runtime-visible float buffer for the tensor input
+    // ---------------------------------------------------------------
+    uint64_t total_floats = 0;
+    for(uint32_t level = 0; level < NB_LEVELS; level++){
+        total_floats += 5 * uint64_t(W0 >> level) * uint64_t(H0 >> level);
+    }
+    uint64_t total_float_bytes = total_floats * sizeof(float);
+
+    static float*    d_input          = nullptr;
+    static uint64_t  d_input_capacity = 0;
+    if(total_float_bytes > d_input_capacity){
+        if(d_input) cudaFree(d_input);
+        cudaMalloc(&d_input, total_float_bytes);
+        d_input_capacity = total_float_bytes;
+    }
+
+    uint64_t output_float_bytes = 3 * uint64_t(W0) * H0 * sizeof(float);
+    static float*    d_output          = nullptr;
+    static uint64_t  d_output_capacity = 0;
+    if(output_float_bytes > d_output_capacity){
+        if(d_output) cudaFree(d_output);
+        cudaMalloc(&d_output, output_float_bytes);
+        d_output_capacity = output_float_bytes;
+    }
+
+    // ---------------------------------------------------------------
+    // 3. Upload offset arrays to GPU
+    // ---------------------------------------------------------------
+    static CUdeviceptr d_level_fb_offsets     = 0;
+    static CUdeviceptr d_level_tensor_offsets = 0;
+    if(d_level_fb_offsets == 0){
+        cuMemAlloc(&d_level_fb_offsets,     NB_LEVELS * sizeof(uint64_t));
+        cuMemAlloc(&d_level_tensor_offsets, NB_LEVELS * sizeof(uint64_t));
+    }
+    cuMemcpyHtoDAsync(d_level_fb_offsets,
+                      level_fb_offsets_host,
+                      NB_LEVELS * sizeof(uint64_t), 0);
+    cuMemcpyHtoDAsync(d_level_tensor_offsets,
+                      level_tensor_offsets_host,
+                      NB_LEVELS * sizeof(uint64_t), 0);
+
+    // ---------------------------------------------------------------
+    // 4. Unpack resolved RGBA + LOD into float tensor
+    // ---------------------------------------------------------------
+    {
+        uint32_t block_size = 256;
+        uint32_t grid_size  = (uint32_t(W0) * H0 + block_size - 1) / block_size;
+        OptionalLaunchSettings launch_settings = {
+            .gridsize  = grid_size,
+            .blocksize = block_size
+        };
+
+        auto d_r0 = d_resolved[0];
+        auto d_r1 = d_resolved[1];
+        auto d_r2 = d_resolved[2];
+        auto d_r3 = d_resolved[3];
+
+        void* args[] = {
+            &d_r0, &d_r1, &d_r2, &d_r3,
+            &target.framebuffer,
+            &d_input,
+            &W0, &H0,
+            &NB_LEVELS,
+            &d_level_fb_offsets,
+            &d_level_tensor_offsets
+        };
+        GpuVersion::prog->launch("kernel_unpack_resolved_pyramid_to_tensor",
+            args, launch_settings);
+    }
+
+    // ---------------------------------------------------------------
+    // 5. Build per-level tensors (zero-copy views into d_input)
+    // ---------------------------------------------------------------
+    std::vector<torch::Tensor> pyramid;
+    pyramid.reserve(NB_LEVELS);
+    {
+        uint64_t float_offset = 0;
+        for(uint32_t level = 0; level < NB_LEVELS; level++){
+            uint32_t w = W0 >> level;
+            uint32_t h = H0 >> level;
+
+            torch::Tensor t = torch::from_blob(
+                d_input + float_offset,
+                {1, 5, (int64_t)h, (int64_t)w},
+                torch::TensorOptions()
+                    .dtype(torch::kFloat32)
+                    .device(torch::kCUDA)
+            );
+            pyramid.push_back(t);
+            float_offset += 5 * uint64_t(w) * h;
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // 6. Run inference
+    // ---------------------------------------------------------------
+    torch::NoGradGuard no_grad;
+
+    std::vector<torch::jit::IValue> inputs;
+    inputs.push_back(pyramid);
+
+    torch::Tensor output         = model.forward(inputs).toTensor();
+    torch::Tensor output_squeezed = output.squeeze(0).contiguous();  // [3, H0, W0]
+
+    cudaMemcpy(d_output,
+               output_squeezed.data_ptr<float>(),
+               output_float_bytes,
+               cudaMemcpyDeviceToDevice);
+
+    // ---------------------------------------------------------------
+    // 7. Pack model output into colorbuffer[level 0]
+    // ---------------------------------------------------------------
+    {
+        uint64_t num_pixels = uint64_t(W0) * H0;
+        uint32_t block_size = 256;
+        uint32_t grid_size  = (num_pixels + block_size - 1) / block_size;
+        OptionalLaunchSettings launch_settings = {
+            .gridsize  = grid_size,
+            .blocksize = block_size
+        };
+
+        void* args[] = { &d_output, &target.colorbuffer, &W0, &H0 };
+        GpuVersion::prog->launch("kernel_pack_tensor_to_colorbuffer",
+            args, launch_settings);
+    }
 }

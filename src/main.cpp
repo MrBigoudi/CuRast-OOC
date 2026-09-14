@@ -496,7 +496,7 @@ void update(){
 }
 
 int main(int argc, char** argv){
-	// NeuralNet::load("/home/ykedadry/Documents/Projects/PointCloudFaker/models_v2/epoch_0050.pth");
+	NeuralNet::load("/home/ykedadry/Documents/Projects/PointCloudFaker/models_v2/pyramid_unet_torchscript.pth");
 	// throw(EXIT_FAILURE);
 
 	
