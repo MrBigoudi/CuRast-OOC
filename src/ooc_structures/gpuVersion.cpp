@@ -68,6 +68,19 @@ void HostStorageNode::init(){
     }
 #endif // COPY_TO_GPU_ASYNC
 
+#ifndef COPY_TO_GPU_ASYNC_STREAM
+#define COPY_TO_GPU_ASYNC_STREAM(member, value, type, stream)                  \
+    {                                                                          \
+        const uint64_t pad =                                                   \
+            reinterpret_cast<uintptr_t>(&(GpuVersion::hostStaging.member)) -   \
+            reinterpret_cast<uintptr_t>(&GpuVersion::hostStaging);             \
+        const CUdeviceptr dst_device = GpuVersion::deviceStaging + pad;        \
+        CURuntime::assertCudaSuccess(                                          \
+            cuMemcpyHtoDAsync(dst_device, value, sizeof(type), stream)         \
+        );                                                                     \
+    }
+#endif // COPY_TO_GPU_ASYNC_STREAM
+
 
 
 void GpuVersion::initConstraints(CuRast* editor, CUcontext* context) {
@@ -965,8 +978,10 @@ void GpuVersion::storeNodes(uint32_t nb_nodes_to_store){
 #include "visibility.h"
 
 void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
-    // Toggle which buffer we write into this frame
-    isUsingSecondRenderingBuffer = !isUsingSecondRenderingBuffer;
+    if(!hasStartedVisibilityUpdate){
+        // Toggle which buffer we write into this frame
+        isUsingSecondRenderingBuffer = !isUsingSecondRenderingBuffer;
+    }
 
     // Select the write-side host buffers
     void* visibility_cache_host  = isUsingSecondRenderingBuffer ? visibilityCache2  : visibilityCache;
@@ -1008,76 +1023,6 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
         - reinterpret_cast<uintptr_t>(&hostStaging)
     );
 
-
-    // Get the frustum
-    const mat4&  view = VKRenderer::view.view;
-    const mat4&  proj = VKRenderer::view.proj;
-    Frustum frustum = Frustum(proj * view);
-    vec3 camera_pos = vec3(glm::inverse(view) * vec4(0.0f, 0.0f, 0.0f, 1.0f));
-
-    // Get all visible nodes and initialise their distances to the camera
-    uint32_t nb_visible_nodes = 0;
-    for(const CIdAABB& id : storedNodes){
-        const CAABB& aabb = aabbsMap[id];
-        if(frustum.doesIntersect(aabb, camera_pos)){
-            float dist = glm::length(aabb.getCentroid() - camera_pos);
-            visibleNodes[nb_visible_nodes] = {id, dist};
-            nb_visible_nodes++;
-        }
-    }
-
-    // Order the nodes with respect to the camera
-    std::sort(visibleNodes.begin(), visibleNodes.begin() + nb_visible_nodes,
-        [](const std::pair<CIdAABB, float>& lhs, const std::pair<CIdAABB, float>& rhs){
-            return lhs.second < rhs.second; // From closest to furthest
-        }
-    );
-
-    // Order to put parent before children
-    // From claude
-    {
-        std::unordered_map<CIdAABB, size_t> indexOf = {};
-        indexOf.reserve(nb_visible_nodes);
-        for(size_t i = 0; i < nb_visible_nodes; i++){
-            indexOf[visibleNodes[i].first] = i;
-        }
-
-        std::vector<bool> placed(nb_visible_nodes, false);
-        uint32_t ordered_size = 0;
-
-        std::vector<CIdAABB> ancestorChain; // scratch, reused per node
-        for(size_t i = 0; i < nb_visible_nodes; i++){
-            if(placed[i]){continue;}
-
-            // Climb from this node's parent upward, collecting ancestors
-            // that are themselves in visible_nodes and not yet placed.
-            ancestorChain.clear();
-            CIdAABB parent = parentsMap[visibleNodes[i].first];
-            while(parent != CINVALID_ID){
-                auto it = indexOf.find(parent);
-                if(it == indexOf.end()){break;} // parent isn't in the visible set, stop
-                size_t parentIndex = it->second;
-                if(placed[parentIndex]){break;} // parent (and its own ancestors) already placed
-                ancestorChain.push_back(parent);
-                parent = parentsMap[parent];
-            }
-
-            // ancestorChain was built immediate-parent-first, reverse so we
-            // emit the outermost ancestor first, then down to the immediate parent.
-            for(auto it = ancestorChain.rbegin(); it != ancestorChain.rend(); ++it){
-                size_t idx = indexOf[*it];
-                visibleNodesOrdered[ordered_size] = visibleNodes[idx].first;
-                ordered_size++;
-                placed[idx] = true;
-            }
-
-            visibleNodesOrdered[ordered_size] = visibleNodes[i].first;
-            ordered_size++;
-            placed[i] = true;
-        }
-    }
-
-
     // Gather the correct number of nodes to send to the device
     CIdAABB* visibility_cache_to_send = static_cast<CIdAABB*>(visibility_cache_host);
     CIdAABB* voxels_nodes_to_send     = static_cast<CIdAABB*>(voxels_nodes_host);
@@ -1101,30 +1046,118 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
     };
 
 
-    uint32_t loop_end = min(nb_visible_nodes, hostStaging.visibilityCacheSize);
 
-    // Deserialise the LRU_VISIBILITY_CACHE closest nodes
-    std::vector<CIdAABB> to_deserialise = {};
-    for(uint32_t i=0; i < loop_end; i++){
-        const CIdAABB& id = visibleNodesOrdered[i];
-        hostCache->add(id);
-        if(!persistentStoredNodes.contains(id)){
-            persistentStoredNodes[id] = std::make_shared<HostStorageNode>();
-            to_deserialise.push_back(id);
+    if(!hasStartedVisibilityUpdate){
+        // Get the frustum
+        const mat4&  view = VKRenderer::view.view;
+        const mat4&  proj = VKRenderer::view.proj;
+        Frustum frustum = Frustum(proj * view);
+        vec3 camera_pos = vec3(glm::inverse(view) * vec4(0.0f, 0.0f, 0.0f, 1.0f));
+
+        // Get all visible nodes and initialise their distances to the camera
+        nbVisibleNodesVisibilityUpdate = 0;
+        for(const CIdAABB& id : storedNodes){
+            const CAABB& aabb = aabbsMap[id];
+            if(frustum.doesIntersect(aabb, camera_pos)){
+                float dist = glm::length(aabb.getCentroid() - camera_pos);
+                visibleNodes[nbVisibleNodesVisibilityUpdate] = {id, dist};
+                nbVisibleNodesVisibilityUpdate++;
+            }
+        }
+
+        // Order the nodes with respect to the camera
+        std::sort(visibleNodes.begin(), visibleNodes.begin() + nbVisibleNodesVisibilityUpdate,
+            [](const std::pair<CIdAABB, float>& lhs, const std::pair<CIdAABB, float>& rhs){
+                return lhs.second < rhs.second; // From closest to furthest
+            }
+        );
+
+        // Order to put parent before children
+        // From claude
+        {
+            std::unordered_map<CIdAABB, size_t> indexOf = {};
+            indexOf.reserve(nbVisibleNodesVisibilityUpdate);
+            for(size_t i = 0; i < nbVisibleNodesVisibilityUpdate; i++){
+                indexOf[visibleNodes[i].first] = i;
+            }
+
+            std::vector<bool> placed(nbVisibleNodesVisibilityUpdate, false);
+            uint32_t ordered_size = 0;
+
+            std::vector<CIdAABB> ancestorChain; // scratch, reused per node
+            for(size_t i = 0; i < nbVisibleNodesVisibilityUpdate; i++){
+                if(placed[i]){continue;}
+
+                // Climb from this node's parent upward, collecting ancestors
+                // that are themselves in visible_nodes and not yet placed.
+                ancestorChain.clear();
+                CIdAABB parent = parentsMap[visibleNodes[i].first];
+                while(parent != CINVALID_ID){
+                    auto it = indexOf.find(parent);
+                    if(it == indexOf.end()){break;} // parent isn't in the visible set, stop
+                    size_t parentIndex = it->second;
+                    if(placed[parentIndex]){break;} // parent (and its own ancestors) already placed
+                    ancestorChain.push_back(parent);
+                    parent = parentsMap[parent];
+                }
+
+                // ancestorChain was built immediate-parent-first, reverse so we
+                // emit the outermost ancestor first, then down to the immediate parent.
+                for(auto it = ancestorChain.rbegin(); it != ancestorChain.rend(); ++it){
+                    size_t idx = indexOf[*it];
+                    visibleNodesOrdered[ordered_size] = visibleNodes[idx].first;
+                    ordered_size++;
+                    placed[idx] = true;
+                }
+
+                visibleNodesOrdered[ordered_size] = visibleNodes[i].first;
+                ordered_size++;
+                placed[i] = true;
+            }
+        }
+
+        uint32_t loop_end = min(nbVisibleNodesVisibilityUpdate, hostStaging.visibilityCacheSize);
+
+        // Deserialise the LRU_VISIBILITY_CACHE closest nodes
+        std::vector<CIdAABB> to_deserialise = {};
+        for(uint32_t i=0; i < loop_end; i++){
+            const CIdAABB& id = visibleNodesOrdered[i];
+            hostCache->add(id);
+            if(!persistentStoredNodes.contains(id)){
+                persistentStoredNodes[id] = std::make_shared<HostStorageNode>();
+                to_deserialise.push_back(id);
+            }
+        }
+        hasStartedVisibilityUpdate = true;
+        
+        if(!to_deserialise.empty()){
+            isDoneDeserializingForVisibility = false;
+
+            if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+                std::thread deserialize_thread([to_deserialise = std::move(to_deserialise)]() mutable {
+                    std::for_each(std::execution::par, to_deserialise.begin(), to_deserialise.end(),
+                        [](const CIdAABB& id){
+                            OctreeNodeSerializable::deserializeV2(persistentStoredNodes[id].get(), id, "From visibility update");
+                        }
+                    );
+                    isDoneDeserializingForVisibility = true;
+                });
+                deserialize_thread.detach();
+                // Skip sending to device this frame; the next frame will pick it up
+                return;
+            } else {
+                std::for_each(to_deserialise.begin(), to_deserialise.end(), [](const CIdAABB& id){
+                    OctreeNodeSerializable::deserializeV2(persistentStoredNodes[id].get(), id, "From visibility update");
+                });
+                isDoneDeserializingForVisibility = true;
+            }
         }
     }
-    if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-        std::for_each(std::execution::par, to_deserialise.begin(), to_deserialise.end(), [&](const CIdAABB& id){
-            OctreeNodeSerializable::deserializeV2(persistentStoredNodes[id].get(), id, "From simlod load");
-        });
-    } else {
-        std::for_each(to_deserialise.begin(), to_deserialise.end(), [&](const CIdAABB& id){
-            OctreeNodeSerializable::deserializeV2(persistentStoredNodes[id].get(), id, "From simlod load");
-        });
-    }
 
+    hasStartedVisibilityUpdate = false;
 
     // Get the LRU_VISIBILTY_CACHE closest nodes
+    uint32_t loop_end = min(nbVisibleNodesVisibilityUpdate, hostStaging.visibilityCacheSize);
     for(uint32_t i = 0; i < loop_end; i++){
         const CIdAABB& cur_node = visibleNodesOrdered[i];
         // if(currentlyInUpdatesCache.contains(cur_node)){continue;}
@@ -1211,6 +1244,7 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
         batchLoadingAttributes.size(),
         stream
     ));
+    COPY_TO_GPU_ASYNC_STREAM(isUsingSecondRenderingBuffer, &isUsingSecondRenderingBuffer, bool, stream);
     CURuntime::assertCudaSuccess(cuEventRecord(eventVisibilityUpdateComplete, stream));
     // println("Nb nodes: {}, nb voxels: {}, nb points: {}\n", *cpt, *voxel_cpt, *point_cpt);
 }
@@ -1218,7 +1252,7 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
 
 
 void GpuVersion::updateHostCache(){
-    if(!isDoneUpdatingHostCache){return;}
+    if(!isDoneUpdatingHostCache || !isDoneDeserializingForVisibility){return;}
     std::vector<std::shared_ptr<HostStorageNode>> nodes_to_store = {};
     for(auto it = persistentStoredNodes.begin(); it != persistentStoredNodes.end();){
         const CIdAABB& id = it->first;
@@ -1293,6 +1327,7 @@ void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
     // }
     LoaderGpuVersion::run(editor, context);
 
+
     // Only run the initialisation kernel once
     if(!*(bool*)isInitialised){
         octreeUpdateInit(editor, context);
@@ -1306,10 +1341,10 @@ void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
 
     // Wait for previous host cache clean
     // Must happen before the first deserialisation
-    if(!isDoneUpdatingHostCache){
+    if(!isDoneDeserializingForVisibility || !isDoneUpdatingHostCache){
         return;
     }
-    COPY_TO_GPU(isUsingSecondRenderingBuffer, &isUsingSecondRenderingBuffer, bool);
+    // COPY_TO_GPU(isUsingSecondRenderingBuffer, &isUsingSecondRenderingBuffer, bool);
 
 
     if(*(bool*)isUpdating){

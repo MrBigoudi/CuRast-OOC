@@ -235,6 +235,9 @@ struct GpuVersion {
     static inline void* isUpdating = nullptr;
 
     static inline bool isDoneUpdatingHostCache = true;
+    static inline bool isDoneDeserializingForVisibility = true;
+    static inline bool hasStartedVisibilityUpdate = false;
+    static inline uint32_t nbVisibleNodesVisibilityUpdate = 0;
 
     static inline void* exchangedIds = nullptr;
     static inline void* exchangedParentsIds = nullptr;
