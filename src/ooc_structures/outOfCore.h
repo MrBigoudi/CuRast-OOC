@@ -37,7 +37,7 @@ struct ChunkSerializable {
     );
     static void deserializeV2(
         const std::string& filepath, CPoint* points, 
-        uint32_t nb_points
+        uint32_t nb_points, const std::string& msg
     );
 };
 
@@ -48,7 +48,7 @@ struct OccupancyGridSerializable {
     );
     static void deserializeV2(
         const std::string& filepath, uint64_t* indices, 
-        uint32_t nb_voxels
+        uint32_t nb_voxels, const std::string& msg
     );
 };
 

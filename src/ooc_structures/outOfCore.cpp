@@ -140,15 +140,15 @@ void OctreeNodeSerializable::deserializeV2(HostStorageNode* node, const CIdAABB&
         // node->points = std::vector<CPoint>(node->node.points_counter);
         std::string points_filepath = getChunkFilePathV2(node->node.aabb_index, false);
         // ChunkSerializable::deserializeV2(points_filepath, node->points.data(), node->node.points_counter);
-        ChunkSerializable::deserializeV2(points_filepath, node->points, node->node.points_counter);
+        ChunkSerializable::deserializeV2(points_filepath, node->points, node->node.points_counter, msg);
     }
 
     // Read voxels
     if(node->node.voxels_counter > 0){
         std::string voxels_filepath = getChunkFilePathV2(node->node.aabb_index, true);
         std::string grid_filepath = getOccupancyFilePathV2(node->node.aabb_index);
-        ChunkSerializable::deserializeV2(voxels_filepath, node->voxels, node->node.voxels_counter);
-        OccupancyGridSerializable::deserializeV2(grid_filepath, node->occupancy_indices, node->node.voxels_counter);
+        ChunkSerializable::deserializeV2(voxels_filepath, node->voxels, node->node.voxels_counter, msg);
+        OccupancyGridSerializable::deserializeV2(grid_filepath, node->occupancy_indices, node->node.voxels_counter, msg);
     }
 }
 
@@ -174,11 +174,11 @@ void ChunkSerializable::serializeV2(
 
 void ChunkSerializable::deserializeV2(
     const std::string& filepath, CPoint* points, 
-    uint32_t nb_points
+    uint32_t nb_points, const std::string& msg
 ){
     ifstream file(filepath, ios::binary);
     if(!file.is_open()){
-        println("Failed to open the file {} to deserialize a chunk", filepath);
+        println("Failed to open the file {} to deserialize a chunk: {}", filepath, msg);
         if(!GlobalVariables::mainLoopIsTerminating){
             throw(EXIT_FAILURE);
         }
@@ -215,11 +215,11 @@ void OccupancyGridSerializable::serializeV2(
 
 void OccupancyGridSerializable::deserializeV2(
     const std::string& filepath, uint64_t* indices, 
-    uint32_t nb_voxels
+    uint32_t nb_voxels, const std::string& msg
 ){
     ifstream file(filepath, ios::binary);
     if(!file.is_open()){
-        println("Failed to open the file {} to deserialize a grid", filepath);
+        println("Failed to open the file {} to deserialize a grid: {}", filepath, msg);
         if(!GlobalVariables::mainLoopIsTerminating){
             throw(EXIT_FAILURE);
         }

@@ -7,14 +7,65 @@ void HostStorageNode::init(){
     uint32_t node_count = OocSimLodSettings::LRU_CPU_CACHE_SIZE // Cache size
         + OocSimLodSettings::MAX_NB_NODES_TO_EXCHANGE    // Current update loaded node points
         + OocSimLodSettings::MAX_NB_NODES_TO_EXCHANGE    // Current update stored node points
-        + OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE   // Current update rendered points
     ;
     uint32_t data_count = OocSimLodSettings::MAX_POINTS_PER_LEAF;
 
-    points_allocator.init(node_count, data_count);
-    voxels_allocator.init(node_count, data_count);
-    indices_allocator.init(node_count, data_count);
+    points_allocator_update.init(node_count, data_count);
+    voxels_allocator_update.init(node_count, data_count);
+    indices_allocator_update.init(node_count, data_count);
+
+    node_count = OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE; // Visibility cache size
+    points_allocator_visibility.init(node_count, data_count);
+    voxels_allocator_visibility.init(node_count, data_count);
+    indices_allocator_visibility.init(node_count, data_count);
 }
+
+void HostStorageNode::destroy(){
+    points_allocator_update.destroy();
+    voxels_allocator_update.destroy();
+    indices_allocator_update.destroy();
+
+    points_allocator_visibility.destroy();
+    voxels_allocator_visibility.destroy();
+    indices_allocator_visibility.destroy();
+}
+
+void HostStorageNode::deallocate(){
+    switch(owner) {
+        case Update:
+            points_allocator_update.deallocate(points);
+            voxels_allocator_update.deallocate(voxels);
+            indices_allocator_update.deallocate(occupancy_indices);
+            break;
+        case Visibility:
+            points_allocator_visibility.deallocate(points);
+            voxels_allocator_visibility.deallocate(voxels);
+            indices_allocator_visibility.deallocate(occupancy_indices);
+            break;
+    }
+
+    points = nullptr;
+    voxels = nullptr;
+    occupancy_indices = nullptr;
+}
+
+
+HostStorageNode::HostStorageNode(const HostStorageNode::Owner& owner): owner(owner){
+    switch(owner){
+        case Update:
+            points = points_allocator_update.allocate();
+            voxels = voxels_allocator_update.allocate();
+            occupancy_indices = indices_allocator_update.allocate();
+            break;
+        case Visibility:
+            points = points_allocator_visibility.allocate();
+            voxels = voxels_allocator_visibility.allocate();
+            occupancy_indices = indices_allocator_visibility.allocate();
+            break;
+    }
+}
+
+
 
 #ifndef COPY_FROM_GPU
 #define COPY_FROM_GPU(member, value, type)                                     \
@@ -553,18 +604,18 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
         const CIdAABB& id = ids[i];
         hostCache->add(id);
         currentlyInUpdatesCache.insert(id);
-        if(!persistentStoredNodes.contains(id)){
-            persistentStoredNodes[id] = std::make_shared<HostStorageNode>();
+        if(!updateNodes.contains(id)){
+            updateNodes[id] = std::make_shared<HostStorageNode>(HostStorageNode::Owner::Update);
             to_deserialise.push_back(id);
         }
     }
     if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
         std::for_each(std::execution::par, to_deserialise.begin(), to_deserialise.end(), [&](const CIdAABB& id){
-            OctreeNodeSerializable::deserializeV2(persistentStoredNodes[id].get(), id, "From simlod load");
+            OctreeNodeSerializable::deserializeV2(updateNodes[id].get(), id, "From simlod load");
         });
     } else {
         std::for_each(to_deserialise.begin(), to_deserialise.end(), [&](const CIdAABB& id){
-            OctreeNodeSerializable::deserializeV2(persistentStoredNodes[id].get(), id, "From simlod load");
+            OctreeNodeSerializable::deserializeV2(updateNodes[id].get(), id, "From simlod load");
         });
     }
 
@@ -586,7 +637,7 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
     };
 
     for(uint32_t i = 0; i<nb_nodes_to_load; i++){
-        HostStorageNode* cur_node = persistentStoredNodes[ids[i]].get();
+        HostStorageNode* cur_node = updateNodes[ids[i]].get();
         static_cast<uint32_t*>(exchangedChildrenIds)[i] = cur_node->node.children_ids;
         static_cast<uint32_t*>(exchangedPointsCounters)[i] = cur_node->node.points_counter;
         static_cast<uint32_t*>(exchangedVoxelsCounters)[i] = cur_node->node.voxels_counter;
@@ -891,23 +942,22 @@ void GpuVersion::storeNodes(uint32_t nb_nodes_to_store){
         hostCache->add(id);
         currentlyInUpdatesCache.erase(id);
 
-        if(!persistentStoredNodes.contains(id)){
-            persistentStoredNodes[id] = std::make_shared<HostStorageNode>();
-            persistentStoredNodes[id]->node.aabb_index = id;
+        if(!updateNodes.contains(id)){
+            updateNodes[id] = std::make_shared<HostStorageNode>(HostStorageNode::Owner::Update);
+            updateNodes[id]->node.aabb_index = id;
             if(storedNodes.contains(id)){
                 to_deserialise.push_back(id);
             }
         }
-        storedNodes.insert(id);
     }
 
     if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
         std::for_each(std::execution::par, to_deserialise.begin(), to_deserialise.end(), [&](const CIdAABB& id){
-            OctreeNodeSerializable::deserializeV2(persistentStoredNodes[id].get(), id, "From update cache");
+            OctreeNodeSerializable::deserializeV2(updateNodes[id].get(), id, "From update cache");
         });
     } else {
         std::for_each(to_deserialise.begin(), to_deserialise.end(), [&](const CIdAABB& id){
-            OctreeNodeSerializable::deserializeV2(persistentStoredNodes[id].get(), id, "From update cache");
+            OctreeNodeSerializable::deserializeV2(updateNodes[id].get(), id, "From update cache");
         });
     }
 
@@ -915,13 +965,12 @@ void GpuVersion::storeNodes(uint32_t nb_nodes_to_store){
         const CIdAABB& id = ids[i];
 
         // Update node properties
-        HostStorageNode* cur_node = persistentStoredNodes[id].get();
+        HostStorageNode* cur_node = updateNodes[id].get();
         cur_node->node.children_ids = children_ids[i];
 
         // Update the CPU version of the relationship map
         parentsMap[id] = parents_ids[i];
         aabbsMap[id] = aabbs[i];
-        storedNodes.insert(id);
         currentlyInUpdatesCache.erase(id);
         hostCache->add(id);
 
@@ -1122,9 +1171,10 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
         std::vector<CIdAABB> to_deserialise = {};
         for(uint32_t i=0; i < loop_end; i++){
             const CIdAABB& id = visibleNodesOrdered[i];
-            hostCache->add(id);
-            if(!persistentStoredNodes.contains(id)){
-                persistentStoredNodes[id] = std::make_shared<HostStorageNode>();
+            
+            if(!visibilityNodes.contains(id)){
+                std::shared_ptr<HostStorageNode> node = std::make_shared<HostStorageNode>(HostStorageNode::Owner::Visibility);
+                visibilityNodes[id] = node;
                 to_deserialise.push_back(id);
             }
         }
@@ -1137,7 +1187,7 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
                 std::thread deserialize_thread([to_deserialise = std::move(to_deserialise)]() mutable {
                     std::for_each(std::execution::par, to_deserialise.begin(), to_deserialise.end(),
                         [](const CIdAABB& id){
-                            OctreeNodeSerializable::deserializeV2(persistentStoredNodes[id].get(), id, "From visibility update");
+                            OctreeNodeSerializable::deserializeV2(visibilityNodes[id].get(), id, "From visibility update");
                         }
                     );
                     isDoneDeserializingForVisibility = true;
@@ -1147,7 +1197,7 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
                 return;
             } else {
                 std::for_each(to_deserialise.begin(), to_deserialise.end(), [](const CIdAABB& id){
-                    OctreeNodeSerializable::deserializeV2(persistentStoredNodes[id].get(), id, "From visibility update");
+                    OctreeNodeSerializable::deserializeV2(visibilityNodes[id].get(), id, "From visibility update");
                 });
                 isDoneDeserializingForVisibility = true;
             }
@@ -1161,9 +1211,7 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
     for(uint32_t i = 0; i < loop_end; i++){
         const CIdAABB& cur_node = visibleNodesOrdered[i];
         // if(currentlyInUpdatesCache.contains(cur_node)){continue;}
-
-        hostCache->add(cur_node);
-        HostStorageNode* node = persistentStoredNodes[cur_node].get();
+        HostStorageNode* node = visibilityNodes[cur_node].get();
 
         bool has_points = (node->node.points_counter > 0);
         bool has_voxels = (node->node.voxels_counter > 0);
@@ -1246,64 +1294,100 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
     ));
     COPY_TO_GPU_ASYNC_STREAM(isUsingSecondRenderingBuffer, &isUsingSecondRenderingBuffer, bool, stream);
     CURuntime::assertCudaSuccess(cuEventRecord(eventVisibilityUpdateComplete, stream));
-    // println("Nb nodes: {}, nb voxels: {}, nb points: {}\n", *cpt, *voxel_cpt, *point_cpt);
 }
 
 
 
 void GpuVersion::updateHostCache(){
-    if(!isDoneUpdatingHostCache || !isDoneDeserializingForVisibility){return;}
+    if(!isDoneUpdatingHostCache){return;}
     std::vector<std::shared_ptr<HostStorageNode>> nodes_to_store = {};
-    for(auto it = persistentStoredNodes.begin(); it != persistentStoredNodes.end();){
+    std::vector<std::shared_ptr<HostStorageNode>> nodes_to_delete = {};
+    for(auto it = updateNodes.begin(); it != updateNodes.end();){
         const CIdAABB& id = it->first;
-        std::shared_ptr<HostStorageNode> node = it->second;
+        std::shared_ptr<HostStorageNode>& node = it->second;
         if(!hostCache->contains(id)){
             nodes_to_store.push_back(node);
-            it = persistentStoredNodes.erase(it);
+            nodes_to_delete.push_back(node);
+            it = updateNodes.erase(it);
         } else {
+            if(!storedNodes.contains(id)){
+                nodes_to_store.push_back(node);
+            }
             it++;
         }
     }
 
     CURuntime::assertCudaSuccess(cuEventSynchronize(eventStoringComplete));
-    CURuntime::assertCudaSuccess(cuEventSynchronize(eventVisibilityUpdateComplete));
     if(nodes_to_store.empty()){return;}
     isDoneUpdatingHostCache = false;
 
     if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-        std::thread update_host_cache_thread([nodes_to_store = std::move(nodes_to_store)]() mutable {
-            std::for_each(std::execution::par, nodes_to_store.begin(), nodes_to_store.end(),
-                [](std::shared_ptr<HostStorageNode>& node){
-                    OctreeNodeSerializable::serializeV2(node);
-                }
-            );
-            std::for_each(nodes_to_store.begin(), nodes_to_store.end(),
-                [](std::shared_ptr<HostStorageNode>& node){
-                    HostStorageNode::points_allocator.deallocate(node->points);
-                    node->points = nullptr;
-                    HostStorageNode::voxels_allocator.deallocate(node->voxels);
-                    node->voxels = nullptr;
-                    HostStorageNode::indices_allocator.deallocate(node->occupancy_indices);
-                    node->occupancy_indices = nullptr;
-                }
-            );
-            isDoneUpdatingHostCache = true;
-        });
+        std::thread update_host_cache_thread(
+            [nodes_to_store = std::move(nodes_to_store), nodes_to_delete = std::move(nodes_to_delete)]() mutable 
+            {
+                // Wait for the current visibility update to load all of its nodes
+                // TODO: find more precise check to avoid waiting if no similar nodes are being loaded
+                while(!isDoneDeserializingForVisibility){}
+
+                std::for_each(std::execution::par, nodes_to_store.begin(), nodes_to_store.end(),
+                    [](std::shared_ptr<HostStorageNode>& node){
+                        OctreeNodeSerializable::serializeV2(node);
+                    }
+                );
+                std::for_each(nodes_to_store.begin(), nodes_to_store.end(),
+                    [](std::shared_ptr<HostStorageNode>& node){
+                        storedNodes.insert(node->node.aabb_index);
+                    }
+                );
+                std::for_each(nodes_to_delete.begin(), nodes_to_delete.end(),
+                    [](std::shared_ptr<HostStorageNode>& node){
+                        node->deallocate();
+                    }
+                );
+                isDoneUpdatingHostCache = true;
+            }
+        );
         update_host_cache_thread.detach();
     } else {
         std::for_each(nodes_to_store.begin(), nodes_to_store.end(), [](std::shared_ptr<HostStorageNode>& node){
             OctreeNodeSerializable::serializeV2(node);
+            storedNodes.insert(node->node.aabb_index);
         });
         // Deallocate old points
-        std::for_each(nodes_to_store.begin(), nodes_to_store.end(), [](std::shared_ptr<HostStorageNode>& node){
-            HostStorageNode::points_allocator.deallocate(node->points);
-            HostStorageNode::voxels_allocator.deallocate(node->voxels);
-            HostStorageNode::indices_allocator.deallocate(node->occupancy_indices);
-            node->points = nullptr;
+        std::for_each(nodes_to_delete.begin(), nodes_to_delete.end(), [](std::shared_ptr<HostStorageNode>& node){
+            node->deallocate();
         });
         isDoneUpdatingHostCache = true;
     }
 
+}
+
+
+void GpuVersion::updateVisCache(){
+    // Don't touch visibilityNodes while the deserialize thread is writing into it
+    if(!isDoneDeserializingForVisibility || hasStartedVisibilityUpdate){return;}
+
+    // Must wait for the GPU to finish reading the visibility buffers before
+    // we free the pinned memory those buffers point into
+    switch(cuEventQuery(eventVisibilityUpdateComplete)){
+        case CUDA_SUCCESS:
+            isDoneUpdatingVisCache = true;
+            break;
+        case CUDA_ERROR_NOT_READY:
+            isDoneUpdatingVisCache = false;
+            return;
+        default:
+            println("ERROR: update visibility cache failed to query event");
+            throw(EXIT_FAILURE);
+    }
+
+    // Collect visibility-owned nodes that have fallen out of the host LRU cache
+    for(auto it = visibilityNodes.begin(); it != visibilityNodes.end();){
+        const CIdAABB& id = it->first;
+        std::shared_ptr<HostStorageNode>& node = it->second;
+        node->deallocate();
+        it = visibilityNodes.erase(it);
+    }
 }
 
 
@@ -1318,15 +1402,7 @@ void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
     if(GpuVersionUI::nbTotalUpdates == 0){
         GpuVersionUI::firstUpdateStart = GpuVersionUI::lastUpdateStart;
     }
-
-    // bool skip_update = false;
-    // // Only load new points if previous points have been handled
-    // if(*(bool*)isDoneLoading && *(bool*)isDoneStoring && *(bool*)isDoneIterating){
-    //     // Only run the update if the first batch has been loaded
-    //     skip_update = !LoaderGpuVersion::run(editor, context);
-    // }
     LoaderGpuVersion::run(editor, context);
-
 
     // Only run the initialisation kernel once
     if(!*(bool*)isInitialised){
@@ -1341,11 +1417,7 @@ void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
 
     // Wait for previous host cache clean
     // Must happen before the first deserialisation
-    if(!isDoneDeserializingForVisibility || !isDoneUpdatingHostCache){
-        return;
-    }
-    // COPY_TO_GPU(isUsingSecondRenderingBuffer, &isUsingSecondRenderingBuffer, bool);
-
+    if(!isDoneUpdatingHostCache){return;}
 
     if(*(bool*)isUpdating){
         if(*(bool*)isDoneStoring){
@@ -1367,9 +1439,8 @@ void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
         GpuVersionUI::update();
     }
 
-    if(*(bool*)isInitialised){
+    if(isDoneUpdatingVisCache && isDoneDeserializingForVisibility && *(bool*)isInitialised){
         GpuVersion::visibilityUpdate(editor, context);
-        // updateHostCache();
     }
 }
 
@@ -1447,6 +1518,7 @@ void GpuVersion::renderOctree(RenderTarget& target){
     }
 
     updateHostCache();
+    updateVisCache();
 }
 
 
@@ -1706,7 +1778,7 @@ void GpuVersion::takeRandomScreenShots(){
         // );
         // mainAABB = main_relationship.aabb;
 
-        for(auto& [id, node] : GpuVersion::persistentStoredNodes){
+        for(auto& [id, node] : GpuVersion::updateNodes){
             for(uint32_t i = 0; i < node->node.points_counter; i++){
                 const CPoint& point = node->points[i];
                 mainAABB.mins.x = min(mainAABB.mins.x, point.position.x);

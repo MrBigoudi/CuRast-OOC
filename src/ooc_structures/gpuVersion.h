@@ -209,8 +209,13 @@ struct GpuVersion {
     
     // CPU cache
     static inline CLRUCache* hostCache = nullptr;
-    static inline std::unordered_map<CIdAABB, std::shared_ptr<HostStorageNode>> persistentStoredNodes = {};
+    static inline std::unordered_map<CIdAABB, std::shared_ptr<HostStorageNode>> updateNodes = {};
+    static inline std::unordered_map<CIdAABB, std::shared_ptr<HostStorageNode>> visibilityNodes = {};
+    // static inline std::unordered_map<CIdAABB, std::shared_ptr<HostStorageNode>> persistentStoredNodes = {};
     static void updateHostCache();
+    static void updateVisCache();
+    static inline bool isDoneUpdatingHostCache = true;
+    static inline bool isDoneUpdatingVisCache = true;
 
     // Visibility cache
     static inline std::unordered_set<CIdAABB> storedNodes = {}; 
@@ -234,7 +239,6 @@ struct GpuVersion {
     static inline void* isInitialised = nullptr;
     static inline void* isUpdating = nullptr;
 
-    static inline bool isDoneUpdatingHostCache = true;
     static inline bool isDoneDeserializingForVisibility = true;
     static inline bool hasStartedVisibilityUpdate = false;
     static inline uint32_t nbVisibleNodesVisibilityUpdate = 0;
@@ -624,21 +628,22 @@ struct HostStorageNode {
 	CPoint* voxels = {};
     uint64_t* occupancy_indices = {};
 
-    static inline PinnedMemoryAllocator<CPoint> points_allocator = {};
-    static inline PinnedMemoryAllocator<CPoint> voxels_allocator = {};
-    static inline PinnedMemoryAllocator<uint64_t> indices_allocator = {};
+    static inline PinnedMemoryAllocator<CPoint> points_allocator_update = {};
+    static inline PinnedMemoryAllocator<CPoint> voxels_allocator_update = {};
+    static inline PinnedMemoryAllocator<uint64_t> indices_allocator_update = {};
+
+    static inline PinnedMemoryAllocator<CPoint> points_allocator_visibility = {};
+    static inline PinnedMemoryAllocator<CPoint> voxels_allocator_visibility = {};
+    static inline PinnedMemoryAllocator<uint64_t> indices_allocator_visibility = {};
+
+    enum Owner {
+        Update,
+        Visibility,
+    };
+    Owner owner;
 
     static void init();
-
-    static void destroy(){
-        points_allocator.destroy();
-        voxels_allocator.destroy();
-        indices_allocator.destroy();
-    }
-
-    HostStorageNode() {
-        points = points_allocator.allocate();
-        voxels = voxels_allocator.allocate();
-        occupancy_indices = indices_allocator.allocate();
-    }
+    static void destroy();
+    void deallocate();
+    HostStorageNode(const Owner& owner);
 };
