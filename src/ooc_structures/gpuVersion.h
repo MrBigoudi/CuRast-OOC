@@ -221,8 +221,13 @@ struct GpuVersion {
     static inline std::unordered_set<CIdAABB> storedNodes = {}; 
     static inline std::unordered_set<CIdAABB> currentlyInUpdatesCache = {}; 
     static void visibilityUpdate(CuRast* editor, CUcontext* context);
+    static void visibilityUpdateSort();
     static inline std::vector<std::pair<CIdAABB, float>> visibleNodes = {};
     static inline std::vector<CIdAABB> visibleNodesOrdered = {};
+
+    static inline std::vector<CIdAABB> storedNodesVisibilityCopy = {};
+    static inline std::atomic<uint32_t> nbStoredNodesInVisibility = 0;
+    static inline std::vector<std::mutex> storedNodesMtx = {};
 
     static inline std::vector<CUdeviceptr> exchangedPointsPointers = {};
 	static inline std::vector<CUdeviceptr> exchangedVoxelsPointers = {};
@@ -256,6 +261,9 @@ struct GpuVersion {
     static inline std::vector<std::shared_ptr<HostStorageNode>> hostCacheToDelete = {};
     static inline bool isDoneSynchronisingEventInStoreNodes = true;
     static inline bool hasStartedSynchronisingEventInStoreNodes = false;
+
+    static inline bool hasStartedSortingVisibleNodes = false;
+    static inline bool isDoneSortingVisibleNodes = true;
 
     static inline void* exchangedIds = nullptr;
     static inline void* exchangedParentsIds = nullptr;
