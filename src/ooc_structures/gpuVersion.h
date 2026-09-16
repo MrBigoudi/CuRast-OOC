@@ -254,6 +254,8 @@ struct GpuVersion {
     static inline bool hasStartedSynchronisingStoringCompleteEvent = false;
     static inline std::vector<std::shared_ptr<HostStorageNode>> hostCacheToSerialise = {};
     static inline std::vector<std::shared_ptr<HostStorageNode>> hostCacheToDelete = {};
+    static inline bool isDoneSynchronisingEventInStoreNodes = true;
+    static inline bool hasStartedSynchronisingEventInStoreNodes = false;
 
     static inline void* exchangedIds = nullptr;
     static inline void* exchangedParentsIds = nullptr;

@@ -859,7 +859,7 @@ void GpuVersion::octreeUpdateSimLOD(CuRast* editor, CUcontext* context){
 
 
 void GpuVersion::octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context){
-    if(!hasStartedStoring){
+    if(!hasStartedStoring && !hasStartedSynchronisingEventInStoreNodes){
         COPY_TO_GPU(nbNodesExchanged, &RESET, uint32_t);
         uint32_t block_size = 256;
         uint32_t grid_size =
@@ -910,42 +910,57 @@ void GpuVersion::octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context){
 
 void GpuVersion::storeNodes(uint32_t nb_nodes_to_store){
     if(!hasStartedStoring){
-        std::vector<CUdeviceptr> srcs_device = {
-            (CUdeviceptr)hostStaging.exchangedAABBIndices,
-            (CUdeviceptr)hostStaging.exchangedPointsCounters,
-            (CUdeviceptr)hostStaging.exchangedVoxelsCounters,
-            (CUdeviceptr)hostStaging.exchangedAABBParentsIndices,
-            (CUdeviceptr)hostStaging.exchangedChildrenIds,
-            (CUdeviceptr)hostStaging.exchangedAABBs
-        };
-        std::vector<CUdeviceptr> dsts_host = {
-            (CUdeviceptr)exchangedIds,
-            (CUdeviceptr)exchangedPointsCounters,
-            (CUdeviceptr)exchangedVoxelsCounters,
-            (CUdeviceptr)exchangedParentsIds,
-            (CUdeviceptr)exchangedChildrenIds,
-            (CUdeviceptr)exchangedAABBs
-        };
-        std::vector<uint64_t> sizes = {
-            nb_nodes_to_store * sizeof(CIdAABB),
-            nb_nodes_to_store * sizeof(uint32_t),
-            nb_nodes_to_store * sizeof(uint32_t),
-            nb_nodes_to_store * sizeof(CIdAABB),
-            nb_nodes_to_store * sizeof(uint32_t),
-            nb_nodes_to_store * sizeof(CAABB)
-        };
+        if(!hasStartedSynchronisingEventInStoreNodes){
+            std::vector<CUdeviceptr> srcs_device = {
+                (CUdeviceptr)hostStaging.exchangedAABBIndices,
+                (CUdeviceptr)hostStaging.exchangedPointsCounters,
+                (CUdeviceptr)hostStaging.exchangedVoxelsCounters,
+                (CUdeviceptr)hostStaging.exchangedAABBParentsIndices,
+                (CUdeviceptr)hostStaging.exchangedChildrenIds,
+                (CUdeviceptr)hostStaging.exchangedAABBs
+            };
+            std::vector<CUdeviceptr> dsts_host = {
+                (CUdeviceptr)exchangedIds,
+                (CUdeviceptr)exchangedPointsCounters,
+                (CUdeviceptr)exchangedVoxelsCounters,
+                (CUdeviceptr)exchangedParentsIds,
+                (CUdeviceptr)exchangedChildrenIds,
+                (CUdeviceptr)exchangedAABBs
+            };
+            std::vector<uint64_t> sizes = {
+                nb_nodes_to_store * sizeof(CIdAABB),
+                nb_nodes_to_store * sizeof(uint32_t),
+                nb_nodes_to_store * sizeof(uint32_t),
+                nb_nodes_to_store * sizeof(CIdAABB),
+                nb_nodes_to_store * sizeof(uint32_t),
+                nb_nodes_to_store * sizeof(CAABB)
+            };
 
-        // Wait for the node properties
-        uint64_t nb_copies = sizes.size();
-        CURuntime::assertCudaSuccess(cuMemcpyBatchAsync(
-            dsts_host.data(), srcs_device.data(), sizes.data(), nb_copies,
-            batchStoringAttributes.data(),
-            batchStoringAttributesIndices.data(),
-            batchStoringAttributes.size(),
-            stream
-        ));
-        CURuntime::assertCudaSuccess(cuEventRecord(eventStoringComplete, stream));
-        CURuntime::assertCudaSuccess(cuEventSynchronize(eventStoringComplete));
+            // Wait for the node properties
+            uint64_t nb_copies = sizes.size();
+            CURuntime::assertCudaSuccess(cuMemcpyBatchAsync(
+                dsts_host.data(), srcs_device.data(), sizes.data(), nb_copies,
+                batchStoringAttributes.data(),
+                batchStoringAttributesIndices.data(),
+                batchStoringAttributes.size(),
+                stream
+            ));
+            CURuntime::assertCudaSuccess(cuEventRecord(eventStoringComplete, stream));
+
+            hasStartedSynchronisingEventInStoreNodes = true;
+        }
+        switch(cuEventQuery(eventStoringComplete)){
+            case CUDA_SUCCESS:
+                isDoneSynchronisingEventInStoreNodes = true;
+                break;
+            case CUDA_ERROR_NOT_READY:
+                isDoneSynchronisingEventInStoreNodes = false;
+                return;
+            default:
+                println("ERROR: store nodes failed to query event");
+                throw(EXIT_FAILURE);
+        }
+        hasStartedSynchronisingEventInStoreNodes = false;
 
         CIdAABB* ids = static_cast<CIdAABB*>(exchangedIds);
 
@@ -1341,7 +1356,10 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
 
 void GpuVersion::updateHostCache(){
     if(!isDoneUpdatingHostCache){return;}
-    if(!isDoneDeserializingForLoading || !isDoneDeserializingForStoring){return;}
+    if(!isDoneDeserializingForLoading 
+        || !isDoneDeserializingForStoring
+        || !isDoneSynchronisingEventInStoreNodes
+    ){return;}
 
     if(!hasStartedSynchronisingStoringCompleteEvent){
         hostCacheToSerialise = {};
@@ -1372,7 +1390,7 @@ void GpuVersion::updateHostCache(){
             isDoneSynchronisingStoringCompleteEvent = false;
             return;
         default:
-            println("ERROR: update visibility cache failed to query event");
+            println("ERROR: update host cache failed to query event");
             throw(EXIT_FAILURE);
     }
     hasStartedSynchronisingStoringCompleteEvent = false;
@@ -1471,7 +1489,7 @@ void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
         || !isDoneDeserializingForStoring
     ){return;}
 
-    if(!hasStartedStoring && !hasStartedLoading){
+    if(!hasStartedStoring && isDoneSynchronisingEventInStoreNodes && !hasStartedLoading){
         // Only run the initialisation kernel once
         if(!*(bool*)isInitialised){
             octreeUpdateInit(editor, context);
@@ -1485,7 +1503,7 @@ void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
     }
 
     if(*(bool*)isUpdating){
-        if(!hasStartedStoring && *(bool*)isDoneStoring){
+        if(!hasStartedStoring && isDoneSynchronisingEventInStoreNodes && *(bool*)isDoneStoring){
             octreeUpdateSimLOD(editor, context);
             if(!isDoneDeserializingForLoading){return;}
         }
@@ -1495,7 +1513,7 @@ void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
             if(!isDoneDeserializingForStoring){return;}
         }
 
-        if(!hasStartedStoring && !hasStartedLoading){
+        if(!hasStartedStoring && isDoneSynchronisingEventInStoreNodes && !hasStartedLoading){
             if(*(bool*)isDoneLoading && *(bool*)isDoneStoring && *(bool*)isDoneIterating){
                 OptionalLaunchSettings launch_settings = {
                     .gridsize = 1,
