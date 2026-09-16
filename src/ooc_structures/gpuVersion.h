@@ -242,6 +242,18 @@ struct GpuVersion {
     static inline bool isDoneDeserializingForVisibility = true;
     static inline bool hasStartedVisibilityUpdate = false;
     static inline uint32_t nbVisibleNodesVisibilityUpdate = 0;
+    static inline bool isDoneDeserializingForLoading = true;
+    static inline bool hasStartedLoading = false;
+    static inline uint32_t nbNodesToLoad = 0;
+    static inline std::vector<CIdAABB> loadingToDeserialise = {};
+    static inline bool isDoneDeserializingForStoring = true;
+    static inline bool hasStartedStoring = false;
+    static inline uint32_t nbNodesToStore = 0;
+    static inline std::vector<CIdAABB> storingToDeserialise = {};
+    static inline bool isDoneSynchronisingStoringCompleteEvent = true;
+    static inline bool hasStartedSynchronisingStoringCompleteEvent = false;
+    static inline std::vector<std::shared_ptr<HostStorageNode>> hostCacheToSerialise = {};
+    static inline std::vector<std::shared_ptr<HostStorageNode>> hostCacheToDelete = {};
 
     static inline void* exchangedIds = nullptr;
     static inline void* exchangedParentsIds = nullptr;
