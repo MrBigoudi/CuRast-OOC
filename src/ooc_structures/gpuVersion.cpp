@@ -376,6 +376,7 @@ void GpuVersion::init(CuRast* editor, CUcontext* context) {
     });
 
     CURuntime::assertCudaSuccess(cuStreamCreate(&stream, CU_STREAM_NON_BLOCKING));
+    CURuntime::assertCudaSuccess(cuStreamCreate(&visStream, CU_STREAM_NON_BLOCKING));
     initConstraints(editor, context);
     initHostSide(editor, context);
     initBuffers(editor, context);
@@ -450,6 +451,7 @@ void GpuVersion::destroy(CuRast *editor, CUcontext *context){
     GpuVersionUI::destroy();
 
     cudaDeviceSynchronize();
+    CURuntime::assertCudaSuccess(cuStreamDestroy(visStream));
     CURuntime::assertCudaSuccess(cuStreamDestroy(stream));
 }
 
@@ -1367,10 +1369,9 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
         batchLoadingAttributes.data(),
         batchLoadingAttributesIndices.data(),
         batchLoadingAttributes.size(),
-        stream
+        visStream
     ));
-    COPY_TO_GPU_ASYNC_STREAM(isUsingSecondRenderingBuffer, &isUsingSecondRenderingBuffer, bool, stream);
-    CURuntime::assertCudaSuccess(cuEventRecord(eventVisibilityUpdateComplete, stream));
+    CURuntime::assertCudaSuccess(cuEventRecord(eventVisibilityUpdateComplete, visStream));
 }
 
 
@@ -1472,6 +1473,7 @@ void GpuVersion::updateVisCache(){
     switch(cuEventQuery(eventVisibilityUpdateComplete)){
         case CUDA_SUCCESS:
             isDoneUpdatingVisCache = true;
+            COPY_TO_GPU_ASYNC_STREAM(isUsingSecondRenderingBuffer, &isUsingSecondRenderingBuffer, bool, stream);
             break;
         case CUDA_ERROR_NOT_READY:
             isDoneUpdatingVisCache = false;

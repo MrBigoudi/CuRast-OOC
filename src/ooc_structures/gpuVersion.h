@@ -200,6 +200,7 @@ struct GpuVersion {
     static inline CGlobalVariables hostStaging = {};
     static inline CUdeviceptr deviceStaging = 0;
     static inline CUstream stream;
+    static inline CUstream visStream;
     static inline uint64_t totalAllocatedMemory = 0;
     static inline bool isTakingScreenshots = false;
 
