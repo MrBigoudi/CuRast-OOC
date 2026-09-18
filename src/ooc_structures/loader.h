@@ -73,6 +73,17 @@ struct LoaderGpuVersion {
     static inline std::mutex loadedBatchesMtx;
     static inline std::vector<std::pair<uint32_t, std::shared_ptr<PointBatch>>> loadedBatches;
 
+    struct FileInfo {
+        std::shared_ptr<laszip_header> header = nullptr;
+        uint32_t nb_batches = 0;
+        std::atomic<uint32_t> nb_batches_loaded = 0;
+        std::atomic<uint32_t> nb_batches_on_device = 0;
+        std::atomic<uint32_t> nb_batches_inserted = 0;
+    };
+
+    static inline std::unordered_map<std::string, FileInfo> filesRecord = {};
+    static inline std::mutex filesRecordMtx;
+
     static void createNewBatches(string file);
     static bool run(CuRast* editor, CUcontext* context);
 
@@ -83,4 +94,7 @@ struct LoaderGpuVersion {
 
     static void loadingRoutine();
     static void enqueueBatches();
+
+
+    static void filesRecordUi();
 };

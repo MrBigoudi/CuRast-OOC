@@ -210,6 +210,11 @@ void loadPointsInBatches(
 			std::lock_guard<std::mutex> lock(LoaderGpuVersion::loadedBatchesMtx);
 			LoaderGpuVersion::loadedBatches.push_back({index, batch});
 		}
+
+		{
+			std::lock_guard<std::mutex> lock(LoaderGpuVersion::filesRecordMtx);
+			LoaderGpuVersion::filesRecord[*batch->file].nb_batches_loaded.fetch_add(1);
+		}
 	};
 
 	auto first = batches_indices.begin();
@@ -447,7 +452,13 @@ void LoaderGpuVersion::fetchFromDevice(){
 			batchesOnGpu[i] = -1;
 			if(real_index != -1){
 				std::lock_guard<std::mutex> lock(batchesQueueMutexes[real_index]);
-				batchesQueue[real_index]->state = BatchState::ToRemove;
+				std::shared_ptr<PointBatch>& batch = batchesQueue[real_index];
+				batch->state = BatchState::ToRemove;
+
+				{
+					std::lock_guard<std::mutex> lock(filesRecordMtx);
+					filesRecord[*batch->file].nb_batches_inserted.fetch_add(1);
+				}
 			}
 		}
 	}
@@ -477,6 +488,10 @@ bool LoaderGpuVersion::sendToDevice(){
         auto& [slot, batch] = ready[ready_index++];
         batchesOnGpu[i] = slot;
         batch->state = BatchState::Sent;
+		{
+			std::lock_guard<std::mutex> lock(filesRecordMtx);
+			filesRecord[*batch->file].nb_batches_on_device.fetch_add(1);
+		}
 
         dsts_device.push_back(((CUdeviceptr*)(GpuVersion::batchesToAddPointsPointers))[i]);
         srcs_host.push_back((CUdeviceptr)(batch->points->data()));
@@ -582,14 +597,20 @@ void LoaderGpuVersion::createNewBatches(std::string file){
 	std::shared_ptr<laszip_header> shared_header = std::make_shared<laszip_header>(*header);
 	std::shared_ptr<string> shared_file = std::make_shared<string>(file);
 
+	uint64_t num_points = header->number_of_point_records ? header->number_of_point_records : header->extended_number_of_point_records;
+
 	{
 		std::lock_guard<std::mutex> lock(perFileMutexesMtx);
 		perFileMutexes.try_emplace(*shared_file);
+		{
+			std::lock_guard<std::mutex> lock_record(filesRecordMtx);
+			filesRecord[file].header = shared_header;
+			uint32_t nb_batches = (num_points + OocSimLodSettings::MAX_POINTS_PER_BATCHES - 1) / OocSimLodSettings::MAX_POINTS_PER_BATCHES;
+			filesRecord[file].nb_batches += nb_batches;
+		}
 	}
 
 	// Create batches
-	uint64_t num_points = header->number_of_point_records ? header->number_of_point_records : header->extended_number_of_point_records;
-
 	std::lock_guard<std::mutex> lock(batchesToEnqueueMtx);
 	for(uint64_t first_point = 0; first_point < num_points; first_point += OocSimLodSettings::MAX_POINTS_PER_BATCHES){
 
@@ -624,4 +645,118 @@ void LoaderGpuVersion::enqueueBatches(){
 
 		if(!found){return;}
 	}
+}
+
+
+
+
+
+
+
+
+void LoaderGpuVersion::filesRecordUi(){
+	ImGui::SetNextWindowSize(ImVec2(500, 400), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("File Explorer")) {
+        ImGui::End();
+        return;
+    }
+
+    // --- Build directory tree from filesRecord ---
+    // Map: directory path -> list of (filename, full path)
+    std::map<std::string, std::vector<std::pair<std::string, std::string>>> dirTree;
+
+    {
+        std::lock_guard<std::mutex> lock(filesRecordMtx);
+        for (const auto& [fullPath, info] : filesRecord) {
+            fs::path p(fullPath);
+            std::string dir  = p.parent_path().string();
+            std::string file = p.filename().string();
+            dirTree[dir].emplace_back(file, fullPath);
+        }
+    }
+
+    // --- Render tree ---
+    for (auto& [dir, files] : dirTree) {
+        // Use the directory path as the tree node label
+        bool dirOpen = ImGui::TreeNodeEx(dir.c_str(),
+                                         ImGuiTreeNodeFlags_DefaultOpen |
+                                         ImGuiTreeNodeFlags_SpanAvailWidth);
+
+        if (dirOpen) {
+            for (auto& [filename, fullPath] : files) {
+                // Snapshot atomics once (avoid multiple reads diverging)
+                FileInfo* infoPtr = nullptr;
+                uint32_t  nb_batches          = 0;
+                uint32_t  nb_batches_loaded    = 0;
+                uint32_t  nb_batches_on_device = 0;
+                uint32_t  nb_batches_inserted  = 0;
+
+                {
+                    std::lock_guard<std::mutex> lock(filesRecordMtx);
+                    auto it = filesRecord.find(fullPath);
+                    if (it != filesRecord.end()) {
+                        nb_batches           = it->second.nb_batches;
+                        nb_batches_loaded    = it->second.nb_batches_loaded.load();
+                        nb_batches_on_device = it->second.nb_batches_on_device.load();
+                        nb_batches_inserted  = it->second.nb_batches_inserted.load();
+                    }
+                }
+
+                // --- Clickable file label ---
+                ImGui::PushID(fullPath.c_str());
+
+                bool clicked = ImGui::Selectable(filename.c_str(), false,
+                                                  ImGuiSelectableFlags_None,
+                                                  ImVec2(0, 0));
+                if (clicked) {
+                    printf("Clicked: %s\n", fullPath.c_str());
+                }
+
+                // --- Progress bars ---
+				ImVec4 bar_color = ImVec4(0.2f, 0.8f, 0.3f, 1.0f);
+				float fraction_loaded   = (nb_batches > 0)
+                    ? static_cast<float>(nb_batches_loaded) / static_cast<float>(nb_batches)
+                    : 0.0f;
+                float fraction_device   = (nb_batches > 0)
+                    ? static_cast<float>(nb_batches_on_device) / static_cast<float>(nb_batches)
+                    : 0.0f;
+                float fraction_inserted = (nb_batches > 0)
+                    ? static_cast<float>(nb_batches_inserted) / static_cast<float>(nb_batches)
+                    : 0.0f;
+
+				// On-device bar
+                char overlayLoaded[64];
+                snprintf(overlayLoaded, sizeof(overlayLoaded),
+                         "Loaded: %u / %u", nb_batches_loaded, nb_batches);
+                ImGui::PushStyleColor(ImGuiCol_PlotHistogram, bar_color);
+                ImGui::ProgressBar(fraction_loaded, ImVec2(-1.0f, 0.0f), overlayLoaded);
+                ImGui::PopStyleColor();
+
+
+                // On-device bar
+                char overlayDevice[64];
+                snprintf(overlayDevice, sizeof(overlayDevice),
+                         "On device: %u / %u", nb_batches_on_device, nb_batches);
+                ImGui::PushStyleColor(ImGuiCol_PlotHistogram, bar_color);
+                ImGui::ProgressBar(fraction_device, ImVec2(-1.0f, 0.0f), overlayDevice);
+                ImGui::PopStyleColor();
+
+                // Inserted bar
+                char overlayInserted[64];
+                snprintf(overlayInserted, sizeof(overlayInserted),
+                         "Inserted:  %u / %u", nb_batches_inserted, nb_batches);
+                ImGui::PushStyleColor(ImGuiCol_PlotHistogram, bar_color);
+                ImGui::ProgressBar(fraction_inserted, ImVec2(-1.0f, 0.0f), overlayInserted);
+                ImGui::PopStyleColor();
+
+
+                ImGui::Separator();
+                ImGui::PopID();
+            }
+
+            ImGui::TreePop();
+        }
+    }
+
+    ImGui::End();
 }

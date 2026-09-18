@@ -1,29 +1,35 @@
 # TODO list
 
 
-- Aim for 100M points / seconds ?? (getting closer)
-- Optimise kernels (rendering and update)
+## Before next week's meeting
+
+### Today 
+
+<!-- - Fix rendering -->
+<!-- - Create UI window with zoom on each file (store their AABB) -->
 - Move the vis update on the device side
-
-<!-- regex:^(?!kernel_clearFramebuffer$|kernel_dummy$|kernel_resolve_colorbuffer_to_opengl_2D$|kernel_resolve_visbuffer_to_colorbuffer2D$|kernel_init_availableMcuSlots$).*kernel_ -->
-
-
+- Fix camera controls
 - Implement vis cache
 
+### This weekend / Monday
 
-
-## Next steps (in priority order)
-
-- Use cuda graphs to combine repetitive kernel launches
 - Check all globalVariables and their initial values (rename some, destroy some, ...)
-- Better voxel rendering
+- Send globalVariables buffers as kernel input
+- Fix loader + improve loading speed ? (maybe pre-read first points for first batch creation)
+
+- Fix IO contention
+- Optimise kernels (rendering and update)
+- What about storing all nodes info in global variables -> avoid loading entirely + avoid duplicate occupancy on host side on store
+- Fix random crops in model training
 
 
-## Coding part
 
-- Clean the code + improve comments
-- Fix Vulkan segfault on quit
-- supress warnings
+
+## Longer term goals
+
+- Find a better dataset
+- Aim for 100M points / seconds ?? (getting closer)
+
 
 
 ## Research part
@@ -39,3 +45,6 @@
 
 - Update the latex algorithm
 - Write down pipeline / method somewhere in a .md file
+
+
+<!-- regex:^(?!kernel_clearFramebuffer$|kernel_dummy$|kernel_resolve_colorbuffer_to_opengl_2D$|kernel_resolve_visbuffer_to_colorbuffer2D$|kernel_init_availableMcuSlots$).*kernel_ -->

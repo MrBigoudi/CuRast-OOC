@@ -273,13 +273,14 @@ struct GpuVersion {
     static inline void* exchangedPointsCounters = nullptr;
     static inline void* exchangedVoxelsCounters = nullptr;
 
-    static inline void* visibilityCache = nullptr;
+    static inline void* exchangedAABBIndicesVisPoints = nullptr;
+    static inline void* exchangedAABBIndicesVisVoxels = nullptr;
+
     static inline void* voxelsNodesToSend = nullptr;
     static inline void* nbRenderedPoints = nullptr;
     static inline void* nbRenderedVoxels = nullptr;
     static inline void* nbRenderedNodes = nullptr;
 
-    static inline void* visibilityCache2 = nullptr;
     static inline void* voxelsNodesToSend2 = nullptr;
     static inline void* nbRenderedPoints2 = nullptr;
     static inline void* nbRenderedVoxels2 = nullptr;

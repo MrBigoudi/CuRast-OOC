@@ -110,6 +110,9 @@ void CuRast::inputHandling(){
 	VKRenderer::camera->world = Runtime::controls->world;
 }
 
+
+#include "ooc_structures/loader.h"
+
 void CuRast::drawGUI() {
 
 	if(!CuRastSettings::hideGUI){
@@ -118,6 +121,9 @@ void CuRast::drawGUI() {
 		makeDevGUI();
 		makeStats();
 		makeDirectStats();
+
+		LoaderGpuVersion::filesRecordUi();
+
 	}else{
 		ImVec2 kernelWindowSize = {70, 25};
 		ImGui::SetNextWindowPos({VKRenderer::width - kernelWindowSize.x, -8});

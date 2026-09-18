@@ -57,8 +57,8 @@ bool Frustum::doesIntersect(const AABB& aabb) const {
 
 bool Frustum::doesIntersect(const CAABB& aabb, const vec3& camera_pos) const {
     if(camera_pos.x >= aabb.mins.x && camera_pos.x <= aabb.maxs.x &&
-       camera_pos.y >= aabb.mins.y && camera_pos.y <= aabb.maxs.y &&
-       camera_pos.z >= aabb.mins.z && camera_pos.z <= aabb.maxs.z){
+        camera_pos.y >= aabb.mins.y && camera_pos.y <= aabb.maxs.y &&
+        camera_pos.z >= aabb.mins.z && camera_pos.z <= aabb.maxs.z){
         return true;
     }
 

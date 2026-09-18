@@ -382,11 +382,11 @@ enum CGlobalNodeFlagType {
 	CFlagIsInUpdatesCache,
 	CFlagWillBeInUpdatesCache,
 	CFlagIsInVisibilityCache,
+	CFlagIsVisibleHost,
+	CFlagIsLargeHost,
+	CFlagIsCutHost,
 
 	// Pads to be replaced on need
-	CGlobalFlagPad4,
-	CGlobalFlagPad5,
-	CGlobalFlagPad6,
 	CGlobalFlagPad7,
 	CGlobalFlagPad8,
 	CGlobalFlagPad9,
@@ -758,11 +758,13 @@ struct CGlobalVariables {
 	CPoint* renderedVoxels2 = nullptr;
 	CIdAABB* renderedVoxelsNodes = nullptr;
 	CIdAABB* renderedVoxelsNodes2 = nullptr;
+
+	uint32_t totalNbNodesForVisibility = 0;
 	uint32_t visibilityCacheSize = 0;
-	uint32_t visibilityCacheCurrentSize = 0;
-	CIdAABB* visibilityCache = nullptr;
-	uint32_t visibilityCacheCurrentSize2 = 0;
-	CIdAABB* visibilityCache2 = nullptr;
+	uint32_t nbNodesExchangedVisPoints = 0;
+	uint32_t nbNodesExchangedVisVoxels = 0;
+	CIdAABB* exchangedAABBIndicesVisPoints = nullptr;
+	CIdAABB* exchangedAABBIndicesVisVoxels = nullptr;
 	bool isUsingSecondRenderingBuffer = false;
 
 
