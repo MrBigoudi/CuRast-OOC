@@ -763,9 +763,14 @@ struct CGlobalVariables {
 	uint32_t visibilityCacheSize = 0;
 	uint32_t nbNodesExchangedVisPoints = 0;
 	uint32_t nbNodesExchangedVisVoxels = 0;
-	CIdAABB* exchangedAABBIndicesVisPoints = nullptr;
-	CIdAABB* exchangedAABBIndicesVisVoxels = nullptr;
 	bool isUsingSecondRenderingBuffer = false;
+	
+	CIdAABB* exchangedAABBIndicesVisPoints = nullptr;
+	CIdAABB* exchangedAABBIndicesVisPointsTmp = nullptr;
+	float* exchangedAABBIndicesVisPointsScreenSpaceSize = nullptr;
+	CIdAABB* exchangedAABBIndicesVisVoxels = nullptr;
+	CIdAABB* exchangedAABBIndicesVisVoxelsTmp = nullptr;
+	float* exchangedAABBIndicesVisVoxelsScreenSpaceSize = nullptr;
 
 
 

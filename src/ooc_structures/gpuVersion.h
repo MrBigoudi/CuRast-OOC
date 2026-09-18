@@ -222,11 +222,11 @@ struct GpuVersion {
     static inline std::unordered_set<CIdAABB> storedNodes = {}; 
     static inline std::unordered_set<CIdAABB> currentlyInUpdatesCache = {}; 
     static void visibilityUpdate(CuRast* editor, CUcontext* context);
-    static void visibilityUpdateSort();
+    static void visibilityUpdateSort(CuRast* editor, CUcontext* context);
     static inline std::vector<std::pair<CIdAABB, float>> visibleNodes = {};
     static inline std::vector<CIdAABB> visibleNodesOrdered = {};
 
-    static inline std::vector<CIdAABB> storedNodesVisibilityCopy = {};
+    static inline std::unordered_set<CIdAABB> storedNodesVisibilityCopy = {};
     static inline std::atomic<uint32_t> nbStoredNodesInVisibility = 0;
     static inline std::vector<std::mutex> storedNodesMtx = {};
 
@@ -273,8 +273,14 @@ struct GpuVersion {
     static inline void* exchangedPointsCounters = nullptr;
     static inline void* exchangedVoxelsCounters = nullptr;
 
+    static inline CUevent eventVisPreprocess;
     static inline void* exchangedAABBIndicesVisPoints = nullptr;
     static inline void* exchangedAABBIndicesVisVoxels = nullptr;
+    static inline void* nbNodesExchangedVisPoints = nullptr;
+    static inline void* nbNodesExchangedVisVoxels = nullptr;
+
+    static inline CRenderTarget renderingTarget = {};
+    static inline CRenderingSettings renderingSettings = {};
 
     static inline void* voxelsNodesToSend = nullptr;
     static inline void* nbRenderedPoints = nullptr;

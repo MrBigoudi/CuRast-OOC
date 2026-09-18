@@ -1027,6 +1027,8 @@ void kernel_get_renderable_nodes_part_1_visibility(
         globalVariables.unsetFlag(node_index, CFlagIsVisibleHost);
         globalVariables.unsetFlag(node_index, CFlagIsLargeHost);
         globalVariables.unsetFlag(node_index, CFlagIsCutHost);
+        globalVariables.exchangedAABBIndicesVisPointsScreenSpaceSize[node_index] = 0.;
+        globalVariables.exchangedAABBIndicesVisVoxelsScreenSpaceSize[node_index] = 0.;
 
         CAABB aabb = globalVariables.relationshipMap[node_index].aabb;
         if(frustum.doesIntersect(aabb, target.camera_pos)){
@@ -1067,16 +1069,21 @@ void kernel_get_renderable_nodes_part_3_large_nodes(
     uint32_t nb_threads = grid.num_threads();
 
     uint32_t nb_nodes = globalVariables.totalNbNodesForVisibility;
-    uint32_t max_nb_exchanged_nodes = globalVariables.visibilityCacheSize;
 
     // Flag nodes just above cut as points loadable
     for(uint32_t node_index = thread_id; node_index < nb_nodes; node_index += nb_threads){
         if(!globalVariables.getFlag(node_index, CFlagIsVisibleHost)){continue;}
         if(!globalVariables.getFlag(node_index, CFlagIsLargeHost)){continue;}
+
         uint32_t buffer_id = __nv_atomic_fetch_add(&globalVariables.nbNodesExchangedVisPoints, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-        if(buffer_id < max_nb_exchanged_nodes){
-            globalVariables.exchangedAABBIndicesVisPoints[buffer_id] = node_index;
-        }
+        globalVariables.exchangedAABBIndicesVisPointsTmp[buffer_id] = node_index;
+
+        // Compute and store screen-space size
+        const CAABB& aabb = globalVariables.relationshipMap[node_index].aabb;
+        float dx, dy;
+        getScreenSpaceSize(target, aabb, dx, dy);
+        globalVariables.exchangedAABBIndicesVisPointsScreenSpaceSize[buffer_id] = dx * dy;
+
 
         CIdAABB* children = globalVariables.relationshipMap[node_index].children;
         CIdAABB children_tmp[8] = {
@@ -1092,7 +1099,7 @@ void kernel_get_renderable_nodes_part_3_large_nodes(
 }
 
 extern "C" __global__
-void kernel_get_renderable_nodes_part_3_small_nodes(
+void kernel_get_renderable_nodes_part_4_small_nodes(
 	CRenderTarget target,
     CRenderingSettings settings
 ){
@@ -1101,21 +1108,108 @@ void kernel_get_renderable_nodes_part_3_small_nodes(
     uint32_t nb_threads = grid.num_threads();
 
     uint32_t nb_nodes = globalVariables.totalNbNodesForVisibility;
-    uint32_t max_nb_exchanged_nodes = globalVariables.visibilityCacheSize;
 
     // Flag nodes just below cut as voxels and points loadable
     for(uint32_t node_index = thread_id; node_index < nb_nodes; node_index += nb_threads){
         if(globalVariables.getFlag(node_index, CFlagIsVisibleHost)
-            && globalVariables.getFlag(node_index, CFlagIsCutHost)){
+            && globalVariables.getFlag(node_index, CFlagIsCutHost)
+        ){
+            // Compute and store screen-space size
+            const CAABB& aabb = globalVariables.relationshipMap[node_index].aabb;
+            float dx, dy;
+            getScreenSpaceSize(target, aabb, dx, dy);
+            float screen_space_size = dx * dy;
+
             uint32_t buffer_id = __nv_atomic_fetch_add(&globalVariables.nbNodesExchangedVisPoints, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-            if(buffer_id < max_nb_exchanged_nodes){
-                globalVariables.exchangedAABBIndicesVisPoints[buffer_id] = node_index;
-            }
-            buffer_id = __nv_atomic_fetch_add(&globalVariables.nbNodesExchangedVisVoxels, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-            if(buffer_id < max_nb_exchanged_nodes){
-                globalVariables.exchangedAABBIndicesVisVoxels[buffer_id] = node_index;
-            }
+            globalVariables.exchangedAABBIndicesVisPointsTmp[buffer_id] = node_index;
+            globalVariables.exchangedAABBIndicesVisPointsScreenSpaceSize[buffer_id] = screen_space_size;
+
+            uint32_t buffer_id = __nv_atomic_fetch_add(&globalVariables.nbNodesExchangedVisVoxels, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            globalVariables.exchangedAABBIndicesVisVoxelsTmp[buffer_id] = node_index;
+            globalVariables.exchangedAABBIndicesVisVoxelsScreenSpaceSize[buffer_id] = screen_space_size;
         }
         
+    }
+}
+
+
+extern "C" __global__
+void kernel_get_renderable_nodes_part_5_reorder(
+	CRenderTarget target,
+    CRenderingSettings settings
+){
+    auto grid = cg::this_grid();
+    uint32_t thread_id = grid.thread_rank();
+    uint32_t nb_threads = grid.num_threads();
+
+    uint32_t max_nb_exchanged_nodes = globalVariables.visibilityCacheSize;
+    uint32_t nb_points = globalVariables.nbNodesExchangedVisPoints;
+    uint32_t nb_voxels = globalVariables.nbNodesExchangedVisVoxels;
+
+    // --- Bitonic sort (descending) on Points buffer ---
+    // Pads logically to next power-of-two; out-of-range indices are treated as -inf
+    for (uint32_t k = 2; k <= nb_points * 2; k <<= 1) {
+        for (uint32_t j = k >> 1; j >= 1; j >>= 1) {
+            for (uint32_t i = thread_id; i < nb_points; i += nb_threads) {
+                uint32_t l = i ^ j;
+                if (l > i && l < nb_points) {
+                    // Ascending in index space → descending in value (biggest first)
+                    bool swap = ((i & k) == 0)
+                        ? (globalVariables.exchangedAABBIndicesVisPointsScreenSpaceSize[i] <
+                           globalVariables.exchangedAABBIndicesVisPointsScreenSpaceSize[l])
+                        : (globalVariables.exchangedAABBIndicesVisPointsScreenSpaceSize[i] >
+                           globalVariables.exchangedAABBIndicesVisPointsScreenSpaceSize[l]);
+                    if (swap) {
+                        // Swap screen space sizes
+                        float tmp_size = globalVariables.exchangedAABBIndicesVisPointsScreenSpaceSize[i];
+                        globalVariables.exchangedAABBIndicesVisPointsScreenSpaceSize[i] =
+                            globalVariables.exchangedAABBIndicesVisPointsScreenSpaceSize[l];
+                        globalVariables.exchangedAABBIndicesVisPointsScreenSpaceSize[l] = tmp_size;
+                        // Swap indices
+                        uint32_t tmp_idx = globalVariables.exchangedAABBIndicesVisPointsTmp[i];
+                        globalVariables.exchangedAABBIndicesVisPointsTmp[i] =
+                            globalVariables.exchangedAABBIndicesVisPointsTmp[l];
+                        globalVariables.exchangedAABBIndicesVisPointsTmp[l] = tmp_idx;
+                    }
+                }
+            }
+            grid.sync();
+        }
+    }
+
+    // --- Bitonic sort (descending) on Voxels buffer ---
+    for (uint32_t k = 2; k <= nb_voxels * 2; k <<= 1) {
+        for (uint32_t j = k >> 1; j >= 1; j >>= 1) {
+            for (uint32_t i = thread_id; i < nb_voxels; i += nb_threads) {
+                uint32_t l = i ^ j;
+                if (l > i && l < nb_voxels) {
+                    bool swap = ((i & k) == 0)
+                        ? (globalVariables.exchangedAABBIndicesVisVoxelsScreenSpaceSize[i] <
+                           globalVariables.exchangedAABBIndicesVisVoxelsScreenSpaceSize[l])
+                        : (globalVariables.exchangedAABBIndicesVisVoxelsScreenSpaceSize[i] >
+                           globalVariables.exchangedAABBIndicesVisVoxelsScreenSpaceSize[l]);
+                    if (swap) {
+                        float tmp_size = globalVariables.exchangedAABBIndicesVisVoxelsScreenSpaceSize[i];
+                        globalVariables.exchangedAABBIndicesVisVoxelsScreenSpaceSize[i] =
+                            globalVariables.exchangedAABBIndicesVisVoxelsScreenSpaceSize[l];
+                        globalVariables.exchangedAABBIndicesVisVoxelsScreenSpaceSize[l] = tmp_size;
+
+                        uint32_t tmp_idx = globalVariables.exchangedAABBIndicesVisVoxelsTmp[i];
+                        globalVariables.exchangedAABBIndicesVisVoxelsTmp[i] =
+                            globalVariables.exchangedAABBIndicesVisVoxelsTmp[l];
+                        globalVariables.exchangedAABBIndicesVisVoxelsTmp[l] = tmp_idx;
+                    }
+                }
+            }
+            grid.sync();
+        }
+    }
+
+    // --- Copy top X entries into output buffers ---
+    for (uint32_t i = thread_id; i < max_nb_exchanged_nodes; i += nb_threads) {
+        globalVariables.exchangedAABBIndicesVisPoints[i] =
+            (i < nb_points) ? globalVariables.exchangedAABBIndicesVisPointsTmp[i] : CINVALID_ID;
+        globalVariables.exchangedAABBIndicesVisVoxels[i] =
+            (i < nb_voxels) ? globalVariables.exchangedAABBIndicesVisVoxelsTmp[i] : CINVALID_ID;
     }
 }
