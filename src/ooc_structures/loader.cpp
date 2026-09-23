@@ -685,7 +685,7 @@ void LoaderGpuVersion::filesRecordUi(){
         if (dirOpen) {
             for (auto& [filename, fullPath] : files) {
                 // Snapshot atomics once (avoid multiple reads diverging)
-                FileInfo* infoPtr = nullptr;
+                laszip_header* header = nullptr;
                 uint32_t  nb_batches          = 0;
                 uint32_t  nb_batches_loaded    = 0;
                 uint32_t  nb_batches_on_device = 0;
@@ -695,6 +695,7 @@ void LoaderGpuVersion::filesRecordUi(){
                     std::lock_guard<std::mutex> lock(filesRecordMtx);
                     auto it = filesRecord.find(fullPath);
                     if (it != filesRecord.end()) {
+						header  			 = it->second.header.get();
                         nb_batches           = it->second.nb_batches;
                         nb_batches_loaded    = it->second.nb_batches_loaded.load();
                         nb_batches_on_device = it->second.nb_batches_on_device.load();
@@ -710,6 +711,29 @@ void LoaderGpuVersion::filesRecordUi(){
                                                   ImVec2(0, 0));
                 if (clicked) {
                     printf("Clicked: %s\n", fullPath.c_str());
+
+					double scale_x = header->x_scale_factor;
+					double scale_y = header->y_scale_factor;
+					double scale_z = header->z_scale_factor;
+					double offset_x = header->x_offset;
+					double offset_y = header->y_offset;
+					double offset_z = header->z_offset;
+					glm::dvec3 mins = {
+						header->min_x * scale_x + offset_x,
+						header->min_y * scale_y + offset_y,
+						header->min_z * scale_z + offset_z
+					};
+					glm::dvec3 maxs = {
+						header->max_x * scale_x + offset_x,
+						header->max_y * scale_y + offset_y,
+						header->max_z * scale_z + offset_z
+					};
+					
+					glm::dvec3 center = glm::dvec3((mins + maxs) * 0.5);
+					double diagonal = double(glm::length(maxs - mins));
+					Runtime::controls->target = center;
+					Runtime::controls->radius = diagonal;
+					Runtime::controls->update();
                 }
 
                 // --- Progress bars ---
