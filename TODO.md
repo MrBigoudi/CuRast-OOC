@@ -7,15 +7,17 @@
 
 <!-- - Fix rendering -->
 <!-- - Create UI window with zoom on each file (store their AABB) -->
-- Move the vis update on the device side
+<!-- - Move the vis update on the device side -->
 <!-- - Fix camera controls -->
-- Implement vis cache
+
+- Fix left issue (sometimes simlod load is loading a non-existing file, maybe because of non-correct split ??)
+- Implement vis cache to avoid sending node data multiple times
+- Fix loader + improve loading speed ? (maybe pre-read first points for first batch creation)
 
 ### This week
 
 - Check all globalVariables and their initial values (rename some, destroy some, ...)
 - Send globalVariables buffers as kernel input
-- Fix loader + improve loading speed ? (maybe pre-read first points for first batch creation)
 
 - Fix IO contention
 - Optimise kernels (rendering and update)

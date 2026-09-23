@@ -653,7 +653,7 @@ void LoaderGpuVersion::enqueueBatches(){
 
 
 
-
+// From claude
 void LoaderGpuVersion::filesRecordUi(){
 	ImGui::SetNextWindowSize(ImVec2(500, 400), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("File Explorer")) {
@@ -661,7 +661,7 @@ void LoaderGpuVersion::filesRecordUi(){
         return;
     }
 
-    // --- Build directory tree from filesRecord ---
+    // Build directory tree from filesRecord
     // Map: directory path -> list of (filename, full path)
     std::map<std::string, std::vector<std::pair<std::string, std::string>>> dirTree;
 
@@ -675,7 +675,7 @@ void LoaderGpuVersion::filesRecordUi(){
         }
     }
 
-    // --- Render tree ---
+    // Render tree
     for (auto& [dir, files] : dirTree) {
         // Use the directory path as the tree node label
         bool dirOpen = ImGui::TreeNodeEx(dir.c_str(),
@@ -710,30 +710,10 @@ void LoaderGpuVersion::filesRecordUi(){
                                                   ImGuiSelectableFlags_None,
                                                   ImVec2(0, 0));
                 if (clicked) {
-                    printf("Clicked: %s\n", fullPath.c_str());
-
-					double scale_x = header->x_scale_factor;
-					double scale_y = header->y_scale_factor;
-					double scale_z = header->z_scale_factor;
-					double offset_x = header->x_offset;
-					double offset_y = header->y_offset;
-					double offset_z = header->z_offset;
-					glm::dvec3 mins = {
-						header->min_x * scale_x + offset_x,
-						header->min_y * scale_y + offset_y,
-						header->min_z * scale_z + offset_z
-					};
-					glm::dvec3 maxs = {
-						header->max_x * scale_x + offset_x,
-						header->max_y * scale_y + offset_y,
-						header->max_z * scale_z + offset_z
-					};
-					
-					glm::dvec3 center = glm::dvec3((mins + maxs) * 0.5);
-					double diagonal = double(glm::length(maxs - mins));
-					Runtime::controls->target = center;
-					Runtime::controls->radius = diagonal;
-					Runtime::controls->update();
+                    printf("Zooming in on: %s\n", fullPath.c_str());
+					glm::vec3 mins = {header->min_x, header->min_y, header->min_z};
+					glm::vec3 maxs = {header->max_x, header->max_y, header->max_z};
+					Runtime::controls->focus(mins, maxs, 1.f);
                 }
 
                 // --- Progress bars ---
