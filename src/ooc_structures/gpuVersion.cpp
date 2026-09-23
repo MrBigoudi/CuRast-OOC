@@ -1196,6 +1196,12 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
     COPY_FROM_GPU(nbNodesExchangedVisPoints, nbNodesExchangedVisPoints, uint32_t);
     COPY_FROM_GPU(nbNodesExchangedVisVoxels, nbNodesExchangedVisVoxels, uint32_t);
 
+    // // TODO: to remove
+    // println("Nb vis voxels nodes = {}, nb vis points nodes = {}, max = {}", 
+    //     *(uint32_t*)nbNodesExchangedVisVoxels, 
+    //     *(uint32_t*)nbNodesExchangedVisPoints, 
+    //     hostStaging.visibilityCacheSize / 2
+    // );
     *(uint32_t*)nbNodesExchangedVisPoints = min(*(uint32_t*)nbNodesExchangedVisPoints, hostStaging.visibilityCacheSize / 2);
     *(uint32_t*)nbNodesExchangedVisVoxels = min(*(uint32_t*)nbNodesExchangedVisVoxels, hostStaging.visibilityCacheSize / 2);
 
@@ -1257,7 +1263,6 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
     }
 
     // Select the write-side host buffers
-    // void* visibility_cache_host  = isUsingSecondRenderingBuffer ? visibilityCache2  : visibilityCache;
     void* voxels_nodes_host      = isUsingSecondRenderingBuffer ? voxelsNodesToSend2 : voxelsNodesToSend;
     void* nb_rendered_nodes_host = isUsingSecondRenderingBuffer ? nbRenderedNodes2  : nbRenderedNodes;
     void* nb_rendered_points_host= isUsingSecondRenderingBuffer ? nbRenderedPoints2 : nbRenderedPoints;
@@ -1270,7 +1275,7 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
     CUdeviceptr dst_rendered_voxels  = isUsingSecondRenderingBuffer
         ? (CUdeviceptr)hostStaging.renderedVoxels2
         : (CUdeviceptr)hostStaging.renderedVoxels;
-        
+
     CUdeviceptr dst_nb_points = deviceStaging + (
         reinterpret_cast<uintptr_t>(isUsingSecondRenderingBuffer
             ? &hostStaging.nbRenderedPoints2
@@ -1284,9 +1289,7 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
         - reinterpret_cast<uintptr_t>(&hostStaging)
     );
 
-    // Gather the correct number of nodes to send to the device
-    // CIdAABB* visibility_cache_to_send = static_cast<CIdAABB*>(visibility_cache_host);
-    CIdAABB* voxels_nodes_to_send     = static_cast<CIdAABB*>(voxels_nodes_host);
+    CIdAABB* voxels_nodes_to_send = static_cast<CIdAABB*>(voxels_nodes_host);
     uint32_t* cpt       = (uint32_t*)nb_rendered_nodes_host;
     uint32_t* point_cpt = (uint32_t*)nb_rendered_points_host;
     uint32_t* voxel_cpt = (uint32_t*)nb_rendered_voxels_host;
@@ -1301,33 +1304,19 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
         dst_nb_voxels
     };
     std::vector<uint64_t> sizes = {
-        sizeof(uint32_t), 
+        sizeof(uint32_t),
         sizeof(uint32_t)
     };
 
-
-
     if(!hasStartedVisibilityUpdate){
-        // if(!hasStartedSortingVisibleNodes){
-        //     isDoneSortingVisibleNodes = false;
-        //     std::thread visibility_sort_thread([&]() {
-        //         visibilityUpdateSort();
-        //         isDoneSortingVisibleNodes = true;
-        //     });
-        //     visibility_sort_thread.detach();
-        //     hasStartedSortingVisibleNodes = true;
-        // }
-        // if(!isDoneSortingVisibleNodes){return;}
-        // hasStartedSortingVisibleNodes = false;
         visibilityUpdateSort(editor, context);
 
         uint32_t loop_end = min(nbVisibleNodesVisibilityUpdate, hostStaging.visibilityCacheSize);
 
-        // Deserialise the LRU_VISIBILITY_CACHE closest nodes
         std::vector<CIdAABB> to_deserialise = {};
         for(uint32_t i=0; i < loop_end; i++){
             const CIdAABB& id = visibleNodesOrdered[i];
-            
+
             if(!visibilityNodes.contains(id)){
                 std::shared_ptr<HostStorageNode> node = std::make_shared<HostStorageNode>(HostStorageNode::Owner::Visibility);
                 visibilityNodes[id] = node;
@@ -1335,7 +1324,7 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
             }
         }
         hasStartedVisibilityUpdate = true;
-        
+
         if(!to_deserialise.empty()){
             isDoneDeserializingForVisibility = false;
 
@@ -1349,7 +1338,6 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
                     isDoneDeserializingForVisibility = true;
                 });
                 deserialize_thread.detach();
-                // Skip sending to device this frame; the next frame will pick it up
                 return;
             } else {
                 std::for_each(to_deserialise.begin(), to_deserialise.end(), [](const CIdAABB& id){
@@ -1362,118 +1350,103 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
 
     hasStartedVisibilityUpdate = false;
 
-    // Send the voxels
-    for(uint32_t i = 0; i < *(uint32_t*)nbNodesExchangedVisVoxels; i++){
-        const CIdAABB& id = ((CIdAABB*)(exchangedAABBIndicesVisVoxels))[i];
-        if(!visibilityNodes.contains(id)){continue;}
-        HostStorageNode* node = visibilityNodes[id].get();
+    // Max-min fair-share quota computation
+    auto waterFillQuotas = [](const std::vector<uint32_t>& counts, uint32_t budget) -> std::vector<uint32_t> {
+        uint32_t n = (uint32_t)counts.size();
+        std::vector<uint32_t> quota(n, 0);
+        if(n == 0 || budget == 0){ return quota; }
 
-        uint32_t available_voxels_slots = OocSimLodSettings::MAX_NB_RENDERED_VOXELS - *voxel_cpt;
-        uint32_t nb_new_voxels = min(node->node.voxels_counter, available_voxels_slots);
+        std::vector<uint32_t> order(n);
+        for(uint32_t i = 0; i < n; i++){ order[i] = i; }
+        std::sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b){
+            return counts[a] < counts[b];
+        });
 
-        if(nb_new_voxels > 0){
-            srcs_host.push_back((CUdeviceptr)node->voxels);
-            dsts_device.push_back(dst_rendered_voxels + (CUdeviceptr)(*voxel_cpt * sizeof(CPoint)));
-            sizes.push_back(nb_new_voxels * sizeof(CPoint));
+        uint32_t remaining = budget;
+        uint32_t remaining_nodes = n;
+
+        for(uint32_t idx : order){
+            uint32_t fair_share = remaining / remaining_nodes;
+            if(counts[idx] <= fair_share){
+                quota[idx] = counts[idx];
+                remaining -= counts[idx];
+            } else {
+                quota[idx] = fair_share;
+                remaining -= fair_share;
+            }
+            remaining_nodes--;
         }
-        
-        *voxel_cpt += nb_new_voxels;
-        if(*voxel_cpt >= OocSimLodSettings::MAX_NB_RENDERED_VOXELS){break;}
+        return quota;
+    };
+
+    // Send the voxels
+    {
+        uint32_t nb_vis_voxels = *(uint32_t*)nbNodesExchangedVisVoxels;
+
+        // Gather valid nodes (skip ids not resident) and their voxel counts
+        std::vector<HostStorageNode*> nodes;
+        std::vector<uint32_t> counts;
+        nodes.reserve(nb_vis_voxels);
+        counts.reserve(nb_vis_voxels);
+
+        for(uint32_t i = 0; i < nb_vis_voxels; i++){
+            const CIdAABB& id = ((CIdAABB*)(exchangedAABBIndicesVisVoxels))[i];
+            if(!visibilityNodes.contains(id)){continue;}
+            HostStorageNode* node = visibilityNodes[id].get();
+            nodes.push_back(node);
+            counts.push_back(node->node.voxels_counter);
+        }
+
+        std::vector<uint32_t> quota = waterFillQuotas(counts, OocSimLodSettings::MAX_NB_RENDERED_VOXELS);
+
+        for(uint32_t i = 0; i < nodes.size(); i++){
+            HostStorageNode* node = nodes[i];
+            uint32_t nb_new_voxels = quota[i];
+
+            if(nb_new_voxels > 0){
+                srcs_host.push_back((CUdeviceptr)node->voxels);
+                dsts_device.push_back(dst_rendered_voxels + (CUdeviceptr)(*voxel_cpt * sizeof(CPoint)));
+                sizes.push_back(nb_new_voxels * sizeof(CPoint));
+            }
+
+            *voxel_cpt += nb_new_voxels;
+        }
     }
 
     // Send the points
-    for(uint32_t i = 0; i < *(uint32_t*)nbNodesExchangedVisPoints; i++){
-        const CIdAABB& id = ((CIdAABB*)(exchangedAABBIndicesVisPoints))[i];
-        if(!visibilityNodes.contains(id)){continue;}
-        HostStorageNode* node = visibilityNodes[id].get();
+    {
+        uint32_t nb_vis_points = *(uint32_t*)nbNodesExchangedVisPoints;
 
-        uint32_t available_points_slots = OocSimLodSettings::MAX_NB_RENDERED_POINTS - *point_cpt;
-        uint32_t nb_new_points = min(node->node.points_counter, available_points_slots);
+        std::vector<HostStorageNode*> nodes;
+        std::vector<uint32_t> counts;
+        nodes.reserve(nb_vis_points);
+        counts.reserve(nb_vis_points);
 
-        if(nb_new_points > 0){
-            srcs_host.push_back((CUdeviceptr)node->points);
-            dsts_device.push_back(dst_rendered_points + (CUdeviceptr)(*point_cpt * sizeof(CPoint)));
-            sizes.push_back(nb_new_points * sizeof(CPoint));
+        for(uint32_t i = 0; i < nb_vis_points; i++){
+            const CIdAABB& id = ((CIdAABB*)(exchangedAABBIndicesVisPoints))[i];
+            if(!visibilityNodes.contains(id)){continue;}
+            HostStorageNode* node = visibilityNodes[id].get();
+            nodes.push_back(node);
+            counts.push_back(node->node.points_counter);
         }
-        
-        *point_cpt += nb_new_points;
-        if(*point_cpt >= OocSimLodSettings::MAX_NB_RENDERED_POINTS){break;}
+
+        std::vector<uint32_t> quota = waterFillQuotas(counts, OocSimLodSettings::MAX_NB_RENDERED_POINTS);
+
+        for(uint32_t i = 0; i < nodes.size(); i++){
+            HostStorageNode* node = nodes[i];
+            uint32_t nb_new_points = quota[i];
+
+            if(nb_new_points > 0){
+                srcs_host.push_back((CUdeviceptr)node->points);
+                dsts_device.push_back(dst_rendered_points + (CUdeviceptr)(*point_cpt * sizeof(CPoint)));
+                sizes.push_back(nb_new_points * sizeof(CPoint));
+            }
+
+            *point_cpt += nb_new_points;
+        }
     }
-
-   
-    // // Get the LRU_VISIBILTY_CACHE closest nodes
-    // uint32_t loop_end = min(nbVisibleNodesVisibilityUpdate, hostStaging.visibilityCacheSize);
-    // for(uint32_t i = 0; i < loop_end; i++){
-    //     const CIdAABB& cur_node = visibleNodesOrdered[i];
-    //     // if(currentlyInUpdatesCache.contains(cur_node)){continue;}
-    //     HostStorageNode* node = visibilityNodes[cur_node].get();
-
-    //     uint32_t available_points_slots = OocSimLodSettings::MAX_NB_RENDERED_POINTS - *point_cpt;
-    //     uint32_t available_voxels_slots = OocSimLodSettings::MAX_NB_RENDERED_VOXELS - *voxel_cpt;
-
-    //     bool points_can_be_added =
-    //         // Only send if the maximum of points to send is not reached
-    //         (available_points_slots > 0)
-    //         // Only send if has points
-    //         && (node->node.points_counter > 0)
-    //         // // Only send if all points can be loaded
-    //         // && (node->node.points_counter + *point_cpt <= OocSimLodSettings::MAX_NB_RENDERED_POINTS)
-    //     ;
-    //     bool voxels_can_be_added =
-    //         // Only send if the maximum of voxels to send is not reached
-    //         (available_voxels_slots > 0)
-    //         // Only send if has voxels
-    //         && (node->node.voxels_counter > 0)
-    //         // // Only send if all voxels can be loaded
-    //         // && (node->node.voxels_counter + *voxel_cpt <= OocSimLodSettings::MAX_NB_RENDERED_VOXELS)
-    //     ;
-
-    //     // Add points
-    //     if(points_can_be_added){
-    //         uint32_t nb_new_points = min(node->node.points_counter, available_points_slots);
-    //         srcs_host.push_back((CUdeviceptr)node->points);
-    //         dsts_device.push_back(dst_rendered_points + (CUdeviceptr)(*point_cpt * sizeof(CPoint)));
-    //         sizes.push_back(nb_new_points * sizeof(CPoint));
-    //         *point_cpt += nb_new_points;
-    //     }
-
-    //     // Add voxels
-    //     if(voxels_can_be_added){
-    //         uint32_t nb_new_voxels = min(node->node.voxels_counter, available_voxels_slots);
-    //         srcs_host.push_back((CUdeviceptr)node->voxels);
-    //         dsts_device.push_back(dst_rendered_voxels + (CUdeviceptr)(*voxel_cpt * sizeof(CPoint)));
-    //         sizes.push_back(nb_new_voxels * sizeof(CPoint));
-    //         for(uint32_t voxel_id = 0; voxel_id < nb_new_voxels; voxel_id++){
-    //             voxels_nodes_to_send[*voxel_cpt + voxel_id] = cur_node;
-    //         }
-    //         *voxel_cpt += nb_new_voxels;
-    //     }
-
-    //     // Add the node
-    //     // visibility_cache_to_send[*cpt] = cur_node;
-    //     // (*cpt)++;
-
-    //     if(*point_cpt >= OocSimLodSettings::MAX_NB_RENDERED_POINTS && *voxel_cpt >= OocSimLodSettings::MAX_NB_RENDERED_VOXELS){
-    //         break;
-    //     }
-    //     // if(*cpt >= hostStaging.visibilityCacheSize){
-    //     //     break;
-    //     // }
-    // }
-
-    // // Add other voxels properties
-    // if(*voxel_cpt > 0){
-    //     srcs_host.push_back((CUdeviceptr)voxels_nodes_to_send);
-    //     dsts_device.push_back(dst_rendered_voxels_nodes);
-    //     sizes.push_back(*voxel_cpt * sizeof(CIdAABB));
-    // }
-
-    // // Add visibility cache
-    // if(*cpt > 0){
-    //     srcs_host.push_back((CUdeviceptr)visibility_cache_to_send);
-    //     dsts_device.push_back(dst_visibility_cache);
-    //     sizes.push_back(*cpt * sizeof(CIdAABB));
-    // }
+    // // TODO: to remove
+    // println("Nb rendered voxels = {}, nb rendered points = {}", *voxel_cpt, *point_cpt);
 
     // Send the data to the device
     uint64_t nb_copies = sizes.size();

@@ -1019,6 +1019,8 @@ struct CFrustum {
 
 
 
+__device__ constexpr float VISIBILITY_HYSTERESIS_BONUS = 1.15f;
+
 
 
 
@@ -1108,7 +1110,11 @@ void kernel_get_renderable_nodes_part_3_large_nodes(
             const CAABB& aabb = globalVariables.relationshipMap[node_index].aabb;
             float dx, dy;
             getScreenSpaceSize(target, aabb, dx, dy);
-            globalVariables.exchangedAABBIndicesVisPointsScreenSpaceSize[buffer_id] = dx * dy;
+            float screen_space_size = dx * dy;
+            if(globalVariables.getFlag(node_index, CFlagWasVisibleHost)){
+                screen_space_size *= VISIBILITY_HYSTERESIS_BONUS;
+            }
+            globalVariables.exchangedAABBIndicesVisPointsScreenSpaceSize[buffer_id] = screen_space_size;
         }
 
         CIdAABB children_tmp[8] = {
@@ -1148,6 +1154,9 @@ void kernel_get_renderable_nodes_part_4_small_nodes(
             float dx, dy;
             getScreenSpaceSize(target, aabb, dx, dy);
             float screen_space_size = dx * dy;
+            if(globalVariables.getFlag(node_index, CFlagWasVisibleHost)){
+                screen_space_size *= VISIBILITY_HYSTERESIS_BONUS;
+            }
 
             if(nb_points > 0){
                 uint32_t points_buffer_id = __nv_atomic_fetch_add(&globalVariables.nbNodesExchangedVisPoints, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
@@ -1191,6 +1200,17 @@ void kernel_get_renderable_nodes_part_5_reorder(
     //     );
     //     globalVariables.curNbVisNode = 0;
     // }
+
+    for(uint32_t i = thread_id; i < max_nb_exchanged_nodes; i += nb_threads){
+        CIdAABB old_points_id = globalVariables.exchangedAABBIndicesVisPoints[i];
+        if(old_points_id != CINVALID_ID){
+            globalVariables.unsetFlag(old_points_id, CFlagWasVisibleHost);
+        }
+        CIdAABB old_voxels_id = globalVariables.exchangedAABBIndicesVisVoxels[i];
+        if(old_voxels_id != CINVALID_ID){
+            globalVariables.unsetFlag(old_voxels_id, CFlagWasVisibleHost);
+        }
+    }
 
     // --- Bitonic sort (descending) on Points buffer ---
     // Pads logically to next power-of-two; out-of-range indices are treated as -inf
@@ -1253,9 +1273,17 @@ void kernel_get_renderable_nodes_part_5_reorder(
 
     // --- Copy top X entries into output buffers ---
     for (uint32_t i = thread_id; i < max_nb_exchanged_nodes; i += nb_threads) {
-        globalVariables.exchangedAABBIndicesVisPoints[i] =
-            (i < nb_points) ? globalVariables.exchangedAABBIndicesVisPointsTmp[i] : CINVALID_ID;
-        globalVariables.exchangedAABBIndicesVisVoxels[i] =
-            (i < nb_voxels) ? globalVariables.exchangedAABBIndicesVisVoxelsTmp[i] : CINVALID_ID;
+        CIdAABB new_points_id = (i < nb_points) ? globalVariables.exchangedAABBIndicesVisPointsTmp[i] : CINVALID_ID;
+        CIdAABB new_voxels_id = (i < nb_voxels) ? globalVariables.exchangedAABBIndicesVisVoxelsTmp[i] : CINVALID_ID;
+
+        globalVariables.exchangedAABBIndicesVisPoints[i] = new_points_id;
+        globalVariables.exchangedAABBIndicesVisVoxels[i] = new_voxels_id;
+
+        if(new_points_id != CINVALID_ID){
+            globalVariables.setFlagSync(new_points_id, CFlagWasVisibleHost);
+        }
+        if(new_voxels_id != CINVALID_ID){
+            globalVariables.setFlagSync(new_voxels_id, CFlagWasVisibleHost);
+        }
     }
 }

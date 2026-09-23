@@ -89,6 +89,15 @@ void OctreeNodeSerializable::serializeV2(const std::shared_ptr<HostStorageNode> 
         std::string points_filepath = getChunkFilePathV2(node->node.aabb_index, false);
         uint32_t nb_old_points = node->node.points_last_stored;
         uint32_t nb_new_points = node->node.points_counter - nb_old_points;
+
+        // Shuffle the points
+        std::mt19937 rng(static_cast<std::mt19937::result_type>(node->node.aabb_index));
+        std::shuffle(
+            node->points + nb_old_points,
+            node->points + node->node.points_counter,
+            rng
+        );
+
         // ChunkSerializable::serializeV2(points_filepath, node->points.data(), 
         ChunkSerializable::serializeV2(points_filepath, node->points,
             nb_old_points, nb_new_points

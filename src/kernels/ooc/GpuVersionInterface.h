@@ -385,9 +385,9 @@ enum CGlobalNodeFlagType {
 	CFlagIsVisibleHost,
 	CFlagIsLargeHost,
 	CFlagIsCutHost,
+	CFlagWasVisibleHost,
 
 	// Pads to be replaced on need
-	CGlobalFlagPad7,
 	CGlobalFlagPad8,
 	CGlobalFlagPad9,
 	CGlobalFlagPad10,
