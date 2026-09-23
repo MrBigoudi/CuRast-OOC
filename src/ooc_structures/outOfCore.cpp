@@ -109,6 +109,9 @@ void OctreeNodeSerializable::serializeV2(const std::shared_ptr<HostStorageNode> 
             nb_old_voxels, nb_new_voxels
         );
     }
+
+    node->node.points_last_stored = node->node.points_counter;
+    node->node.voxels_last_stored = node->node.voxels_counter;
 }
 
 /// A constructor which is deserialized from an aabb

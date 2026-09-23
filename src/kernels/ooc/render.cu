@@ -432,6 +432,8 @@ void kernel_visibility_pass(
         const CAABB& aabb = globalVariables.relationshipMap[node->aabb_index].aabb;
         if(isLargerThanMinSpanning(target, settings, aabb)){
             node->flags |= (0x01 << CFlagIsLarge);
+            // // TODO: to remove
+            // __nv_atomic_add(&globalVariables.curNbVisNode, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
         }
     }
 
@@ -465,6 +467,12 @@ void kernel_replace_unloaded_nodes(
     uint32_t block_id = grid.block_rank();
     uint32_t thread_id = block.thread_rank();
     uint32_t nb_threads_per_block = block.num_threads();
+
+    // // TODO: to remove
+    // if(block_id == 0 && thread_id == 0){
+    //     printf("nb large nodes = %d\n", globalVariables.curNbVisNode);
+    //     globalVariables.curNbVisNode = 0;
+    // }
 
     uint32_t nb_nodes = globalVariables.curNbNodes;
     uint32_t depth = globalVariables.octreeDepth;
@@ -623,6 +631,10 @@ void kernel_draw_octree_large(
                 if(!child){continue;}
                 if(child->flags & (0x01 << CFlagIsLarge)){continue;}
                 child->flags |= (0x01 << CFlagIsCut);
+                // // TODO: to remove
+                // if(child->voxels_counter > 0){
+                //     __nv_atomic_add(&globalVariables.curNbVisNode, child->voxels_counter, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+                // }
             }
         }
     }
@@ -681,6 +693,12 @@ void kernel_draw_octree_small(
     uint32_t block_id = grid.block_rank();
     uint32_t thread_id = block.thread_rank();
     uint32_t nb_threads_per_block = block.num_threads();
+
+    // // TODO: to remove
+    // if(block_id == 0 && thread_id == 0){
+    //     printf("nb rendered voxels = %d\n", globalVariables.curNbVisNode);
+    //     globalVariables.curNbVisNode = 0;
+    // }
 
     uint32_t nb_nodes = globalVariables.curNbNodes;
 
@@ -1033,6 +1051,8 @@ void kernel_get_renderable_nodes_part_1_visibility(
         CAABB aabb = globalVariables.relationshipMap[node_index].aabb;
         if(frustum.doesIntersect(aabb, target.camera_pos)){
             globalVariables.setFlag(node_index, CFlagIsVisibleHost);
+            // TODO: to remove
+            // __nv_atomic_add(&globalVariables.curNbVisNode, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
         }
     }
 }
@@ -1054,6 +1074,8 @@ void kernel_get_renderable_nodes_part_2_flagging_large(
         CAABB aabb = globalVariables.relationshipMap[node_index].aabb;
         if(isLargerThanMinSpanning(target, settings, aabb)){
             globalVariables.setFlag(node_index, CFlagIsLargeHost);
+            // TODO: to remove
+            // __nv_atomic_add(&globalVariables.curNbVisNode, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
         }
     }
 }
@@ -1075,17 +1097,20 @@ void kernel_get_renderable_nodes_part_3_large_nodes(
         if(!globalVariables.getFlag(node_index, CFlagIsVisibleHost)){continue;}
         if(!globalVariables.getFlag(node_index, CFlagIsLargeHost)){continue;}
 
-        uint32_t buffer_id = __nv_atomic_fetch_add(&globalVariables.nbNodesExchangedVisPoints, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-        globalVariables.exchangedAABBIndicesVisPointsTmp[buffer_id] = node_index;
-
-        // Compute and store screen-space size
-        const CAABB& aabb = globalVariables.relationshipMap[node_index].aabb;
-        float dx, dy;
-        getScreenSpaceSize(target, aabb, dx, dy);
-        globalVariables.exchangedAABBIndicesVisPointsScreenSpaceSize[buffer_id] = dx * dy;
-
-
+        uint32_t nb_points = globalVariables.relationshipMap[node_index].points_stored;
         CIdAABB* children = globalVariables.relationshipMap[node_index].children;
+
+        if(nb_points > 0){
+            uint32_t buffer_id = __nv_atomic_fetch_add(&globalVariables.nbNodesExchangedVisPoints, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            globalVariables.exchangedAABBIndicesVisPointsTmp[buffer_id] = node_index;
+
+            // Compute and store screen-space size
+            const CAABB& aabb = globalVariables.relationshipMap[node_index].aabb;
+            float dx, dy;
+            getScreenSpaceSize(target, aabb, dx, dy);
+            globalVariables.exchangedAABBIndicesVisPointsScreenSpaceSize[buffer_id] = dx * dy;
+        }
+
         CIdAABB children_tmp[8] = {
             children[0], children[1], children[2], children[3],
             children[4], children[5], children[6], children[7]
@@ -1094,6 +1119,8 @@ void kernel_get_renderable_nodes_part_3_large_nodes(
             if(children_tmp[i] == CINVALID_ID){continue;}
             if(globalVariables.getFlag(children_tmp[i], CFlagIsLargeHost)){continue;}
             globalVariables.setFlag(children_tmp[i], CFlagIsCutHost);
+            // // TODO: to remove
+            // __nv_atomic_add(&globalVariables.curNbVisNode, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
         }
     }
 }
@@ -1116,17 +1143,25 @@ void kernel_get_renderable_nodes_part_4_small_nodes(
         ){
             // Compute and store screen-space size
             const CAABB& aabb = globalVariables.relationshipMap[node_index].aabb;
+            uint32_t nb_voxels = globalVariables.relationshipMap[node_index].voxels_stored; 
+            uint32_t nb_points = globalVariables.relationshipMap[node_index].points_stored; 
             float dx, dy;
             getScreenSpaceSize(target, aabb, dx, dy);
             float screen_space_size = dx * dy;
 
-            uint32_t buffer_id = __nv_atomic_fetch_add(&globalVariables.nbNodesExchangedVisPoints, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-            globalVariables.exchangedAABBIndicesVisPointsTmp[buffer_id] = node_index;
-            globalVariables.exchangedAABBIndicesVisPointsScreenSpaceSize[buffer_id] = screen_space_size;
+            if(nb_points > 0){
+                uint32_t points_buffer_id = __nv_atomic_fetch_add(&globalVariables.nbNodesExchangedVisPoints, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+                globalVariables.exchangedAABBIndicesVisPointsTmp[points_buffer_id] = node_index;
+                globalVariables.exchangedAABBIndicesVisPointsScreenSpaceSize[points_buffer_id] = screen_space_size;
+            }
 
-            uint32_t buffer_id = __nv_atomic_fetch_add(&globalVariables.nbNodesExchangedVisVoxels, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-            globalVariables.exchangedAABBIndicesVisVoxelsTmp[buffer_id] = node_index;
-            globalVariables.exchangedAABBIndicesVisVoxelsScreenSpaceSize[buffer_id] = screen_space_size;
+            if(nb_voxels > 0){
+                uint32_t voxels_buffer_id = __nv_atomic_fetch_add(&globalVariables.nbNodesExchangedVisVoxels, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+                globalVariables.exchangedAABBIndicesVisVoxelsTmp[voxels_buffer_id] = node_index;
+                globalVariables.exchangedAABBIndicesVisVoxelsScreenSpaceSize[voxels_buffer_id] = screen_space_size;
+                // // TODO: to remove
+                // __nv_atomic_add(&globalVariables.curNbVisNode, nb_voxels, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            }
         }
         
     }
@@ -1142,9 +1177,20 @@ void kernel_get_renderable_nodes_part_5_reorder(
     uint32_t thread_id = grid.thread_rank();
     uint32_t nb_threads = grid.num_threads();
 
-    uint32_t max_nb_exchanged_nodes = globalVariables.visibilityCacheSize;
+    uint32_t max_nb_exchanged_nodes = globalVariables.visibilityCacheSize / 2;
     uint32_t nb_points = globalVariables.nbNodesExchangedVisPoints;
     uint32_t nb_voxels = globalVariables.nbNodesExchangedVisVoxels;
+
+    // // TODO: to remove
+    // if(thread_id == 0){
+    //     printf("nb nodes = %d, nb used nodes = %d, nb vis = %d, nb points = %d, nb voxels = %d\n", 
+    //         globalVariables.totalNbNodes,
+    //         globalVariables.totalNbNodesForVisibility,
+    //         globalVariables.curNbVisNode,
+    //         nb_points, nb_voxels
+    //     );
+    //     globalVariables.curNbVisNode = 0;
+    // }
 
     // --- Bitonic sort (descending) on Points buffer ---
     // Pads logically to next power-of-two; out-of-range indices are treated as -inf

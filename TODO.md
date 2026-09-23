@@ -8,10 +8,10 @@
 <!-- - Fix rendering -->
 <!-- - Create UI window with zoom on each file (store their AABB) -->
 - Move the vis update on the device side
-- Fix camera controls
+<!-- - Fix camera controls -->
 - Implement vis cache
 
-### This weekend / Monday
+### This week
 
 - Check all globalVariables and their initial values (rename some, destroy some, ...)
 - Send globalVariables buffers as kernel input

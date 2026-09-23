@@ -1186,7 +1186,7 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
     prog->launch("kernel_get_renderable_nodes_part_3_large_nodes", {&renderingTarget, &renderingSettings}, launch_settings);
     prog->launch("kernel_get_renderable_nodes_part_4_small_nodes", {&renderingTarget, &renderingSettings}, launch_settings);
     
-    // TODO: sort by screen space size on device side
+    // Sort by screen space size on device side
     launch_settings = {
         .gridsize = 0,
         .blocksize = 256,
@@ -1196,8 +1196,8 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
     COPY_FROM_GPU(nbNodesExchangedVisPoints, nbNodesExchangedVisPoints, uint32_t);
     COPY_FROM_GPU(nbNodesExchangedVisVoxels, nbNodesExchangedVisVoxels, uint32_t);
 
-    *(uint32_t*)nbNodesExchangedVisPoints = min(*(uint32_t*)nbNodesExchangedVisPoints, hostStaging.visibilityCacheSize);
-    *(uint32_t*)nbNodesExchangedVisVoxels = min(*(uint32_t*)nbNodesExchangedVisVoxels, hostStaging.visibilityCacheSize);
+    *(uint32_t*)nbNodesExchangedVisPoints = min(*(uint32_t*)nbNodesExchangedVisPoints, hostStaging.visibilityCacheSize / 2);
+    *(uint32_t*)nbNodesExchangedVisVoxels = min(*(uint32_t*)nbNodesExchangedVisVoxels, hostStaging.visibilityCacheSize / 2);
 
     uint32_t nb_vis_points = *(uint32_t*)nbNodesExchangedVisPoints;
     uint32_t nb_vis_voxels = *(uint32_t*)nbNodesExchangedVisVoxels;
@@ -1231,16 +1231,16 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
     
     nbVisibleNodesVisibilityUpdate = 0;
     std::unordered_set<CIdAABB> already_added = {};
-    for(uint32_t i = 0; i < nb_vis_points; i++){
-        const CIdAABB& id = ((CIdAABB*)(exchangedAABBIndicesVisPoints))[i];
+    for(uint32_t i = 0; i < nb_vis_voxels; i++){
+        const CIdAABB& id = ((CIdAABB*)(exchangedAABBIndicesVisVoxels))[i];
         if(storedNodesVisibilityCopy.contains(id) && !already_added.contains(id)){
             already_added.insert(id);
             visibleNodesOrdered[nbVisibleNodesVisibilityUpdate] = id;
             nbVisibleNodesVisibilityUpdate++;
         }
     }
-    for(uint32_t i = 0; i < nb_vis_voxels; i++){
-        const CIdAABB& id = ((CIdAABB*)(exchangedAABBIndicesVisVoxels))[i];
+    for(uint32_t i = 0; i < nb_vis_points; i++){
+        const CIdAABB& id = ((CIdAABB*)(exchangedAABBIndicesVisPoints))[i];
         if(storedNodesVisibilityCopy.contains(id) && !already_added.contains(id)){
             already_added.insert(id);
             visibleNodesOrdered[nbVisibleNodesVisibilityUpdate] = id;
@@ -1364,7 +1364,7 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
 
     // Send the voxels
     for(uint32_t i = 0; i < *(uint32_t*)nbNodesExchangedVisVoxels; i++){
-        const CIdAABB& id = ((CIdAABB*)(exchangedAABBIndicesVisPoints))[i];
+        const CIdAABB& id = ((CIdAABB*)(exchangedAABBIndicesVisVoxels))[i];
         if(!visibilityNodes.contains(id)){continue;}
         HostStorageNode* node = visibilityNodes[id].get();
 
@@ -1721,7 +1721,7 @@ void GpuVersion::renderOctree(RenderTarget& target){
 
         if(isTakingScreenshots){
             prog->launch("kernel_visibility_pass", {&renderingTarget, &renderingSettings}, launch_settings);
-            prog->launch("kernel_replace_unloaded_nodes", {&renderingTarget, &renderingSettings}, launch_settings);
+            // prog->launch("kernel_replace_unloaded_nodes", {&renderingTarget, &renderingSettings}, launch_settings);
             prog->launch("kernel_draw_visibility_cache", {&renderingTarget, &renderingSettings}, launch_settings);
             prog->launch("kernel_draw_octree_large", {&renderingTarget, &renderingSettings}, launch_settings);
             prog->launch("kernel_draw_octree_small", {&renderingTarget, &renderingSettings}, launch_settings);
@@ -1739,7 +1739,7 @@ void GpuVersion::renderOctree(RenderTarget& target){
             }
 
             prog->launch("kernel_visibility_pass", {&renderingTarget, &renderingSettings}, launch_settings);
-            prog->launch("kernel_replace_unloaded_nodes", {&renderingTarget, &renderingSettings}, launch_settings);
+            // prog->launch("kernel_replace_unloaded_nodes", {&renderingTarget, &renderingSettings}, launch_settings);
             prog->launch("kernel_draw_visibility_cache", {&renderingTarget, &renderingSettings}, launch_settings);
             prog->launch("kernel_draw_octree_large", {&renderingTarget, &renderingSettings}, launch_settings);
             prog->launch("kernel_draw_octree_small", {&renderingTarget, &renderingSettings}, launch_settings);

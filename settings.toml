@@ -176,7 +176,8 @@ MAX_NB_RENDERED_POINTS = 20_000_000
 # MAX_NB_RENDERED_POINTS = 50_000_000
 
 ### The voxels rendering budget for the visibility cache
-MAX_NB_RENDERED_VOXELS = 5_000_000
+# MAX_NB_RENDERED_VOXELS = 5_000_000
+MAX_NB_RENDERED_VOXELS = 20_000_000
 # MAX_NB_RENDERED_VOXELS = 50_000_000
 
 ### The maximum number of Count/Split operations per update

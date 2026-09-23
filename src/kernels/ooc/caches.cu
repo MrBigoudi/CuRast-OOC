@@ -184,6 +184,9 @@ void kernel_prepare_store_part_1_filling_buffers(){
             globalVariables.exchangedPointsCounters[shExchangedIndex] = (node->points_counter - node->points_last_stored);
             globalVariables.exchangedVoxelsCounters[shExchangedIndex] = min(MAX_NB_VOXELS, node->voxels_counter);
 
+            globalVariables.relationshipMap[node->aabb_index].points_stored += (node->points_counter - node->points_last_stored);
+            globalVariables.relationshipMap[node->aabb_index].voxels_stored += min(MAX_NB_VOXELS, node->voxels_counter);
+
             CPoint* exchanged_points = globalVariables.exchangedPoints[shExchangedIndex];
             CPoint* exchanged_voxels = globalVariables.exchangedVoxels[shExchangedIndex];
             uint64_t* exchanged_grids = globalVariables.exchangedGrids[shExchangedIndex];

@@ -664,6 +664,8 @@ struct CGlobalVariables {
         };
 		CIdAABB parent = CINVALID_ID;
 		CAABB aabb = CAABB();
+		uint32_t points_stored = 0;
+		uint32_t voxels_stored = 0;
     };
     /// The list of all AABBs created during runtime
 	uint32_t totalNbNodes = 0;
@@ -764,6 +766,7 @@ struct CGlobalVariables {
 	uint32_t nbNodesExchangedVisPoints = 0;
 	uint32_t nbNodesExchangedVisVoxels = 0;
 	bool isUsingSecondRenderingBuffer = false;
+	uint32_t curNbVisNode = 0;
 	
 	CIdAABB* exchangedAABBIndicesVisPoints = nullptr;
 	CIdAABB* exchangedAABBIndicesVisPointsTmp = nullptr;
