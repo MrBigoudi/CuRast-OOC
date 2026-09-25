@@ -97,4 +97,12 @@ struct LoaderGpuVersion {
 
 
     static void filesRecordUi();
+    static glm::vec3 batchHeaderCenter(const laszip_header& h);
+    static glm::vec3 batchPointsCentroid(const std::shared_ptr<PointBatch>& batch);
+
+    static inline std::atomic<float> cameraPosX{0.0f};
+    static inline std::atomic<float> cameraPosY{0.0f};
+    static inline std::atomic<float> cameraPosZ{0.0f};
+    static void updateCameraSnapshot();
+    static vec3 getCameraSnapshot();
 };

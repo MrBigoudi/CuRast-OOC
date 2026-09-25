@@ -127,6 +127,8 @@ struct PointBatch {
 	shared_ptr<laszip_header> header = nullptr;
 	BatchState state = BatchState::Empty;
 
+	glm::vec3 centroid = glm::vec3(0.0f);;
+
 	// TODO: rethink that
 	/// Helpers for CUDA memory transfer
 	vector<vec3> getPositions() const;
