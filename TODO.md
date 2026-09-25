@@ -10,7 +10,7 @@
 <!-- - Move the vis update on the device side -->
 <!-- - Fix camera controls -->
 
-- Priority loading
+<!-- - Priority loading -->
 <!-- - Fix remaining issues  -->
 <!-- - sometimes simlod load is loading a non-existing file, maybe because of non-correct split ?? -->
 <!-- - sometimes, illegal memory access on updating levels -->

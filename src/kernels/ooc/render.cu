@@ -245,91 +245,58 @@ void drawAllPoints(
 }
 
 
-__device__
-void getScreenSpaceSquare(
-    const CRenderTarget& target, 
-    vec3 mins, vec3 maxs,
-    float* smin_x, float* smax_x, float* smin_y, float* smax_y,
-    float* depth
-){
-    // compute node boundaries in screen space
-    vec4 p000 = {mins.x, mins.y, mins.z, 1.0f};
-    vec4 p001 = {mins.x, mins.y, maxs.z, 1.0f};
-    vec4 p010 = {mins.x, maxs.y, mins.z, 1.0f};
-    vec4 p011 = {mins.x, maxs.y, maxs.z, 1.0f};
-    vec4 p100 = {maxs.x, mins.y, mins.z, 1.0f};
-    vec4 p101 = {maxs.x, mins.y, maxs.z, 1.0f};
-    vec4 p110 = {maxs.x, maxs.y, mins.z, 1.0f};
-    vec4 p111 = {maxs.x, maxs.y, maxs.z, 1.0f};
 
-    mat4 transform = target.proj * target.view;
-    vec4 ndc000 = transform * p000;
-    vec4 ndc001 = transform * p001;
-    vec4 ndc010 = transform * p010;
-    vec4 ndc011 = transform * p011;
-    vec4 ndc100 = transform * p100;
-    vec4 ndc101 = transform * p101;
-    vec4 ndc110 = transform * p110;
-    vec4 ndc111 = transform * p111;
 
-    float fwidth = target.width;
-    float fheight = target.height;
-    vec4 s000 = ((ndc000 / ndc000.w) * 0.5f + 0.5f) * vec4{fwidth, fheight, 1.0f, 1.0f};
-    vec4 s001 = ((ndc001 / ndc001.w) * 0.5f + 0.5f) * vec4{fwidth, fheight, 1.0f, 1.0f};
-    vec4 s010 = ((ndc010 / ndc010.w) * 0.5f + 0.5f) * vec4{fwidth, fheight, 1.0f, 1.0f};
-    vec4 s011 = ((ndc011 / ndc011.w) * 0.5f + 0.5f) * vec4{fwidth, fheight, 1.0f, 1.0f};
-    vec4 s100 = ((ndc100 / ndc100.w) * 0.5f + 0.5f) * vec4{fwidth, fheight, 1.0f, 1.0f};
-    vec4 s101 = ((ndc101 / ndc101.w) * 0.5f + 0.5f) * vec4{fwidth, fheight, 1.0f, 1.0f};
-    vec4 s110 = ((ndc110 / ndc110.w) * 0.5f + 0.5f) * vec4{fwidth, fheight, 1.0f, 1.0f};
-    vec4 s111 = ((ndc111 / ndc111.w) * 0.5f + 0.5f) * vec4{fwidth, fheight, 1.0f, 1.0f};
-
-    auto min8 = [](float f0, float f1, float f2, float f3, 
-        float f4, float f5, float f6, float f7
-    ){
-		float m0 = min(f0, f1);
-		float m1 = min(f2, f3);
-		float m2 = min(f4, f5);
-		float m3 = min(f6, f7);
-		float n0 = min(m0, m1);
-		float n1 = min(m2, m3);
-		return min(n0, n1);
-	};
-
-	auto max8 = [](float f0, float f1, float f2, float f3, 
-        float f4, float f5, float f6, float f7
-    ){
-		float m0 = max(f0, f1);
-		float m1 = max(f2, f3);
-		float m2 = max(f4, f5);
-		float m3 = max(f6, f7);
-		float n0 = max(m0, m1);
-		float n1 = max(m2, m3);
-		return max(n0, n1);
-	};
-
-    *smin_x = min8(s000.x, s001.x, s010.x, s011.x, s100.x, s101.x, s110.x, s111.x);
-    *smin_y = min8(s000.y, s001.y, s010.y, s011.y, s100.y, s101.y, s110.y, s111.y);
-    *smax_x = max8(s000.x, s001.x, s010.x, s011.x, s100.x, s101.x, s110.x, s111.x);
-    *smax_y = max8(s000.y, s001.y, s010.y, s011.y, s100.y, s101.y, s110.y, s111.y);
-    *depth = min8(ndc000.w, ndc001.w, ndc010.w, ndc011.w, ndc100.w, ndc101.w, ndc110.w, ndc111.w);
-}
 
 
 __device__
-void getScreenSpaceSize(const CRenderTarget& target, const CAABB& aabb, float& dx, float& dy){
-    float smin_x = 0.;
-    float smax_x = 0.;
-    float smin_y = 0.;
-    float smax_y = 0.;
-    float depth = 0.;
-    getScreenSpaceSquare(target, aabb.mins, aabb.maxs, 
-        &smin_x, &smax_x, &smin_y, &smax_y, &depth
-    );
+struct CScreenRect {
+    float x0, y0, x1, y1;   // unclipped screen-space bounds (pixels)
+    bool crosses_near;      // at least one corner is behind / on the near plane
+};
 
-    // screen-space size
-    dx = smax_x - smin_x;
-    dy = smax_y - smin_y;
+__device__ constexpr float VISIBILITY_NEAR_EPS      = 1e-4f;
+
+__device__
+CScreenRect projectAABB(const CRenderTarget& target, const CAABB& aabb){
+    const mat4 transform = target.proj * target.view;
+    const float W = float(target.width);
+    const float H = float(target.height);
+
+    CScreenRect r = {INFINITY, INFINITY, -INFINITY, -INFINITY, false};
+
+    #pragma unroll
+    for(uint32_t c = 0; c < 8; c++){
+        vec4 p = {
+            (c & 1) ? aabb.maxs.x : aabb.mins.x,
+            (c & 2) ? aabb.maxs.y : aabb.mins.y,
+            (c & 4) ? aabb.maxs.z : aabb.mins.z,
+            1.0f
+        };
+        vec4 q = transform * p;
+        if(q.w <= VISIBILITY_NEAR_EPS){
+            r.crosses_near = true;
+            continue;
+        }
+        float sx = (q.x / q.w * 0.5f + 0.5f) * W;
+        float sy = (q.y / q.w * 0.5f + 0.5f) * H;
+        r.x0 = min(r.x0, sx);  r.x1 = max(r.x1, sx);
+        r.y0 = min(r.y0, sy);  r.y1 = max(r.y1, sy);
+    }
+    return r;
 }
+
+__device__ __forceinline__
+bool isCameraInside(const CRenderTarget& target, const CAABB& aabb){
+    const vec3 cam = target.camera_pos;
+    return cam.x > aabb.mins.x && cam.x < aabb.maxs.x
+        && cam.y > aabb.mins.y && cam.y < aabb.maxs.y
+        && cam.z > aabb.mins.z && cam.z < aabb.maxs.z;
+}
+
+
+
+
 
 
 __device__
@@ -339,18 +306,13 @@ bool isLargerThanMinSpanning(
     const CAABB& aabb
 ){
 
-    // Check if Camera is inside the node
-    vec3 cam = target.camera_pos;
-    bool cam_inside = cam.x > aabb.mins.x && cam.x < aabb.maxs.x
-        && cam.y > aabb.mins.y && cam.y < aabb.maxs.y
-        && cam.z > aabb.mins.z && cam.z < aabb.maxs.z
-    ;
-    if(cam_inside){return true;}
+    if(isCameraInside(target, aabb)){return true;}
 
-    float dx = 0.;
-    float dy = 0.;
-    getScreenSpaceSize(target, aabb, dx, dy);
+    CScreenRect r = projectAABB(target, aabb);
+    if(r.crosses_near){return true;}   // right in front of the camera: always large
 
+    float dx = r.x1 - r.x0;
+    float dy = r.y1 - r.y0;
     float threshold = 2. * settings.min_pixel_span;
     return dx > threshold || dy > threshold;
 }
@@ -1020,7 +982,32 @@ struct CFrustum {
 
 
 __device__ constexpr float VISIBILITY_HYSTERESIS_BONUS = 1.15f;
+__device__ constexpr float VISIBILITY_CENTER_WEIGHT = 0.5f;   // 0 = no centre bias, 1 = corners score 0
 
+__device__
+float getVisibilityPriority(const CRenderTarget& target, const CAABB& aabb){
+    const float W = float(target.width);
+    const float H = float(target.height);
+    const float full_screen = W * H;
+
+    if(isCameraInside(target, aabb)){ return full_screen; }
+
+    CScreenRect r = projectAABB(target, aabb);
+    if(r.crosses_near){ return full_screen; }
+
+    // Clip to the viewport
+    float x0 = clamp(r.x0, 0.0f, W), x1 = clamp(r.x1, 0.0f, W);
+    float y0 = clamp(r.y0, 0.0f, H), y1 = clamp(r.y1, 0.0f, H);
+    float area = max(x1 - x0, 0.0f) * max(y1 - y0, 0.0f);
+    if(area <= 0.0f){ return 0.0f; }
+
+    // Centre weighting on the clipped rectangle's centre
+    vec2 c = {0.5f * (x0 + x1) - 0.5f * W, 0.5f * (y0 + y1) - 0.5f * H};
+    float r_norm = clamp(length(c) / (0.5f * length(vec2{W, H})), 0.0f, 1.0f);
+    float score = area * (1.0f - VISIBILITY_CENTER_WEIGHT * r_norm);
+
+    return isfinite(score) ? score : 0.0f;
+}
 
 
 
@@ -1106,15 +1093,12 @@ void kernel_get_renderable_nodes_part_3_large_nodes(
             uint32_t buffer_id = __nv_atomic_fetch_add(&globalVariables.nbNodesExchangedVisPoints, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
             globalVariables.exchangedAABBIndicesVisPointsTmp[buffer_id] = node_index;
 
-            // Compute and store screen-space size
             const CAABB& aabb = globalVariables.relationshipMap[node_index].aabb;
-            float dx, dy;
-            getScreenSpaceSize(target, aabb, dx, dy);
-            float screen_space_size = dx * dy;
+            float priority = getVisibilityPriority(target, aabb);
             if(globalVariables.getFlag(node_index, CFlagWasVisibleHost)){
-                screen_space_size *= VISIBILITY_HYSTERESIS_BONUS;
+                priority *= VISIBILITY_HYSTERESIS_BONUS;
             }
-            globalVariables.exchangedAABBIndicesVisPointsScreenSpaceSize[buffer_id] = screen_space_size;
+            globalVariables.exchangedAABBIndicesVisPointsScreenSpaceSize[buffer_id] = priority;
         }
 
         CIdAABB children_tmp[8] = {
@@ -1151,9 +1135,7 @@ void kernel_get_renderable_nodes_part_4_small_nodes(
             const CAABB& aabb = globalVariables.relationshipMap[node_index].aabb;
             uint32_t nb_voxels = globalVariables.relationshipMap[node_index].voxels_stored; 
             uint32_t nb_points = globalVariables.relationshipMap[node_index].points_stored; 
-            float dx, dy;
-            getScreenSpaceSize(target, aabb, dx, dy);
-            float screen_space_size = dx * dy;
+            float screen_space_size = getVisibilityPriority(target, aabb);
             if(globalVariables.getFlag(node_index, CFlagWasVisibleHost)){
                 screen_space_size *= VISIBILITY_HYSTERESIS_BONUS;
             }
@@ -1177,6 +1159,63 @@ void kernel_get_renderable_nodes_part_4_small_nodes(
 }
 
 
+__device__ __forceinline__
+uint32_t nextPow2(uint32_t n){
+    return n <= 1 ? n : (1u << (32 - __clz(n - 1)));
+}
+
+__device__
+void bitonicSortDescending(
+    cg::grid_group& grid,
+    float* keys, CIdAABB* ids,
+    uint32_t n, uint32_t capacity
+){
+    const uint32_t thread_id  = grid.thread_rank();
+    const uint32_t nb_threads = grid.num_threads();
+
+    uint32_t n2 = nextPow2(n);
+
+#ifdef ASSERT_ENABLED
+    if(n2 > capacity){
+        if(thread_id == 0){
+            printf("ERROR: bitonic sort needs %u slots, buffers only have %u\n", n2, capacity);
+        }
+        customAssert();
+    }
+#endif
+    n2 = min(n2, capacity);   // uniform across threads, so grid.sync() counts stay equal
+
+    // Pad with -inf (sorted to the end in descending order)
+    for(uint32_t i = n + thread_id; i < n2; i += nb_threads){
+        keys[i] = -INFINITY;
+        ids[i]  = CINVALID_ID;
+    }
+    grid.sync();
+
+    for(uint32_t k = 2; k <= n2; k <<= 1){
+        for(uint32_t j = k >> 1; j > 0; j >>= 1){
+            for(uint32_t i = thread_id; i < n2; i += nb_threads){
+                uint32_t l = i ^ j;
+                if(l <= i){continue;}
+
+                float a = keys[i];
+                float b = keys[l];
+                // (i & k) == 0 -> descending block, else ascending block;
+                // the final pass (k == n2) is fully descending
+                bool swap = ((i & k) == 0) ? (a < b) : (a > b);
+                if(swap){
+                    keys[i] = b;
+                    keys[l] = a;
+                    CIdAABB tmp = ids[i];
+                    ids[i] = ids[l];
+                    ids[l] = tmp;
+                }
+            }
+            grid.sync();
+        }
+    }
+}
+
 extern "C" __global__
 void kernel_get_renderable_nodes_part_5_reorder(
 	CRenderTarget target,
@@ -1190,89 +1229,36 @@ void kernel_get_renderable_nodes_part_5_reorder(
     uint32_t nb_points = globalVariables.nbNodesExchangedVisPoints;
     uint32_t nb_voxels = globalVariables.nbNodesExchangedVisVoxels;
 
-    // // TODO: to remove
-    // if(thread_id == 0){
-    //     printf("nb nodes = %d, nb used nodes = %d, nb vis = %d, nb points = %d, nb voxels = %d\n", 
-    //         globalVariables.totalNbNodes,
-    //         globalVariables.totalNbNodesForVisibility,
-    //         globalVariables.curNbVisNode,
-    //         nb_points, nb_voxels
-    //     );
-    //     globalVariables.curNbVisNode = 0;
-    // }
+    // Must match the host allocation (std::bit_ceil(maxNbConcurrentNodes))
+    uint32_t sort_capacity = nextPow2(globalVariables.maxNbConcurrentNodes);
 
+    // Clear previous "was visible" flags
     for(uint32_t i = thread_id; i < max_nb_exchanged_nodes; i += nb_threads){
         CIdAABB old_points_id = globalVariables.exchangedAABBIndicesVisPoints[i];
         if(old_points_id != CINVALID_ID){
-            globalVariables.unsetFlag(old_points_id, CFlagWasVisibleHost);
+            globalVariables.unsetFlagSync(old_points_id, CFlagWasVisibleHost);
         }
         CIdAABB old_voxels_id = globalVariables.exchangedAABBIndicesVisVoxels[i];
         if(old_voxels_id != CINVALID_ID){
-            globalVariables.unsetFlag(old_voxels_id, CFlagWasVisibleHost);
+            globalVariables.unsetFlagSync(old_voxels_id, CFlagWasVisibleHost);
         }
     }
+    // Make sure every unset lands before any set below (the sorts may do zero syncs)
+    grid.sync();
 
-    // --- Bitonic sort (descending) on Points buffer ---
-    // Pads logically to next power-of-two; out-of-range indices are treated as -inf
-    for (uint32_t k = 2; k <= nb_points * 2; k <<= 1) {
-        for (uint32_t j = k >> 1; j >= 1; j >>= 1) {
-            for (uint32_t i = thread_id; i < nb_points; i += nb_threads) {
-                uint32_t l = i ^ j;
-                if (l > i && l < nb_points) {
-                    // Ascending in index space → descending in value (biggest first)
-                    bool swap = ((i & k) == 0)
-                        ? (globalVariables.exchangedAABBIndicesVisPointsScreenSpaceSize[i] <
-                           globalVariables.exchangedAABBIndicesVisPointsScreenSpaceSize[l])
-                        : (globalVariables.exchangedAABBIndicesVisPointsScreenSpaceSize[i] >
-                           globalVariables.exchangedAABBIndicesVisPointsScreenSpaceSize[l]);
-                    if (swap) {
-                        // Swap screen space sizes
-                        float tmp_size = globalVariables.exchangedAABBIndicesVisPointsScreenSpaceSize[i];
-                        globalVariables.exchangedAABBIndicesVisPointsScreenSpaceSize[i] =
-                            globalVariables.exchangedAABBIndicesVisPointsScreenSpaceSize[l];
-                        globalVariables.exchangedAABBIndicesVisPointsScreenSpaceSize[l] = tmp_size;
-                        // Swap indices
-                        uint32_t tmp_idx = globalVariables.exchangedAABBIndicesVisPointsTmp[i];
-                        globalVariables.exchangedAABBIndicesVisPointsTmp[i] =
-                            globalVariables.exchangedAABBIndicesVisPointsTmp[l];
-                        globalVariables.exchangedAABBIndicesVisPointsTmp[l] = tmp_idx;
-                    }
-                }
-            }
-            grid.sync();
-        }
-    }
+    bitonicSortDescending(grid,
+        globalVariables.exchangedAABBIndicesVisPointsScreenSpaceSize,
+        globalVariables.exchangedAABBIndicesVisPointsTmp,
+        nb_points, sort_capacity
+    );
+    bitonicSortDescending(grid,
+        globalVariables.exchangedAABBIndicesVisVoxelsScreenSpaceSize,
+        globalVariables.exchangedAABBIndicesVisVoxelsTmp,
+        nb_voxels, sort_capacity
+    );
 
-    // --- Bitonic sort (descending) on Voxels buffer ---
-    for (uint32_t k = 2; k <= nb_voxels * 2; k <<= 1) {
-        for (uint32_t j = k >> 1; j >= 1; j >>= 1) {
-            for (uint32_t i = thread_id; i < nb_voxels; i += nb_threads) {
-                uint32_t l = i ^ j;
-                if (l > i && l < nb_voxels) {
-                    bool swap = ((i & k) == 0)
-                        ? (globalVariables.exchangedAABBIndicesVisVoxelsScreenSpaceSize[i] <
-                           globalVariables.exchangedAABBIndicesVisVoxelsScreenSpaceSize[l])
-                        : (globalVariables.exchangedAABBIndicesVisVoxelsScreenSpaceSize[i] >
-                           globalVariables.exchangedAABBIndicesVisVoxelsScreenSpaceSize[l]);
-                    if (swap) {
-                        float tmp_size = globalVariables.exchangedAABBIndicesVisVoxelsScreenSpaceSize[i];
-                        globalVariables.exchangedAABBIndicesVisVoxelsScreenSpaceSize[i] =
-                            globalVariables.exchangedAABBIndicesVisVoxelsScreenSpaceSize[l];
-                        globalVariables.exchangedAABBIndicesVisVoxelsScreenSpaceSize[l] = tmp_size;
-
-                        uint32_t tmp_idx = globalVariables.exchangedAABBIndicesVisVoxelsTmp[i];
-                        globalVariables.exchangedAABBIndicesVisVoxelsTmp[i] =
-                            globalVariables.exchangedAABBIndicesVisVoxelsTmp[l];
-                        globalVariables.exchangedAABBIndicesVisVoxelsTmp[l] = tmp_idx;
-                    }
-                }
-            }
-            grid.sync();
-        }
-    }
-
-    // --- Copy top X entries into output buffers ---
-    for (uint32_t i = thread_id; i < max_nb_exchanged_nodes; i += nb_threads) {
+    // Copy the top entries into the output buffers
+    for(uint32_t i = thread_id; i < max_nb_exchanged_nodes; i += nb_threads){
         CIdAABB new_points_id = (i < nb_points) ? globalVariables.exchangedAABBIndicesVisPointsTmp[i] : CINVALID_ID;
         CIdAABB new_voxels_id = (i < nb_voxels) ? globalVariables.exchangedAABBIndicesVisVoxelsTmp[i] : CINVALID_ID;
 

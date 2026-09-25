@@ -151,7 +151,7 @@ NB_ALLOCABLE_NODES = 32_768
 #########################################################################
 
 ### The initial maximum number of nodes allowed to be created during runtime
-MAX_NB_NODES = 1_000_000
+MAX_NB_NODES = 1_048_576
 ### The maximum number of nodes that can be exchanged at once between the host and the device
 # MAX_NB_NODES_TO_EXCHANGE = 1
 MAX_NB_NODES_TO_EXCHANGE = 256
