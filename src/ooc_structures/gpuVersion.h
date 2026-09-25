@@ -229,6 +229,7 @@ struct GpuVersion {
     static inline std::unordered_set<CIdAABB> storedNodesVisibilityCopy = {};
     static inline std::atomic<uint32_t> nbStoredNodesInVisibility = 0;
     static inline std::vector<std::mutex> storedNodesMtx = {};
+    static inline std::mutex storedNodesVisibilityMtx;
 
     static inline std::vector<CUdeviceptr> exchangedPointsPointers = {};
 	static inline std::vector<CUdeviceptr> exchangedVoxelsPointers = {};

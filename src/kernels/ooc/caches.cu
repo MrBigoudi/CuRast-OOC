@@ -179,7 +179,9 @@ void kernel_prepare_store_part_1_filling_buffers(){
             // Storing node properties
             globalVariables.exchangedAABBIndices[shExchangedIndex] = node->aabb_index;
             globalVariables.exchangedAABBParentsIndices[shExchangedIndex] = globalVariables.relationshipMap[node->aabb_index].parent;
-            globalVariables.exchangedAABBs[shExchangedIndex] = globalVariables.relationshipMap[node->aabb_index].aabb;
+
+            const CAABB aabb = globalVariables.relationshipMap[node->aabb_index].aabb;
+            globalVariables.exchangedAABBs[shExchangedIndex] = aabb;
             globalVariables.exchangedChildrenIds[shExchangedIndex] = node->children_ids;
             globalVariables.exchangedPointsCounters[shExchangedIndex] = (node->points_counter - node->points_last_stored);
             globalVariables.exchangedVoxelsCounters[shExchangedIndex] = min(MAX_NB_VOXELS, node->voxels_counter);
@@ -204,30 +206,16 @@ void kernel_prepare_store_part_1_filling_buffers(){
             }
 
             // Storing node voxels
-            cur_chunk = node->voxels;
-            cur_point_index = thread_id;
-            while(cur_chunk){
-                for(uint32_t i = thread_id; i < cur_chunk->size; i += nb_threads_per_block){
-                    if(cur_point_index >= MAX_NB_VOXELS){
-                        printf("WARN: Too many voxels in the node, some will be skipped to store it: index %d / %d\n",
-                            cur_point_index, MAX_NB_VOXELS
-                        );
-                        cur_chunk = nullptr;
-                        break;
-                    }
-
-                    const CPoint& cur_voxel = cur_chunk->points[i];
-                    COccupancyGrid::GridIndex grid_index = COccupancyGrid::getCellIndices(
-                        globalVariables.relationshipMap[node->aabb_index].aabb,
-                        cur_voxel
-                    );
-                    uint64_t stored_index = (uint64_t(grid_index.word) << 32) | (uint64_t(grid_index.bit));
-
-                    exchanged_voxels[cur_point_index] = cur_voxel;
-                    exchanged_grids[cur_point_index] = stored_index;
-                    cur_point_index += nb_threads_per_block;
+            uint32_t base = 0;
+            for(CChunk* c = node->voxels; c && base < MAX_NB_VOXELS; base += c->size, c = c->next){
+                uint32_t n = min(c->size, MAX_NB_VOXELS - base);
+                for(uint32_t i = thread_id; i < n; i += nb_threads_per_block){
+                    uint32_t idx = base + i;
+                    const CPoint& v = c->points[i];
+                    auto gi = COccupancyGrid::getCellIndices(aabb, v);
+                    exchanged_voxels[idx] = v;
+                    exchanged_grids[idx]  = (uint64_t(gi.word) << 32) | gi.bit;
                 }
-                cur_chunk = cur_chunk->next;
             }
 
             __syncthreads(); // Needed to sync before deletion

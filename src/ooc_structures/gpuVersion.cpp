@@ -622,6 +622,10 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
             const CIdAABB& id = ids[i];
             hostCache->add(id);
             currentlyInUpdatesCache.insert(id);
+
+            // TODO: to remove
+            if(!storedNodes.contains(id)){println("node {} is not yet stored; why is it here ??", id);}
+
             if(!updateNodes.contains(id)){
                 updateNodes[id] = std::make_shared<HostStorageNode>(HostStorageNode::Owner::Update);
                 loadingToDeserialise.push_back(id);
@@ -1237,6 +1241,8 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
     
     nbVisibleNodesVisibilityUpdate = 0;
     std::unordered_set<CIdAABB> already_added = {};
+
+    std::lock_guard<std::mutex> lock(storedNodesVisibilityMtx);
     for(uint32_t i = 0; i < nb_vis_voxels; i++){
         const CIdAABB& id = ((CIdAABB*)(exchangedAABBIndicesVisVoxels))[i];
         if(storedNodesVisibilityCopy.contains(id) && !already_added.contains(id)){
@@ -1519,8 +1525,10 @@ void GpuVersion::updateHostCache(){
                         const CIdAABB id = node->node.aabb_index;
                         if(!storedNodes.contains(id)){
                             storedNodes.insert(id);
-                            storedNodesVisibilityCopy.insert(id);
                             nbStoredNodesInVisibility.fetch_add(1);
+
+                            std::lock_guard<std::mutex> lock(storedNodesVisibilityMtx);
+                            storedNodesVisibilityCopy.insert(id);
                         }
                     }
                 );
@@ -1559,7 +1567,7 @@ void GpuVersion::updateVisCache(){
     switch(cuEventQuery(eventVisibilityUpdateComplete)){
         case CUDA_SUCCESS:
             isDoneUpdatingVisCache = true;
-            COPY_TO_GPU_ASYNC_STREAM(isUsingSecondRenderingBuffer, &isUsingSecondRenderingBuffer, bool, stream);
+            COPY_TO_GPU(isUsingSecondRenderingBuffer, &isUsingSecondRenderingBuffer, bool);
             break;
         case CUDA_ERROR_NOT_READY:
             isDoneUpdatingVisCache = false;

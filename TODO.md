@@ -10,9 +10,12 @@
 <!-- - Move the vis update on the device side -->
 <!-- - Fix camera controls -->
 
-- Fix left issue (sometimes simlod load is loading a non-existing file, maybe because of non-correct split ??)
-- Implement vis cache to avoid sending node data multiple times
+- Priority loading
+<!-- - Fix remaining issues  -->
+<!-- - sometimes simlod load is loading a non-existing file, maybe because of non-correct split ?? -->
+<!-- - sometimes, illegal memory access on updating levels -->
 - Fix loader + improve loading speed ? (maybe pre-read first points for first batch creation)
+- Implement vis cache to avoid sending node data multiple times
 
 ### This week
 

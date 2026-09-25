@@ -12,20 +12,17 @@ void kernel_init_global_buffers(){
     uint32_t thread_id = grid.thread_rank();
     uint32_t nb_threads = grid.num_threads();
 
-
     for(uint32_t i = thread_id; i < globalVariables.maxNbConcurrentNodes; i += nb_threads){
-        globalVariables.relationshipMap[thread_id] = CGlobalVariables::Relationship();
-        globalVariables.packedNodes[thread_id] = nullptr;
-        globalVariables.nodesFlags[thread_id] = 0;
-        globalVariables.gridsToInitExchangedIndex[thread_id] = -1;
+        globalVariables.relationshipMap[i] = CGlobalVariables::Relationship();
+        globalVariables.packedNodes[i] = nullptr;
+        globalVariables.nodesFlags[i] = 0;
+        globalVariables.gridsToInitExchangedIndex[i] = -1;
     }
-
 
     for(uint32_t i = thread_id; i < globalVariables.maxNbBatches; i += nb_threads){
-        globalVariables.batchesAddedMask[thread_id] = BatchHandled;
-        globalVariables.batchesToAddCounts[thread_id] = 0;
+        globalVariables.batchesAddedMask[i] = BatchHandled;
+        globalVariables.batchesToAddCounts[i] = 0;
     }
-
 
     for(uint32_t i = thread_id; i < globalVariables.updatesCacheSize; i += nb_threads){
         globalVariables.updatesCache[i] = CINVALID_ID;
@@ -39,6 +36,8 @@ void kernel_init_global_buffers(){
         globalVariables.packedNodes[0] = globalVariables.mainOctree;
         globalVariables.mainOctree->cur_id = 0;
         globalVariables.curNbNodes = 1;
+
+        printf("Max nb batches: %d\n", globalVariables.maxNbBatches);
     }
 }
 
