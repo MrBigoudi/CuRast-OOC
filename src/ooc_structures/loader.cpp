@@ -684,8 +684,14 @@ void LoaderGpuVersion::createNewBatches(std::string file){
 	}
 	std::shared_ptr<laszip_header> shared_header = std::make_shared<laszip_header>(*header);
 	std::shared_ptr<string> shared_file = std::make_shared<string>(file);
+	laszip_close_reader(laszip_reader);
+	laszip_destroy(laszip_reader);
+	header = nullptr;
 
-	uint64_t num_points = header->number_of_point_records ? header->number_of_point_records : header->extended_number_of_point_records;
+	uint64_t num_points = shared_header->number_of_point_records 
+		? shared_header->number_of_point_records 
+		: shared_header->extended_number_of_point_records
+	;
 
 	{
 		std::lock_guard<std::mutex> lock(perFileMutexesMtx);

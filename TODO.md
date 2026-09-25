@@ -14,17 +14,20 @@
 <!-- - Fix remaining issues  -->
 <!-- - sometimes simlod load is loading a non-existing file, maybe because of non-correct split ?? -->
 <!-- - sometimes, illegal memory access on updating levels -->
-- Fix loader + improve loading speed ? (maybe pre-read first points for first batch creation)
+<!-- - Fix loader  -->
+- improve loading speed ? (maybe pre-read first points for first batch creation)
 - Implement vis cache to avoid sending node data multiple times
 
-### This week
+### This weekend
 
 - Check all globalVariables and their initial values (rename some, destroy some, ...)
 - Send globalVariables buffers as kernel input
-
-- Fix IO contention
 - Optimise kernels (rendering and update)
 - What about storing all nodes info in global variables -> avoid loading entirely + avoid duplicate occupancy on host side on store
+
+### Next week
+
+- Fix IO contention
 - Fix random crops in model training
 
 
