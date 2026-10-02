@@ -322,6 +322,7 @@ struct GpuVersion {
     static void storeNodes(uint32_t nb_nodes_to_store);
     static inline uint32_t MAX_NB_VOXELS = 0;
 
+    static void shuffleForRendering(HostStorageNode* node, CIdAABB id);
 
     static inline std::thread* updateHostCacheComplete = nullptr;
 

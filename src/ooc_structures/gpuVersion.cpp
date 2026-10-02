@@ -1185,29 +1185,27 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
         .gridsize  = grid_size,
         .blocksize = block_size
     };
+    OptionalLaunchSettings launch_settings_coop = {
+        .gridsize  = 0,
+        .blocksize = 256
+    };
+
+    uint32_t half_vis_cache = hostStaging.visibilityCacheSize / 2;
+    uint32_t old_min_pixel_span = renderingSettings.min_pixel_span;
+
     prog->launch("kernel_get_renderable_nodes_part_1_visibility", {&renderingTarget, &renderingSettings}, launch_settings);
     prog->launch("kernel_get_renderable_nodes_part_2_flagging_large", {&renderingTarget, &renderingSettings}, launch_settings);
     prog->launch("kernel_get_renderable_nodes_part_3_large_nodes", {&renderingTarget, &renderingSettings}, launch_settings);
     prog->launch("kernel_get_renderable_nodes_part_4_small_nodes", {&renderingTarget, &renderingSettings}, launch_settings);
     
     // Sort by screen space size on device side
-    launch_settings = {
-        .gridsize = 0,
-        .blocksize = 256,
-    };
-    prog->launchCooperative("kernel_get_renderable_nodes_part_5_reorder", {&renderingTarget, &renderingSettings}, launch_settings);
+    prog->launchCooperative("kernel_get_renderable_nodes_part_5_reorder", {&renderingTarget, &renderingSettings}, launch_settings_coop);
     
     COPY_FROM_GPU(nbNodesExchangedVisPoints, nbNodesExchangedVisPoints, uint32_t);
     COPY_FROM_GPU(nbNodesExchangedVisVoxels, nbNodesExchangedVisVoxels, uint32_t);
 
-    // // TODO: to remove
-    // println("Nb vis voxels nodes = {}, nb vis points nodes = {}, max = {}", 
-    //     *(uint32_t*)nbNodesExchangedVisVoxels, 
-    //     *(uint32_t*)nbNodesExchangedVisPoints, 
-    //     hostStaging.visibilityCacheSize / 2
-    // );
-    *(uint32_t*)nbNodesExchangedVisPoints = min(*(uint32_t*)nbNodesExchangedVisPoints, hostStaging.visibilityCacheSize / 2);
-    *(uint32_t*)nbNodesExchangedVisVoxels = min(*(uint32_t*)nbNodesExchangedVisVoxels, hostStaging.visibilityCacheSize / 2);
+    *(uint32_t*)nbNodesExchangedVisPoints = min(*(uint32_t*)nbNodesExchangedVisPoints, half_vis_cache);
+    *(uint32_t*)nbNodesExchangedVisVoxels = min(*(uint32_t*)nbNodesExchangedVisVoxels, half_vis_cache);
 
     uint32_t nb_vis_points = *(uint32_t*)nbNodesExchangedVisPoints;
     uint32_t nb_vis_voxels = *(uint32_t*)nbNodesExchangedVisVoxels;
@@ -1259,6 +1257,12 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
             nbVisibleNodesVisibilityUpdate++;
         }
     }
+}
+
+void GpuVersion::shuffleForRendering(HostStorageNode* node, CIdAABB id){
+    std::minstd_rand rng(static_cast<uint32_t>(id) * 2654435761u + 1u);
+    std::shuffle(node->points, node->points + node->node.points_counter, rng);
+    std::shuffle(node->voxels, node->voxels + node->node.voxels_counter, rng);
 }
 
 
@@ -1316,39 +1320,55 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
 
     if(!hasStartedVisibilityUpdate){
         visibilityUpdateSort(editor, context);
-
         uint32_t loop_end = min(nbVisibleNodesVisibilityUpdate, hostStaging.visibilityCacheSize);
 
-        std::vector<CIdAABB> to_deserialise = {};
-        for(uint32_t i=0; i < loop_end; i++){
+        // Resolve the pointers on the main thread: the worker threads must not touch the map
+        std::vector<std::pair<CIdAABB, HostStorageNode*>> to_deserialise = {};
+        for(uint32_t i = 0; i < loop_end; i++){
             const CIdAABB& id = visibleNodesOrdered[i];
-
             if(!visibilityNodes.contains(id)){
-                std::shared_ptr<HostStorageNode> node = std::make_shared<HostStorageNode>(HostStorageNode::Owner::Visibility);
+                auto node = std::make_shared<HostStorageNode>(HostStorageNode::Owner::Visibility);
                 visibilityNodes[id] = node;
-                to_deserialise.push_back(id);
+                to_deserialise.emplace_back(id, node.get());
             }
         }
         hasStartedVisibilityUpdate = true;
+
+        auto load_for_rendering = [](const std::pair<CIdAABB, HostStorageNode*>& entry){
+            const auto& [id, node] = entry;
+            {
+                std::lock_guard<std::mutex> lock(storedNodesMtx[id]);
+                OctreeNodeSerializable::deserializeV2(node, id, "From visibility update");
+            }
+            shuffleForRendering(node, id);
+        };
 
         if(!to_deserialise.empty()){
             isDoneDeserializingForVisibility = false;
 
             if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-                std::thread deserialize_thread([to_deserialise = std::move(to_deserialise)]() mutable {
-                    std::for_each(to_deserialise.begin(), to_deserialise.end(), [](const CIdAABB& id){
-                            std::lock_guard<std::mutex> lock(storedNodesMtx[id]);
-                            OctreeNodeSerializable::deserializeV2(visibilityNodes[id].get(), id, "From visibility update");
-                        }
-                    );
+                std::thread deserialize_thread([to_deserialise = std::move(to_deserialise), load_for_rendering]() {
+                    const uint32_t nb_nodes   = uint32_t(to_deserialise.size());
+                    const uint32_t nb_workers = std::min(nb_nodes, std::max(1u, std::thread::hardware_concurrency() / 4));
+
+                    std::atomic<uint32_t> next = 0;
+                    std::vector<std::thread> workers;
+                    workers.reserve(nb_workers);
+                    for(uint32_t w = 0; w < nb_workers; w++){
+                        workers.emplace_back([&]{
+                            for(uint32_t i = next.fetch_add(1); i < nb_nodes; i = next.fetch_add(1)){
+                                load_for_rendering(to_deserialise[i]);
+                            }
+                        });
+                    }
+                    for(auto& t : workers){ t.join(); }
+
                     isDoneDeserializingForVisibility = true;
                 });
                 deserialize_thread.detach();
                 return;
             } else {
-                std::for_each(to_deserialise.begin(), to_deserialise.end(), [](const CIdAABB& id){
-                    OctreeNodeSerializable::deserializeV2(visibilityNodes[id].get(), id, "From visibility update");
-                });
+                std::for_each(to_deserialise.begin(), to_deserialise.end(), load_for_rendering);
                 isDoneDeserializingForVisibility = true;
             }
         }
@@ -1486,7 +1506,16 @@ void GpuVersion::updateHostCache(){
                 hostCacheToDelete.push_back(node);
                 it = updateNodes.erase(it);
             } else {
-                if(!storedNodes.contains(id)){
+                // if(!storedNodes.contains(id)){
+                //     hostCacheToSerialise.push_back(node);
+                // }
+                // it++;
+
+                // TODO: test more store
+                const COctreeNode& n = node->node;
+                bool is_dirty = n.points_counter != n.points_last_stored
+                    || n.voxels_counter != n.voxels_last_stored;
+                if(!storedNodes.contains(id) || is_dirty){
                     hostCacheToSerialise.push_back(node);
                 }
                 it++;

@@ -90,14 +90,6 @@ void OctreeNodeSerializable::serializeV2(const std::shared_ptr<HostStorageNode> 
         uint32_t nb_old_points = node->node.points_last_stored;
         uint32_t nb_new_points = node->node.points_counter - nb_old_points;
 
-        // Shuffle the points
-        std::mt19937 rng(static_cast<std::mt19937::result_type>(node->node.aabb_index));
-        std::shuffle(
-            node->points + nb_old_points,
-            node->points + node->node.points_counter,
-            rng
-        );
-
         // ChunkSerializable::serializeV2(points_filepath, node->points.data(), 
         ChunkSerializable::serializeV2(points_filepath, node->points,
             nb_old_points, nb_new_points
@@ -111,12 +103,9 @@ void OctreeNodeSerializable::serializeV2(const std::shared_ptr<HostStorageNode> 
 
         uint32_t nb_old_voxels = node->node.voxels_last_stored;
         uint32_t nb_new_voxels = node->node.voxels_counter - nb_old_voxels;
-        ChunkSerializable::serializeV2(voxels_filepath, node->voxels, 
-            nb_old_voxels, nb_new_voxels
-        );
-        OccupancyGridSerializable::serializeV2(grid_filepath, node->occupancy_indices, 
-            nb_old_voxels, nb_new_voxels
-        );
+        
+        ChunkSerializable::serializeV2(voxels_filepath, node->voxels, nb_old_voxels, nb_new_voxels);
+        OccupancyGridSerializable::serializeV2(grid_filepath, node->occupancy_indices, nb_old_voxels, nb_new_voxels);
     }
 
     node->node.points_last_stored = node->node.points_counter;

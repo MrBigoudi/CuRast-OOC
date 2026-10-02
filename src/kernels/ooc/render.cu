@@ -1109,8 +1109,6 @@ void kernel_get_renderable_nodes_part_3_large_nodes(
             if(children_tmp[i] == CINVALID_ID){continue;}
             if(globalVariables.getFlag(children_tmp[i], CFlagIsLargeHost)){continue;}
             globalVariables.setFlag(children_tmp[i], CFlagIsCutHost);
-            // // TODO: to remove
-            // __nv_atomic_add(&globalVariables.curNbVisNode, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
         }
     }
 }
@@ -1150,8 +1148,6 @@ void kernel_get_renderable_nodes_part_4_small_nodes(
                 uint32_t voxels_buffer_id = __nv_atomic_fetch_add(&globalVariables.nbNodesExchangedVisVoxels, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
                 globalVariables.exchangedAABBIndicesVisVoxelsTmp[voxels_buffer_id] = node_index;
                 globalVariables.exchangedAABBIndicesVisVoxelsScreenSpaceSize[voxels_buffer_id] = screen_space_size;
-                // // TODO: to remove
-                // __nv_atomic_add(&globalVariables.curNbVisNode, nb_voxels, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
             }
         }
         
