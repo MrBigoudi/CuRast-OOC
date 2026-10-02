@@ -497,7 +497,7 @@ void GpuVersion::octreeUpdateInit(CuRast* editor, CUcontext* context){
 
     prog->launch("kernel_init_octree_part_1_aabb_measuring", {}, launch_settings);
     COPY_FROM_GPU(isInitialised, isInitialised, bool);
-    if(!isInitialised){return;}
+    if(!*(bool*)isInitialised){return;}
 
     launch_settings = {
         .gridsize = 1,
@@ -541,7 +541,7 @@ void GpuVersion::octreeUpdateBottomUp(CuRast* editor, CUcontext* context){
 
     prog->launch("kernel_bottom_up_update_part_0_flagging", {}, single_launch);
     COPY_FROM_GPU(isUpdating, isUpdating, bool);
-    if(!isUpdating){return;}
+    if(!*(bool*)isUpdating){return;}
     prog->launch("kernel_bottom_up_update_part_1_counting", {}, launch_settings);
     prog->launch("kernel_bottom_up_update_part_2_instancing", {}, single_launch);
 }
@@ -785,7 +785,7 @@ void GpuVersion::octreeUpdateSimLODVoxelSampling(CuRast* editor, CUcontext* cont
     octreeUpdateFillNewGrids(editor, context);
     COPY_TO_GPU(nbGridsToInit, &RESET, uint32_t);
 
-    if(!(bool*)isDoneIterating){return;}
+    if(!*(bool*)isDoneIterating){return;}
 
     uint32_t block_size = 256;
     uint32_t grid_size =
@@ -1659,7 +1659,9 @@ void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
 
 
 void GpuVersion::renderOctree(RenderTarget& target){
-    renderingSettings.debug_lod_to_render = CuRastSettings::debugLodToRender;
+    // renderingSettings.debug_lod_to_render = CuRastSettings::debugLodToRender;
+    renderingSettings.debug_lod_to_render = -1;
+    renderingSettings.draw_every_x_points = (CuRastSettings::debugLodToRender <= 0) ? 1 : uint32_t(CuRastSettings::debugLodToRender);
     renderingSettings.use_voxels_debug_color = CuRastSettings::voxelsDebugColor;
     renderingSettings.min_pixel_span = CuRastSettings::minPixelSpan;
     renderingSettings.voxels_nb_points_per_axis = uint32_t(CuRastSettings::voxelsPointsPerAxis);
@@ -1700,32 +1702,16 @@ void GpuVersion::renderOctree(RenderTarget& target){
             .blocksize = block_size
         };
 
-        if(isTakingScreenshots){
-            prog->launch("kernel_visibility_pass", {&renderingTarget, &renderingSettings}, launch_settings);
-            // prog->launch("kernel_replace_unloaded_nodes", {&renderingTarget, &renderingSettings}, launch_settings);
-            prog->launch("kernel_draw_visibility_cache", {&renderingTarget, &renderingSettings}, launch_settings);
-            prog->launch("kernel_draw_octree_large", {&renderingTarget, &renderingSettings}, launch_settings);
-            prog->launch("kernel_draw_octree_small", {&renderingTarget, &renderingSettings}, launch_settings);
-            // prog->launch("kernel_test_multi_resolution", {&real_target, &real_settings, &randomOffset}, launch_settings);
-        } else {
-            // prog->launch("kernel_visibility_pass", {&renderingTarget, &renderingSettings}, launch_settings);
-            // prog->launch("kernel_replace_unloaded_nodes", {&renderingTarget, &renderingSettings}, launch_settings);
-            // prog->launch("kernel_draw_visibility_cache", {&renderingTarget, &renderingSettings}, launch_settings);
-            // prog->launch("kernel_draw_octree_large", {&renderingTarget, &renderingSettings}, launch_settings);
-            // prog->launch("kernel_draw_octree_small", {&renderingTarget, &renderingSettings}, launch_settings);
-
-            // Render bounding boxes
-            if(CuRastSettings::showBoundingBoxes){
-                prog->launch("kernel_render_bounding_boxes", {&renderingTarget, &renderingSettings}, launch_settings);
-            }
-
-            prog->launch("kernel_visibility_pass", {&renderingTarget, &renderingSettings}, launch_settings);
-            // prog->launch("kernel_replace_unloaded_nodes", {&renderingTarget, &renderingSettings}, launch_settings);
-            prog->launch("kernel_draw_visibility_cache", {&renderingTarget, &renderingSettings}, launch_settings);
-            prog->launch("kernel_draw_octree_large", {&renderingTarget, &renderingSettings}, launch_settings);
-            prog->launch("kernel_draw_octree_small", {&renderingTarget, &renderingSettings}, launch_settings);
-
+        // Render bounding boxes
+        if(CuRastSettings::showBoundingBoxes){
+            prog->launch("kernel_render_bounding_boxes", {&renderingTarget, &renderingSettings}, launch_settings);
         }
+
+        prog->launch("kernel_visibility_pass", {&renderingTarget, &renderingSettings}, launch_settings);
+        // prog->launch("kernel_replace_unloaded_nodes", {&renderingTarget, &renderingSettings}, launch_settings);
+        prog->launch("kernel_draw_visibility_cache", {&renderingTarget, &renderingSettings}, launch_settings);
+        prog->launch("kernel_draw_octree_large", {&renderingTarget, &renderingSettings}, launch_settings);
+        prog->launch("kernel_draw_octree_small", {&renderingTarget, &renderingSettings}, launch_settings);
     }
 
     updateHostCache();
@@ -2272,7 +2258,7 @@ void GpuVersion::takeSingleScreenShot(){
         bool isPerturbed  = (screenshotCounter % 2 == 0);
 
         if(isPerturbed){
-            CuRastSettings::debugLodToRender = int32_t(density[cpt]);
+            CuRastSettings::debugLodToRender = int32_t(1 << density[cpt]);
             cpt++;
             CuRastSettings::requestScreenshot = std::make_shared<string>(
                 format("./screenshots/id_{}_res_{}x{}_perturbed.png",

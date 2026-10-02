@@ -93,6 +93,12 @@ void kernel_init_octree_part_1_aabb_measuring(){
     CAABB tmp_aabb = CAABB();
     bool is_init = false;
 
+    if(thread_id == 0){ 
+        shBlockMinX = shBlockMinY = shBlockMinZ =  INFINITY;
+        shBlockMaxX = shBlockMaxY = shBlockMaxZ = -INFINITY; 
+    }
+    __syncthreads();
+
     for(uint32_t batch = 0; batch < globalVariables.maxNbBatches; batch++){
         if(globalVariables.batchesAddedMask[batch] != BatchToHandle){continue;}
         
@@ -156,7 +162,7 @@ void kernel_init_octree_part_1_aabb_measuring(){
     __syncthreads();
 
     // Grid level AABB
-    if(thread_id == 0){
+    if(thread_id == 0 && shBlockMinX <= shBlockMaxX){
         atomicMinFloatRelaxedOrderDeviceScope(
             &globalVariables.relationshipMap[globalVariables.mainOctree->aabb_index].aabb.mins.x,
             shBlockMinX
@@ -191,14 +197,15 @@ void kernel_init_octree_part_2_refining(){
     // printf("kernel_init_octree_part_2_refining\n");
 
     // Adding small 2x delta to avoid floating point issues
-    float epsilon = 0.5f;
+    vec3 size = globalVariables.relationshipMap[globalVariables.mainOctree->aabb_index].aabb.getSize();
+    float epsilon = 0.01f * fmaxf(fmaxf(size.x, size.y), fmaxf(size.z, 1e-3f));
     globalVariables.relationshipMap[globalVariables.mainOctree->aabb_index].aabb.mins 
         -= epsilon * globalVariables.relationshipMap[globalVariables.mainOctree->aabb_index].aabb.mins;
     globalVariables.relationshipMap[globalVariables.mainOctree->aabb_index].aabb.maxs 
         += epsilon * globalVariables.relationshipMap[globalVariables.mainOctree->aabb_index].aabb.maxs;
 
     // Make it cubic
-    vec3 size = globalVariables.relationshipMap[globalVariables.mainOctree->aabb_index].aabb.getSize();
+    size = globalVariables.relationshipMap[globalVariables.mainOctree->aabb_index].aabb.getSize();
     vec3 half_sizes_x = 0.5f * (vec3(size.x) - size);
     vec3 half_sizes_y = 0.5f * (vec3(size.y) - size);
     vec3 half_sizes_z = 0.5f * (vec3(size.z) - size);

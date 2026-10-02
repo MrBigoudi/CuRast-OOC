@@ -63,9 +63,9 @@ struct CAABB {
 
 	__device__ __forceinline__  glm::vec3 getSize() const {return maxs - mins;}
 	__device__ __forceinline__  bool contains(const glm::vec3& position) const {
-		return position.x > mins.x && position.x < maxs.x
-			&& position.y > mins.y && position.y < maxs.y
-			&& position.z > mins.z && position.z < maxs.z
+		return position.x >= mins.x && position.x <= maxs.x
+			&& position.y >= mins.y && position.y <= maxs.y
+			&& position.z >= mins.z && position.z <= maxs.z
 		;
 	}
 	__device__ __forceinline__  void extend(const CNodePosition& position) {
@@ -927,12 +927,13 @@ enum SentBatchState {
 
 
 struct CRenderingSettings {
-	int32_t debug_lod_to_render = 0;
+	int32_t debug_lod_to_render = -1;
 	bool use_voxels_debug_color = false;
 	uint32_t min_pixel_span = 0;
 	uint32_t voxels_nb_points_per_axis = 0;
 	bool use_multiscale = false;
 	static constexpr uint32_t NB_PYRAMID_LEVELS = 4;
+	uint32_t draw_every_x_points = 1;
 };
 
 

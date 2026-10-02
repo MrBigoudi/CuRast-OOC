@@ -237,6 +237,9 @@ void drawAllPoints(
 
     while(cur_points){
         for(uint32_t i = thread_id; i < cur_points->size; i += nb_threads_per_block){
+            // For dataset creation
+            if(i % settings.draw_every_x_points != 0){continue;}
+
             const CPoint& point = cur_points->points[i];
             drawPoint(target, settings, point.position, point.color);
         }
@@ -530,6 +533,9 @@ void kernel_draw_visibility_cache(
 
     // Render points
     for(uint32_t point_id = thread_id; point_id < nb_points; point_id += nb_threads){
+        // For dataset creation
+        if(point_id % settings.draw_every_x_points != 0){continue;}
+
         const CPoint& point = rendered_points[point_id];
         drawPoint(target, settings, point.position,
             settings.use_voxels_debug_color ? 0xff00ffff : point.color
@@ -538,6 +544,9 @@ void kernel_draw_visibility_cache(
 
     // Render voxels
     for(uint32_t voxel_id = thread_id; voxel_id < nb_voxels; voxel_id += nb_threads){
+        // For dataset creation
+        if(voxel_id % settings.draw_every_x_points != 0){continue;}
+
         const CPoint& voxel = rendered_voxels[voxel_id];
         // const CIdAABB& node_id = rendered_voxels_nodes[voxel_id];
 
@@ -626,6 +635,9 @@ void drawAllVoxels(
 
     while(cur_voxels){
         for(uint32_t i = thread_id; i < cur_voxels->size; i += nb_threads_per_block){
+            // For dataset creation
+            if(i % settings.draw_every_x_points != 0){continue;}
+
             const CPoint& voxel = cur_voxels->points[i];
             uint32_t voxel_color = settings.use_voxels_debug_color ? color : voxel.color;
             drawPoint(target, settings, voxel.position, voxel_color,
@@ -1229,8 +1241,7 @@ void kernel_get_renderable_nodes_part_5_reorder(
     uint32_t nb_points = globalVariables.nbNodesExchangedVisPoints;
     uint32_t nb_voxels = globalVariables.nbNodesExchangedVisVoxels;
 
-    // Must match the host allocation (std::bit_ceil(maxNbConcurrentNodes))
-    uint32_t sort_capacity = nextPow2(globalVariables.maxNbConcurrentNodes);
+    uint32_t sort_capacity = globalVariables.maxNbConcurrentNodes;
 
     // Clear previous "was visible" flags
     for(uint32_t i = thread_id; i < max_nb_exchanged_nodes; i += nb_threads){

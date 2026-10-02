@@ -430,6 +430,7 @@ void loadPointsInBatches(
             for (uint64_t i = 0; i < batch->count; i++) {
                 if(laszip_read_point(laszip_reader)){
                     println("ERROR: reading point {} for '{}'", i+batch->first, *batch->file);
+                    batch->count = i+1;
                     break;
                 }
 
