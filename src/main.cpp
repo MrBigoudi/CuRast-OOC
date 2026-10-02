@@ -496,10 +496,6 @@ void update(){
 }
 
 int main(int argc, char** argv){
-	// NeuralNet::load("/home/ykedadry/Documents/Projects/PointCloudFaker/models/pyramid_unet_torchscript.pth");
-	// throw(EXIT_FAILURE);
-
-	
 	std::thread* thread_points_loader = nullptr;
 	std::thread* thread_octree_visibility = nullptr;
 
@@ -593,10 +589,16 @@ int main(int argc, char** argv){
 
 
 		println("GPU Memory Usage Before scene setup:\n{}", GlobalVariables::getGpuMemoryUsage());
-		// Create Global things
-		OocSimLodSettings::init();
 		std::filesystem::remove_all(OocSimLodSettings::TEMPORARY_NODE_STORAGE_DIRECTORY);
 		std::filesystem::create_directories(OocSimLodSettings::TEMPORARY_NODE_STORAGE_DIRECTORY);
+
+		// Create Global things
+		OocSimLodSettings::init();
+		if(OocSimLodSettings::IS_USING_NN){
+			NeuralNet::load("filling_unet.pth");
+			// throw(EXIT_SUCCESS);
+		}
+
 		if(!OocSimLodSettings::IS_USING_GPU_VERSION){
 			GlobalVariables::init(CuRast::instance, &context);
 			initScene();

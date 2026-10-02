@@ -71,6 +71,8 @@ struct OocSimLodSettings {
     static inline bool IS_USING_GPU_VERSION;
     /// Tells if need to find automatic properties
     static inline bool DERIVE_AUTOMATIC_PROPERTIES;
+    /// Tells if the point cloud filling network can be used
+    static inline bool IS_USING_NN;
 
 
 

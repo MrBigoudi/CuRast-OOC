@@ -825,85 +825,73 @@ void kernel_unpack_resolved_pyramid_to_tensor(
     uint32_t* resolved_level1,
     uint32_t* resolved_level2,
     uint32_t* resolved_level3,
-    uint64_t* framebuffer,
+    uint64_t* colorbuffer,           // depth in the high 32 bits
     float*    out_tensor,
     uint32_t  base_width,
     uint32_t  base_height,
     uint32_t  nb_levels,
-    uint64_t* level_fb_offsets,
+    uint32_t  nb_channels,           // == NeuralNet::config.level_channels()
+    uint32_t  flip_y,                // 1 = match stbi_flip_vertically_on_write(1)
+    uint64_t* level_cb_offsets,
     uint64_t* level_tensor_offsets
 ){
-    uint32_t thread_id     = blockIdx.x * blockDim.x + threadIdx.x;
-    uint32_t total_threads = blockDim.x * gridDim.x;
+    uint64_t thread_id     = uint64_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    uint64_t total_threads = uint64_t(blockDim.x) * gridDim.x;
 
-    uint32_t* resolved[4] = {
-        resolved_level0, resolved_level1,
-        resolved_level2, resolved_level3
-    };
+    uint32_t* resolved[4] = { resolved_level0, resolved_level1, resolved_level2, resolved_level3 };
 
     for(uint32_t level = 0; level < nb_levels; level++){
         uint32_t w = base_width  >> level;
         uint32_t h = base_height >> level;
-        uint64_t levelPixels = uint64_t(w) * h;
-        uint64_t tensor_off  = level_tensor_offsets[level];
-        uint64_t fb_off      = level_fb_offsets[level];
-        uint64_t stride_c    = levelPixels;
+        uint64_t pixels     = uint64_t(w) * h;
+        uint64_t tensor_off = level_tensor_offsets[level];
+        uint64_t cb_off     = level_cb_offsets[level];
 
-        for(uint64_t i = thread_id; i < levelPixels; i += total_threads){
-            uint32_t rgba = resolved[level][i];
+        for(uint64_t i = thread_id; i < pixels; i += total_threads){
+            uint32_t x = uint32_t(i % w);
+            uint32_t y = uint32_t(i / w);
+            uint64_t src = uint64_t(flip_y ? (h - 1 - y) : y) * w + x;
 
-            // kernel_resolve_colorbuffer_to_screenshot writes via
-            // uint8_t* rgba = (uint8_t*)&color, so byte0=R, byte1=G, byte2=B
-            // which is exactly what PIL reads from the PNG — matches training
-            float r = float( rgba        & 0xff) / 255.0f;
-            float g = float((rgba >>  8) & 0xff) / 255.0f;
-            float b = float((rgba >> 16) & 0xff) / 255.0f;
+            uint32_t rgba = resolved[level][src];
+            out_tensor[tensor_off + 0 * pixels + i] = float( rgba        & 0xff) / 255.0f;
+            out_tensor[tensor_off + 1 * pixels + i] = float((rgba >>  8) & 0xff) / 255.0f;
+            out_tensor[tensor_off + 2 * pixels + i] = float((rgba >> 16) & 0xff) / 255.0f;
 
-            uint64_t fb = framebuffer[fb_off + i];
-            float lod   = float(uint8_t(fb >> 56)) / 255.0f;
-
-            out_tensor[tensor_off + 0 * stride_c + i] = r;
-            out_tensor[tensor_off + 1 * stride_c + i] = g;
-            out_tensor[tensor_off + 2 * stride_c + i] = b;
-            out_tensor[tensor_off + 3 * stride_c + i] = lod;
-            out_tensor[tensor_off + 4 * stride_c + i] = 0.0f;
+            if(nb_channels > 3){
+                // Replicates kernel_resolve_depthbuffer_to_screenshot + PIL "L"
+                uint64_t px         = colorbuffer[cb_off + src];
+                uint32_t depth_bits = uint32_t(px >> 32);
+                bool     is_hole    = isinf(__uint_as_float(depth_bits));
+                uint8_t  depth_b    = is_hole ? 0 : uint8_t(depth_bits);
+                out_tensor[tensor_off + 3 * pixels + i] = float(depth_b) / 255.0f;
+            }
         }
     }
 }
-
 
 extern "C" __global__
 void kernel_pack_tensor_to_colorbuffer(
     float*    tensor,
     uint64_t* colorbuffer,
     uint32_t  width,
-    uint32_t  height
+    uint32_t  height,
+    uint32_t  flip_y
 ){
-    uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    uint64_t i = uint64_t(blockIdx.x) * blockDim.x + threadIdx.x;
     uint64_t numPixels = uint64_t(width) * height;
     if(i >= numPixels) return;
 
-    float r_f = __saturatef(tensor[0 * numPixels + i]);
-    float g_f = __saturatef(tensor[1 * numPixels + i]);
-    float b_f = __saturatef(tensor[2 * numPixels + i]);
+    uint8_t r = uint8_t(__saturatef(tensor[0 * numPixels + i]) * 255.0f);
+    uint8_t g = uint8_t(__saturatef(tensor[1 * numPixels + i]) * 255.0f);
+    uint8_t b = uint8_t(__saturatef(tensor[2 * numPixels + i]) * 255.0f);
+    uint32_t color = uint32_t(r) | (uint32_t(g) << 8) | (uint32_t(b) << 16) | (0xffu << 24);
 
-    uint8_t r = uint8_t(r_f * 255.0f);
-    uint8_t g = uint8_t(g_f * 255.0f);
-    uint8_t b = uint8_t(b_f * 255.0f);
+    uint32_t x = uint32_t(i % width);
+    uint32_t y = uint32_t(i / width);
+    uint64_t dst = uint64_t(flip_y ? (height - 1 - y) : y) * width + x;
 
-    // Pack to match what kernel_resolve_colorbuffer_to_screenshot reads:
-    // it does uint8_t* rgba = (uint8_t*)&color; rgba[0]=R, rgba[1]=G, rgba[2]=B
-    // So byte0=R -> uint32 bit0..7 = R
-    uint32_t color = uint32_t(r)
-                   | (uint32_t(g) << 8)
-                   | (uint32_t(b) << 16)
-                   | (0xffu       << 24);
-
-    // Write depth=1.0 so EDL and resolve treat this as a valid pixel
-    uint32_t depth_bits = __float_as_uint(1.0f);
-    colorbuffer[i] = (uint64_t(depth_bits) << 32) | uint64_t(color);
+    colorbuffer[dst] = (uint64_t(__float_as_uint(1.0f)) << 32) | uint64_t(color);
 }
-
 
 
 

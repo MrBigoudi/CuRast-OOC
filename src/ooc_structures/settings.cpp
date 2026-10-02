@@ -64,6 +64,7 @@ void OocSimLodSettings::init_miscellaneous(){
     MEASURE_TIMINGS = init_field<bool>("MEASURE_TIMINGS", false);
     IS_USING_GPU_VERSION = init_field<bool>("IS_USING_GPU_VERSION", false);
     DERIVE_AUTOMATIC_PROPERTIES = init_field<bool>("DERIVE_AUTOMATIC_PROPERTIES", false);
+    IS_USING_NN = init_field<bool>("IS_USING_NN", false);
 }
 
 void OocSimLodSettings::init_ui_params(){
@@ -128,25 +129,27 @@ void OocSimLodSettings::init_gpu_version_buffers(){
 void OocSimLodSettings::init_default(){
     // 1Gb fixed
     MAX_NB_NODES = 1'048'576;
-    MAX_NB_RENDERED_POINTS = 8'388'608;
-    MAX_NB_RENDERED_VOXELS = 4'194'304;
+    MAX_NB_RENDERED_POINTS = 25'165'824;
+    MAX_NB_RENDERED_VOXELS = 25'165'824;
     MAX_NB_SPILLING_POINTS = 8'388'608;
     MAX_NB_BACKLOG_VOXELS = 8'388'608;
     MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE = 128;
     MAX_POINTS_PER_LEAF = 65'536;
     MAX_POINTS_PER_BATCHES = 1'048'576;
-    double fixed_memory = 2. * 1024 * 1024 * 1024;
+
+    double fixed_memory_factor = IS_USING_NN ? 5. : 2.;
+    double fixed_memory = fixed_memory_factor * 1024 * 1024 * 1024;
 
     double available_memory = (DEVICE_AVAILABLE_MEMORY * 0.9) - fixed_memory - sizeof(CGlobalVariables);
     
     // Allocable memory
     double allocable_memory = 0.75 * available_memory;
-    double chunk_memory = 0.8 * allocable_memory;
+    double chunk_memory = 0.75 * allocable_memory;
     double chunk_size = 64 * sizeof(CChunk); // 64 because nbChunks should be 64 * LRU_CACHE
     LRU_UPDATES_CACHE_SIZE = std::bit_floor(uint32_t(chunk_memory / chunk_size));
     NB_ALLOCABLE_CHUNKS = 64 * LRU_UPDATES_CACHE_SIZE;
-    NB_ALLOCABLE_GRIDS = LRU_UPDATES_CACHE_SIZE;
-    NB_ALLOCABLE_NODES = 4 * LRU_UPDATES_CACHE_SIZE;
+    NB_ALLOCABLE_GRIDS = 2 * LRU_UPDATES_CACHE_SIZE;
+    NB_ALLOCABLE_NODES = 8 * LRU_UPDATES_CACHE_SIZE;
     chunk_memory = (NB_ALLOCABLE_CHUNKS * (sizeof(CChunk) + 4)) + sizeof(CAllocatorPool<CChunk>);
     double grids_memory = (NB_ALLOCABLE_GRIDS * (sizeof(COccupancyGrid) + 4)) + sizeof(CAllocatorPool<COccupancyGrid>);
     double nodes_memory = (NB_ALLOCABLE_NODES * (sizeof(COctreeNode) + 4)) + sizeof(CAllocatorPool<COctreeNode>);
