@@ -51,6 +51,15 @@ struct CLRUCache {
     uint32_t getSize() const {
         return static_cast<uint32_t>(cache_map.size());
     }
+
+    void remove(const CIdAABB& aabb_index){
+        // Already present: remove it
+        auto map_it = cache_map.find(aabb_index);
+        if(map_it != cache_map.end()){
+            cache.erase(map_it->second);
+            cache_map.erase(aabb_index);
+        }
+    }
 };
 
 
@@ -210,6 +219,7 @@ struct GpuVersion {
     
     // CPU cache
     static inline CLRUCache* hostCache = nullptr;
+    static inline CLRUCache* hostVisCache = nullptr;
     static inline std::unordered_map<CIdAABB, std::shared_ptr<HostStorageNode>> updateNodes = {};
     static inline std::unordered_map<CIdAABB, std::shared_ptr<HostStorageNode>> visibilityNodes = {};
     // static inline std::unordered_map<CIdAABB, std::shared_ptr<HostStorageNode>> persistentStoredNodes = {};
@@ -618,19 +628,30 @@ struct GpuVersion {
 
 
 
-
+enum HostStorageNodeOwner {
+    Update,
+    Visibility,
+};
+    
 
 template <typename T>
 struct PinnedMemoryAllocator {
     std::unordered_set<T*> free_data = {};
     std::unordered_set<T*> used_data = {};
-    T* allocate() {
+    T* allocate(const HostStorageNodeOwner& owner) {
         for(T* data : free_data){
             used_data.insert(data);
             free_data.erase(data);
             return data;
         }
-        printf("ERROR: no more point list can be created\n");
+        switch(owner){
+            case Update:
+                printf("ERROR: no more %s can be created for the update cache\n", typeid(T).name());
+                break;
+            case Visibility:
+                printf("ERROR: no more %s can be created for the visibility cache\n", typeid(T).name());
+                break;
+        }
         throw(EXIT_FAILURE);
     }
     void deallocate(T* data) {
@@ -668,14 +689,10 @@ struct HostStorageNode {
     static inline PinnedMemoryAllocator<CPoint> voxels_allocator_visibility = {};
     static inline PinnedMemoryAllocator<uint64_t> indices_allocator_visibility = {};
 
-    enum Owner {
-        Update,
-        Visibility,
-    };
-    Owner owner;
+    HostStorageNodeOwner owner;
 
     static void init();
     static void destroy();
     void deallocate();
-    HostStorageNode(const Owner& owner);
+    HostStorageNode(const HostStorageNodeOwner& owner);
 };

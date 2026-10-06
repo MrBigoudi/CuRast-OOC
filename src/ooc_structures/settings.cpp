@@ -136,6 +136,7 @@ void OocSimLodSettings::init_default(){
     MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE = 128;
     MAX_POINTS_PER_LEAF = 65'536;
     MAX_POINTS_PER_BATCHES = 1'048'576;
+    LRU_VISIBILITY_CACHE_SIZE = 1'024;
 
     double fixed_memory_factor = IS_USING_NN ? 5. : 2.;
     double fixed_memory = fixed_memory_factor * 1024 * 1024 * 1024;

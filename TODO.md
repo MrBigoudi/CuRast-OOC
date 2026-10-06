@@ -1,58 +1,63 @@
 # TODO list
 
 
-## Before next week's meeting
-
-### Today 
-
-<!-- - Fix rendering -->
-<!-- - Create UI window with zoom on each file (store their AABB) -->
-<!-- - Move the vis update on the device side -->
-<!-- - Fix camera controls -->
-
-<!-- - Priority loading -->
-<!-- - Fix remaining issues  -->
-<!-- - sometimes simlod load is loading a non-existing file, maybe because of non-correct split ?? -->
-<!-- - sometimes, illegal memory access on updating levels -->
-<!-- - Fix loader  -->
-- improve loading speed ? (maybe pre-read first points for first batch creation)
-- Implement vis cache to avoid sending node data multiple times
-
-### This weekend
-
-- Check all globalVariables and their initial values (rename some, destroy some, ...)
-- Send globalVariables buffers as kernel input
-- Optimise kernels (rendering and update)
-- What about storing all nodes info in global variables -> avoid loading entirely + avoid duplicate occupancy on host side on store
-
-### Next week
-
-- Fix IO contention
-- Fix random crops in model training
+## Tomorrow
 
 
+### Morning
+
+- [x] Implement visibility cache (for disk loading)
+- [ ] Fix only loading points of higher node level when using the multipass loader
+- [ ] Implement visibility cache (for node rendering)
+- [ ] Measure new bottlenecks (nsys + ncu)
+
+### Afternoon
+
+- [ ] Fix depth store
+- [ ] Generate new simple dataset
+- [ ] Try running a training session on cluster (or locally if cluster not available)
+- [ ] Clean model architecture / training script
 
 
-## Longer term goals
+### Unrelated
 
-- Find a better dataset
-- Aim for 100M points / seconds ?? (getting closer)
-
+- [ ]  Prepare papers for seminar
 
 
-## Research part
+## This week
 
-- Find which node to store (is LRU best strategy)
-- Find a way to compress stored nodes
-- Improve Color-filtering
-- Find a way to load closest batches first
-- Improve on linked-list approach ?
+- [ ] Fix rendering of just unloaded nodes
+- [ ] Fix nodes sorting (wrong sorting creates random holes)
+- [ ] Fix priority loading
 
 
-## Report part
+- [ ] Implement depth mask for inference (find depth with "an hierarchical coverage-based depth upsampling")
+- [ ] Generate dataset for TAA
+- [ ] Train with TAA
 
-- Update the latex algorithm
-- Write down pipeline / method somewhere in a .md file
+- [ ] Fix UI values
+- [ ] Store all remaining nodes on quit
+- [ ] Improve loading speed ? (maybe pre-read first points for first batch creation)
+
+
+- [ ] Check all globalVariables and their initial values (rename some, destroy some, ...)
+- [ ] Send globalVariables buffers as kernel input
+- [ ] What about storing all nodes info in global variables -> avoid loading entirely + avoid duplicate occupancy on host side on store
+
+
+
+## This month
+
+- [ ] Fix memory limitations
+- [ ] What about storage limitations
+
+- [ ] Fix IO contention
+- [ ] Optimise kernels (rendering and update)
+- [ ] Improve inference speed
+
+- [ ] Update the latex algorithms
+- [ ] Find a way to compress stored nodes
+- [ ] Improve Color-filtering
 
 
 <!-- regex:^(?!kernel_clearFramebuffer$|kernel_dummy$|kernel_resolve_colorbuffer_to_opengl_2D$|kernel_resolve_visbuffer_to_colorbuffer2D$|kernel_init_availableMcuSlots$).*kernel_ -->

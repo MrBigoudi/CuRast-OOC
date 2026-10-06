@@ -14,7 +14,7 @@ void HostStorageNode::init(){
     voxels_allocator_update.init(node_count, data_count);
     indices_allocator_update.init(node_count, data_count);
 
-    node_count = OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE; // Visibility cache size
+    node_count = 2 * OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE; // Visibility cache size (x2 for hostVisCache)
     points_allocator_visibility.init(node_count, data_count);
     voxels_allocator_visibility.init(node_count, data_count);
     indices_allocator_visibility.init(node_count, data_count);
@@ -50,17 +50,17 @@ void HostStorageNode::deallocate(){
 }
 
 
-HostStorageNode::HostStorageNode(const HostStorageNode::Owner& owner): owner(owner){
+HostStorageNode::HostStorageNode(const HostStorageNodeOwner& owner): owner(owner){
     switch(owner){
         case Update:
-            points = points_allocator_update.allocate();
-            voxels = voxels_allocator_update.allocate();
-            occupancy_indices = indices_allocator_update.allocate();
+            points = points_allocator_update.allocate(owner);
+            voxels = voxels_allocator_update.allocate(owner);
+            occupancy_indices = indices_allocator_update.allocate(owner);
             break;
         case Visibility:
-            points = points_allocator_visibility.allocate();
-            voxels = voxels_allocator_visibility.allocate();
-            occupancy_indices = indices_allocator_visibility.allocate();
+            points = points_allocator_visibility.allocate(owner);
+            voxels = voxels_allocator_visibility.allocate(owner);
+            occupancy_indices = indices_allocator_visibility.allocate(owner);
             break;
     }
 }
@@ -178,6 +178,7 @@ void GpuVersion::initHostSide(CuRast* editor, CUcontext* context) {
     CURuntime::assertCudaSuccess(cuEventCreate(&eventVisibilityUpdateComplete, CU_EVENT_DISABLE_TIMING));
 
     hostCache = new CLRUCache(OocSimLodSettings::LRU_CPU_CACHE_SIZE);
+    hostVisCache = new CLRUCache(OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE);
     parentsMap = std::vector<CIdAABB>(OocSimLodSettings::MAX_NB_NODES, CINVALID_ID);
     aabbsMap = std::vector<CAABB>(OocSimLodSettings::MAX_NB_NODES, CAABB());
 
@@ -623,11 +624,11 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
             hostCache->add(id);
             currentlyInUpdatesCache.insert(id);
 
-            // TODO: to remove
-            if(!storedNodes.contains(id)){println("node {} is not yet stored; why is it here ??", id);}
+            // // TODO: to remove
+            // if(!storedNodes.contains(id)){println("node {} is not yet stored; why is it here ??", id);}
 
             if(!updateNodes.contains(id)){
-                updateNodes[id] = std::make_shared<HostStorageNode>(HostStorageNode::Owner::Update);
+                updateNodes[id] = std::make_shared<HostStorageNode>(HostStorageNodeOwner::Update);
                 loadingToDeserialise.push_back(id);
             }
         }
@@ -993,7 +994,7 @@ void GpuVersion::storeNodes(uint32_t nb_nodes_to_store){
             currentlyInUpdatesCache.erase(id);
 
             if(!updateNodes.contains(id)){
-                updateNodes[id] = std::make_shared<HostStorageNode>(HostStorageNode::Owner::Update);
+                updateNodes[id] = std::make_shared<HostStorageNode>(HostStorageNodeOwner::Update);
                 updateNodes[id]->node.aabb_index = id;
                 if(storedNodes.contains(id)){
                     storingToDeserialise.push_back(id);
@@ -1193,22 +1194,33 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
     uint32_t half_vis_cache = hostStaging.visibilityCacheSize / 2;
     uint32_t old_min_pixel_span = renderingSettings.min_pixel_span;
 
-    prog->launch("kernel_get_renderable_nodes_part_1_visibility", {&renderingTarget, &renderingSettings}, launch_settings);
-    prog->launch("kernel_get_renderable_nodes_part_2_flagging_large", {&renderingTarget, &renderingSettings}, launch_settings);
-    prog->launch("kernel_get_renderable_nodes_part_3_large_nodes", {&renderingTarget, &renderingSettings}, launch_settings);
-    prog->launch("kernel_get_renderable_nodes_part_4_small_nodes", {&renderingTarget, &renderingSettings}, launch_settings);
+    uint32_t nb_vis_points = 0;
+    uint32_t nb_vis_voxels = 0;
+
+    const uint32_t MAX_NODE_FINDER_ITERATION = 8;
+    for(uint32_t i = 0; i < MAX_NODE_FINDER_ITERATION; i++){
+        prog->launch("kernel_get_renderable_nodes_part_1_visibility", {&renderingTarget, &renderingSettings}, launch_settings);
+        prog->launch("kernel_get_renderable_nodes_part_2_flagging_large", {&renderingTarget, &renderingSettings}, launch_settings);
+        prog->launch("kernel_get_renderable_nodes_part_3_large_nodes", {&renderingTarget, &renderingSettings}, launch_settings);
+        prog->launch("kernel_get_renderable_nodes_part_4_small_nodes", {&renderingTarget, &renderingSettings}, launch_settings);
     
-    // Sort by screen space size on device side
-    prog->launchCooperative("kernel_get_renderable_nodes_part_5_reorder", {&renderingTarget, &renderingSettings}, launch_settings_coop);
+        // Sort by screen space size on device side
+        prog->launchCooperative("kernel_get_renderable_nodes_part_5_reorder", {&renderingTarget, &renderingSettings}, launch_settings_coop);
     
-    COPY_FROM_GPU(nbNodesExchangedVisPoints, nbNodesExchangedVisPoints, uint32_t);
-    COPY_FROM_GPU(nbNodesExchangedVisVoxels, nbNodesExchangedVisVoxels, uint32_t);
+        COPY_FROM_GPU(nbNodesExchangedVisPoints, nbNodesExchangedVisPoints, uint32_t);
+        COPY_FROM_GPU(nbNodesExchangedVisVoxels, nbNodesExchangedVisVoxels, uint32_t);
+
+        nb_vis_points = *(uint32_t*)nbNodesExchangedVisPoints;
+        nb_vis_voxels = *(uint32_t*)nbNodesExchangedVisVoxels;
+
+        if(nb_vis_points <= half_vis_cache && nb_vis_voxels <= half_vis_cache){break;}
+    }
+    renderingSettings.min_pixel_span = old_min_pixel_span;
 
     *(uint32_t*)nbNodesExchangedVisPoints = min(*(uint32_t*)nbNodesExchangedVisPoints, half_vis_cache);
     *(uint32_t*)nbNodesExchangedVisVoxels = min(*(uint32_t*)nbNodesExchangedVisVoxels, half_vis_cache);
-
-    uint32_t nb_vis_points = *(uint32_t*)nbNodesExchangedVisPoints;
-    uint32_t nb_vis_voxels = *(uint32_t*)nbNodesExchangedVisVoxels;
+    nb_vis_points = *(uint32_t*)nbNodesExchangedVisPoints;
+    nb_vis_voxels = *(uint32_t*)nbNodesExchangedVisVoxels;
 
     std::vector<CUdeviceptr> dsts_host = {};
     std::vector<CUdeviceptr> srcs_device = {};
@@ -1273,10 +1285,10 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
     }
 
     // Select the write-side host buffers
-    void* voxels_nodes_host      = isUsingSecondRenderingBuffer ? voxelsNodesToSend2 : voxelsNodesToSend;
-    void* nb_rendered_nodes_host = isUsingSecondRenderingBuffer ? nbRenderedNodes2  : nbRenderedNodes;
-    void* nb_rendered_points_host= isUsingSecondRenderingBuffer ? nbRenderedPoints2 : nbRenderedPoints;
-    void* nb_rendered_voxels_host= isUsingSecondRenderingBuffer ? nbRenderedVoxels2 : nbRenderedVoxels;
+    void* voxels_nodes_host       = isUsingSecondRenderingBuffer ? voxelsNodesToSend2 : voxelsNodesToSend;
+    void* nb_rendered_nodes_host  = isUsingSecondRenderingBuffer ? nbRenderedNodes2  : nbRenderedNodes;
+    void* nb_rendered_points_host = isUsingSecondRenderingBuffer ? nbRenderedPoints2 : nbRenderedPoints;
+    void* nb_rendered_voxels_host = isUsingSecondRenderingBuffer ? nbRenderedVoxels2 : nbRenderedVoxels;
 
     // Select the write-side device pointers
     CUdeviceptr dst_rendered_points  = isUsingSecondRenderingBuffer
@@ -1326,8 +1338,9 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
         std::vector<std::pair<CIdAABB, HostStorageNode*>> to_deserialise = {};
         for(uint32_t i = 0; i < loop_end; i++){
             const CIdAABB& id = visibleNodesOrdered[i];
+            hostVisCache->add(id);
             if(!visibilityNodes.contains(id)){
-                auto node = std::make_shared<HostStorageNode>(HostStorageNode::Owner::Visibility);
+                auto node = std::make_shared<HostStorageNode>(HostStorageNodeOwner::Visibility);
                 visibilityNodes[id] = node;
                 to_deserialise.emplace_back(id, node.get());
             }
@@ -1511,12 +1524,13 @@ void GpuVersion::updateHostCache(){
                 // }
                 // it++;
 
-                // TODO: test more store
                 const COctreeNode& n = node->node;
                 bool is_dirty = n.points_counter != n.points_last_stored
                     || n.voxels_counter != n.voxels_last_stored;
                 if(!storedNodes.contains(id) || is_dirty){
                     hostCacheToSerialise.push_back(node);
+                    // TODO: remove node from vis cache ??
+                    hostVisCache->remove(node->node.aabb_index);
                 }
                 it++;
             }
@@ -1609,6 +1623,10 @@ void GpuVersion::updateVisCache(){
     // Collect visibility-owned nodes that have fallen out of the host LRU cache
     for(auto it = visibilityNodes.begin(); it != visibilityNodes.end();){
         const CIdAABB& id = it->first;
+        if(hostVisCache->contains(id)){
+            it++;
+            continue;
+        }
         std::shared_ptr<HostStorageNode>& node = it->second;
         node->deallocate();
         it = visibilityNodes.erase(it);

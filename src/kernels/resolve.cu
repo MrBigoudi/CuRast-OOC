@@ -1311,33 +1311,49 @@ void kernel_resolve_colorbuffer_to_screenshot(
 	screenshot[pixelID] = color;	
 }
 
+
+
+#define DEPTH_ENC_NEAR 0.1f
+#define DEPTH_ENC_FAR  1000.0f
+
+__device__ __forceinline__
+uint8_t encodeDepthLog8(float depth){
+    // Holes: +inf (cleared), and defensively NaN / non-positive
+    if(!(depth > 0.0f) || isinf(depth)) return 0;
+
+    const float log_near = logf(DEPTH_ENC_NEAR);
+    const float log_far  = logf(DEPTH_ENC_FAR);
+
+    float t = (logf(depth) - log_near) / (log_far - log_near);
+    t = fminf(fmaxf(t, 0.0f), 1.0f);
+
+    return uint8_t(1.0f + rintf(t * 254.0f));   // never 0 for a valid pixel
+}
+
 extern "C" __global__
 void kernel_resolve_depthbuffer_to_screenshot(
 	RenderTarget source,
 	uint32_t* screenshot
 ) {
 	auto grid = cg::this_grid();
-	auto block = cg::this_thread_block();
 
 	int x = grid.thread_index().x;
 	int y = grid.thread_index().y;
-	int pixelID = toFramebufferIndex(x, y, source.width);
 
 	if(x >= source.width) return;
 	if(y >= source.height) return;
 
+	int pixelID = toFramebufferIndex(x, y, source.width);
+
 	uint64_t pixel = source.colorbuffer[pixelID];
-	float depth = __uint_as_float(pixel >> 32);
-	uint8_t depth_b = pixel >> 32;
-	uint32_t depth_rgb = 0;
+	float depth    = __uint_as_float(uint32_t(pixel >> 32));
+	uint8_t d8     = encodeDepthLog8(depth);
 
-	uint8_t* rgba = (uint8_t*)&depth_rgb;
-	rgba[0] = isinf(depth)? 0 : depth_b;
-	rgba[1] = isinf(depth)? 0 : depth_b;
-	rgba[2] = isinf(depth)? 0 : depth_b;
-	rgba[3] = 255;
-
-	screenshot[pixelID] = depth_rgb;	
+	// Gray RGBA: PIL's "L" conversion of (v, v, v) returns exactly v
+	screenshot[pixelID] = uint32_t(d8)
+	                    | (uint32_t(d8) << 8)
+	                    | (uint32_t(d8) << 16)
+	                    | (0xffu << 24);	
 }
 
 
