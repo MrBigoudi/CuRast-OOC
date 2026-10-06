@@ -401,19 +401,6 @@ void kernel_visibility_pass(
             // __nv_atomic_add(&globalVariables.curNbVisNode, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
         }
     }
-
-    // // Select the active visibility cache
-    // CIdAABB* vis_cache = globalVariables.isUsingSecondRenderingBuffer
-    //     ? globalVariables.visibilityCache2
-    //     : globalVariables.visibilityCache;
-    // uint32_t vis_cache_size = globalVariables.isUsingSecondRenderingBuffer
-    //     ? globalVariables.visibilityCacheCurrentSize2
-    //     : globalVariables.visibilityCacheCurrentSize;
-
-    // for(uint32_t node_index = thread_id; node_index < vis_cache_size; node_index += nb_threads){
-    //     const CIdAABB& id = vis_cache[node_index];
-    //     globalVariables.setFlag(id, CFlagIsInVisibilityCache);
-    // }
 }
 
 
@@ -699,19 +686,6 @@ void kernel_draw_octree_small(
             __nv_atomic_and(&node->flags, ~(1u << CFlagIsCut), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
         }
     }
-
-    // // Also unflag the nodes from the cache
-    // CIdAABB* vis_cache = globalVariables.isUsingSecondRenderingBuffer
-    //     ? globalVariables.visibilityCache2 : globalVariables.visibilityCache;
-    // uint32_t vis_cache_size = globalVariables.isUsingSecondRenderingBuffer
-    //     ? globalVariables.visibilityCacheCurrentSize2 : globalVariables.visibilityCacheCurrentSize;
-
-    // uint32_t first_point = block_id * nb_threads_per_block + thread_id;
-    // uint32_t step = nb_blocks * nb_threads_per_block;
-    // for(uint32_t node_index = first_point; node_index < vis_cache_size; node_index += step){
-    //     const CIdAABB& id = vis_cache[node_index];
-    //     globalVariables.unsetFlagSync(id, CFlagIsInVisibilityCache);
-    // }
 }
 
 
@@ -1036,6 +1010,8 @@ void kernel_get_renderable_nodes_part_1_visibility(
         globalVariables.unsetFlag(node_index, CFlagIsCutHost);
         globalVariables.exchangedAABBIndicesVisPointsScreenSpaceSize[node_index] = 0.;
         globalVariables.exchangedAABBIndicesVisVoxelsScreenSpaceSize[node_index] = 0.;
+
+        if(!globalVariables.hasBeenStored(node_index)){continue;}
 
         CAABB aabb = globalVariables.relationshipMap[node_index].aabb;
         if(frustum.doesIntersect(aabb, target.camera_pos)){

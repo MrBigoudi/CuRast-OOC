@@ -624,8 +624,8 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
             hostCache->add(id);
             currentlyInUpdatesCache.insert(id);
 
-            // // TODO: to remove
-            // if(!storedNodes.contains(id)){println("node {} is not yet stored; why is it here ??", id);}
+            // TODO: to remove
+            if(!storedNodes.contains(id)){println("node {} is not yet stored; why is it here ??", id);}
 
             if(!updateNodes.contains(id)){
                 updateNodes[id] = std::make_shared<HostStorageNode>(HostStorageNodeOwner::Update);
@@ -904,10 +904,7 @@ void GpuVersion::octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context){
         *(bool*)isDoneStoring = true;
         COPY_TO_GPU(isDoneStoring, isDoneStoring, bool);
 
-        // launch_settings = {
-        //     .gridsize  = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_GRID_SIZE_FOR_MAX_BLOCK_SIZE,
-        //     .blocksize = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK
-        // };
+        prog->launch("kernel_prepare_store_part_0_check_stored", {}, launch_settings);
         prog->launch("kernel_prepare_store_part_1_filling_buffers", {}, launch_settings);
         prog->launch("kernel_prepare_store_part_2_resetting_children", {}, launch_settings);
 
@@ -1192,13 +1189,15 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
     };
 
     uint32_t half_vis_cache = hostStaging.visibilityCacheSize / 2;
-    uint32_t old_min_pixel_span = renderingSettings.min_pixel_span;
+    uint32_t new_min_pixel_span = CuRastSettings::minPixelSpan;
 
     uint32_t nb_vis_points = 0;
     uint32_t nb_vis_voxels = 0;
 
     const uint32_t MAX_NODE_FINDER_ITERATION = 8;
+    // const uint32_t MAX_NODE_FINDER_ITERATION = 1;
     for(uint32_t i = 0; i < MAX_NODE_FINDER_ITERATION; i++){
+        renderingSettings.min_pixel_span = new_min_pixel_span;
         prog->launch("kernel_get_renderable_nodes_part_1_visibility", {&renderingTarget, &renderingSettings}, launch_settings);
         prog->launch("kernel_get_renderable_nodes_part_2_flagging_large", {&renderingTarget, &renderingSettings}, launch_settings);
         prog->launch("kernel_get_renderable_nodes_part_3_large_nodes", {&renderingTarget, &renderingSettings}, launch_settings);
@@ -1214,9 +1213,10 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
         nb_vis_voxels = *(uint32_t*)nbNodesExchangedVisVoxels;
 
         if(nb_vis_points <= half_vis_cache && nb_vis_voxels <= half_vis_cache){break;}
+        new_min_pixel_span *= 2;
+        // println("i = {}", i);
     }
-    renderingSettings.min_pixel_span = old_min_pixel_span;
-
+    
     *(uint32_t*)nbNodesExchangedVisPoints = min(*(uint32_t*)nbNodesExchangedVisPoints, half_vis_cache);
     *(uint32_t*)nbNodesExchangedVisVoxels = min(*(uint32_t*)nbNodesExchangedVisVoxels, half_vis_cache);
     nb_vis_points = *(uint32_t*)nbNodesExchangedVisPoints;
@@ -1529,7 +1529,6 @@ void GpuVersion::updateHostCache(){
                     || n.voxels_counter != n.voxels_last_stored;
                 if(!storedNodes.contains(id) || is_dirty){
                     hostCacheToSerialise.push_back(node);
-                    // TODO: remove node from vis cache ??
                     hostVisCache->remove(node->node.aabb_index);
                 }
                 it++;

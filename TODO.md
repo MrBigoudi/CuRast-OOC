@@ -7,9 +7,9 @@
 ### Morning
 
 - [x] Implement visibility cache (for disk loading)
-- [ ] Fix only loading points of higher node level when using the multipass loader
+- [x] Fix rendering when using the multipass loader
+- [x] Measure bottlenecks (nsys + ncu + superluminal) (still vis cache exchanges ??, not sure..., don't know...)
 - [ ] Implement visibility cache (for node rendering)
-- [ ] Measure new bottlenecks (nsys + ncu)
 
 ### Afternoon
 
@@ -26,7 +26,7 @@
 
 ## This week
 
-- [ ] Fix rendering of just unloaded nodes
+- [ ] Fix rendering of just unloaded nodes / updating nodes
 - [ ] Fix nodes sorting (wrong sorting creates random holes)
 - [ ] Fix priority loading
 
@@ -55,6 +55,8 @@
 - [ ] Optimise kernels (rendering and update)
 - [ ] Improve inference speed
 
+- [ ] Properly put down the entire method
+- [ ] Rewrite everything more cleanly
 - [ ] Update the latex algorithms
 - [ ] Find a way to compress stored nodes
 - [ ] Improve Color-filtering

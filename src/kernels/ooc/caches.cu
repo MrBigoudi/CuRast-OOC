@@ -154,18 +154,23 @@ void kernel_prepare_store_part_1_filling_buffers(){
         }
 #endif
 
-        bool is_in_cache = globalVariables.isInUpdatesCache(node->aabb_index);
+        CIdAABB aabb_index = node->aabb_index;
+        bool is_in_cache = globalVariables.isInUpdatesCache(aabb_index);
         // Unset all the flags except the isInUpdatesCache flag
         if(thread_id == 0){ // Only one thread per block
             node->flags = 0;
-            uint32_t flags = uint32_t(is_in_cache) << CFlagIsInUpdatesCache;
-            globalVariables.setFlags(node->aabb_index, flags);
+            uint32_t clear_mask = (uint32_t(!is_in_cache) << CFlagIsInUpdatesCache)
+                | (0x01 << CFlagToLoad)
+                | (0x01 << CFlagWillBeInUpdatesCache)
+            ;
+            globalVariables.setFlagsSync(aabb_index, ~clear_mask);
         }
 
         if(!is_in_cache){
             __syncthreads(); // Needed to sync after break
             if(thread_id == 0){
                 shExchangedIndex = __nv_atomic_fetch_add(&globalVariables.nbNodesExchanged, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+                globalVariables.setFlag(aabb_index, CFlagWillBeStored);
                 if(shExchangedIndex >= globalVariables.maxNbNodesExchanged){
                     globalVariables.isDoneStoring = false;
                 }
@@ -177,17 +182,17 @@ void kernel_prepare_store_part_1_filling_buffers(){
             }
 
             // Storing node properties
-            globalVariables.exchangedAABBIndices[shExchangedIndex] = node->aabb_index;
-            globalVariables.exchangedAABBParentsIndices[shExchangedIndex] = globalVariables.relationshipMap[node->aabb_index].parent;
+            globalVariables.exchangedAABBIndices[shExchangedIndex] = aabb_index;
+            globalVariables.exchangedAABBParentsIndices[shExchangedIndex] = globalVariables.relationshipMap[aabb_index].parent;
 
-            const CAABB aabb = globalVariables.relationshipMap[node->aabb_index].aabb;
+            const CAABB aabb = globalVariables.relationshipMap[aabb_index].aabb;
             globalVariables.exchangedAABBs[shExchangedIndex] = aabb;
             globalVariables.exchangedChildrenIds[shExchangedIndex] = node->children_ids;
             globalVariables.exchangedPointsCounters[shExchangedIndex] = (node->points_counter - node->points_last_stored);
             globalVariables.exchangedVoxelsCounters[shExchangedIndex] = min(MAX_NB_VOXELS, node->voxels_counter);
 
-            globalVariables.relationshipMap[node->aabb_index].points_stored += (node->points_counter - node->points_last_stored);
-            globalVariables.relationshipMap[node->aabb_index].voxels_stored += min(MAX_NB_VOXELS, node->voxels_counter);
+            globalVariables.relationshipMap[aabb_index].points_stored += (node->points_counter - node->points_last_stored);
+            globalVariables.relationshipMap[aabb_index].voxels_stored += min(MAX_NB_VOXELS, node->voxels_counter);
 
             CPoint* exchanged_points = globalVariables.exchangedPoints[shExchangedIndex];
             CPoint* exchanged_voxels = globalVariables.exchangedVoxels[shExchangedIndex];
@@ -422,6 +427,21 @@ void kernel_prepare_store_part_4_updating_levels(){
     ){
         // UI values
         __nv_atomic_add(&globalVariables.nbTotalUpdates, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+    }
+}
+
+/// Run on floor("NB SMs" * "Max threads per SM" / "Max threads per block") blocks of size "Max threads per block"
+extern "C" __global__
+void kernel_prepare_store_part_0_check_stored(){
+    auto grid = cg::this_grid();
+    uint32_t thread_id = grid.thread_rank();
+    uint32_t nb_threads = grid.num_threads();
+
+    for(uint32_t i = thread_id; i < globalVariables.totalNbNodes; i += nb_threads){
+        if(globalVariables.willbeStored(i)){
+            globalVariables.setFlag(i, CFlagHasBeenStored);
+            globalVariables.unsetFlag(i, CFlagWillBeStored);
+        }
     }
 }
 

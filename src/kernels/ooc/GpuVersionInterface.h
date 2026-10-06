@@ -379,16 +379,16 @@ enum CNodeFlagType {
 
 enum CGlobalNodeFlagType {
 	CFlagToLoad,
-	CFlagIsInUpdatesCache,
 	CFlagWillBeInUpdatesCache,
-	CFlagIsInVisibilityCache,
+	CFlagIsInUpdatesCache,
+	CFlagWillBeStored,
+	CFlagHasBeenStored,
 	CFlagIsVisibleHost,
 	CFlagIsLargeHost,
 	CFlagIsCutHost,
 	CFlagWasVisibleHost,
 
 	// Pads to be replaced on need
-	CGlobalFlagPad8,
 	CGlobalFlagPad9,
 	CGlobalFlagPad10,
 	CGlobalFlagPad11,
@@ -897,8 +897,11 @@ struct CGlobalVariables {
 	__device__ __forceinline__ bool willBeInUpdatesCache(const CIdAABB& aabb_index) const {
 		return getFlag(aabb_index, CFlagWillBeInUpdatesCache);
 	}
-	__device__ __forceinline__ bool isInVisibilityCache(const CIdAABB& aabb_index) const {
-		return getFlag(aabb_index, CFlagIsInVisibilityCache);
+	__device__ __forceinline__ bool willbeStored(const CIdAABB& aabb_index) const {
+		return getFlag(aabb_index, CFlagWillBeStored);
+	}
+	__device__ __forceinline__ bool hasBeenStored(const CIdAABB& aabb_index) const {
+		return getFlag(aabb_index, CFlagHasBeenStored);
 	}
 
 #endif // __CUDACC__
