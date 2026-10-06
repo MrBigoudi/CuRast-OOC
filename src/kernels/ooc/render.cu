@@ -790,6 +790,22 @@ void kernel_resolve_colorbuffer_to_screenshot(
 }
 
 
+/// WARN: Should match resolve.cu
+#define DEPTH_ENC_NEAR 0.1f
+#define DEPTH_ENC_FAR  1000.0f
+__device__ __forceinline__
+uint8_t encodeDepthLog8(float depth){
+    // Holes: +inf (cleared), and defensively NaN / non-positive
+    if(!(depth > 0.0f) || isinf(depth)) return 0;
+
+    const float log_near = logf(DEPTH_ENC_NEAR);
+    const float log_far  = logf(DEPTH_ENC_FAR);
+
+    float t = (logf(depth) - log_near) / (log_far - log_near);
+    t = fminf(fmaxf(t, 0.0f), 1.0f);
+
+    return uint8_t(1.0f + rintf(t * 254.0f));   // never 0 for a valid pixel
+}
 
 
 
@@ -832,12 +848,9 @@ void kernel_unpack_resolved_pyramid_to_tensor(
             out_tensor[tensor_off + 2 * pixels + i] = float((rgba >> 16) & 0xff) / 255.0f;
 
             if(nb_channels > 3){
-                // Replicates kernel_resolve_depthbuffer_to_screenshot + PIL "L"
-                uint64_t px         = colorbuffer[cb_off + src];
-                uint32_t depth_bits = uint32_t(px >> 32);
-                bool     is_hole    = isinf(__uint_as_float(depth_bits));
-                uint8_t  depth_b    = is_hole ? 0 : uint8_t(depth_bits);
-                out_tensor[tensor_off + 3 * pixels + i] = float(depth_b) / 255.0f;
+                uint64_t px  = colorbuffer[cb_off + src];
+                float depth  = __uint_as_float(uint32_t(px >> 32));
+                out_tensor[tensor_off + 3 * pixels + i] = float(encodeDepthLog8(depth)) / 255.0f;
             }
         }
     }
