@@ -594,10 +594,12 @@ int main(int argc, char** argv){
 
 		// Create Global things
 		OocSimLodSettings::init();
-		if(OocSimLodSettings::IS_USING_NN){
-			NeuralNet::load("filling_unet.pth");
-			// throw(EXIT_SUCCESS);
-		}
+		// if(OocSimLodSettings::IS_USING_NN){
+		// 	// NeuralNet::load("models/filling_unet.pth");
+		// 	// NeuralNet::load("models/filling_unet_v2.pth");
+		// 	// NeuralNet::load("models/test.pt");
+		// 	// throw(EXIT_SUCCESS);
+		// }
 
 		if(!OocSimLodSettings::IS_USING_GPU_VERSION){
 			GlobalVariables::init(CuRast::instance, &context);

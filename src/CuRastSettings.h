@@ -19,7 +19,11 @@ struct CuRastSettings{
 	static inline int32_t lastScreenshotValue = 5;
 	static inline bool tryToCenterTarget = false;
 	static inline float tryToCenterTargetDiagonal = 0.5f;
+	// Render the lower pyramid levels too. Managed automatically while the NN is
+	// used (NeuralNet::sync_rendering_settings) and by the screenshot code.
 	static inline bool useMultiScale = false;
+	// Run the hole-filling network on every frame (needs a loaded model)
+	static inline bool useNN = false;
 
 	static inline bool showVisibleNodes = false;
 	static inline bool freezeVisibleNodes = false;

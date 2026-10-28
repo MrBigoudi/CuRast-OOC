@@ -1,39 +1,30 @@
 # TODO list
 
-
-## Tomorrow
-
-
-### Morning
+## Last week
 
 - [x] Implement visibility cache (for disk loading)
 - [x] Fix rendering when using the multipass loader
 - [x] Measure bottlenecks (nsys + ncu + superluminal) (still vis cache exchanges ??, not sure..., don't know...)
-- [ ] Implement visibility cache (for node rendering)
 
-### Afternoon
-
-- [ ] Fix depth store
-- [ ] Generate new simple dataset
-- [ ] Try running a training session on cluster (or locally if cluster not available)
-- [ ] Clean model architecture / training script
+- [x] Fix depth store
+- [x] Generate new simple dataset
+- [x] Try running a training session on cluster (or locally if cluster not available)
 
 
-### Unrelated
 
-- [ ]  Prepare papers for seminar
-
-
-## This week
+## Today
 
 - [ ] Fix rendering of just unloaded nodes / updating nodes
 - [ ] Fix nodes sorting (wrong sorting creates random holes)
 - [ ] Fix priority loading
 
 
-- [ ] Implement depth mask for inference (find depth with "an hierarchical coverage-based depth upsampling")
-- [ ] Generate dataset for TAA
-- [ ] Train with TAA
+
+## This month
+
+- [ ] Script to automatically generate a better dataset
+- [ ] Implement visibility cache (for node rendering)
+
 
 - [ ] Fix UI values
 - [ ] Store all remaining nodes on quit
@@ -44,9 +35,6 @@
 - [ ] Send globalVariables buffers as kernel input
 - [ ] What about storing all nodes info in global variables -> avoid loading entirely + avoid duplicate occupancy on host side on store
 
-
-
-## This month
 
 - [ ] Fix memory limitations
 - [ ] What about storage limitations

@@ -894,7 +894,7 @@ void CuRast::draw(Scene* scene, vector<View> views){
 
 		if(OocSimLodSettings::IS_USING_GPU_VERSION){
 			GpuVersion::renderOctree(target);
-			if(OocSimLodSettings::IS_USING_NN && CuRastSettings::useMultiScale){
+			if(OocSimLodSettings::IS_USING_NN && CuRastSettings::useNN){
 				NeuralNet::infer(target);
 			}
 		} else {

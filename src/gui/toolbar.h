@@ -1,5 +1,3 @@
-
-
 // see https://github.com/ocornut/imgui/issues/2648
 void CuRast::makeToolbar(){
 
@@ -148,8 +146,56 @@ void CuRast::makeToolbar(){
 				ImGui::SameLine();
 				ImGui::Checkbox("Use voxel debug color", &CuRastSettings::voxelsDebugColor);
 				if(OocSimLodSettings::IS_USING_NN){
+					// --- Neural hole filling: on/off + model picker (one model in memory at a time) ---
 					ImGui::SameLine();
-					ImGui::Checkbox("Use multiscale", &CuRastSettings::useMultiScale);
+					ImGui::BeginDisabled(!NeuralNet::is_loaded());
+					ImGui::Checkbox("Use NN", &CuRastSettings::useNN);
+					ImGui::EndDisabled();
+
+					ImGui::SameLine();
+					ImGui::SetNextItemWidth(320.0f);
+					static vector<string> nnModels;
+					string currentModel = NeuralNet::is_loaded()
+						? std::filesystem::path(NeuralNet::loaded_path).stem().string()
+						: string("(none)");
+					if(ImGui::BeginCombo("Model##nn", currentModel.c_str())){
+						// Rescan the models folder every time the list is opened
+						if(ImGui::IsWindowAppearing()){
+							nnModels = NeuralNet::list_models();
+						}
+						if(ImGui::Selectable("(none) - free GPU memory", !NeuralNet::is_loaded())){
+							NeuralNet::switch_model("");
+							CuRastSettings::useNN = false;
+						}
+						for(const string& path : nnModels){
+							bool isCurrent = (path == NeuralNet::loaded_path);
+							string label = std::filesystem::path(path).stem().string();
+							if(ImGui::Selectable(label.c_str(), isCurrent) && !isCurrent){
+								// Frees the current model first, then loads this one
+								CuRastSettings::useNN = NeuralNet::switch_model(path);
+							}
+							if(isCurrent){
+								ImGui::SetItemDefaultFocus();
+							}
+						}
+						if(nnModels.empty()){
+							ImGui::TextDisabled("no .pt files in '%s'", NeuralNet::models_dir.c_str());
+						}
+						ImGui::EndCombo();
+					}
+					if(NeuralNet::is_loaded() && ImGui::IsItemHovered()){
+						ImGui::SetTooltip("%s", NeuralNet::settings.summary().c_str());
+					}
+					if(!NeuralNet::last_error.empty()){
+						ImGui::SameLine();
+						ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "load failed");
+						if(ImGui::IsItemHovered()){
+							ImGui::SetTooltip("%s", NeuralNet::last_error.c_str());
+						}
+					}
+
+					// Lower pyramid levels are rendered only when the active model reads them
+					NeuralNet::sync_rendering_settings();
 				}
 
 				// ImGui::Checkbox("Auto-free GPU memory", &CuRastSettings::autoFreeOldOctreeMemoryOnGPU);
