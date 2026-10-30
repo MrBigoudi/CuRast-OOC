@@ -172,6 +172,33 @@ ModelSettings ModelSettings::from_export(const torch::IValue& s)
     m.kernel_residual       = get_bool(s, "model.kernel.residual");
     m.kernel_residual_scale = float(get_number(s, "model.kernel.residual_scale"));
 
+    // Architecture (older exports have no key: they are all U-Nets) and [model.vit]
+    {
+        auto model = lookup(s, "model").toGenericDict();
+        if (model.contains(torch::IValue("architecture"))) {
+            m.architecture = parse_enum<Architecture>("model.architecture", get_string(s, "model.architecture"),
+                { { "conv", Architecture::Conv }, { "vit", Architecture::ViT } });
+        }
+        if (m.architecture == Architecture::ViT) {
+            m.vit.embed_dim       = uint32_t(get_number(s, "model.vit.embed_dim"));
+            m.vit.depth           = uint32_t(get_number(s, "model.vit.depth"));
+            m.vit.heads           = uint32_t(get_number(s, "model.vit.heads"));
+            m.vit.mlp_ratio       = float(get_number(s, "model.vit.mlp_ratio"));
+            m.vit.window          = uint32_t(get_number(s, "model.vit.window"));
+            m.vit.shifted_windows = get_bool(s, "model.vit.shifted_windows");
+            m.vit.refine          = get_bool(s, "model.vit.refine");
+            m.vit.refine_channels = uint32_t(get_number(s, "model.vit.refine_channels"));
+            m.vit.conv_stem       = get_bool(s, "model.vit.conv_stem.enabled");
+            m.vit.include_raw     = get_bool(s, "model.vit.conv_stem.include_raw");
+            if (m.multiscale_input != MultiscaleInput::Rendered || m.encoder_split != EncoderSplit::None) {
+                throw std::runtime_error("ViT models need multiscale_input = rendered and encoder.split = none");
+            }
+            if (m.vit.embed_dim % m.vit.heads != 0) {
+                throw std::runtime_error("model.vit.embed_dim must be a multiple of model.vit.heads");
+            }
+        }
+    }
+
     // auto hole = lookup(s, "inference.hole_color");
     // if (hole.isString()) {
     //     if (hole.toStringRef() != "background") {
@@ -224,14 +251,21 @@ std::string ModelSettings::summary() const
     static const char* split_names[]      = { "none", "modality", "channel" };
     static const char* fusion_names[]     = { "avg", "max", "concat", "conv", "attention" };
     std::ostringstream ss;
-    ss << "'" << name << "': level_channels=" << level_channels()
+    ss << "'" << name << "': " << (architecture == Architecture::ViT ? "vit" : "conv")
+       << " level_channels=" << level_channels()
        << " base=" << base_channels
        << " multiscale=" << multiscale_names[int(multiscale_input)]
        << " colour=" << (color_space == InputColorSpace::Lab ? "lab" : "rgb")
        << " prev_frame=" << (prev_frame ? "yes" : "no")
        << " encoder=" << split_names[int(encoder_split)] << "/" << fusion_names[int(fusion)]
-       << " output=" << (output == OutputHead::Kernel ? "kernel" : "rgb")
-       << " hole_color=";
+       << " output=" << (output == OutputHead::Kernel ? "kernel" : "rgb");
+    if (architecture == Architecture::ViT) {
+        ss << " vit(dim=" << vit.embed_dim << " depth=" << vit.depth << " heads=" << vit.heads
+           << " window=" << vit.window << (vit.shifted_windows ? " shifted" : "")
+           << (vit.refine ? " refine" : "") << (vit.conv_stem ? " conv_stem" : "")
+           << (vit.conv_stem && !vit.include_raw ? "(no raw)" : "") << ")";
+    }
+    ss << " hole_color=";
     if (hole_color_is_background) ss << "background";
     else ss << "(" << hole_color[0] << ", " << hole_color[1] << ", " << hole_color[2] << ")";
     return ss.str();
@@ -496,6 +530,213 @@ torch::Tensor PointFillNet::forward(const std::vector<torch::Tensor>& pyramid, c
 
 
 // =============================================================================
+// Pyramid vision transformer (train_v2.py)
+// =============================================================================
+
+static int64_t positive_mod(int64_t a, int64_t m) { return ((a % m) + m) % m; }
+
+WindowAttention::WindowAttention(int64_t dim, int64_t heads, int64_t window, int64_t shift)
+    : heads(heads), window(window), shift(shift)
+{
+    qkv  = register_module("qkv",  torch::nn::Linear(dim, 3 * dim));
+    proj = register_module("proj", torch::nn::Linear(dim, dim));
+}
+
+// Same as train_v2.py window_partition / attention / window_merge: the grid is
+// padded by `shift` tokens at the top / left (and up to a multiple of the window
+// at the bottom / right); padded tokens are masked out as keys.
+torch::Tensor WindowAttention::forward(const torch::Tensor& x)
+{
+    const int64_t B = x.size(0), H = x.size(1), W = x.size(2), D = x.size(3);
+    const int64_t w = window;
+    const int64_t pad_top = shift, pad_left = shift;
+    const int64_t pad_bottom = positive_mod(-(H + pad_top), w);
+    const int64_t pad_right  = positive_mod(-(W + pad_left), w);
+
+    auto xp = F::pad(x, F::PadFuncOptions({ 0, 0, pad_left, pad_right, pad_top, pad_bottom }));
+    const int64_t Hp = xp.size(1), Wp = xp.size(2);
+    const int64_t nh = Hp / w, nw = Wp / w, L = w * w;
+
+    auto valid = torch::zeros({ Hp, Wp }, torch::TensorOptions().dtype(torch::kBool).device(x.device()));
+    valid.slice(0, pad_top, pad_top + H).slice(1, pad_left, pad_left + W).fill_(true);
+
+    auto windows = xp.view({ B, nh, w, nw, w, D }).permute({ 0, 1, 3, 2, 4, 5 }).reshape({ B * nh * nw, L, D });
+    auto mask = valid.view({ nh, w, nw, w }).permute({ 0, 2, 1, 3 }).reshape({ nh * nw, L }).repeat({ B, 1 });
+
+    const int64_t n = windows.size(0);
+    auto qkv_out = qkv->forward(windows).view({ n, L, 3, heads, D / heads }).permute({ 2, 0, 3, 1, 4 });
+    auto q = qkv_out[0], k = qkv_out[1], v = qkv_out[2];                    // (n, heads, L, d)
+    auto out = at::scaled_dot_product_attention(q, k, v, mask.unsqueeze(1).unsqueeze(1));
+    out = proj->forward(out.transpose(1, 2).reshape({ n, L, D }));
+
+    auto merged = out.view({ B, nh, nw, w, w, D }).permute({ 0, 1, 3, 2, 4, 5 }).reshape({ B, Hp, Wp, D });
+    return merged.slice(1, pad_top, pad_top + H).slice(2, pad_left, pad_left + W);
+}
+
+TransformerBlock::TransformerBlock(int64_t dim, int64_t heads, float mlp_ratio, int64_t window, int64_t shift)
+{
+    const int64_t hidden = int64_t(dim * mlp_ratio);                       // int() in Python
+    norm1 = register_module("norm1", torch::nn::LayerNorm(torch::nn::LayerNormOptions({ dim })));
+    attn  = register_module("attn", std::make_shared<WindowAttention>(dim, heads, window, shift));
+    norm2 = register_module("norm2", torch::nn::LayerNorm(torch::nn::LayerNormOptions({ dim })));
+    mlp   = register_module("mlp", torch::nn::Sequential(
+        torch::nn::Linear(dim, hidden), torch::nn::GELU(), torch::nn::Linear(hidden, dim)));
+}
+
+torch::Tensor TransformerBlock::forward(const torch::Tensor& x)
+{
+    auto y = x + attn->forward(norm1->forward(x));
+    return y + mlp->forward(norm2->forward(y));
+}
+
+PyramidViT::PyramidViT(const ModelSettings& s)
+    : settings(s)
+{
+    const auto& v = s.vit;
+    const int64_t channels = s.level_channels() + s.prev_channels();     // per level
+    const int64_t dim = v.embed_dim;
+
+    pool = register_module("pool", torch::nn::AvgPool2d(torch::nn::AvgPool2dOptions(2)));
+
+    // Values per token: raw pyramid (C * (8*8 + 4*4 + 2*2 + 1)) and / or conv stem features
+    int64_t raw_values = 0, stem_values = 0;
+    for (int64_t l = 0; l < NB_LEVELS; l++) raw_values += channels * (PATCH >> l) * (PATCH >> l);
+    int64_t token_values = raw_values;
+    if (v.conv_stem) {
+        std::vector<int64_t> all_channels;
+        for (int64_t ch = 0; ch < channels; ch++) all_channels.push_back(ch);
+        stem = register_module("stem", std::make_shared<BranchEncoder>(all_channels, s.base_channels, s.negative_slope));
+        for (int64_t l = 0; l < NB_LEVELS; l++) stem_values += int64_t(s.base_channels << l) * (PATCH >> l) * (PATCH >> l);
+        token_values = stem_values + (v.include_raw ? raw_values : 0);
+    }
+
+    embed = register_module("embed", torch::nn::Conv2d(torch::nn::Conv2dOptions(token_values, dim, 1)));
+    pos   = register_module("pos", torch::nn::Conv2d(torch::nn::Conv2dOptions(dim, dim, 3).padding(1).groups(dim)));
+
+    const int64_t shift = v.shifted_windows ? int64_t(v.window / 2) : 0;
+    blocks = register_module("blocks", torch::nn::ModuleList());
+    for (uint32_t i = 0; i < v.depth; i++) {
+        auto block = std::make_shared<TransformerBlock>(dim, v.heads, v.mlp_ratio, v.window, (i % 2) ? shift : 0);
+        blocks->push_back(block);                                             // "blocks.N"
+        block_list.push_back(block);
+    }
+    norm = register_module("norm", torch::nn::LayerNorm(torch::nn::LayerNormOptions({ dim })));
+
+    if (s.output == OutputHead::RGB) {
+        head = register_module("head", torch::nn::Linear(dim, 3 * PATCH * PATCH));
+    } else {
+        kernel_heads = register_module("kernel_heads", torch::nn::ModuleList());
+        for (int64_t l = 0; l < NB_LEVELS; l++) {
+            const int64_t k = s.kernel_sizes[l];
+            const int64_t factor = PATCH >> l;
+            const bool with_blend = l < NB_LEVELS - 1;
+            auto linear = torch::nn::Linear(dim, (k * k + (with_blend ? 1 : 0)) * factor * factor);
+            kernel_heads->push_back(linear);                                  // "kernel_heads.L"
+            kernel_head_list.push_back(linear);
+        }
+    }
+
+    // rgb output: optional refine; kernel output: only as the residual
+    if ((v.refine && s.output == OutputHead::RGB) || (s.output == OutputHead::Kernel && s.kernel_residual)) {
+        const int64_t r = v.refine_channels;
+        refine = register_module("refine", torch::nn::Sequential(
+            torch::nn::Conv2d(torch::nn::Conv2dOptions(3 + channels, r, 3).padding(1)),
+            torch::nn::GELU(),
+            torch::nn::Conv2d(torch::nn::Conv2dOptions(r, 3, 3).padding(1))));
+    }
+}
+
+torch::Tensor PyramidViT::forward(const std::vector<torch::Tensor>& pyramid_in, const torch::Tensor& prev_in)
+{
+    TORCH_CHECK(pyramid_in.size() == NB_LEVELS, "ViT '", settings.name, "' needs the ", NB_LEVELS, " rendered levels");
+    TORCH_CHECK(pyramid_in[0].size(1) == settings.level_channels(),
+                "ViT '", settings.name, "' expects ", settings.level_channels(), " channels per level");
+
+    // Sizes that are not a multiple of 8 (other window sizes): edge-pad every
+    // level to the padded grid, crop the output at the end
+    const int64_t H = pyramid_in[0].size(-2), W = pyramid_in[0].size(-1);
+    const int64_t Hp = (H + PATCH - 1) / PATCH * PATCH, Wp = (W + PATCH - 1) / PATCH * PATCH;
+    auto pad_to = [](const torch::Tensor& t, int64_t h, int64_t w) {
+        const int64_t ph = h - t.size(-2), pw = w - t.size(-1);
+        if (ph <= 0 && pw <= 0) return t;
+        return F::pad(t, F::PadFuncOptions({ 0, std::max<int64_t>(pw, 0), 0, std::max<int64_t>(ph, 0) })
+                             .mode(torch::kReplicate));
+    };
+    std::vector<torch::Tensor> pyramid;
+    for (int64_t l = 0; l < NB_LEVELS; l++) pyramid.push_back(pad_to(pyramid_in[l], Hp >> l, Wp >> l));
+
+    // Network input per level: colour transform + previous frame (pooled per level)
+    std::vector<torch::Tensor> levels;
+    for (const auto& p : pyramid) {
+        levels.push_back(settings.color_space == InputColorSpace::Lab ? rgb_to_lab(p) : p);
+    }
+    if (settings.prev_frame) {
+        auto q = pad_to(prev_in, Hp, Wp).to(levels[0].dtype());
+        for (size_t i = 0; i < levels.size(); i++) {
+            if (i > 0) q = resize_to_match(pool->forward(q), levels[i]);
+            levels[i] = torch::cat({ levels[i], q }, 1);
+        }
+    }
+
+    // Tokens: one per coarsest-level pixel, every level unshuffled onto that grid
+    const int64_t th = Hp / PATCH, tw = Wp / PATCH;
+    auto to_tokens = [&](const std::vector<torch::Tensor>& maps, std::vector<torch::Tensor>& out) {
+        for (size_t l = 0; l < maps.size(); l++) {
+            const int64_t factor = PATCH >> l;
+            auto t = factor > 1 ? torch::pixel_unshuffle(maps[l], factor) : maps[l];
+            if (t.size(-2) != th || t.size(-1) != tw) {
+                t = F::interpolate(t, F::InterpolateFuncOptions()
+                                          .size(std::vector<int64_t>{ th, tw })
+                                          .mode(torch::kBilinear).align_corners(false));
+            }
+            out.push_back(t);
+        }
+    };
+    std::vector<torch::Tensor> tokens;
+    if (!settings.vit.conv_stem || settings.vit.include_raw) to_tokens(levels, tokens);
+    if (stem) {
+        auto features = stem->forward(levels);
+        std::vector<torch::Tensor> feature_list(features.begin(), features.end());
+        to_tokens(feature_list, tokens);
+    }
+    auto x = embed->forward(torch::cat(tokens, 1));                            // (B, D, th, tw)
+    x = x + pos->forward(x);
+
+    x = x.permute({ 0, 2, 3, 1 }).contiguous();                               // (B, th, tw, D)
+    for (auto& block : block_list) x = block->forward(x);
+    x = norm->forward(x);
+
+    torch::Tensor out;
+    if (settings.output == OutputHead::RGB) {
+        out = torch::pixel_shuffle(head->forward(x).permute({ 0, 3, 1, 2 }), PATCH);   // (B, 3, Hp, Wp)
+        if (refine) out = out + refine->forward(torch::cat({ out, levels[0].to(out.dtype()) }, 1));
+    } else {
+        // Kernels on the (untransformed) input colours, coarse to fine
+        for (int64_t l = NB_LEVELS - 1; l >= 0; l--) {
+            const int64_t factor = PATCH >> l;
+            const int64_t k = settings.kernel_sizes[l];
+            auto colors = pyramid[l].slice(1, 0, 3);
+            auto raw = kernel_head_list[l]->forward(x).permute({ 0, 3, 1, 2 });
+            raw = (factor > 1 ? torch::pixel_shuffle(raw, factor) : raw).to(torch::kFloat32);
+            raw = resize_to_match(raw, colors);
+            auto filtered = apply_kernel(colors, raw.slice(1, 0, k * k), k);
+            if (!out.defined()) {
+                out = filtered;                                                // coarsest level
+            } else {
+                auto blend = torch::sigmoid(raw.slice(1, k * k, k * k + 1));
+                out = blend * filtered + (1.0 - blend) * upsample_to(out, filtered);
+            }
+        }
+        if (refine) {                                                          // kernel.residual
+            auto correction = refine->forward(torch::cat({ out, levels[0].to(out.dtype()) }, 1));
+            out = out + settings.kernel_residual_scale * torch::tanh(correction.to(torch::kFloat32));
+        }
+    }
+    return out.slice(2, 0, H).slice(3, 0, W);
+}
+
+
+// =============================================================================
 // Loading: weights + self-check against the Python reference output
 // =============================================================================
 
@@ -553,7 +794,7 @@ struct FullFP32Scope {
     }
 };
 
-static void verify_reference(const c10::impl::GenericDict& reference, PointFillNet& net)
+static void verify_reference(const c10::impl::GenericDict& reference, FillNetwork& net)
 {
     torch::NoGradGuard no_grad;
     FullFP32Scope full_fp32;
@@ -614,7 +855,9 @@ void NeuralNet::load(const std::string& model_path)
     if (s.depth_rgb)        throw std::runtime_error("depth_mode = \"RGB\" is not produced by the renderer");
     if (s.prev_reprojected) throw std::runtime_error("prev_reprojected models need motion vectors (not implemented)");
 
-    auto model = std::make_shared<PointFillNet>(s);
+    std::shared_ptr<FillNetwork> model;
+    if (s.architecture == Architecture::ViT) model = std::make_shared<PyramidViT>(s);
+    else                                     model = std::make_shared<PointFillNet>(s);
     copy_state_dict(root.at(torch::IValue("state_dict")).toGenericDict(), *model);
     model->to(torch::kCUDA);
     model->eval();

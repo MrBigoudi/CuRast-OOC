@@ -20,7 +20,11 @@
 // NeuralNet::load(path) builds the matching network from the settings, copies
 // the weights and checks its own output against the reference, so the C++
 // side never has to be told which experiment a file comes from.
+//
+// Two architectures: the gated U-Net of train.py (PointFillNet) and the pyramid
+// vision transformer of train_v2.py (PyramidViT), chosen by model.architecture.
 
+enum class Architecture     { Conv, ViT };                // model.architecture ("conv" | "vit")
 enum class MultiscaleInput  { Rendered, Pooled, None };   // model.multiscale_input
 enum class InputColorSpace  { RGB, Lab };                 // model.input_color_space
 enum class EncoderSplit     { None, Modality, Channel };  // model.encoder.split
@@ -29,7 +33,8 @@ enum class OutputHead       { RGB, Kernel };              // model.output
 enum class OutputActivation { Sigmoid, Linear };          // model.output_activation
 
 struct ModelSettings {
-    std::string name = "unnamed";                         // run.name
+    std::string  name = "unnamed";                        // run.name
+    Architecture architecture = Architecture::Conv;       // read from the export file
 
     // Input channels per pyramid level, in this order: RGB, [LOD], [depth]
     bool use_lod   = false;
@@ -57,6 +62,20 @@ struct ModelSettings {
     // [inference]: colour written into empty input pixels
     bool  hole_color_is_background = false;               // "background"
     float hole_color[3] = { 1.0f, 1.0f, 1.0f };
+
+    // [model.vit] of train_v2.py, read from the export file (not user settings)
+    struct ViT {
+        uint32_t embed_dim       = 192;
+        uint32_t depth           = 8;
+        uint32_t heads           = 6;
+        float    mlp_ratio       = 4.0f;
+        uint32_t window          = 8;     // attention window, in tokens
+        bool     shifted_windows = true;
+        bool     refine          = true;
+        uint32_t refine_channels = 16;
+        bool     conv_stem       = false; // [model.vit.conv_stem] enabled
+        bool     include_raw     = true;  // raw pyramid values in the embedding too
+    } vit;
 
     float negative_slope = 0.2f;                          // LeakyReLU in GatedConv2d
 
@@ -163,7 +182,16 @@ struct KernelHead : torch::nn::Module {
 //         or head3..head0 kernels on the input colours, coarse to fine
 //            [+ residual]                     (output = kernel)
 
-struct PointFillNet : torch::nn::Module {
+// Common interface of the two architectures (what NeuralNet runs)
+struct FillNetwork : torch::nn::Module {
+    virtual ~FillNetwork() = default;
+
+    // pyramid: input_levels() tensors [1, level_channels, H >> l, W >> l]
+    // prev   : [1, 4, H, W] previous output + validity (ignored without prev_frame)
+    virtual torch::Tensor forward(const std::vector<torch::Tensor>& pyramid, const torch::Tensor& prev) = 0;
+};
+
+struct PointFillNet : FillNetwork {
     static constexpr uint32_t NB_LEVELS = 4;
 
     ModelSettings        settings;
@@ -182,13 +210,69 @@ struct PointFillNet : torch::nn::Module {
 
     explicit PointFillNet(const ModelSettings& settings);
 
-    // pyramid: input_levels() tensors [1, level_channels, H >> l, W >> l]
-    // prev   : [1, 4, H, W] previous output + validity (ignored without prev_frame)
-    torch::Tensor forward(const std::vector<torch::Tensor>& pyramid, const torch::Tensor& prev);
+    torch::Tensor forward(const std::vector<torch::Tensor>& pyramid, const torch::Tensor& prev) override;
 
 private:
     std::vector<torch::Tensor> input_levels(const std::vector<torch::Tensor>& pyramid,
                                             const torch::Tensor& prev);
+};
+
+
+// =============================================================================
+// Pyramid vision transformer (train_v2.py), same sub-module names
+// =============================================================================
+//
+//   levels (+ Lab, + previous output)  --pixel_unshuffle(8, 4, 2, 1)-->  one token
+//   per coarsest-level pixel  [+ conv stem features "stem.enc0..3", unshuffled]
+//   -> embed (1x1 conv) -> + pos (depthwise 3x3) -> blocks.N (window attention,
+//   every other block shifted by window/2; MLP) -> norm
+//   -> head (linear D -> 8*8*3, pixel_shuffle) [+ refine]           (output = rgb)
+//   or kernel_heads.L (per-pixel kernels on the input colours)      (output = kernel)
+//      [+ scaled tanh(refine)]                                      (kernel.residual)
+//
+// Inputs whose size is not a multiple of 8 are edge-padded and the output cropped.
+
+struct WindowAttention : torch::nn::Module {
+    int64_t heads, window, shift;
+    torch::nn::Linear qkv = nullptr;                      // "qkv"
+    torch::nn::Linear proj = nullptr;                     // "proj"
+
+    WindowAttention(int64_t dim, int64_t heads, int64_t window, int64_t shift);
+    torch::Tensor forward(const torch::Tensor& x);       // (B, H, W, D) token grid
+};
+
+struct TransformerBlock : torch::nn::Module {
+    torch::nn::LayerNorm             norm1 = nullptr;
+    std::shared_ptr<WindowAttention> attn;
+    torch::nn::LayerNorm             norm2 = nullptr;
+    torch::nn::Sequential            mlp = nullptr;      // "mlp.0" Linear, GELU, "mlp.2" Linear
+
+    TransformerBlock(int64_t dim, int64_t heads, float mlp_ratio, int64_t window, int64_t shift);
+    torch::Tensor forward(const torch::Tensor& x);
+};
+
+struct PyramidViT : FillNetwork {
+    static constexpr uint32_t NB_LEVELS = 4;
+    static constexpr int64_t  PATCH = 8;                  // level-0 pixels per token side
+
+    ModelSettings        settings;
+    torch::nn::AvgPool2d pool = nullptr;
+
+    std::shared_ptr<BranchEncoder> stem;                  // "stem.enc0".."stem.enc3" (conv_stem)
+    torch::nn::Conv2d     embed = nullptr;
+    torch::nn::Conv2d     pos = nullptr;
+    torch::nn::ModuleList blocks = nullptr;
+    std::vector<std::shared_ptr<TransformerBlock>> block_list;
+    torch::nn::LayerNorm  norm = nullptr;
+
+    torch::nn::Linear     head = nullptr;                 // output = rgb
+    torch::nn::ModuleList kernel_heads = nullptr;         // output = kernel
+    std::vector<torch::nn::Linear> kernel_head_list;
+    torch::nn::Sequential refine = nullptr;               // "refine.0" conv, GELU, "refine.2" conv
+
+    explicit PyramidViT(const ModelSettings& settings);
+
+    torch::Tensor forward(const std::vector<torch::Tensor>& pyramid, const torch::Tensor& prev) override;
 };
 
 
@@ -201,7 +285,7 @@ struct NeuralNet {
     static inline std::string models_dir = "models";
 
     static inline ModelSettings                 settings;
-    static inline std::shared_ptr<PointFillNet> net;
+    static inline std::shared_ptr<FillNetwork>  net;      // PointFillNet or PyramidViT
     static inline std::string                   loaded_path;   // "" when no model is loaded
     static inline std::string                   last_error;    // last failed load, for the UI
 
