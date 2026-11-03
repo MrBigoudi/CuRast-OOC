@@ -371,6 +371,16 @@ void kernel_render_bounding_boxes(
         
         drawBoundingBox(target, aabb, color);
     }
+
+    // TODO: to remove
+    // Render visible nodes bounding volumes
+    for(uint32_t node_index = thread_id; node_index < globalVariables.totalNbNodes; node_index += nb_threads){
+        if(globalVariables.getFlag(node_index, CFlagWasVisibleHost)){
+            const CAABB& aabb = globalVariables.relationshipMap[node_index].aabb;
+            uint32_t color = 0xffff0000; // blue
+            drawBoundingBox(target, aabb, color);
+        }
+    }
 }
 
 
@@ -970,6 +980,8 @@ struct CFrustum {
 
 __device__ constexpr float VISIBILITY_HYSTERESIS_BONUS = 1.15f;
 __device__ constexpr float VISIBILITY_CENTER_WEIGHT = 0.5f;   // 0 = no centre bias, 1 = corners score 0
+// __device__ constexpr float VISIBILITY_CENTER_WEIGHT = 1.0f;   // 0 = no centre bias, 1 = corners score 0
+// __device__ constexpr float VISIBILITY_CENTER_WEIGHT = 0.0f;   // 0 = no centre bias, 1 = corners score 0
 
 __device__
 float getVisibilityPriority(const CRenderTarget& target, const CAABB& aabb){
@@ -1012,6 +1024,7 @@ void kernel_get_renderable_nodes_part_1_visibility(
     globalVariables.totalNbNodesForVisibility = nb_nodes;
     globalVariables.nbNodesExchangedVisPoints = 0;
     globalVariables.nbNodesExchangedVisVoxels = 0;
+    globalVariables.curNbVisNode = 0;
 
     CFrustum frustum = CFrustum(target.proj * target.view);
 
@@ -1137,6 +1150,10 @@ void kernel_get_renderable_nodes_part_4_small_nodes(
                 uint32_t voxels_buffer_id = __nv_atomic_fetch_add(&globalVariables.nbNodesExchangedVisVoxels, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
                 globalVariables.exchangedAABBIndicesVisVoxelsTmp[voxels_buffer_id] = node_index;
                 globalVariables.exchangedAABBIndicesVisVoxelsScreenSpaceSize[voxels_buffer_id] = screen_space_size;
+            }
+
+            if(nb_points > 0 || nb_voxels > 0){
+                __nv_atomic_add(&globalVariables.curNbVisNode, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
             }
         }
         

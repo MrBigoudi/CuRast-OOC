@@ -216,6 +216,7 @@ void GpuVersion::initHostSide(CuRast* editor, CUcontext* context) {
     exchangedAABBIndicesVisVoxels = allocHost<CIdAABB>(hostStaging.visibilityCacheSize);
     nbNodesExchangedVisPoints = allocHost<uint32_t>(1);
     nbNodesExchangedVisVoxels = allocHost<uint32_t>(1);
+    curNbVisNode = allocHost<uint32_t>(1);
 
 
     MAX_NB_VOXELS = hostStaging.maxNbVoxelsChunksPerExchangedNode * OocSimLodSettings::NB_POINTS_PER_CHUNK;
@@ -1099,8 +1100,6 @@ void GpuVersion::storeNodes(uint32_t nb_nodes_to_store){
 
 
 
-#include "visibility.h"
-
 float getScreenSpaceSize(const CAABB& aabb){
     const mat4 view = VKRenderer::view.view;
     const mat4 proj = VKRenderer::view.proj;
@@ -1193,9 +1192,10 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
 
     uint32_t nb_vis_points = 0;
     uint32_t nb_vis_voxels = 0;
+    uint32_t nb_vis_nodes  = 0;
 
-    const uint32_t MAX_NODE_FINDER_ITERATION = 8;
-    // const uint32_t MAX_NODE_FINDER_ITERATION = 1;
+    // const uint32_t MAX_NODE_FINDER_ITERATION = 8;
+    const uint32_t MAX_NODE_FINDER_ITERATION = 1;
     for(uint32_t i = 0; i < MAX_NODE_FINDER_ITERATION; i++){
         renderingSettings.min_pixel_span = new_min_pixel_span;
         prog->launch("kernel_get_renderable_nodes_part_1_visibility", {&renderingTarget, &renderingSettings}, launch_settings);
@@ -1208,11 +1208,15 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
     
         COPY_FROM_GPU(nbNodesExchangedVisPoints, nbNodesExchangedVisPoints, uint32_t);
         COPY_FROM_GPU(nbNodesExchangedVisVoxels, nbNodesExchangedVisVoxels, uint32_t);
+        COPY_FROM_GPU(curNbVisNode, curNbVisNode, uint32_t);
 
         nb_vis_points = *(uint32_t*)nbNodesExchangedVisPoints;
         nb_vis_voxels = *(uint32_t*)nbNodesExchangedVisVoxels;
+        nb_vis_nodes  = *(uint32_t*)curNbVisNode;
 
-        if(nb_vis_points <= half_vis_cache && nb_vis_voxels <= half_vis_cache){break;}
+
+        // if(nb_vis_points <= half_vis_cache && nb_vis_voxels <= half_vis_cache){break;}
+        if(nb_vis_nodes <= half_vis_cache){break;}
         new_min_pixel_span *= 2;
         // println("i = {}", i);
     }

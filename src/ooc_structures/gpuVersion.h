@@ -289,6 +289,7 @@ struct GpuVersion {
     static inline void* exchangedAABBIndicesVisVoxels = nullptr;
     static inline void* nbNodesExchangedVisPoints = nullptr;
     static inline void* nbNodesExchangedVisVoxels = nullptr;
+    static inline void* curNbVisNode = nullptr;
 
     static inline CRenderTarget renderingTarget = {};
     static inline CRenderingSettings renderingSettings = {};
