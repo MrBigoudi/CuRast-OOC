@@ -375,9 +375,14 @@ void kernel_render_bounding_boxes(
     // TODO: to remove
     // Render visible nodes bounding volumes
     for(uint32_t node_index = thread_id; node_index < globalVariables.totalNbNodes; node_index += nb_threads){
-        if(globalVariables.getFlag(node_index, CFlagWasVisibleHost)){
+        if(globalVariables.getFlag(node_index, CFlagWasVisibleHost)
+            || globalVariables.getFlag(node_index, CFlagIsVisibleHost)
+        ){
             const CAABB& aabb = globalVariables.relationshipMap[node_index].aabb;
-            uint32_t color = 0xffff0000; // blue
+            uint32_t color = globalVariables.getFlag(node_index, CFlagWasVisibleHost)
+                ? 0xffff0000 // blue
+                : 0xffffffff // white
+            ;
             drawBoundingBox(target, aabb, color);
         }
     }
@@ -978,10 +983,11 @@ struct CFrustum {
 
 
 
-__device__ constexpr float VISIBILITY_HYSTERESIS_BONUS = 1.15f;
-__device__ constexpr float VISIBILITY_CENTER_WEIGHT = 0.5f;   // 0 = no centre bias, 1 = corners score 0
+// __device__ constexpr float VISIBILITY_HYSTERESIS_BONUS = 1.15f;  // 1 = no bias
+__device__ constexpr float VISIBILITY_HYSTERESIS_BONUS = 1.0f;   // 1 = no bias
+// __device__ constexpr float VISIBILITY_CENTER_WEIGHT = 0.5f;   // 0 = no centre bias, 1 = corners score 0
 // __device__ constexpr float VISIBILITY_CENTER_WEIGHT = 1.0f;   // 0 = no centre bias, 1 = corners score 0
-// __device__ constexpr float VISIBILITY_CENTER_WEIGHT = 0.0f;   // 0 = no centre bias, 1 = corners score 0
+__device__ constexpr float VISIBILITY_CENTER_WEIGHT = 0.0f;   // 0 = no centre bias, 1 = corners score 0
 
 __device__
 float getVisibilityPriority(const CRenderTarget& target, const CAABB& aabb){
@@ -1101,6 +1107,7 @@ void kernel_get_renderable_nodes_part_3_large_nodes(
                 priority *= VISIBILITY_HYSTERESIS_BONUS;
             }
             globalVariables.exchangedAABBIndicesVisPointsScreenSpaceSize[buffer_id] = priority;
+            __nv_atomic_add(&globalVariables.curNbVisNode, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
         }
 
         CIdAABB children_tmp[8] = {
@@ -1227,21 +1234,19 @@ void kernel_get_renderable_nodes_part_5_reorder(
     uint32_t thread_id = grid.thread_rank();
     uint32_t nb_threads = grid.num_threads();
 
-    uint32_t max_nb_exchanged_nodes = globalVariables.visibilityCacheSize / 2;
+    // The complete lists are output now: the host streams every visible node, the budget being
+    // enforced on the number of points / voxels instead of the number of nodes
     uint32_t nb_points = globalVariables.nbNodesExchangedVisPoints;
     uint32_t nb_voxels = globalVariables.nbNodesExchangedVisVoxels;
+    uint32_t nb_nodes = globalVariables.totalNbNodesForVisibility;
 
     uint32_t sort_capacity = globalVariables.maxNbConcurrentNodes;
 
     // Clear previous "was visible" flags
-    for(uint32_t i = thread_id; i < max_nb_exchanged_nodes; i += nb_threads){
-        CIdAABB old_points_id = globalVariables.exchangedAABBIndicesVisPoints[i];
-        if(old_points_id != CINVALID_ID){
-            globalVariables.unsetFlagSync(old_points_id, CFlagWasVisibleHost);
-        }
-        CIdAABB old_voxels_id = globalVariables.exchangedAABBIndicesVisVoxels[i];
-        if(old_voxels_id != CINVALID_ID){
-            globalVariables.unsetFlagSync(old_voxels_id, CFlagWasVisibleHost);
+    // (the previous lists are not truncated anymore, so their length is unknown here: scan every node)
+    for(uint32_t node_index = thread_id; node_index < nb_nodes; node_index += nb_threads){
+        if(globalVariables.getFlag(node_index, CFlagWasVisibleHost)){
+            globalVariables.unsetFlagSync(node_index, CFlagWasVisibleHost);
         }
     }
     // Make sure every unset lands before any set below (the sorts may do zero syncs)
@@ -1258,19 +1263,22 @@ void kernel_get_renderable_nodes_part_5_reorder(
         nb_voxels, sort_capacity
     );
 
-    // Copy the top entries into the output buffers
-    for(uint32_t i = thread_id; i < max_nb_exchanged_nodes; i += nb_threads){
-        CIdAABB new_points_id = (i < nb_points) ? globalVariables.exchangedAABBIndicesVisPointsTmp[i] : CINVALID_ID;
-        CIdAABB new_voxels_id = (i < nb_voxels) ? globalVariables.exchangedAABBIndicesVisVoxelsTmp[i] : CINVALID_ID;
-
-        globalVariables.exchangedAABBIndicesVisPoints[i] = new_points_id;
-        globalVariables.exchangedAABBIndicesVisVoxels[i] = new_voxels_id;
-
-        if(new_points_id != CINVALID_ID){
-            globalVariables.setFlagSync(new_points_id, CFlagWasVisibleHost);
+    // Copy every sorted entry into the output buffers
+    uint32_t nb_outputs = min(max(nb_points, nb_voxels), sort_capacity);
+    for(uint32_t i = thread_id; i < nb_outputs; i += nb_threads){
+        if(i < nb_points){
+            CIdAABB new_points_id = globalVariables.exchangedAABBIndicesVisPointsTmp[i];
+            globalVariables.exchangedAABBIndicesVisPoints[i] = new_points_id;
+            if(new_points_id != CINVALID_ID){
+                globalVariables.setFlagSync(new_points_id, CFlagWasVisibleHost);
+            }
         }
-        if(new_voxels_id != CINVALID_ID){
-            globalVariables.setFlagSync(new_voxels_id, CFlagWasVisibleHost);
+        if(i < nb_voxels){
+            CIdAABB new_voxels_id = globalVariables.exchangedAABBIndicesVisVoxelsTmp[i];
+            globalVariables.exchangedAABBIndicesVisVoxels[i] = new_voxels_id;
+            if(new_voxels_id != CINVALID_ID){
+                globalVariables.setFlagSync(new_voxels_id, CFlagWasVisibleHost);
+            }
         }
     }
 }

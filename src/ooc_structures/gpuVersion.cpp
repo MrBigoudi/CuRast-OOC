@@ -1,5 +1,14 @@
 #include "gpuVersion.h"
 
+#include <algorithm>
+#include <atomic>
+#include <cmath>
+#include <cstring>
+#include <fstream>
+#include <random>
+#include <thread>
+#include <unordered_map>
+
 #include "loader.h"
 #include "outOfCore.h"
 
@@ -14,10 +23,10 @@ void HostStorageNode::init(){
     voxels_allocator_update.init(node_count, data_count);
     indices_allocator_update.init(node_count, data_count);
 
-    node_count = 2 * OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE; // Visibility cache size (x2 for hostVisCache)
-    points_allocator_visibility.init(node_count, data_count);
-    voxels_allocator_visibility.init(node_count, data_count);
-    indices_allocator_visibility.init(node_count, data_count);
+    // The visibility nodes are no longer kept in pinned memory: they are streamed from disk
+    // into regular RAM and only their rendered points / voxels are copied into the pinned
+    // staging buffers `GpuVersion::visStaging*' (see `GpuVersion::visibilityUpdate')
+    // -> the `*_allocator_visibility' pools stay empty (no Visibility HostStorageNode is created)
 }
 
 void HostStorageNode::destroy(){
@@ -212,8 +221,15 @@ void GpuVersion::initHostSide(CuRast* editor, CUcontext* context) {
     nbRenderedVoxels2 = allocHost<uint32_t>(1);
     nbRenderedNodes2 = allocHost<uint32_t>(1);
 
-    exchangedAABBIndicesVisPoints = allocHost<CIdAABB>(hostStaging.visibilityCacheSize);
-    exchangedAABBIndicesVisVoxels = allocHost<CIdAABB>(hostStaging.visibilityCacheSize);
+    // The visible lists are not truncated anymore: they can hold every node (same size as on device)
+    exchangedAABBIndicesVisPoints = allocHost<CIdAABB>(hostStaging.maxNbConcurrentNodes);
+    exchangedAABBIndicesVisVoxels = allocHost<CIdAABB>(hostStaging.maxNbConcurrentNodes);
+    exchangedPrioritiesVisPoints = allocHost<float>(hostStaging.maxNbConcurrentNodes);
+    exchangedPrioritiesVisVoxels = allocHost<float>(hostStaging.maxNbConcurrentNodes);
+
+    // Staging buffers for the rendered points / voxels (same capacity as the device buffers)
+    visStagingPoints = static_cast<CPoint*>(allocHost<CPoint>(hostStaging.maxNbRenderedPoints));
+    visStagingVoxels = static_cast<CPoint*>(allocHost<CPoint>(hostStaging.maxNbRenderedVoxels));
     nbNodesExchangedVisPoints = allocHost<uint32_t>(1);
     nbNodesExchangedVisVoxels = allocHost<uint32_t>(1);
     curNbVisNode = allocHost<uint32_t>(1);
@@ -420,6 +436,11 @@ void GpuVersion::init(CuRast* editor, CUcontext* context) {
 
 
 void GpuVersion::destroy(CuRast *editor, CUcontext *context){
+    // The detached visibility workers write into the staging buffers freed below
+    while(!isDoneDeserializingForVisibility){
+        std::this_thread::yield();
+    }
+
     if(hostCache){delete(hostCache);}
 
     cudaDeviceSynchronize();
@@ -443,6 +464,10 @@ void GpuVersion::destroy(CuRast *editor, CUcontext *context){
 
     CURuntime::assertCudaSuccess(cuMemFreeHost(exchangedAABBIndicesVisPoints));
     CURuntime::assertCudaSuccess(cuMemFreeHost(exchangedAABBIndicesVisVoxels));
+    CURuntime::assertCudaSuccess(cuMemFreeHost(exchangedPrioritiesVisPoints));
+    CURuntime::assertCudaSuccess(cuMemFreeHost(exchangedPrioritiesVisVoxels));
+    CURuntime::assertCudaSuccess(cuMemFreeHost(visStagingPoints));
+    CURuntime::assertCudaSuccess(cuMemFreeHost(visStagingVoxels));
 
     CURuntime::assertCudaSuccess(cuMemFreeHost(voxelsNodesToSend));
     CURuntime::assertCudaSuccess(cuMemFreeHost(nbRenderedPoints));
@@ -1172,7 +1197,232 @@ float getScreenSpaceSize(const CAABB& aabb){
 
 
 
+namespace {
+
+/// Max-min fair-share quotas (water filling)
+/// Every node gets min(count, fair share), where the fair share is at least floor(budget / n):
+/// a minimum of elements of every node is kept even when everything does not fit.
+/// The rounding leftover is handed out to the truncated nodes; the sum never exceeds the budget.
+std::vector<uint32_t> visWaterFillQuotas(const std::vector<uint32_t>& counts, uint32_t budget){
+    const uint32_t n = static_cast<uint32_t>(counts.size());
+    std::vector<uint32_t> quota(n, 0);
+    if(n == 0 || budget == 0){ return quota; }
+
+    std::vector<uint32_t> order(n);
+    for(uint32_t i = 0; i < n; i++){ order[i] = i; }
+    std::sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b){
+        return counts[a] < counts[b];
+    });
+
+    uint32_t remaining = budget;
+    uint32_t remaining_nodes = n;
+    for(uint32_t idx : order){
+        const uint32_t fair_share = remaining / remaining_nodes;
+        quota[idx] = std::min(counts[idx], fair_share);
+        remaining -= quota[idx];
+        remaining_nodes--;
+    }
+
+    // Hand out the rounding leftover (at most one extra element per truncated node)
+    for(uint32_t i = n; i > 0 && remaining > 0; i--){
+        const uint32_t idx = order[i - 1];
+        if(quota[idx] < counts[idx]){
+            quota[idx]++;
+            remaining--;
+        }
+    }
+    return quota;
+}
+
+/// Fraction of the budget shared equally between every visible node (guaranteed minimum per node)
+/// The rest goes to the nodes in proportion to the screen area they cover
+// constexpr double VIS_MIN_SHARE_FRACTION = 0.1;
+constexpr double VIS_MIN_SHARE_FRACTION = 0.0;
+
+/// Quotas favouring the nodes covering the most pixels (close / zoomed-in nodes)
+///  1. `VIS_MIN_SHARE_FRACTION' of the budget is water-filled equally: every node keeps at least
+///     min(count, floor(VIS_MIN_SHARE_FRACTION * budget / n)) elements
+///  2. the rest is water-filled with weights = priorities (~ projected area in pixels): every node
+///     that is not saturated gets the same number of elements per pixel, and the nodes that need
+///     fewer than that get all their elements
+///  3. what is left (rounding, nodes with a zero priority) is water-filled equally
+/// The quotas never exceed the counts and their sum never exceeds the budget; if everything fits,
+/// everything is kept
+std::vector<uint32_t> visPriorityQuotas(const std::vector<uint32_t>& counts,
+    const std::vector<float>& priorities, uint32_t budget
+){
+    const uint32_t n = static_cast<uint32_t>(counts.size());
+    if(n == 0 || budget == 0){ return std::vector<uint32_t>(n, 0); }
+
+    // 1. Guaranteed minimum
+    const uint32_t min_budget = static_cast<uint32_t>(double(budget) * VIS_MIN_SHARE_FRACTION);
+    std::vector<uint32_t> quota = visWaterFillQuotas(counts, min_budget);
+    uint64_t used = 0;
+    for(uint32_t q : quota){ used += q; }
+    uint64_t remaining = uint64_t(budget) - used;   // used <= min_budget <= budget
+
+    // 2. Weighted water filling on what is not taken yet
+    std::vector<uint32_t> order = {};
+    std::vector<double> weights(n, 0.0);
+    order.reserve(n);
+    for(uint32_t i = 0; i < n; i++){
+        const float p = (i < priorities.size()) ? priorities[i] : 0.0f;
+        weights[i] = (std::isfinite(p) && p > 0.0f) ? double(p) : 0.0;
+        if(weights[i] > 0.0 && quota[i] < counts[i]){ order.push_back(i); }
+    }
+    // Ascending residual / weight: the nodes saturating first are served first
+    std::sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b){
+        const double ra = double(counts[a] - quota[a]);
+        const double rb = double(counts[b] - quota[b]);
+        return ra * weights[b] < rb * weights[a];
+    });
+    // Suffix sums of the weights (avoids accumulating subtraction errors)
+    std::vector<double> weights_left(order.size() + 1, 0.0);
+    for(uint32_t k = static_cast<uint32_t>(order.size()); k > 0; k--){
+        weights_left[k - 1] = weights_left[k] + weights[order[k - 1]];
+    }
+    for(uint32_t k = 0; k < order.size() && remaining > 0; k++){
+        const uint32_t idx = order[k];
+        const uint64_t residual = counts[idx] - quota[idx];
+        const double share = double(remaining) * weights[idx] / weights_left[k];
+        uint64_t q = (share >= double(residual)) ? residual : static_cast<uint64_t>(std::floor(share));
+        q = std::min(q, remaining);
+        quota[idx] += static_cast<uint32_t>(q);
+        remaining -= q;
+    }
+
+    // 3. Leftover shared equally
+    if(remaining > 0){
+        std::vector<uint32_t> residuals(n);
+        for(uint32_t i = 0; i < n; i++){ residuals[i] = counts[i] - quota[i]; }
+        std::vector<uint32_t> extra = visWaterFillQuotas(residuals, static_cast<uint32_t>(remaining));
+        for(uint32_t i = 0; i < n; i++){ quota[i] += extra[i]; }
+    }
+    return quota;
+}
+
+/// Read the first `nb_elements' points of an append-only points / voxels file
+/// Returns the number of elements really read
+uint32_t visReadPointsFile(const std::string& filepath, uint32_t nb_elements, std::vector<CPoint>& out){
+    if(nb_elements == 0){ return 0; }
+    if(out.size() < nb_elements){ out.resize(nb_elements); }
+
+    std::ifstream file(filepath, std::ios::binary);
+    if(!file.is_open()){ return 0; }
+    file.read(
+        reinterpret_cast<char*>(out.data()),
+        static_cast<std::streamsize>(uint64_t(nb_elements) * sizeof(CPoint))
+    );
+    return static_cast<uint32_t>(uint64_t(file.gcount()) / sizeof(CPoint));
+}
+
+/// Copy `quota' uniformly chosen elements among the first `nb_read' ones into `dst'
+/// Deterministic for a given seed: a smaller quota selects a prefix of a larger one's selection,
+/// so the rendered subset of a node stays stable from one update to the next
+uint32_t visCopyRandomSubset(std::vector<CPoint>& data, uint32_t nb_read, uint32_t quota, uint32_t seed, CPoint* dst){
+    const uint32_t nb_to_copy = std::min(quota, nb_read);
+    if(nb_to_copy == 0){ return 0; }
+
+    if(nb_to_copy < nb_read){
+        // Partial Fisher-Yates: the first `nb_to_copy' elements become a uniform random subset
+        std::minstd_rand rng(seed);
+        for(uint32_t i = 0; i < nb_to_copy; i++){
+            std::uniform_int_distribution<uint32_t> dist(i, nb_read - 1);
+            std::swap(data[i], data[dist(rng)]);
+        }
+    }
+
+    std::copy_n(data.data(), nb_to_copy, dst);
+    return nb_to_copy;
+}
+
+std::atomic<bool> visHasWarnedShortRead{false};
+
+/// Stream one node: read it from disk into regular RAM, then copy its quota into the staging buffers
+/// `points_buffer' / `voxels_buffer' are per-worker scratch buffers, reused between nodes
+void visLoadTask(GpuVersion::VisibilityTask& task,
+    std::vector<CPoint>& points_buffer, std::vector<CPoint>& voxels_buffer
+){
+    task.points_written = 0;
+    task.voxels_written = 0;
+
+    const bool wants_points = task.points_quota > 0;
+    const bool wants_voxels = task.voxels_quota > 0;
+    if(!wants_points && !wants_voxels){ return; }
+
+    uint32_t nb_points_read = 0;
+    uint32_t nb_voxels_read = 0;
+    {
+        // The serialization thread writes these files under the same lock
+        std::lock_guard<std::mutex> lock(GpuVersion::storedNodesMtx[task.id]);
+        if(wants_points){
+            nb_points_read = visReadPointsFile(getChunkFilePathV2(task.id, false), task.nb_points_on_disk, points_buffer);
+        }
+        if(wants_voxels){
+            nb_voxels_read = visReadPointsFile(getChunkFilePathV2(task.id, true), task.nb_voxels_on_disk, voxels_buffer);
+        }
+    }
+
+    if((wants_points && nb_points_read < task.nb_points_on_disk)
+        || (wants_voxels && nb_voxels_read < task.nb_voxels_on_disk)
+    ){
+        if(!visHasWarnedShortRead.exchange(true)){
+            println("WARN: visibility update, node {} has less data on disk than expected (points {}/{}, voxels {}/{})",
+                task.id, nb_points_read, task.nb_points_on_disk, nb_voxels_read, task.nb_voxels_on_disk
+            );
+        }
+    }
+
+    const uint32_t seed = static_cast<uint32_t>(task.id) * 2654435761u;
+    if(wants_points){
+        task.points_written = visCopyRandomSubset(points_buffer, nb_points_read, task.points_quota, seed + 1u,
+            GpuVersion::visStagingPoints + task.points_offset
+        );
+    }
+    if(wants_voxels){
+        task.voxels_written = visCopyRandomSubset(voxels_buffer, nb_voxels_read, task.voxels_quota, seed + 2u,
+            GpuVersion::visStagingVoxels + task.voxels_offset
+        );
+    }
+}
+
+/// Process every task of `GpuVersion::visibilityTasks' with a pool of workers
+void visRunTasks(uint32_t max_nb_workers){
+    std::vector<GpuVersion::VisibilityTask>& tasks = GpuVersion::visibilityTasks;
+    const uint32_t nb_tasks = static_cast<uint32_t>(tasks.size());
+    const uint32_t nb_workers = std::min(nb_tasks, std::max(1u, max_nb_workers));
+    if(nb_tasks == 0){ return; }
+
+    std::atomic<uint32_t> next = 0;
+    auto work = [&](){
+        std::vector<CPoint> points_buffer;
+        std::vector<CPoint> voxels_buffer;
+        for(uint32_t i = next.fetch_add(1); i < nb_tasks; i = next.fetch_add(1)){
+            visLoadTask(tasks[i], points_buffer, voxels_buffer);
+        }
+    };
+
+    if(nb_workers == 1){
+        work();
+        return;
+    }
+    std::vector<std::thread> workers;
+    workers.reserve(nb_workers);
+    for(uint32_t w = 0; w < nb_workers; w++){
+        workers.emplace_back(work);
+    }
+    for(std::thread& t : workers){ t.join(); }
+}
+
+} // namespace
+
+
+
+/// Find the visible nodes (single pass, no node limit) and build the streaming tasks:
+/// which nodes, how many points / voxels each one may write, and where in the staging buffers
 void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
+    visibilityTasks.clear();
+
     uint32_t block_size = 256;
     uint32_t grid_size =
         (OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM + block_size - 1)
@@ -1187,58 +1437,47 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
         .blocksize = 256
     };
 
-    uint32_t half_vis_cache = hostStaging.visibilityCacheSize / 2;
-    uint32_t new_min_pixel_span = CuRastSettings::minPixelSpan;
+    // Single pass: every node of the cut is kept, the budget is enforced on points / voxels instead
+    renderingSettings.min_pixel_span = CuRastSettings::minPixelSpan;
+    prog->launch("kernel_get_renderable_nodes_part_1_visibility", {&renderingTarget, &renderingSettings}, launch_settings);
+    prog->launch("kernel_get_renderable_nodes_part_2_flagging_large", {&renderingTarget, &renderingSettings}, launch_settings);
+    prog->launch("kernel_get_renderable_nodes_part_3_large_nodes", {&renderingTarget, &renderingSettings}, launch_settings);
+    prog->launch("kernel_get_renderable_nodes_part_4_small_nodes", {&renderingTarget, &renderingSettings}, launch_settings);
+    // Sort by screen space size on device side (also outputs the complete lists)
+    prog->launchCooperative("kernel_get_renderable_nodes_part_5_reorder", {&renderingTarget, &renderingSettings}, launch_settings_coop);
 
-    uint32_t nb_vis_points = 0;
-    uint32_t nb_vis_voxels = 0;
-    uint32_t nb_vis_nodes  = 0;
+    COPY_FROM_GPU(nbNodesExchangedVisPoints, nbNodesExchangedVisPoints, uint32_t);
+    COPY_FROM_GPU(nbNodesExchangedVisVoxels, nbNodesExchangedVisVoxels, uint32_t);
 
-    // const uint32_t MAX_NODE_FINDER_ITERATION = 8;
-    const uint32_t MAX_NODE_FINDER_ITERATION = 1;
-    for(uint32_t i = 0; i < MAX_NODE_FINDER_ITERATION; i++){
-        renderingSettings.min_pixel_span = new_min_pixel_span;
-        prog->launch("kernel_get_renderable_nodes_part_1_visibility", {&renderingTarget, &renderingSettings}, launch_settings);
-        prog->launch("kernel_get_renderable_nodes_part_2_flagging_large", {&renderingTarget, &renderingSettings}, launch_settings);
-        prog->launch("kernel_get_renderable_nodes_part_3_large_nodes", {&renderingTarget, &renderingSettings}, launch_settings);
-        prog->launch("kernel_get_renderable_nodes_part_4_small_nodes", {&renderingTarget, &renderingSettings}, launch_settings);
-    
-        // Sort by screen space size on device side
-        prog->launchCooperative("kernel_get_renderable_nodes_part_5_reorder", {&renderingTarget, &renderingSettings}, launch_settings_coop);
-    
-        COPY_FROM_GPU(nbNodesExchangedVisPoints, nbNodesExchangedVisPoints, uint32_t);
-        COPY_FROM_GPU(nbNodesExchangedVisVoxels, nbNodesExchangedVisVoxels, uint32_t);
-        COPY_FROM_GPU(curNbVisNode, curNbVisNode, uint32_t);
-
-        nb_vis_points = *(uint32_t*)nbNodesExchangedVisPoints;
-        nb_vis_voxels = *(uint32_t*)nbNodesExchangedVisVoxels;
-        nb_vis_nodes  = *(uint32_t*)curNbVisNode;
-
-
-        // if(nb_vis_points <= half_vis_cache && nb_vis_voxels <= half_vis_cache){break;}
-        if(nb_vis_nodes <= half_vis_cache){break;}
-        new_min_pixel_span *= 2;
-        // println("i = {}", i);
-    }
-    
-    *(uint32_t*)nbNodesExchangedVisPoints = min(*(uint32_t*)nbNodesExchangedVisPoints, half_vis_cache);
-    *(uint32_t*)nbNodesExchangedVisVoxels = min(*(uint32_t*)nbNodesExchangedVisVoxels, half_vis_cache);
-    nb_vis_points = *(uint32_t*)nbNodesExchangedVisPoints;
-    nb_vis_voxels = *(uint32_t*)nbNodesExchangedVisVoxels;
+    // The device lists (and the host copies) hold at most `maxNbConcurrentNodes' entries
+    const uint32_t nb_vis_points = min(*(uint32_t*)nbNodesExchangedVisPoints, hostStaging.maxNbConcurrentNodes);
+    const uint32_t nb_vis_voxels = min(*(uint32_t*)nbNodesExchangedVisVoxels, hostStaging.maxNbConcurrentNodes);
+    *(uint32_t*)nbNodesExchangedVisPoints = nb_vis_points;
+    *(uint32_t*)nbNodesExchangedVisVoxels = nb_vis_voxels;
 
     std::vector<CUdeviceptr> dsts_host = {};
     std::vector<CUdeviceptr> srcs_device = {};
     std::vector<uint64_t> sizes = {};
 
+    // Ids and their priorities: `kernel_get_renderable_nodes_part_5_reorder' sorts both arrays
+    // together, so entry i of the priorities belongs to entry i of the ids
     if(nb_vis_points > 0){
         dsts_host.push_back((CUdeviceptr)exchangedAABBIndicesVisPoints);
         srcs_device.push_back((CUdeviceptr)hostStaging.exchangedAABBIndicesVisPoints);
         sizes.push_back(sizeof(CIdAABB) * nb_vis_points);
+
+        dsts_host.push_back((CUdeviceptr)exchangedPrioritiesVisPoints);
+        srcs_device.push_back((CUdeviceptr)hostStaging.exchangedAABBIndicesVisPointsScreenSpaceSize);
+        sizes.push_back(sizeof(float) * nb_vis_points);
     }
     if(nb_vis_voxels > 0){
         dsts_host.push_back((CUdeviceptr)exchangedAABBIndicesVisVoxels);
         srcs_device.push_back((CUdeviceptr)hostStaging.exchangedAABBIndicesVisVoxels);
         sizes.push_back(sizeof(CIdAABB) * nb_vis_voxels);
+
+        dsts_host.push_back((CUdeviceptr)exchangedPrioritiesVisVoxels);
+        srcs_device.push_back((CUdeviceptr)hostStaging.exchangedAABBIndicesVisVoxelsScreenSpaceSize);
+        sizes.push_back(sizeof(float) * nb_vis_voxels);
     }
 
     if(sizes.empty()){ return; }
@@ -1252,25 +1491,79 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
     ));
     CURuntime::assertCudaSuccess(cuEventRecord(eventVisPreprocess, visStream));
     CURuntime::assertCudaSuccess(cuEventSynchronize(eventVisPreprocess));
-    
-    nbVisibleNodesVisibilityUpdate = 0;
-    std::unordered_set<CIdAABB> already_added = {};
 
-    std::lock_guard<std::mutex> lock(storedNodesVisibilityMtx);
-    for(uint32_t i = 0; i < nb_vis_voxels; i++){
-        const CIdAABB& id = ((CIdAABB*)(exchangedAABBIndicesVisVoxels))[i];
-        if(storedNodesVisibilityCopy.contains(id) && !already_added.contains(id)){
-            already_added.insert(id);
-            visibleNodesOrdered[nbVisibleNodesVisibilityUpdate] = id;
-            nbVisibleNodesVisibilityUpdate++;
+    // One task per distinct node; a node can be in both lists (points and voxels)
+    // Only the nodes already written on disk are kept, with their on-disk counters
+    std::unordered_map<CIdAABB, uint32_t> task_index = {};
+    task_index.reserve(nb_vis_points + nb_vis_voxels);
+    auto get_task = [&](const CIdAABB& id) -> VisibilityTask& {
+        auto [it, inserted] = task_index.try_emplace(id, static_cast<uint32_t>(visibilityTasks.size()));
+        if(inserted){
+            VisibilityTask task = {};
+            task.id = id;
+            visibilityTasks.push_back(task);
+        }
+        return visibilityTasks[it->second];
+    };
+
+    {
+        std::lock_guard<std::mutex> lock(storedNodesVisibilityMtx);
+        for(uint32_t i = 0; i < nb_vis_voxels; i++){
+            const CIdAABB id = ((CIdAABB*)(exchangedAABBIndicesVisVoxels))[i];
+            auto it = storedNodesVisibilityCounters.find(id);
+            if(it == storedNodesVisibilityCounters.end() || it->second.nb_voxels == 0){continue;}
+            VisibilityTask& task = get_task(id);
+            task.nb_voxels_on_disk = it->second.nb_voxels;
+            task.voxels_priority = ((float*)(exchangedPrioritiesVisVoxels))[i];
+        }
+        for(uint32_t i = 0; i < nb_vis_points; i++){
+            const CIdAABB id = ((CIdAABB*)(exchangedAABBIndicesVisPoints))[i];
+            auto it = storedNodesVisibilityCounters.find(id);
+            if(it == storedNodesVisibilityCounters.end() || it->second.nb_points == 0){continue;}
+            VisibilityTask& task = get_task(id);
+            task.nb_points_on_disk = it->second.nb_points;
+            task.points_priority = ((float*)(exchangedPrioritiesVisPoints))[i];
         }
     }
-    for(uint32_t i = 0; i < nb_vis_points; i++){
-        const CIdAABB& id = ((CIdAABB*)(exchangedAABBIndicesVisPoints))[i];
-        if(storedNodesVisibilityCopy.contains(id) && !already_added.contains(id)){
-            already_added.insert(id);
-            visibleNodesOrdered[nbVisibleNodesVisibilityUpdate] = id;
-            nbVisibleNodesVisibilityUpdate++;
+
+    // Quotas and reserved slots in the staging buffers (the sum of the quotas fits the budget)
+    // The budget goes in priority to the nodes covering the most pixels, see `visPriorityQuotas'
+    {
+        std::vector<uint32_t> task_ids = {};
+        std::vector<uint32_t> counts = {};
+        std::vector<float> priorities = {};
+        for(uint32_t i = 0; i < visibilityTasks.size(); i++){
+            if(visibilityTasks[i].nb_points_on_disk == 0){continue;}
+            task_ids.push_back(i);
+            counts.push_back(visibilityTasks[i].nb_points_on_disk);
+            priorities.push_back(visibilityTasks[i].points_priority);
+        }
+        std::vector<uint32_t> quotas = visPriorityQuotas(counts, priorities, hostStaging.maxNbRenderedPoints);
+        uint64_t offset = 0;
+        for(uint32_t j = 0; j < task_ids.size(); j++){
+            VisibilityTask& task = visibilityTasks[task_ids[j]];
+            task.points_quota = quotas[j];
+            task.points_offset = offset;
+            offset += quotas[j];
+        }
+    }
+    {
+        std::vector<uint32_t> task_ids = {};
+        std::vector<uint32_t> counts = {};
+        std::vector<float> priorities = {};
+        for(uint32_t i = 0; i < visibilityTasks.size(); i++){
+            if(visibilityTasks[i].nb_voxels_on_disk == 0){continue;}
+            task_ids.push_back(i);
+            counts.push_back(visibilityTasks[i].nb_voxels_on_disk);
+            priorities.push_back(visibilityTasks[i].voxels_priority);
+        }
+        std::vector<uint32_t> quotas = visPriorityQuotas(counts, priorities, hostStaging.maxNbRenderedVoxels);
+        uint64_t offset = 0;
+        for(uint32_t j = 0; j < task_ids.size(); j++){
+            VisibilityTask& task = visibilityTasks[task_ids[j]];
+            task.voxels_quota = quotas[j];
+            task.voxels_offset = offset;
+            offset += quotas[j];
         }
     }
 }
@@ -1282,23 +1575,57 @@ void GpuVersion::shuffleForRendering(HostStorageNode* node, CIdAABB id){
 }
 
 
+/// Stream the visible nodes from disk into the rendering buffers
+/// 1. (main thread) find the visible nodes and their quotas, see `visibilityUpdateSort'
+/// 2. (workers) read each node into regular RAM, copy a random subset of its quota into the
+///    pinned staging buffers, free it
+/// 3. (main thread) one batched copy from the staging buffers to the write-side device buffers;
+///    the device switches to them in `updateVisCache' once the copy is complete
 void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
-    if(!hasStartedVisibilityUpdate && !hasStartedSortingVisibleNodes){
-        // Toggle which buffer we write into this frame
+    if(!hasStartedVisibilityUpdate){
+        // The previous content must be published (the device reads it) and its copy complete
+        // (the staging buffers are about to be overwritten) before starting a new one
+        if(isVisibilityPublishPending){return;}
+        CUresult res = cuEventQuery(eventVisibilityUpdateComplete);
+        if(res == CUDA_ERROR_NOT_READY){return;}
+        CURuntime::assertCudaSuccess(res);
+
+        // Write into the buffer pair the device is NOT reading
         isUsingSecondRenderingBuffer = !isUsingSecondRenderingBuffer;
+
+        visibilityUpdateSort(editor, context);
+        hasStartedVisibilityUpdate = true;
+
+        if(!visibilityTasks.empty()){
+            const uint32_t max_nb_workers = std::max(1u, std::thread::hardware_concurrency() / 4);
+            if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+                isDoneDeserializingForVisibility = false;
+                // `visibilityTasks' and the staging buffers belong to the workers until
+                // `isDoneDeserializingForVisibility' is true again
+                std::thread coordinator([max_nb_workers](){
+                    visRunTasks(max_nb_workers);
+                    isDoneDeserializingForVisibility = true;
+                });
+                coordinator.detach();
+                // The next frames will pick it up
+                return;
+            } else {
+                visRunTasks(1);
+            }
+        }
     }
 
-    // Select the write-side host buffers
-    void* voxels_nodes_host       = isUsingSecondRenderingBuffer ? voxelsNodesToSend2 : voxelsNodesToSend;
-    void* nb_rendered_nodes_host  = isUsingSecondRenderingBuffer ? nbRenderedNodes2  : nbRenderedNodes;
+    if(!isDoneDeserializingForVisibility){return;}
+    hasStartedVisibilityUpdate = false;
+
+    // Select the write-side buffers
     void* nb_rendered_points_host = isUsingSecondRenderingBuffer ? nbRenderedPoints2 : nbRenderedPoints;
     void* nb_rendered_voxels_host = isUsingSecondRenderingBuffer ? nbRenderedVoxels2 : nbRenderedVoxels;
 
-    // Select the write-side device pointers
-    CUdeviceptr dst_rendered_points  = isUsingSecondRenderingBuffer
+    CUdeviceptr dst_rendered_points = isUsingSecondRenderingBuffer
         ? (CUdeviceptr)hostStaging.renderedPoints2
         : (CUdeviceptr)hostStaging.renderedPoints;
-    CUdeviceptr dst_rendered_voxels  = isUsingSecondRenderingBuffer
+    CUdeviceptr dst_rendered_voxels = isUsingSecondRenderingBuffer
         ? (CUdeviceptr)hostStaging.renderedVoxels2
         : (CUdeviceptr)hostStaging.renderedVoxels;
 
@@ -1315,11 +1642,23 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
         - reinterpret_cast<uintptr_t>(&hostStaging)
     );
 
-    CIdAABB* voxels_nodes_to_send = static_cast<CIdAABB*>(voxels_nodes_host);
-    uint32_t* cpt       = (uint32_t*)nb_rendered_nodes_host;
-    uint32_t* point_cpt = (uint32_t*)nb_rendered_points_host;
-    uint32_t* voxel_cpt = (uint32_t*)nb_rendered_voxels_host;
-    *cpt = 0; *point_cpt = 0; *voxel_cpt = 0;
+    // Totals of what the workers really wrote (<= quotas <= budgets)
+    uint64_t total_points = 0;
+    uint64_t total_voxels = 0;
+    uint64_t total_points_on_disk = 0;
+    uint64_t total_voxels_on_disk = 0;
+    for(const VisibilityTask& task : visibilityTasks){
+        total_points += task.points_written;
+        total_voxels += task.voxels_written;
+        total_points_on_disk += task.nb_points_on_disk;
+        total_voxels_on_disk += task.nb_voxels_on_disk;
+    }
+    *(uint32_t*)nb_rendered_points_host = static_cast<uint32_t>(total_points);
+    *(uint32_t*)nb_rendered_voxels_host = static_cast<uint32_t>(total_voxels);
+
+    GpuVersionUI::visNbNodes  = static_cast<uint32_t>(visibilityTasks.size());
+    GpuVersionUI::visNbPoints = static_cast<uint32_t>(total_points);
+    GpuVersionUI::visNbVoxels = static_cast<uint32_t>(total_voxels);
 
     std::vector<CUdeviceptr> srcs_host = {
         (CUdeviceptr)nb_rendered_points_host,
@@ -1334,175 +1673,61 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
         sizeof(uint32_t)
     };
 
-    if(!hasStartedVisibilityUpdate){
-        visibilityUpdateSort(editor, context);
-        uint32_t loop_end = min(nbVisibleNodesVisibilityUpdate, hostStaging.visibilityCacheSize);
-
-        // Resolve the pointers on the main thread: the worker threads must not touch the map
-        std::vector<std::pair<CIdAABB, HostStorageNode*>> to_deserialise = {};
-        for(uint32_t i = 0; i < loop_end; i++){
-            const CIdAABB& id = visibleNodesOrdered[i];
-            hostVisCache->add(id);
-            if(!visibilityNodes.contains(id)){
-                auto node = std::make_shared<HostStorageNode>(HostStorageNodeOwner::Visibility);
-                visibilityNodes[id] = node;
-                to_deserialise.emplace_back(id, node.get());
-            }
-        }
-        hasStartedVisibilityUpdate = true;
-
-        auto load_for_rendering = [](const std::pair<CIdAABB, HostStorageNode*>& entry){
-            const auto& [id, node] = entry;
-            {
-                std::lock_guard<std::mutex> lock(storedNodesMtx[id]);
-                OctreeNodeSerializable::deserializeV2(node, id, "From visibility update");
-            }
-            shuffleForRendering(node, id);
+    // The written elements are packed contiguously on the device. A node that wrote less than its
+    // quota leaves a gap in the staging buffer: consecutive full slots are merged into one copy
+    auto append_segments = [&](const CPoint* staging, CUdeviceptr dst_base,
+        uint64_t VisibilityTask::* offset_member, uint32_t VisibilityTask::* written_member
+    ){
+        uint64_t run_src = 0;
+        uint64_t run_dst = 0;
+        uint64_t run_len = 0;
+        uint64_t dst_cursor = 0;
+        auto flush = [&](){
+            if(run_len == 0){return;}
+            srcs_host.push_back((CUdeviceptr)(staging + run_src));
+            dsts_device.push_back(dst_base + (CUdeviceptr)(run_dst * sizeof(CPoint)));
+            sizes.push_back(run_len * sizeof(CPoint));
+            run_len = 0;
         };
-
-        if(!to_deserialise.empty()){
-            isDoneDeserializingForVisibility = false;
-
-            if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-                std::thread deserialize_thread([to_deserialise = std::move(to_deserialise), load_for_rendering]() {
-                    const uint32_t nb_nodes   = uint32_t(to_deserialise.size());
-                    const uint32_t nb_workers = std::min(nb_nodes, std::max(1u, std::thread::hardware_concurrency() / 4));
-
-                    std::atomic<uint32_t> next = 0;
-                    std::vector<std::thread> workers;
-                    workers.reserve(nb_workers);
-                    for(uint32_t w = 0; w < nb_workers; w++){
-                        workers.emplace_back([&]{
-                            for(uint32_t i = next.fetch_add(1); i < nb_nodes; i = next.fetch_add(1)){
-                                load_for_rendering(to_deserialise[i]);
-                            }
-                        });
-                    }
-                    for(auto& t : workers){ t.join(); }
-
-                    isDoneDeserializingForVisibility = true;
-                });
-                deserialize_thread.detach();
-                return;
+        for(const VisibilityTask& task : visibilityTasks){
+            const uint64_t written = task.*written_member;
+            if(written == 0){continue;}
+            const uint64_t src = task.*offset_member;
+            if(run_len > 0 && src == run_src + run_len){
+                run_len += written;
             } else {
-                std::for_each(to_deserialise.begin(), to_deserialise.end(), load_for_rendering);
-                isDoneDeserializingForVisibility = true;
+                flush();
+                run_src = src;
+                run_dst = dst_cursor;
+                run_len = written;
             }
+            dst_cursor += written;
         }
-    }
-
-    hasStartedVisibilityUpdate = false;
-
-    // Max-min fair-share quota computation
-    auto waterFillQuotas = [](const std::vector<uint32_t>& counts, uint32_t budget) -> std::vector<uint32_t> {
-        uint32_t n = (uint32_t)counts.size();
-        std::vector<uint32_t> quota(n, 0);
-        if(n == 0 || budget == 0){ return quota; }
-
-        std::vector<uint32_t> order(n);
-        for(uint32_t i = 0; i < n; i++){ order[i] = i; }
-        std::sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b){
-            return counts[a] < counts[b];
-        });
-
-        uint32_t remaining = budget;
-        uint32_t remaining_nodes = n;
-
-        for(uint32_t idx : order){
-            uint32_t fair_share = remaining / remaining_nodes;
-            if(counts[idx] <= fair_share){
-                quota[idx] = counts[idx];
-                remaining -= counts[idx];
-            } else {
-                quota[idx] = fair_share;
-                remaining -= fair_share;
-            }
-            remaining_nodes--;
-        }
-        return quota;
+        flush();
     };
+    append_segments(visStagingVoxels, dst_rendered_voxels, &VisibilityTask::voxels_offset, &VisibilityTask::voxels_written);
+    append_segments(visStagingPoints, dst_rendered_points, &VisibilityTask::points_offset, &VisibilityTask::points_written);
 
-    // Send the voxels
-    {
-        uint32_t nb_vis_voxels = *(uint32_t*)nbNodesExchangedVisVoxels;
-
-        // Gather valid nodes (skip ids not resident) and their voxel counts
-        std::vector<HostStorageNode*> nodes;
-        std::vector<uint32_t> counts;
-        nodes.reserve(nb_vis_voxels);
-        counts.reserve(nb_vis_voxels);
-
-        for(uint32_t i = 0; i < nb_vis_voxels; i++){
-            const CIdAABB& id = ((CIdAABB*)(exchangedAABBIndicesVisVoxels))[i];
-            if(!visibilityNodes.contains(id)){continue;}
-            HostStorageNode* node = visibilityNodes[id].get();
-            nodes.push_back(node);
-            counts.push_back(node->node.voxels_counter);
-        }
-
-        std::vector<uint32_t> quota = waterFillQuotas(counts, OocSimLodSettings::MAX_NB_RENDERED_VOXELS);
-
-        for(uint32_t i = 0; i < nodes.size(); i++){
-            HostStorageNode* node = nodes[i];
-            uint32_t nb_new_voxels = quota[i];
-
-            if(nb_new_voxels > 0){
-                srcs_host.push_back((CUdeviceptr)node->voxels);
-                dsts_device.push_back(dst_rendered_voxels + (CUdeviceptr)(*voxel_cpt * sizeof(CPoint)));
-                sizes.push_back(nb_new_voxels * sizeof(CPoint));
-            }
-
-            *voxel_cpt += nb_new_voxels;
-        }
+    // TODO: to remove
+    if(total_voxels < total_voxels_on_disk || total_points < total_points_on_disk){
+        println("{} nodes, voxels: {} / {}, points: {} / {}",
+            visibilityTasks.size(),
+            total_voxels, total_voxels_on_disk,
+            total_points, total_points_on_disk
+        );
     }
-
-    // Send the points
-    {
-        uint32_t nb_vis_points = *(uint32_t*)nbNodesExchangedVisPoints;
-
-        std::vector<HostStorageNode*> nodes;
-        std::vector<uint32_t> counts;
-        nodes.reserve(nb_vis_points);
-        counts.reserve(nb_vis_points);
-
-        for(uint32_t i = 0; i < nb_vis_points; i++){
-            const CIdAABB& id = ((CIdAABB*)(exchangedAABBIndicesVisPoints))[i];
-            if(!visibilityNodes.contains(id)){continue;}
-            HostStorageNode* node = visibilityNodes[id].get();
-            nodes.push_back(node);
-            counts.push_back(node->node.points_counter);
-        }
-
-        std::vector<uint32_t> quota = waterFillQuotas(counts, OocSimLodSettings::MAX_NB_RENDERED_POINTS);
-
-        for(uint32_t i = 0; i < nodes.size(); i++){
-            HostStorageNode* node = nodes[i];
-            uint32_t nb_new_points = quota[i];
-
-            if(nb_new_points > 0){
-                srcs_host.push_back((CUdeviceptr)node->points);
-                dsts_device.push_back(dst_rendered_points + (CUdeviceptr)(*point_cpt * sizeof(CPoint)));
-                sizes.push_back(nb_new_points * sizeof(CPoint));
-            }
-
-            *point_cpt += nb_new_points;
-        }
-    }
-    // // TODO: to remove
-    // println("Nb rendered voxels = {}, nb rendered points = {}", *voxel_cpt, *point_cpt);
 
     // Send the data to the device
-    uint64_t nb_copies = sizes.size();
     CURuntime::assertCudaSuccess(cuMemcpyBatchAsync(
-        dsts_device.data(), srcs_host.data(), sizes.data(), nb_copies,
+        dsts_device.data(), srcs_host.data(), sizes.data(), sizes.size(),
         batchLoadingAttributes.data(),
         batchLoadingAttributesIndices.data(),
         batchLoadingAttributes.size(),
         visStream
     ));
     CURuntime::assertCudaSuccess(cuEventRecord(eventVisibilityUpdateComplete, visStream));
+    isVisibilityPublishPending = true;
 }
-
 
 
 void GpuVersion::updateHostCache(){
@@ -1533,7 +1758,6 @@ void GpuVersion::updateHostCache(){
                     || n.voxels_counter != n.voxels_last_stored;
                 if(!storedNodes.contains(id) || is_dirty){
                     hostCacheToSerialise.push_back(node);
-                    hostVisCache->remove(node->node.aabb_index);
                 }
                 it++;
             }
@@ -1559,61 +1783,62 @@ void GpuVersion::updateHostCache(){
     isDoneUpdatingHostCache = false;
 
     if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-        std::thread update_host_cache_thread([&]()  {
-                std::for_each(hostCacheToSerialise.begin(), hostCacheToSerialise.end(), [](std::shared_ptr<HostStorageNode>& node){
-                        std::lock_guard<std::mutex> lock(storedNodesMtx[node->node.aabb_index]);    
-                        OctreeNodeSerializable::serializeV2(node);
-                    }
-                );
-
-                std::for_each(hostCacheToSerialise.begin(), hostCacheToSerialise.end(),
-                    [](std::shared_ptr<HostStorageNode>& node){
-                        const CIdAABB id = node->node.aabb_index;
-                        if(!storedNodes.contains(id)){
-                            storedNodes.insert(id);
-                            nbStoredNodesInVisibility.fetch_add(1);
-
-                            std::lock_guard<std::mutex> lock(storedNodesVisibilityMtx);
-                            storedNodesVisibilityCopy.insert(id);
-                        }
-                    }
-                );
-
-                std::for_each(hostCacheToDelete.begin(), hostCacheToDelete.end(),
-                    [](std::shared_ptr<HostStorageNode>& node){
-                        node->deallocate();
-                    }
-                );
+        std::thread update_host_cache_thread([]()  {
+                serialiseHostCacheNodes();
                 isDoneUpdatingHostCache = true;
             }
         );
         update_host_cache_thread.detach();
     } else {
-        std::for_each(hostCacheToSerialise.begin(), hostCacheToSerialise.end(), [](std::shared_ptr<HostStorageNode>& node){
-            OctreeNodeSerializable::serializeV2(node);
-            storedNodes.insert(node->node.aabb_index);
-        });
-        // Deallocate old points
-        std::for_each(hostCacheToDelete.begin(), hostCacheToDelete.end(), [](std::shared_ptr<HostStorageNode>& node){
-            node->deallocate();
-        });
+        serialiseHostCacheNodes();
         isDoneUpdatingHostCache = true;
     }
 
 }
 
 
+void GpuVersion::serialiseHostCacheNodes(){
+    // Write the files, keeping the counters each node was written with
+    std::vector<std::pair<CIdAABB, StoredNodeCounters>> written_counters = {};
+    written_counters.reserve(hostCacheToSerialise.size());
+    for(std::shared_ptr<HostStorageNode>& node : hostCacheToSerialise){
+        const CIdAABB id = node->node.aabb_index;
+        std::lock_guard<std::mutex> lock(storedNodesMtx[id]);
+        OctreeNodeSerializable::serializeV2(node);
+        written_counters.emplace_back(id, StoredNodeCounters{node->node.points_counter, node->node.voxels_counter});
+    }
+
+    // Publish them for the visibility update only now that the data is on disk
+    for(const auto& [id, counters] : written_counters){
+        if(!storedNodes.contains(id)){
+            storedNodes.insert(id);
+            nbStoredNodesInVisibility.fetch_add(1);
+        }
+        std::lock_guard<std::mutex> lock(storedNodesVisibilityMtx);
+        storedNodesVisibilityCopy.insert(id);
+        storedNodesVisibilityCounters[id] = counters;
+    }
+
+    // Deallocate the nodes that left the host cache
+    for(std::shared_ptr<HostStorageNode>& node : hostCacheToDelete){
+        node->deallocate();
+    }
+}
+
+
 void GpuVersion::updateVisCache(){
-    // Don't touch visibilityNodes while the deserialize thread is writing into it
+    // Nothing to publish while the workers are filling the staging buffers
     if(!isDoneDeserializingForVisibility || hasStartedVisibilityUpdate){return;}
     if(!isDoneSortingVisibleNodes || hasStartedSortingVisibleNodes){return;}
 
-    // Must wait for the GPU to finish reading the visibility buffers before
-    // we free the pinned memory those buffers point into
+    // Only switch the device to the new buffers once their copy is complete
     switch(cuEventQuery(eventVisibilityUpdateComplete)){
         case CUDA_SUCCESS:
             isDoneUpdatingVisCache = true;
-            COPY_TO_GPU(isUsingSecondRenderingBuffer, &isUsingSecondRenderingBuffer, bool);
+            if(isVisibilityPublishPending){
+                COPY_TO_GPU(isUsingSecondRenderingBuffer, &isUsingSecondRenderingBuffer, bool);
+                isVisibilityPublishPending = false;
+            }
             break;
         case CUDA_ERROR_NOT_READY:
             isDoneUpdatingVisCache = false;
@@ -1621,18 +1846,6 @@ void GpuVersion::updateVisCache(){
         default:
             println("ERROR: update visibility cache failed to query event");
             throw(EXIT_FAILURE);
-    }
-
-    // Collect visibility-owned nodes that have fallen out of the host LRU cache
-    for(auto it = visibilityNodes.begin(); it != visibilityNodes.end();){
-        const CIdAABB& id = it->first;
-        if(hostVisCache->contains(id)){
-            it++;
-            continue;
-        }
-        std::shared_ptr<HostStorageNode>& node = it->second;
-        node->deallocate();
-        it = visibilityNodes.erase(it);
     }
 }
 

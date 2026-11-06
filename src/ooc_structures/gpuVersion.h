@@ -224,6 +224,8 @@ struct GpuVersion {
     static inline std::unordered_map<CIdAABB, std::shared_ptr<HostStorageNode>> visibilityNodes = {};
     // static inline std::unordered_map<CIdAABB, std::shared_ptr<HostStorageNode>> persistentStoredNodes = {};
     static void updateHostCache();
+    /// Serialise `hostCacheToSerialise', publish the on-disk counters, free `hostCacheToDelete'
+    static void serialiseHostCacheNodes();
     static void updateVisCache();
     static inline bool isDoneUpdatingHostCache = true;
     static inline bool isDoneUpdatingVisCache = true;
@@ -241,6 +243,40 @@ struct GpuVersion {
     static inline std::vector<std::mutex> storedNodesMtx = {};
     static inline std::mutex storedNodesVisibilityMtx;
 
+    /// Number of points / voxels written on disk for each stored node
+    /// Only published once the data is entirely written (protected by `storedNodesVisibilityMtx')
+    /// The files are append-only, so these many elements can always be read from them afterwards
+    struct StoredNodeCounters {
+        uint32_t nb_points = 0;
+        uint32_t nb_voxels = 0;
+    };
+    static inline std::unordered_map<CIdAABB, StoredNodeCounters> storedNodesVisibilityCounters = {};
+
+    /// One visible node streamed from disk into the rendering staging buffers
+    /// Built on the main thread, filled by exactly one worker (`*_written'), read back on the main thread
+    struct VisibilityTask {
+        CIdAABB id = CINVALID_ID;
+        uint32_t nb_points_on_disk = 0;
+        uint32_t points_quota = 0;      // number of points this node may write
+        uint64_t points_offset = 0;     // reserved slot in `visStagingPoints'
+        uint32_t points_written = 0;    // number of points really written (<= quota)
+        uint32_t nb_voxels_on_disk = 0;
+        uint32_t voxels_quota = 0;
+        uint64_t voxels_offset = 0;
+        uint32_t voxels_written = 0;
+        float points_priority = 0.0f;   // device visibility priority (~ screen area covered, in pixels)
+        float voxels_priority = 0.0f;
+    };
+    static inline std::vector<VisibilityTask> visibilityTasks = {};
+
+    /// Pinned staging buffers, as large as the device rendering buffers
+    /// Written by the visibility workers, read by a single batched copy to the device
+    static inline CPoint* visStagingPoints = nullptr;
+    static inline CPoint* visStagingVoxels = nullptr;
+
+    /// True between the copy of a new visibility content and its publication to the device
+    static inline bool isVisibilityPublishPending = false;
+
     static inline std::vector<CUdeviceptr> exchangedPointsPointers = {};
 	static inline std::vector<CUdeviceptr> exchangedVoxelsPointers = {};
 	static inline std::vector<CUdeviceptr> exchangedGridsPointers = {};
@@ -256,7 +292,8 @@ struct GpuVersion {
     static inline void* isInitialised = nullptr;
     static inline void* isUpdating = nullptr;
 
-    static inline bool isDoneDeserializingForVisibility = true;
+    /// Atomic: written by the visibility coordinator thread, read by the main thread
+    static inline std::atomic<bool> isDoneDeserializingForVisibility{true};
     static inline bool hasStartedVisibilityUpdate = false;
     static inline uint32_t nbVisibleNodesVisibilityUpdate = 0;
     static inline bool isDoneDeserializingForLoading = true;
@@ -287,6 +324,9 @@ struct GpuVersion {
     static inline CUevent eventVisPreprocess;
     static inline void* exchangedAABBIndicesVisPoints = nullptr;
     static inline void* exchangedAABBIndicesVisVoxels = nullptr;
+    /// Priorities of the visible lists (sorted on device together with the ids above)
+    static inline void* exchangedPrioritiesVisPoints = nullptr;
+    static inline void* exchangedPrioritiesVisVoxels = nullptr;
     static inline void* nbNodesExchangedVisPoints = nullptr;
     static inline void* nbNodesExchangedVisVoxels = nullptr;
     static inline void* curNbVisNode = nullptr;
