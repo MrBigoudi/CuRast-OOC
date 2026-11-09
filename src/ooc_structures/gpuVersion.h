@@ -266,6 +266,14 @@ struct GpuVersion {
         uint32_t voxels_written = 0;
         float points_priority = 0.0f;   // device visibility priority (~ screen area covered, in pixels)
         float voxels_priority = 0.0f;
+
+        /// Source of the node: its on-disk files (default) or its host RAM copy in `updateNodes'
+        /// (node evicted from the device but not written to disk yet, or with newer data than on
+        /// disk). Host RAM nodes are copied on the main thread in `visibilityUpdateSort' (the
+        /// workers skip them); `nb_*_on_disk' then hold the counts available in host RAM.
+        bool is_from_update_node = false;
+        /// Only valid during `visibilityUpdateSort' (main thread), reset to nullptr afterwards
+        const HostStorageNode* update_node = nullptr;
     };
     static inline std::vector<VisibilityTask> visibilityTasks = {};
 
@@ -276,6 +284,23 @@ struct GpuVersion {
 
     /// True between the copy of a new visibility content and its publication to the device
     static inline bool isVisibilityPublishPending = false;
+
+    /// Hand-over of the evicted nodes between the device (`kernel_draw_evicted_nodes', drawing the
+    /// last evicted batch from the exchange buffers) and the host rendering buffers (main thread only)
+    /// Generation of the last eviction pass (mirrored on the device as `evictionGeneration')
+    static inline uint32_t evictionGenerationHost = 0;
+    /// Generation whose data `storeNodes' has brought into host RAM, and what each of its nodes must
+    /// show in the host rendering buffers: id, points, voxels (counts of its host RAM copy)
+    static inline uint32_t evictionGenerationStored = 0;
+    struct EvictedNodeRecord {
+        CIdAABB id = CINVALID_ID;
+        uint32_t nb_points = 0;
+        uint32_t nb_voxels = 0;
+    };
+    static inline std::vector<EvictedNodeRecord> lastEvictedNodes = {};
+    /// Latest eviction generation shown by the visibility update in progress (computed in
+    /// `visibilityUpdateSort', published with its buffers in `updateVisCache')
+    static inline uint32_t visCoveredEvictionGeneration = 0;
 
     static inline std::vector<CUdeviceptr> exchangedPointsPointers = {};
 	static inline std::vector<CUdeviceptr> exchangedVoxelsPointers = {};

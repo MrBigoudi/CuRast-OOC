@@ -191,6 +191,13 @@ void kernel_prepare_store_part_1_filling_buffers(){
             globalVariables.exchangedPointsCounters[shExchangedIndex] = (node->points_counter - node->points_last_stored);
             globalVariables.exchangedVoxelsCounters[shExchangedIndex] = min(MAX_NB_VOXELS, node->voxels_counter);
 
+            // Snapshot of the slot, to keep drawing the node from the exchange buffers after its
+            // deletion (the next load overwrites `exchangedAABBIndices' and the counters above, not
+            // the points / voxels buffers): see `kernel_draw_evicted_nodes'
+            globalVariables.evictedNodesIds[shExchangedIndex] = aabb_index;
+            globalVariables.evictedNodesNbPoints[shExchangedIndex] = (node->points_counter - node->points_last_stored);
+            globalVariables.evictedNodesNbVoxels[shExchangedIndex] = min(MAX_NB_VOXELS, node->voxels_counter);
+
             globalVariables.relationshipMap[aabb_index].points_stored += (node->points_counter - node->points_last_stored);
             globalVariables.relationshipMap[aabb_index].voxels_stored += min(MAX_NB_VOXELS, node->voxels_counter);
 
@@ -331,6 +338,14 @@ void kernel_prepare_store_part_3_pack_nodes(){
     globalVariables.curNbNodes = nb_nodes;
     globalVariables.octreeDepth = 0;
     globalVariables.batchesToAddBottomUpCount = 0;
+
+    // Slots of this eviction pass (written by `kernel_prepare_store_part_1_filling_buffers'); when
+    // nothing was evicted, the slots are untouched and the previous batch stays valid
+    // (the host increments `evictionGeneration' under the same condition)
+    const uint32_t nb_evicted = min(globalVariables.nbNodesExchanged, globalVariables.maxNbNodesExchanged);
+    if(nb_evicted > 0){
+        globalVariables.nbEvictedNodes = nb_evicted;
+    }
 }
 
 

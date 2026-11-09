@@ -388,9 +388,13 @@ enum CGlobalNodeFlagType {
 	CFlagIsCutHost,
 	CFlagWasVisibleHost,
 
+	// Cut of the host rendering buffers currently drawn (copied from `CFlagIsLargeHost' /
+	// `CFlagIsCutHost' when they are published): the device draws its resident and evicted nodes
+	// with the same cut, so that both renderers always agree (see `kernel_publish_host_cut')
+	CFlagIsLargePublished,
+	CFlagIsCutPublished,
+
 	// Pads to be replaced on need
-	CGlobalFlagPad9,
-	CGlobalFlagPad10,
 	CGlobalFlagPad11,
 	CGlobalFlagPad12,
 	CGlobalFlagPad13,
@@ -767,6 +771,22 @@ struct CGlobalVariables {
 	uint32_t nbNodesExchangedVisVoxels = 0;
 	bool isUsingSecondRenderingBuffer = false;
 	uint32_t curNbVisNode = 0;
+
+	/// Last evicted batch, still drawn from the exchange buffers (`exchangedPoints' / `exchangedVoxels',
+	/// only overwritten by the next eviction pass) until the published host rendering buffers show it
+	uint32_t nbEvictedNodes = 0;               // valid slots of the last eviction pass
+	CIdAABB* evictedNodesIds = nullptr;        // node id of each exchange slot
+	uint32_t* evictedNodesNbPoints = nullptr;  // points in `exchangedPoints[slot]'
+	uint32_t* evictedNodesNbVoxels = nullptr;  // voxels in `exchangedVoxels[slot]'
+	/// Generation of the last eviction pass (written by the host) and latest generation the published
+	/// host rendering buffers show (written by the host when it publishes them): the evicted batch is
+	/// drawn while `evictionGeneration > coveredEvictionGeneration'
+	uint32_t evictionGeneration = 0;
+	uint32_t coveredEvictionGeneration = 0;
+
+	/// Number of nodes covered by the published cut (`CFlagIsLargePublished' / `CFlagIsCutPublished'):
+	/// the nodes created after it are only on the device and keep the live cut (current camera)
+	uint32_t publishedNbNodes = 0;
 	
 	CIdAABB* exchangedAABBIndicesVisPoints = nullptr;
 	CIdAABB* exchangedAABBIndicesVisPointsTmp = nullptr;

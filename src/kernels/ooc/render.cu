@@ -571,6 +571,72 @@ void kernel_draw_visibility_cache(
 
 
 
+/// Draw the last evicted batch straight from the exchange buffers, until the published host
+/// rendering buffers show it (closes the gap between the deletion of an evicted node on the device
+/// and its arrival in the host rendering buffers)
+/// The slots hold exactly what the device drew before the eviction (the in-memory points / voxels of
+/// the node), so the same LOD rule as `kernel_draw_octree_large' / `_small' is applied:
+/// large node -> its points; cut node (not large, parent large) -> its voxels and points;
+/// root not large -> its voxels and points
+/// Run on "NB SMs" blocks of size min("Max threads per SM", "Max block dim")
+extern "C" __global__
+void kernel_draw_evicted_nodes(
+	CRenderTarget target,
+    CRenderingSettings settings
+){
+    if(settings.debug_lod_to_render != -1){return;}
+    if(!(globalVariables.evictionGeneration > globalVariables.coveredEvictionGeneration)){return;}
+
+	auto grid = cg::this_grid();
+    auto block = cg::this_thread_block();
+    uint32_t nb_blocks = grid.num_blocks();
+
+    uint32_t block_id = grid.block_rank();
+    uint32_t thread_id = block.thread_rank();
+    uint32_t nb_threads_per_block = block.num_threads();
+
+    const uint32_t nb_slots = min(globalVariables.nbEvictedNodes, globalVariables.maxNbNodesExchanged);
+
+    // Assign each slot to one thread block (all the conditions below are uniform in a block)
+    for(uint32_t slot = block_id; slot < nb_slots; slot += nb_blocks){
+        const CIdAABB node_id = globalVariables.evictedNodesIds[slot];
+        if(node_id == CINVALID_ID){continue;}
+
+        const CGlobalVariables::Relationship& relationship = globalVariables.relationshipMap[node_id];
+        const bool is_large = isLargerThanMinSpanning(target, settings, relationship.aabb);
+        const bool is_parent_large = (relationship.parent == CINVALID_ID)
+            || isLargerThanMinSpanning(target, settings, globalVariables.relationshipMap[relationship.parent].aabb);
+
+        const bool draw_points = is_large || is_parent_large;
+        const bool draw_voxels = !is_large && is_parent_large;
+        if(!draw_points){continue;}
+
+        const CPoint* points = globalVariables.exchangedPoints[slot];
+        const uint32_t nb_points = globalVariables.evictedNodesNbPoints[slot];
+        for(uint32_t i = thread_id; i < nb_points; i += nb_threads_per_block){
+            // For dataset creation
+            if(i % settings.draw_every_x_points != 0){continue;}
+            const CPoint& point = points[i];
+            drawPoint(target, settings, point.position, point.color);
+        }
+
+        if(draw_voxels){
+            const CPoint* voxels = globalVariables.exchangedVoxels[slot];
+            const uint32_t nb_voxels = globalVariables.evictedNodesNbVoxels[slot];
+            for(uint32_t i = thread_id; i < nb_voxels; i += nb_threads_per_block){
+                // For dataset creation
+                if(i % settings.draw_every_x_points != 0){continue;}
+                const CPoint& voxel = voxels[i];
+                drawPoint(target, settings, voxel.position,
+                    settings.use_voxels_debug_color ? 0xffff00ff : voxel.color
+                );
+            }
+        }
+    }
+}
+
+
+
 /// Run on "NB SMs" blocks of size min("Max threads per SM", "Max block dim")
 extern "C" __global__
 void kernel_draw_octree_large(
@@ -1043,7 +1109,14 @@ void kernel_get_renderable_nodes_part_1_visibility(
         globalVariables.exchangedAABBIndicesVisPointsScreenSpaceSize[node_index] = 0.;
         globalVariables.exchangedAABBIndicesVisVoxelsScreenSpaceSize[node_index] = 0.;
 
-        if(!globalVariables.hasBeenStored(node_index)){continue;}
+        // The visibility / large / cut flags are evaluated on the WHOLE hierarchy, stored or not:
+        // a node that only lives on the device (never evicted, e.g. the top of the octree, always in
+        // the updates cache) must still be able to be large and flag its stored children as cut,
+        // otherwise their on-disk data is drawn by nobody (the device only has their new data, and no
+        // pointer to the evicted ones). Whether a node has host data is decided in parts 3/4 with
+        // `points_stored' / `voxels_stored' (only increased at eviction), then on the host.
+        // (this also removes the dependency on `CFlagHasBeenStored', only promoted at the NEXT cache
+        // update, i.e. never for the nodes evicted by the last one)
 
         CAABB aabb = globalVariables.relationshipMap[node_index].aabb;
         if(frustum.doesIntersect(aabb, target.camera_pos)){
@@ -1135,8 +1208,13 @@ void kernel_get_renderable_nodes_part_4_small_nodes(
 
     // Flag nodes just below cut as voxels and points loadable
     for(uint32_t node_index = thread_id; node_index < nb_nodes; node_index += nb_threads){
+        // The root has no parent to flag it as cut: draw it when it is not large
+        // (same as the "minimal draw" of `kernel_draw_octree_small')
+        const bool is_root_minimal_draw = (globalVariables.relationshipMap[node_index].parent == CINVALID_ID)
+            && !globalVariables.getFlag(node_index, CFlagIsLargeHost);
+
         if(globalVariables.getFlag(node_index, CFlagIsVisibleHost)
-            && globalVariables.getFlag(node_index, CFlagIsCutHost)
+            && (globalVariables.getFlag(node_index, CFlagIsCutHost) || is_root_minimal_draw)
         ){
             // Compute and store screen-space size
             const CAABB& aabb = globalVariables.relationshipMap[node_index].aabb;
