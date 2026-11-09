@@ -213,6 +213,7 @@ VOXELS_POINTS_PER_AXIS_AT_STARTUP = 1
 ### The minimum number of pixels to condider a node large
 # MIN_PIXEL_SPAN_AT_STARTUP = 32.0
 MIN_PIXEL_SPAN_AT_STARTUP = 64.0
+# MIN_PIXEL_SPAN_AT_STARTUP = 128.0
 # MIN_PIXEL_SPAN_AT_STARTUP = 1024.0
 
 ### Use a debug color for the voxels; the color will correspond to the level of the node

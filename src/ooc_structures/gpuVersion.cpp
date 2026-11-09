@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <random>
 #include <thread>
 #include <unordered_map>
@@ -1235,17 +1236,73 @@ std::vector<uint32_t> visWaterFillQuotas(const std::vector<uint32_t>& counts, ui
 }
 
 /// Fraction of the budget shared equally between every visible node (guaranteed minimum per node)
-/// The rest goes to the nodes in proportion to the screen area they cover
+/// The rest goes to the nodes according to their distance to the camera (see `VIS_DISTANCE_EXPONENT')
 // constexpr double VIS_MIN_SHARE_FRACTION = 0.1;
 constexpr double VIS_MIN_SHARE_FRACTION = 0.0;
 
-/// Quotas favouring the nodes covering the most pixels (close / zoomed-in nodes)
+/// Distance weighting of the water filling: weight = (d_closest / d_node)^VIS_DISTANCE_EXPONENT
+/// d_node is the distance from the camera to the CENTER of the node, d_closest the smallest one
+/// among the selected nodes (so the weights are in (0, 1] whatever the scene units)
+/// The weight strictly decreases with the distance: among the nodes that do not get all their
+/// points, a closer node always gets more points than a farther one
+/// 1 = a node twice as far gets half the points, 2 = a quarter, ...
+// constexpr double VIS_DISTANCE_EXPONENT = 2.0;
+constexpr double VIS_DISTANCE_EXPONENT = 3.0;
+
+/// The distance is floored to this fraction of the node diagonal (the camera can be at the center)
+constexpr double VIS_DISTANCE_FLOOR_FRACTION = 0.01;
+
+/// Floored distance from `position' to the center of `aabb'; negative if it can't be computed
+double visNodeCenterDistance(const glm::vec3& position, const CAABB& aabb){
+    if(!(aabb.mins.x <= aabb.maxs.x && aabb.mins.y <= aabb.maxs.y && aabb.mins.z <= aabb.maxs.z)){
+        return -1.0;   // never filled
+    }
+    const double cx = 0.5 * (double(aabb.mins.x) + double(aabb.maxs.x));
+    const double cy = 0.5 * (double(aabb.mins.y) + double(aabb.maxs.y));
+    const double cz = 0.5 * (double(aabb.mins.z) + double(aabb.maxs.z));
+    const double dx = double(position.x) - cx;
+    const double dy = double(position.y) - cy;
+    const double dz = double(position.z) - cz;
+    const double sx = double(aabb.maxs.x) - double(aabb.mins.x);
+    const double sy = double(aabb.maxs.y) - double(aabb.mins.y);
+    const double sz = double(aabb.maxs.z) - double(aabb.mins.z);
+    const double distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+    const double diagonal = std::sqrt(sx * sx + sy * sy + sz * sz);
+    const double floored = std::max(distance, VIS_DISTANCE_FLOOR_FRACTION * diagonal);
+    return (std::isfinite(floored) && floored > 0.0) ? floored : -1.0;
+}
+
+/// Water-filling weights of the given nodes from their center distance to the camera
+/// A node whose distance can't be computed (should not happen) is treated as the farthest one
+std::vector<float> visDistanceWeights(const std::vector<CAABB>& aabbs, const glm::vec3& camera_pos){
+    const uint32_t n = static_cast<uint32_t>(aabbs.size());
+    std::vector<double> distances(n, -1.0);
+    double closest = std::numeric_limits<double>::infinity();
+    double farthest = 0.0;
+    for(uint32_t i = 0; i < n; i++){
+        distances[i] = visNodeCenterDistance(camera_pos, aabbs[i]);
+        if(distances[i] > 0.0){
+            closest = std::min(closest, distances[i]);
+            farthest = std::max(farthest, distances[i]);
+        }
+    }
+
+    std::vector<float> weights(n, 1.0f);
+    if(!std::isfinite(closest)){ return weights; }   // no distance known: equal weights
+    for(uint32_t i = 0; i < n; i++){
+        const double d = (distances[i] > 0.0) ? distances[i] : farthest;
+        weights[i] = static_cast<float>(std::pow(closest / d, VIS_DISTANCE_EXPONENT));
+    }
+    return weights;
+}
+
+/// Weighted quotas (the weights are the distance weights, see `visDistanceWeights')
 ///  1. `VIS_MIN_SHARE_FRACTION' of the budget is water-filled equally: every node keeps at least
 ///     min(count, floor(VIS_MIN_SHARE_FRACTION * budget / n)) elements
-///  2. the rest is water-filled with weights = priorities (~ projected area in pixels): every node
-///     that is not saturated gets the same number of elements per pixel, and the nodes that need
-///     fewer than that get all their elements
-///  3. what is left (rounding, nodes with a zero priority) is water-filled equally
+///  2. the rest is water-filled with the weights: every node that is not saturated gets
+///     lambda * weight elements (the same lambda for all), and the nodes that need fewer than
+///     that get all their elements
+///  3. what is left (rounding, nodes with a zero weight) is water-filled equally
 /// The quotas never exceed the counts and their sum never exceeds the budget; if everything fits,
 /// everything is kept
 std::vector<uint32_t> visPriorityQuotas(const std::vector<uint32_t>& counts,
@@ -1527,18 +1584,23 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
     }
 
     // Quotas and reserved slots in the staging buffers (the sum of the quotas fits the budget)
-    // The budget goes in priority to the nodes covering the most pixels, see `visPriorityQuotas'
+    // The device sort (screen space size) selected the nodes; the budget is shared between them
+    // according to their distance to the camera: the closer, the more points / voxels
+    // (`aabbsMap' is filled by `storeNodes' for every node sent to the host, so for every node on disk;
+    // `renderingTarget' is the camera the kernels above used)
+    const glm::vec3 camera_pos = renderingTarget.camera_pos;
     {
         std::vector<uint32_t> task_ids = {};
         std::vector<uint32_t> counts = {};
-        std::vector<float> priorities = {};
+        std::vector<CAABB> aabbs = {};
         for(uint32_t i = 0; i < visibilityTasks.size(); i++){
             if(visibilityTasks[i].nb_points_on_disk == 0){continue;}
             task_ids.push_back(i);
             counts.push_back(visibilityTasks[i].nb_points_on_disk);
-            priorities.push_back(visibilityTasks[i].points_priority);
+            aabbs.push_back(aabbsMap[visibilityTasks[i].id]);
         }
-        std::vector<uint32_t> quotas = visPriorityQuotas(counts, priorities, hostStaging.maxNbRenderedPoints);
+        const std::vector<float> weights = visDistanceWeights(aabbs, camera_pos);
+        std::vector<uint32_t> quotas = visPriorityQuotas(counts, weights, hostStaging.maxNbRenderedPoints);
         uint64_t offset = 0;
         for(uint32_t j = 0; j < task_ids.size(); j++){
             VisibilityTask& task = visibilityTasks[task_ids[j]];
@@ -1550,14 +1612,15 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
     {
         std::vector<uint32_t> task_ids = {};
         std::vector<uint32_t> counts = {};
-        std::vector<float> priorities = {};
+        std::vector<CAABB> aabbs = {};
         for(uint32_t i = 0; i < visibilityTasks.size(); i++){
             if(visibilityTasks[i].nb_voxels_on_disk == 0){continue;}
             task_ids.push_back(i);
             counts.push_back(visibilityTasks[i].nb_voxels_on_disk);
-            priorities.push_back(visibilityTasks[i].voxels_priority);
+            aabbs.push_back(aabbsMap[visibilityTasks[i].id]);
         }
-        std::vector<uint32_t> quotas = visPriorityQuotas(counts, priorities, hostStaging.maxNbRenderedVoxels);
+        const std::vector<float> weights = visDistanceWeights(aabbs, camera_pos);
+        std::vector<uint32_t> quotas = visPriorityQuotas(counts, weights, hostStaging.maxNbRenderedVoxels);
         uint64_t offset = 0;
         for(uint32_t j = 0; j < task_ids.size(); j++){
             VisibilityTask& task = visibilityTasks[task_ids[j]];
@@ -1708,14 +1771,14 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
     append_segments(visStagingVoxels, dst_rendered_voxels, &VisibilityTask::voxels_offset, &VisibilityTask::voxels_written);
     append_segments(visStagingPoints, dst_rendered_points, &VisibilityTask::points_offset, &VisibilityTask::points_written);
 
-    // TODO: to remove
-    if(total_voxels < total_voxels_on_disk || total_points < total_points_on_disk){
-        println("{} nodes, voxels: {} / {}, points: {} / {}",
-            visibilityTasks.size(),
-            total_voxels, total_voxels_on_disk,
-            total_points, total_points_on_disk
-        );
-    }
+    // // TODO: to remove
+    // if(total_voxels < total_voxels_on_disk || total_points < total_points_on_disk){
+    //     println("{} nodes, voxels: {} / {}, points: {} / {}",
+    //         visibilityTasks.size(),
+    //         total_voxels, total_voxels_on_disk,
+    //         total_points, total_points_on_disk
+    //     );
+    // }
 
     // Send the data to the device
     CURuntime::assertCudaSuccess(cuMemcpyBatchAsync(
