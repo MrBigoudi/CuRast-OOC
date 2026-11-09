@@ -339,6 +339,54 @@ bool isLargerThanMinSpanning(
 
 
 
+/// Longest chain of refined ancestors `isLargeForRendering' walks (far deeper than any octree here;
+/// only guards against a corrupted hierarchy, in which case the node is not refined)
+__device__ constexpr uint32_t MAX_REFINEMENT_CHAIN = 64;
+
+/// True if the voxels of the node are an incomplete representation (some were dropped when it was
+/// stored, see `CFlagHasIncompleteVoxels') and it has children to draw instead
+/// A voxel is only created where the node has a child, and its point continues into that child: the
+/// children always hold all the data behind the voxels of their parent
+__device__ __forceinline__
+bool hasIncompleteVoxels(CIdAABB node_id){
+    if(!globalVariables.getFlag(node_id, CFlagHasIncompleteVoxels)){return false;}
+    const CIdAABB* children = globalVariables.relationshipMap[node_id].children;
+    for(uint32_t i = 0; i < 8; i++){
+        if(children[i] != CINVALID_ID){return true;}
+    }
+    return false;
+}
+
+/// "Large" for every cut (host lists, device resident nodes, evicted nodes): large on screen, or
+/// refined because its voxels are incomplete (its children are drawn instead of its voxels)
+/// To keep the cut consistent, a refined node only counts if its parent counts as large too:
+/// being large on screen is monotone (a node large on screen has all its ancestors large on
+/// screen), so walking up through refined ancestors until one is large on screen (or the root) is
+/// enough. Otherwise the node is below the cut and must not make its children drawn on top of the
+/// voxels of an ancestor.
+__device__
+bool isLargeForRendering(
+    const CRenderTarget& target,
+    CRenderingSettings settings,
+    CIdAABB node_id
+){
+    const CGlobalVariables::Relationship& relationship = globalVariables.relationshipMap[node_id];
+    if(isLargerThanMinSpanning(target, settings, relationship.aabb)){return true;}
+    if(!hasIncompleteVoxels(node_id)){return false;}
+
+    CIdAABB ancestor = relationship.parent;
+    for(uint32_t i = 0; i < MAX_REFINEMENT_CHAIN && ancestor != CINVALID_ID; i++){
+        const CGlobalVariables::Relationship& ancestor_relationship = globalVariables.relationshipMap[ancestor];
+        if(isLargerThanMinSpanning(target, settings, ancestor_relationship.aabb)){return true;}
+        if(!hasIncompleteVoxels(ancestor)){return false;}
+        ancestor = ancestor_relationship.parent;
+    }
+    // Refined all the way up to the root (the root is drawn by none, its children are)
+    return ancestor == CINVALID_ID;
+}
+
+
+
 /// Run on "NB SMs" blocks of size min("Max threads per SM", "Max block dim")
 extern "C" __global__
 void kernel_render_bounding_boxes(
@@ -409,8 +457,7 @@ void kernel_visibility_pass(
             continue;
         }
 
-        const CAABB& aabb = globalVariables.relationshipMap[node->aabb_index].aabb;
-        if(isLargerThanMinSpanning(target, settings, aabb)){
+        if(isLargeForRendering(target, settings, node->aabb_index)){
             node->flags |= (0x01 << CFlagIsLarge);
             // // TODO: to remove
             // __nv_atomic_add(&globalVariables.curNbVisNode, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
@@ -603,9 +650,9 @@ void kernel_draw_evicted_nodes(
         if(node_id == CINVALID_ID){continue;}
 
         const CGlobalVariables::Relationship& relationship = globalVariables.relationshipMap[node_id];
-        const bool is_large = isLargerThanMinSpanning(target, settings, relationship.aabb);
+        const bool is_large = isLargeForRendering(target, settings, node_id);
         const bool is_parent_large = (relationship.parent == CINVALID_ID)
-            || isLargerThanMinSpanning(target, settings, globalVariables.relationshipMap[relationship.parent].aabb);
+            || isLargeForRendering(target, settings, relationship.parent);
 
         const bool draw_points = is_large || is_parent_large;
         const bool draw_voxels = !is_large && is_parent_large;
@@ -1141,8 +1188,7 @@ void kernel_get_renderable_nodes_part_2_flagging_large(
     // Flag all large nodes
     for(uint32_t node_index = thread_id; node_index < nb_nodes; node_index += nb_threads){
         if(!globalVariables.getFlag(node_index, CFlagIsVisibleHost)){continue;}
-        CAABB aabb = globalVariables.relationshipMap[node_index].aabb;
-        if(isLargerThanMinSpanning(target, settings, aabb)){
+        if(isLargeForRendering(target, settings, node_index)){
             globalVariables.setFlag(node_index, CFlagIsLargeHost);
             // TODO: to remove
             // __nv_atomic_add(&globalVariables.curNbVisNode, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);

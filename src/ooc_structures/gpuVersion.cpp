@@ -1104,6 +1104,17 @@ void GpuVersion::storeNodes(uint32_t nb_nodes_to_store){
             uint32_t old_counter = cur_node->node.voxels_counter;
             uint32_t new_counter = old_counter + nbs_voxels[i];
             cur_node->node.voxels_counter = min(OocSimLodSettings::MAX_POINTS_PER_LEAF, new_counter);
+            if(new_counter > OocSimLodSettings::MAX_POINTS_PER_LEAF){
+                // These voxels (and their occupancy cells) are dropped: the device has flagged the
+                // node (`CFlagHasIncompleteVoxels') and draws its children instead. Printed once.
+                static bool has_warned = false;
+                if(!has_warned){
+                    println("INFO: node {} has {} voxels but at most {} are stored per node; its children will be drawn instead of its voxels (further cases not reported)",
+                        id, new_counter, OocSimLodSettings::MAX_POINTS_PER_LEAF
+                    );
+                    has_warned = true;
+                }
+            }
             uint32_t nb_voxels_to_load = cur_node->node.voxels_counter - old_counter;
 
             if(nb_voxels_to_load > 0){

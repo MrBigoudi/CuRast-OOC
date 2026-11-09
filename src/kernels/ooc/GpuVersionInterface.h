@@ -395,7 +395,11 @@ enum CGlobalNodeFlagType {
 	CFlagIsCutPublished,
 
 	// Pads to be replaced on need
-	CGlobalFlagPad11,
+	// Sticky: some voxels of the node were dropped when it was stored (the host keeps at most
+	// `maxPointsPerLeaf' voxels per node, the device sends up to `maxNbVoxelsChunksPerExchangedNode'
+	// chunks): its voxels are an incomplete representation, its children (which hold all the data
+	// behind its voxels) are drawn instead (see `isLargeForRendering' in render.cu)
+	CFlagHasIncompleteVoxels,
 	CGlobalFlagPad12,
 	CGlobalFlagPad13,
 	CGlobalFlagPad14,

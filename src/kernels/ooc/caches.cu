@@ -198,8 +198,22 @@ void kernel_prepare_store_part_1_filling_buffers(){
             globalVariables.evictedNodesNbPoints[shExchangedIndex] = (node->points_counter - node->points_last_stored);
             globalVariables.evictedNodesNbVoxels[shExchangedIndex] = min(MAX_NB_VOXELS, node->voxels_counter);
 
-            globalVariables.relationshipMap[aabb_index].points_stored += (node->points_counter - node->points_last_stored);
-            globalVariables.relationshipMap[aabb_index].voxels_stored += min(MAX_NB_VOXELS, node->voxels_counter);
+            // Only one thread: these are non-atomic read-modify-writes (they used to run on every
+            // thread of the block, so the counters were increased several times)
+            if(thread_id == 0){
+                CGlobalVariables::Relationship& relationship = globalVariables.relationshipMap[aabb_index];
+                relationship.points_stored += (node->points_counter - node->points_last_stored);
+                relationship.voxels_stored += min(MAX_NB_VOXELS, node->voxels_counter);
+
+                // The host keeps min(maxPointsPerLeaf, sum of the voxels sent) voxels per node (and
+                // their occupancy cells), and only MAX_NB_VOXELS can be sent at once: beyond that, the
+                // voxels (and their cells) are lost for good, the node must be refined instead
+                if(node->voxels_counter > MAX_NB_VOXELS
+                    || relationship.voxels_stored > globalVariables.maxPointsPerLeaf
+                ){
+                    globalVariables.setFlagSync(aabb_index, CFlagHasIncompleteVoxels);
+                }
+            }
 
             CPoint* exchanged_points = globalVariables.exchangedPoints[shExchangedIndex];
             CPoint* exchanged_voxels = globalVariables.exchangedVoxels[shExchangedIndex];
