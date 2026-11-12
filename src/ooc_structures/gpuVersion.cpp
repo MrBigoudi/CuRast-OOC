@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdlib>
 #include <cmath>
 #include <cstring>
 #include <fstream>
@@ -445,8 +446,14 @@ void GpuVersion::init(CuRast* editor, CUcontext* context) {
 
 
 void GpuVersion::destroy(CuRast *editor, CUcontext *context){
-    // The detached visibility workers write into the staging buffers freed below
-    while(!isDoneDeserializingForVisibility){
+    // The detached threads use the host buffers freed below: the visibility workers (staging
+    // buffers), the load / store deserialization threads and the host cache serialization thread
+    // (host RAM nodes, freed by `HostStorageNode::destroy'). Wait for all of them
+    while(!isDoneDeserializingForVisibility
+        || !isDoneDeserializingForLoading
+        || !isDoneDeserializingForStoring
+        || !isDoneUpdatingHostCache
+    ){
         std::this_thread::yield();
     }
 
@@ -927,7 +934,11 @@ void GpuVersion::octreeUpdateSimLODInsertion(CuRast* editor, CUcontext* context)
 void GpuVersion::octreeUpdateSimLOD(CuRast* editor, CUcontext* context){
     if(*(bool*)isDoneIterating){
         octreeUpdateSimLODLoad(editor, context);
-        if(!isDoneDeserializingForLoading){return;}
+        // if(!isDoneDeserializingForLoading){return;}
+        // The loaded nodes are only on the device once parts 2/3 are launched, which is
+        // when `hasStartedLoading' goes back to false. `isDoneDeserializingForLoading'
+        // only says the worker thread is done, and it can be done before we return here
+        if(hasStartedLoading){return;}
     }
 
     if(*(bool*)isDoneLoading){
@@ -1135,6 +1146,13 @@ void GpuVersion::storeNodes(uint32_t nb_nodes_to_store){
         // Prepare to load points
         if(nbs_points[i] > 0){
             uint32_t old_counter = cur_node->node.points_counter;
+            // The host buffers hold MAX_POINTS_PER_LEAF points: a larger copy would write past them
+            if(uint64_t(old_counter) + nbs_points[i] > OocSimLodSettings::MAX_POINTS_PER_LEAF){
+                println("FATAL: storeNodes, node {} would hold {} points, its host buffer holds {}",
+                    id, uint64_t(old_counter) + nbs_points[i], OocSimLodSettings::MAX_POINTS_PER_LEAF
+                );
+                std::abort();
+            }
             cur_node->node.points_counter += nbs_points[i];
             srcs_device.push_back(exchangedPointsPointers[i]);
             dsts_host.push_back((CUdeviceptr)(cur_node->points + old_counter));
@@ -2177,7 +2195,8 @@ void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
     if(*(bool*)isUpdating){
         if(!hasStartedStoring && isDoneSynchronisingEventInStoreNodes && *(bool*)isDoneStoring){
             octreeUpdateSimLOD(editor, context);
-            if(!isDoneDeserializingForLoading){return;}
+            if(hasStartedLoading){return;}
+            // if(!isDoneDeserializingForLoading){return;}
         }
 
         if(!hasStartedLoading && *(bool*)isDoneLoading && *(bool*)isDoneIterating){

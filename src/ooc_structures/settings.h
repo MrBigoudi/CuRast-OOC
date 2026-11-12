@@ -90,6 +90,9 @@ struct OocSimLodSettings {
     static inline uint32_t MIN_BATCHES_PER_LOAD;
     /// The maximum number of batches that can be loaded from disk at once
     static inline uint32_t MAX_BATCHES_PER_LOAD;
+    /// The maximum number of threads decoding point cloud files at the same time
+    /// 0 = automatic (a quarter of the CPU cores)
+    static inline uint32_t MAX_LOADING_THREADS;
 
     /// The minimum number of batches that can be loaded to the GPU at once
     /// A batch is loaded as a collection of points on the GPU only for the brute-force comparison

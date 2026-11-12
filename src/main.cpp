@@ -41,6 +41,7 @@
 #include "ooc_structures/allocator.h"
 #include "ooc_structures/gpuVersion.h"
 #include "ooc_structures/neural.h"
+#include "ooc_structures/crashDiagnostics.h"
 
 
 using namespace std; // YOLO
@@ -498,6 +499,8 @@ void update(){
 int main(int argc, char** argv){
 	std::thread* thread_points_loader = nullptr;
 	std::thread* thread_octree_visibility = nullptr;
+
+	// installCrashHandler();
 
 	try {
 		Benchmarking::datasetPath = "./";

@@ -227,8 +227,8 @@ struct GpuVersion {
     /// Serialise `hostCacheToSerialise', publish the on-disk counters, free `hostCacheToDelete'
     static void serialiseHostCacheNodes();
     static void updateVisCache();
-    static inline bool isDoneUpdatingHostCache = true;
-    static inline bool isDoneUpdatingVisCache = true;
+    static inline std::atomic<bool> isDoneUpdatingHostCache = true;
+    static inline std::atomic<bool> isDoneUpdatingVisCache = true;
 
     // Visibility cache
     static inline std::unordered_set<CIdAABB> storedNodes = {}; 
@@ -321,11 +321,11 @@ struct GpuVersion {
     static inline std::atomic<bool> isDoneDeserializingForVisibility{true};
     static inline bool hasStartedVisibilityUpdate = false;
     static inline uint32_t nbVisibleNodesVisibilityUpdate = 0;
-    static inline bool isDoneDeserializingForLoading = true;
+    static inline std::atomic<bool> isDoneDeserializingForLoading = true;
     static inline bool hasStartedLoading = false;
     static inline uint32_t nbNodesToLoad = 0;
     static inline std::vector<CIdAABB> loadingToDeserialise = {};
-    static inline bool isDoneDeserializingForStoring = true;
+    static inline std::atomic<bool> isDoneDeserializingForStoring = true;
     static inline bool hasStartedStoring = false;
     static inline uint32_t nbNodesToStore = 0;
     static inline std::vector<CIdAABB> storingToDeserialise = {};

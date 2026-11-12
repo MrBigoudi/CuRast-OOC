@@ -6,6 +6,7 @@
 #include <iostream>
 #include <iomanip>
 #include <algorithm>
+#include <cstdlib>
 
 ///////////////////////////////////////////////////////////////////////////////
 ////////////////////////////// HELPER FUNCTIONS ///////////////////////////////
@@ -135,6 +136,16 @@ void OctreeNodeSerializable::deserializeV2(HostStorageNode* node, const CIdAABB&
     node->node.points_last_stored = node->node.points_counter;
     node->node.voxels_last_stored = node->node.voxels_counter;
 
+    // The host buffers hold MAX_POINTS_PER_LEAF elements: a larger read would write past them
+    if(node->node.points_counter > OocSimLodSettings::MAX_POINTS_PER_LEAF
+        || node->node.voxels_counter > OocSimLodSettings::MAX_POINTS_PER_LEAF
+    ){
+        println("FATAL: deserializeV2, node {} has {} points / {} voxels, host buffers hold {} ({})",
+            aabb_index, node->node.points_counter, node->node.voxels_counter,
+            OocSimLodSettings::MAX_POINTS_PER_LEAF, msg
+        );
+        std::abort();
+    }
 
     // Read points
     if(node->node.points_counter > 0){

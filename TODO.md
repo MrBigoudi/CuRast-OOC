@@ -13,13 +13,13 @@
 - [x] Fix nodes sorting (wrong sorting creates random holes)
 - [x] Improve loading speed ? (maybe pre-read first points for first batch creation)
 - [x] Fix original bounding box
-- [x] Fix priority loading
 
 
 
 ## Today
 
-- [ ] Fix huge segfault
+- [x] Fix priority loading
+- [x] Fix huge segfault (caused by intel CPU multithreading on too many cores apparently...)
 - [ ] Fix UI values
 - [ ] Fix rendering of just unloaded nodes / updating nodes
 - [ ] Check all globalVariables and their initial values (rename some, destroy some, ...)

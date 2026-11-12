@@ -52,6 +52,11 @@ MIN_BATCHES_PER_LOAD = 1
 MAX_BATCHES_PER_LOAD = 100
 # MAX_BATCHES_PER_LOAD = 1_000
 
+### The maximum number of threads decoding point cloud files at the same time
+### 0 = automatic (a quarter of the CPU cores)
+MAX_LOADING_THREADS = 0
+# MAX_LOADING_THREADS = 8
+
 ### The minimum number of batches that can be loaded to the GPU at once
 ### A batch is loaded as a collection of points on the GPU only for the brute-force comparison
 MIN_BATCHES_PER_GPU_LOAD = 1

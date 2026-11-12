@@ -94,6 +94,7 @@ void OocSimLodSettings::init_batch_sizes(){
     MAX_POINTS_PER_BATCHES = init_field<uint32_t>("MAX_POINTS_PER_BATCHES", 1'000'000);
     MIN_BATCHES_PER_LOAD = init_field<uint32_t>("MIN_BATCHES_PER_LOAD", 1);
     MAX_BATCHES_PER_LOAD = init_field<uint32_t>( "MAX_BATCHES_PER_LOAD", 1);
+    MAX_LOADING_THREADS = init_field<uint32_t>("MAX_LOADING_THREADS", 0);
     MIN_BATCHES_PER_GPU_LOAD = init_field<uint32_t>( "MIN_BATCHES_PER_GPU_LOAD", 1);
     MAX_BATCHES_PER_GPU_LOAD = init_field<uint32_t>("MAX_BATCHES_PER_GPU_LOAD", 1);
     MIN_BATCHES_PER_OCTREE_UPDATE = init_field<uint32_t>("MIN_BATCHES_PER_OCTREE_UPDATE", 1);
@@ -233,6 +234,7 @@ void OocSimLodSettings::display(){
     println("    - MAX_POINTS_PER_BATCHES: {}", MAX_POINTS_PER_BATCHES);
     println("    - MIN_BATCHES_PER_LOAD: {}", MIN_BATCHES_PER_LOAD);
     println("    - MAX_BATCHES_PER_LOAD: {}", MAX_BATCHES_PER_LOAD);
+    println("    - MAX_LOADING_THREADS: {}", MAX_LOADING_THREADS);
     println("    - MIN_BATCHES_PER_GPU_LOAD: {}", MIN_BATCHES_PER_GPU_LOAD);
     println("    - MAX_BATCHES_PER_GPU_LOAD: {}", MAX_BATCHES_PER_GPU_LOAD);
     println("    - MIN_BATCHES_PER_OCTREE_UPDATE: {}", MIN_BATCHES_PER_OCTREE_UPDATE);

@@ -141,6 +141,10 @@ struct LoaderGpuVersion {
     static void loadPendingBatches();
     /// Load the current best pending batch (one worker step); false if nothing was loaded
     static bool loadOneBatch();
+    /// Number of threads decoding point cloud files at the same time (loading workers and overview
+    /// reading together): `MAX_LOADING_THREADS', or half of the CPU cores when it is 0, at most the
+    /// number of cores and `MAX_BATCHES_PER_LOAD'
+    static uint32_t nbLoadingThreads();
     /// Stop and join the loading workers (also registered with `std::atexit' when they start, so
     /// that they never outlive the static data they use, whatever the way the program exits)
     static void stopLoading();

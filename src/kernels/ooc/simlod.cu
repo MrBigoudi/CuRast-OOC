@@ -231,19 +231,7 @@ void kernel_simlod_load_part_2_rebuilding_nodes(){
 
 
 /// Run on "maxNbNodesExchanged" blocks of size "Max threads per block"
-/// Rebuild the relationships of the nodes loaded by THIS pass, after every pass (not only after the
-/// last one): each node links itself under its resident parent and links its resident children, so
-/// whichever of a parent and a child is loaded last makes the link, whatever the passes.
-/// `CFlagToLoad' is cleared once a node is REACHABLE from the root (its parent is resident and
-/// reachable, i.e. resident without `CFlagToLoad'), together with the nodes already linked below it.
-/// A node that is not reachable yet keeps it: the flagging walks the relationship ids below the
-/// deepest reachable node and skips flagged nodes, so it is not loaded twice.
-/// Invariant: a resident node without `CFlagToLoad' is reachable. (Races between threads can only
-/// leave a reachable node flagged a bit longer, which is harmless; the bottom-up update clears it.)
-/// (This used to happen only on the last pass, for all the passes at once, using
-/// `nbNodesExchangedBeforeLoadComplete': when that step was skipped or miscounted, the nodes of the
-/// earlier passes that part 2 couldn't link stayed unreachable with `CFlagToLoad' set, and were never
-/// loaded again -> "on count; the node ... should not have an unloaded child")
+/// Rebuild the relationships of the loaded nodes
 extern "C" __global__
 void kernel_simlod_load_part_3_rebuilding_children(){
     // Because "kernel_fill_new_grids" should be launched just before
@@ -253,17 +241,18 @@ void kernel_simlod_load_part_3_rebuilding_children(){
     uint32_t thread_id = grid.thread_rank();
     uint32_t nb_threads = grid.num_threads();
 
-    // The nodes loaded by this pass: the last ones of `packedNodes' (`nbNodesExchanged' was clamped
-    // by part 2, which added exactly that many nodes)
-    const uint32_t nb_nodes = globalVariables.curNbNodes;
-    const uint32_t nb_loaded = min(globalVariables.nbNodesExchanged, nb_nodes);
-    const uint32_t first_node = nb_nodes - nb_loaded;
+    // if(thread_id == 0){
+    //     printf("kernel_simlod_load_part_3_rebuilding_children\n");
+    // }
 
-    for(uint32_t node_index = first_node + thread_id; node_index < nb_nodes; node_index += nb_threads){
+    if(!globalVariables.isDoneLoading){return;}
+
+    uint32_t first_node = globalVariables.curNbNodes - globalVariables.nbNodesExchangedBeforeLoadComplete;
+    // if(thread_id == 0){
+    //     printf("nb exchanged: %d\n", globalVariables.nbNodesExchangedBeforeLoadComplete);
+    // }
+    for(uint32_t node_index = first_node + thread_id; node_index < globalVariables.curNbNodes; node_index += nb_threads){
         COctreeNode* cur_node = globalVariables.packedNodes[node_index];
-        const CIdAABB cur_id = cur_node->aabb_index;
-        const CIdAABB parent_id = globalVariables.relationshipMap[cur_id].parent;
-
         uint32_t child_aabbs[8] = {
             CINVALID_ID, CINVALID_ID, CINVALID_ID, CINVALID_ID,
             CINVALID_ID, CINVALID_ID, CINVALID_ID, CINVALID_ID
@@ -273,41 +262,25 @@ void kernel_simlod_load_part_3_rebuilding_children(){
 
 #ifdef ASSERT_ENABLED
             if(cur_node->children[i] && 
-                (cur_id != globalVariables.relationshipMap[cur_node->children[i]->aabb_index].parent)
+                (cur_node->aabb_index != globalVariables.relationshipMap[cur_node->children[i]->aabb_index].parent)
             ){
                 printf("ERROR: a newly loaded node `%d' should not have children already initialised: children[%d] = %d; parent = %d\n", 
-                    cur_id, i, cur_node->children[i]->aabb_index, globalVariables.relationshipMap[cur_node->children[i]->aabb_index].parent
+                    cur_node->aabb_index, i, cur_node->children[i]->aabb_index, globalVariables.relationshipMap[cur_node->children[i]->aabb_index].parent
                 );
                 customAssert();
             }
 #endif
 
-            child_aabbs[i] = globalVariables.relationshipMap[cur_id].children[i];
+            child_aabbs[i] = globalVariables.relationshipMap[cur_node->aabb_index].children[i];
             if(child_aabbs[i] != CINVALID_ID){to_find++;}
         }
 
-        // One scan of the resident nodes: the parent and the children
-        bool is_parent_found = (parent_id == CINVALID_ID);   // the root hangs under nothing
         uint32_t nb_found = 0;
-        for(uint32_t i=0; i<nb_nodes; i++){
-            if(nb_found == to_find && is_parent_found){break;}
+        for(uint32_t i=0; i<globalVariables.curNbNodes; i++){
+            if(nb_found == to_find){break;}
             COctreeNode* potential_node = globalVariables.packedNodes[i];
-            const CIdAABB potential_id = potential_node->aabb_index;
-
-            if(!is_parent_found && potential_id == parent_id){
-                // Hang under the parent (part 2 may already have done it: same pointer)
-                for(uint32_t child=0; child<8; child++){
-                    if(globalVariables.relationshipMap[parent_id].children[child] == cur_id){
-                        potential_node->children[child] = cur_node;
-                        break;
-                    }
-                }
-                is_parent_found = true;
-                continue;
-            }
-
             for(uint32_t child=0; child<8; child++){
-                if(child_aabbs[child] == potential_id){
+                if(child_aabbs[child] == potential_node->aabb_index){
                     cur_node->children[child] = potential_node;
                     nb_found++;
                     break;
@@ -315,27 +288,8 @@ void kernel_simlod_load_part_3_rebuilding_children(){
             }
         }
 
-        // Reachable when its parent is reachable: then neither it nor the nodes linked below it (loaded
-        // by earlier passes while waiting for it) are to be loaded anymore
-        const bool is_reachable = (parent_id == CINVALID_ID)
-            || (is_parent_found && !globalVariables.getFlag(parent_id, CFlagToLoad));
-        if(is_reachable){
-            COctreeNode* stack[LOAD_REACHABLE_STACK_SIZE];
-            uint32_t stack_size = 0;
-            globalVariables.unsetFlagSync(cur_id, CFlagToLoad);
-            stack[stack_size++] = cur_node;
-            while(stack_size > 0){
-                COctreeNode* node = stack[--stack_size];
-                for(uint32_t child=0; child<8; child++){
-                    COctreeNode* child_node = node->children[child];
-                    // Unflagged children are reachable already, with their subtree
-                    if(!child_node || !globalVariables.getFlag(child_node->aabb_index, CFlagToLoad)){continue;}
-                    globalVariables.unsetFlagSync(child_node->aabb_index, CFlagToLoad);
-                    // Full stack: the rest stays flagged a bit longer (harmless, see above)
-                    if(stack_size < LOAD_REACHABLE_STACK_SIZE){ stack[stack_size++] = child_node; }
-                }
-            }
-        }
+        // Flag the node as not needing to be loaded anymore
+        globalVariables.unsetFlag(cur_node->aabb_index, CFlagToLoad);
     }
 }
 

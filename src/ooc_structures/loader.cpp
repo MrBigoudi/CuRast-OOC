@@ -13,9 +13,11 @@
 #include <execution>
 #include <fstream>
 #include <limits>
+#include <new>
 #include <numeric>
 #include <optional>
 #include <random>
+#include <semaphore>
 #include <thread>
 #include <unordered_set>
 
@@ -1151,15 +1153,56 @@ void loaderCreateOverviewBatches(const std::vector<std::optional<LoaderFileEntry
 } // namespace
 
 
+uint32_t LoaderGpuVersion::nbLoadingThreads(){
+	const uint32_t nb_cores = std::max(1u, std::thread::hardware_concurrency());
+	uint32_t nb_threads = OocSimLodSettings::MAX_LOADING_THREADS;
+	if(nb_threads == 0){ nb_threads = nb_cores / 4; }   // automatic: quarter of the cores
+	nb_threads = std::min(nb_threads, nb_cores);
+	nb_threads = std::min(nb_threads, std::max(1u, OocSimLodSettings::MAX_BATCHES_PER_LOAD));
+	return std::clamp(nb_threads, 1u, 4096u);
+}
+
+namespace {
+
+/// Bounds the LASzip decoding running at the same time, whatever thread does it (loading workers,
+/// overview reading of newly dropped files): at most `nbLoadingThreads()' cores decode at once
+std::counting_semaphore<4096>& loaderDecodingSlots(){
+	static std::counting_semaphore<4096> slots(static_cast<std::ptrdiff_t>(LoaderGpuVersion::nbLoadingThreads()));
+	return slots;
+}
+
+/// Holds one decoding slot for its lifetime. Taken before any per-file mutex, everywhere
+struct LoaderDecodingSlot {
+	LoaderDecodingSlot(){ loaderDecodingSlots().acquire(); }
+	~LoaderDecodingSlot(){ loaderDecodingSlots().release(); }
+	LoaderDecodingSlot(const LoaderDecodingSlot&) = delete;
+	LoaderDecodingSlot& operator=(const LoaderDecodingSlot&) = delete;
+};
+
+} // namespace
+
+
 void LoaderGpuVersion::createNewBatchesFromFiles(std::vector<std::string> files){
 	std::vector<uint32_t> indices(files.size());
 	std::iota(indices.begin(), indices.end(), 0u);
+	// At most `nbLoadingThreads()' threads (std::execution::par would use every core)
 	auto for_each_file = [&](auto func){
-		if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-			std::for_each(std::execution::par, indices.begin(), indices.end(), func);
-		} else {
+		if(!OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 			std::for_each(indices.begin(), indices.end(), func);
+			return;
 		}
+		const uint32_t nb_threads = std::min<uint32_t>(nbLoadingThreads(), static_cast<uint32_t>(indices.size()));
+		std::atomic<uint32_t> next{0};
+		auto work = [&](){
+			for(uint32_t k = next.fetch_add(1); k < indices.size(); k = next.fetch_add(1)){
+				func(indices[k]);
+			}
+		};
+		std::vector<std::thread> pool;
+		pool.reserve(nb_threads);
+		for(uint32_t t = 1; t < nb_threads; t++){ pool.emplace_back(work); }
+		work();   // the calling thread takes part
+		for(std::thread& t : pool){ t.join(); }
 	};
 
 	// 1. Register every file (headers)
@@ -1181,7 +1224,9 @@ void LoaderGpuVersion::createNewBatchesFromFiles(std::vector<std::string> files)
 	std::vector<std::vector<Point>> samples(files.size());
 	std::vector<uint64_t> strides(files.size(), 0);
 	for_each_file([&](uint32_t i){
-		if(entries[i]){ samples[i] = loaderReadChunkPoints(*entries[i], strides[i]); }
+		if(!entries[i]){ return; }
+		LoaderDecodingSlot slot;   // shared with the loading workers
+		samples[i] = loaderReadChunkPoints(*entries[i], strides[i]);
 	});
 	loaderCreateOverviewBatches(entries, samples);
 
@@ -1338,44 +1383,58 @@ bool LoaderGpuVersion::loadOneBatch(){
     std::vector<Point> points = {};
     const char* failure = nullptr;
     {
+        // At most `nbLoadingThreads()' decodings at once (taken before the file mutex, everywhere)
+        LoaderDecodingSlot decoding_slot;
         std::lock_guard<std::mutex> file_lock(*file_mutex);
-        laszip_POINTER laszip_reader = nullptr;
+        // Closed and destroyed on every exit of this scope, exceptions included (an escaping
+        // exception used to leak the reader, its file, the slot and the in-flight counters)
+        struct ReaderGuard {
+            laszip_POINTER reader = nullptr;
+            bool is_open = false;
+            ~ReaderGuard(){
+                if(is_open){ laszip_close_reader(reader); }
+                if(reader){ laszip_destroy(reader); }
+            }
+        } guard;
         laszip_point* laz_point = nullptr;
-        bool is_open = false;
         {
             // LASzip's logging (lasmessage.cpp) is global and not thread-safe: opening a file and the
             // first decoding (which reads the chunk table) may log, so they are serialised
             std::lock_guard<std::mutex> lock(laszipReaderMtx);
             laszip_BOOL is_compressed = 0;
-            if(laszip_create(&laszip_reader)){
-                laszip_reader = nullptr;
+            if(laszip_create(&guard.reader)){
+                guard.reader = nullptr;
                 failure = "creating the laszip reader";
-            } else if(laszip_open_reader(laszip_reader, (*batch->file).c_str(), &is_compressed)){
+            } else if(laszip_open_reader(guard.reader, (*batch->file).c_str(), &is_compressed)){
                 failure = "opening the file";
             } else {
-                is_open = true;
-                if(laszip_get_point_pointer(laszip_reader, &laz_point) || laszip_read_point(laszip_reader)){
+                guard.is_open = true;
+                if(laszip_get_point_pointer(guard.reader, &laz_point) || laszip_read_point(guard.reader)){
                     failure = "initialising the decoder";
                 }
             }
         }
 
-        if(!failure && laszip_seek_point(laszip_reader, static_cast<laszip_I64>(batch->first))){
+        if(!failure && laszip_seek_point(guard.reader, static_cast<laszip_I64>(batch->first))){
             failure = "seeking the first point";
         }
         if(!failure){
-            points.reserve(batch->count);
-            for(uint64_t i = 0; i < batch->count; i++){
-                if(laszip_read_point(laszip_reader)){
-                    failure = "reading a point";
-                    break;
+            // The batch size is read once: nothing may change it while it is being loaded
+            const uint64_t nb_points_to_read = batch->count;
+            try {
+                points.reserve(nb_points_to_read);
+                for(uint64_t i = 0; i < nb_points_to_read; i++){
+                    if(laszip_read_point(guard.reader)){
+                        failure = "reading a point";
+                        break;
+                    }
+                    points.push_back(loaderToPoint(laz_point, *batch->header));
                 }
-                points.push_back(loaderToPoint(laz_point, *batch->header));
+            } catch(const std::bad_alloc&){
+                failure = "out of host memory";
+                points = {};
             }
         }
-
-        if(is_open){ laszip_close_reader(laszip_reader); }
-        if(laszip_reader){ laszip_destroy(laszip_reader); }
     }
     if(failure){ fail(failure); return true; }
 
@@ -1423,7 +1482,12 @@ bool LoaderGpuVersion::loadOneBatch(){
         loaded_bounds.extend(point.position);
     }
     if(!points.empty()){ batch->centroid /= static_cast<float>(points.size()); }
-    batch->points = std::make_shared<vector<Point>>(std::move(points));
+    try {
+        batch->points = std::make_shared<vector<Point>>(std::move(points));
+    } catch(const std::bad_alloc&){
+        fail("out of host memory");
+        return true;
+    }
 
     // 4. Publish it, with its exact bounds (written before it is visible in `loadedBatches')
     slotsBounds[slot] = loaded_bounds;
@@ -1453,9 +1517,8 @@ void LoaderGpuVersion::loadPendingBatches(){
     {
         std::lock_guard<std::mutex> lock(loadingWorkersMtx);
         if(loadingWorkers.empty() && !stopLoadingWorkers){
-            const uint32_t nb_workers = std::max(1u, std::min(
-                OocSimLodSettings::MAX_BATCHES_PER_LOAD, std::max(1u, std::thread::hardware_concurrency())
-            ));
+            // Not every core: see `nbLoadingThreads' (`MAX_LOADING_THREADS' in settings.toml)
+            const uint32_t nb_workers = nbLoadingThreads();
             nbLoadingWorkers = nb_workers;
             // Joined before the static data they use is destroyed, however the program exits: an
             // `atexit' handler registered now runs before the destructors of the statics constructed
