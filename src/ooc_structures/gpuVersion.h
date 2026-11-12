@@ -435,6 +435,15 @@ struct GpuVersion {
         return new_ptr;
     }
 
+    /// Initial bounding volume of the octree root: the union of the header bounding boxes of the first
+    /// dropped files, proposed by the loader before any of their batches is queued. Only the first
+    /// proposal is kept; `octreeUpdateInit' uses it instead of measuring the first points
+    static inline std::mutex initialAABBMtx;
+    static inline bool hasInitialAABB = false;
+    static inline glm::vec3 initialAABBMins = glm::vec3(0.0f);
+    static inline glm::vec3 initialAABBMaxs = glm::vec3(0.0f);
+    static void proposeInitialAABB(const glm::vec3& mins, const glm::vec3& maxs);
+
     private:
         static void octreeUpdateInit(CuRast* editor, CUcontext* context);
         static void octreeUpdateBottomUp(CuRast* editor, CUcontext* context);

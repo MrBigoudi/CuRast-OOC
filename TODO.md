@@ -10,13 +10,21 @@
 - [x] Generate new simple dataset
 - [x] Try running a training session on cluster (or locally if cluster not available)
 
+- [x] Fix rendering of just unloaded nodes / updating nodes
+- [x] Fix nodes sorting (wrong sorting creates random holes)
+- [x] Improve loading speed ? (maybe pre-read first points for first batch creation)
+- [x] Fix original bounding box
+
 
 
 ## Today
 
-- [ ] Fix rendering of just unloaded nodes / updating nodes
-- [ ] Fix nodes sorting (wrong sorting creates random holes)
 - [ ] Fix priority loading
+- [ ] Fix UI values
+- [ ] Check all globalVariables and their initial values (rename some, destroy some, ...)
+- [ ] Send globalVariables buffers as kernel input
+- [ ] Store all remaining nodes on quit (or on button pressed)
+- [ ] Find a way to compress stored nodes
 
 
 
@@ -24,17 +32,6 @@
 
 - [ ] Script to automatically generate a better dataset
 - [ ] Implement visibility cache (for node rendering)
-
-
-- [ ] Fix UI values
-- [ ] Store all remaining nodes on quit
-- [ ] Improve loading speed ? (maybe pre-read first points for first batch creation)
-
-
-- [ ] Check all globalVariables and their initial values (rename some, destroy some, ...)
-- [ ] Send globalVariables buffers as kernel input
-- [ ] What about storing all nodes info in global variables -> avoid loading entirely + avoid duplicate occupancy on host side on store
-
 
 - [ ] Fix memory limitations
 - [ ] What about storage limitations
@@ -46,7 +43,6 @@
 - [ ] Properly put down the entire method
 - [ ] Rewrite everything more cleanly
 - [ ] Update the latex algorithms
-- [ ] Find a way to compress stored nodes
 - [ ] Improve Color-filtering
 
 

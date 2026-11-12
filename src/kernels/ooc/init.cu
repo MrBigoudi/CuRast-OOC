@@ -192,17 +192,42 @@ void kernel_init_octree_part_1_aabb_measuring(){
 
 
 /// Run on a single thread
+/// Initialise the bounding volume of the root from the host instead of measuring the first points:
+/// the union of the header bounding boxes of the first dropped files (see
+/// `GpuVersion::proposeInitialAABB'). `kernel_init_octree_part_2_refining' then adds its margin and
+/// makes it cubic. Points outside of it (inaccurate headers) are handled by the bottom-up update.
+extern "C" __global__
+void kernel_init_octree_part_1_from_bounds(
+    float min_x, float min_y, float min_z,
+    float max_x, float max_y, float max_z
+){
+    CAABB& aabb = globalVariables.relationshipMap[globalVariables.mainOctree->aabb_index].aabb;
+    aabb.mins = vec3(min_x, min_y, min_z);
+    aabb.maxs = vec3(max_x, max_y, max_z);
+    globalVariables.isInitialised = true;
+}
+
+
+/// Run on a single thread
 extern "C" __global__
 void kernel_init_octree_part_2_refining(){
     // printf("kernel_init_octree_part_2_refining\n");
 
-    // Adding small 2x delta to avoid floating point issues
+    // Margin against floating point issues, on every side: 1% of the largest side, plus the float
+    // precision at these coordinates (the points are converted to float from their LAS coordinates)
+    // (it used to be `mins -= epsilon * mins': a length times the coordinates, which made the root
+    // far too large away from the origin, and shrank it on the sides with negative coordinates)
     vec3 size = globalVariables.relationshipMap[globalVariables.mainOctree->aabb_index].aabb.getSize();
     float epsilon = 0.01f * fmaxf(fmaxf(size.x, size.y), fmaxf(size.z, 1e-3f));
-    globalVariables.relationshipMap[globalVariables.mainOctree->aabb_index].aabb.mins 
-        -= epsilon * globalVariables.relationshipMap[globalVariables.mainOctree->aabb_index].aabb.mins;
-    globalVariables.relationshipMap[globalVariables.mainOctree->aabb_index].aabb.maxs 
-        += epsilon * globalVariables.relationshipMap[globalVariables.mainOctree->aabb_index].aabb.maxs;
+    {
+        CAABB& aabb = globalVariables.relationshipMap[globalVariables.mainOctree->aabb_index].aabb;
+        const vec3 abs_maxs = {fabsf(aabb.maxs.x), fabsf(aabb.maxs.y), fabsf(aabb.maxs.z)};
+        const vec3 abs_mins = {fabsf(aabb.mins.x), fabsf(aabb.mins.y), fabsf(aabb.mins.z)};
+        const vec3 magnitude = max(abs_maxs, abs_mins);
+        const vec3 margin = vec3(epsilon) + 1e-6f * magnitude;
+        aabb.mins -= margin;
+        aabb.maxs += margin;
+    }
 
     // Make it cubic
     size = globalVariables.relationshipMap[globalVariables.mainOctree->aabb_index].aabb.getSize();

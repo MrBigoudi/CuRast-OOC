@@ -515,6 +515,21 @@ void GpuVersion::destroy(CuRast *editor, CUcontext *context){
 
 
 
+void GpuVersion::proposeInitialAABB(const glm::vec3& mins, const glm::vec3& maxs){
+    const bool is_valid = std::isfinite(mins.x) && std::isfinite(mins.y) && std::isfinite(mins.z)
+        && std::isfinite(maxs.x) && std::isfinite(maxs.y) && std::isfinite(maxs.z)
+        && mins.x <= maxs.x && mins.y <= maxs.y && mins.z <= maxs.z;
+    if(!is_valid){return;}
+
+    // Only the first dropped files define it (later ones extend the root with the bottom-up update)
+    std::lock_guard<std::mutex> lock(initialAABBMtx);
+    if(hasInitialAABB){return;}
+    initialAABBMins = mins;
+    initialAABBMaxs = maxs;
+    hasInitialAABB = true;
+}
+
+
 void GpuVersion::octreeUpdateInit(CuRast* editor, CUcontext* context){
     // OptionalLaunchSettings launch_settings = {
     //     .gridsize  = OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_GRID_SIZE_FOR_MAX_BLOCK_SIZE,
@@ -531,7 +546,34 @@ void GpuVersion::octreeUpdateInit(CuRast* editor, CUcontext* context){
         .blocksize = block_size
     };
 
-    prog->launch("kernel_init_octree_part_1_aabb_measuring", {}, launch_settings);
+    // Root bounding volume: the header bounding boxes of the first dropped files when known
+    // (available as soon as they are dropped, before any of their points), else measured from
+    // the points of the first batches
+    bool has_initial_aabb = false;
+    glm::vec3 initial_mins = glm::vec3(0.0f);
+    glm::vec3 initial_maxs = glm::vec3(0.0f);
+    {
+        std::lock_guard<std::mutex> lock(initialAABBMtx);
+        has_initial_aabb = hasInitialAABB;
+        initial_mins = initialAABBMins;
+        initial_maxs = initialAABBMaxs;
+    }
+    if(has_initial_aabb){
+        float min_x = initial_mins.x, min_y = initial_mins.y, min_z = initial_mins.z;
+        float max_x = initial_maxs.x, max_y = initial_maxs.y, max_z = initial_maxs.z;
+        OptionalLaunchSettings single_launch = {
+            .gridsize = 1,
+            .blocksize = 1
+        };
+        prog->launch("kernel_init_octree_part_1_from_bounds",
+            {&min_x, &min_y, &min_z, &max_x, &max_y, &max_z}, single_launch
+        );
+        println("Octree root initialised from the file headers: ({}, {}, {}) - ({}, {}, {})",
+            min_x, min_y, min_z, max_x, max_y, max_z
+        );
+    } else {
+        prog->launch("kernel_init_octree_part_1_aabb_measuring", {}, launch_settings);
+    }
     COPY_FROM_GPU(isInitialised, isInitialised, bool);
     if(!*(bool*)isInitialised){return;}
 

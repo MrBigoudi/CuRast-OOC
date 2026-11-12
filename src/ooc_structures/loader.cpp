@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <execution>
 #include <fstream>
@@ -878,6 +879,35 @@ std::vector<Point> loaderReadChunkPoints(const LoaderFileEntry& entry){
 	return points;
 }
 
+/// Union of the header bounding boxes of the registered files (headers with invalid bounds are
+/// skipped); false if there is none
+bool loaderHeadersBounds(const std::vector<std::optional<LoaderFileEntry>>& entries,
+	glm::vec3& mins, glm::vec3& maxs
+){
+	double min_x =  std::numeric_limits<double>::infinity(), min_y = min_x, min_z = min_x;
+	double max_x = -std::numeric_limits<double>::infinity(), max_y = max_x, max_z = max_x;
+	bool has_bounds = false;
+	for(const std::optional<LoaderFileEntry>& entry : entries){
+		if(!entry){continue;}
+		const laszip_header& h = *entry->header;
+		const bool is_valid = std::isfinite(h.min_x) && std::isfinite(h.min_y) && std::isfinite(h.min_z)
+			&& std::isfinite(h.max_x) && std::isfinite(h.max_y) && std::isfinite(h.max_z)
+			&& h.min_x <= h.max_x && h.min_y <= h.max_y && h.min_z <= h.max_z;
+		if(!is_valid){
+			println("WARNING: '{}' has invalid header bounds, not used for the initial octree root", *entry->file);
+			continue;
+		}
+		min_x = std::min(min_x, h.min_x); min_y = std::min(min_y, h.min_y); min_z = std::min(min_z, h.min_z);
+		max_x = std::max(max_x, h.max_x); max_y = std::max(max_y, h.max_y); max_z = std::max(max_z, h.max_z);
+		has_bounds = true;
+	}
+	if(!has_bounds){return false;}
+	// Same conversion as the points (double to float)
+	mins = glm::vec3(static_cast<float>(min_x), static_cast<float>(min_y), static_cast<float>(min_z));
+	maxs = glm::vec3(static_cast<float>(max_x), static_cast<float>(max_y), static_cast<float>(max_z));
+	return true;
+}
+
 /// Mix the overview samples of all the files into batches that are sent before any other batch
 void loaderCreateOverviewBatches(const std::vector<std::optional<LoaderFileEntry>>& entries,
 	const std::vector<std::vector<Point>>& samples
@@ -996,6 +1026,17 @@ void LoaderGpuVersion::createNewBatchesFromFiles(std::vector<std::string> files)
 	// 1. Register every file (headers)
 	std::vector<std::optional<LoaderFileEntry>> entries(files.size());
 	for_each_file([&](uint32_t i){ entries[i] = loaderRegisterFile(files[i]); });
+
+	// The first dropped files give the initial bounding volume of the octree root (the union of their
+	// header bounding boxes), before any of their batches is queued: the root is built from it
+	// instead of from the first points (only the first proposal counts, see `proposeInitialAABB')
+	{
+		glm::vec3 mins = glm::vec3(0.0f);
+		glm::vec3 maxs = glm::vec3(0.0f);
+		if(loaderHeadersBounds(entries, mins, maxs)){
+			GpuVersion::proposeInitialAABB(mins, maxs);
+		}
+	}
 
 	// 2. Overview: the chunk points of every file, sent before anything else
 	std::vector<std::vector<Point>> samples(files.size());
