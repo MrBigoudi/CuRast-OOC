@@ -43,7 +43,51 @@ void clearUnusedBatchesRoutine(
 
 
 
+// Helper types of `LoaderGpuVersion', at namespace scope: a static member of a nested type can't use
+// its default member initializers inside the enclosing class
+
+/// Approximate spatial extent of a batch: estimated from the chunk points it contains (overview
+/// sample) before it is loaded, exact once loaded
+struct LoaderBatchBounds {
+    glm::vec3 mins = glm::vec3( INFINITY);
+    glm::vec3 maxs = glm::vec3(-INFINITY);
+    bool isValid() const { return mins.x <= maxs.x && mins.y <= maxs.y && mins.z <= maxs.z; }
+    void extend(const glm::vec3& p){ mins = glm::min(mins, p); maxs = glm::max(maxs, p); }
+};
+
+/// A batch not loaded yet, with its estimated bounds
+struct LoaderPendingBatch {
+    std::shared_ptr<PointBatch> batch = nullptr;
+    LoaderBatchBounds bounds = {};
+    uint32_t nb_failures = 0;   // failed load attempts (open / seek / read errors)
+};
+
+/// Camera used to rank the batches (snapshot taken on the main thread every frame)
+struct LoaderCameraState {
+    glm::mat4 view_proj = glm::mat4(1.0f);
+    glm::vec3 position = glm::vec3(0.0f);
+    float width = 1.0f;
+    float height = 1.0f;
+};
+
+/// Loading priority (smaller = loaded first): batches in view first, by decreasing screen-space size
+/// at their nearest point (1 / distance^2, centre-weighted like the visibility update), then the
+/// others by increasing distance to the camera, then the batches without bounds
+struct LoaderLoadPriority {
+    uint32_t tier = 2;      // 0: in view, 1: out of view, 2: unknown bounds
+    float key = 0.0f;       // tier 0: -centre-weighted 1/distance^2 (-inf: camera inside), tier 1: distance
+    bool operator<(const LoaderLoadPriority& rhs) const {
+        return tier != rhs.tier ? tier < rhs.tier : key < rhs.key;
+    }
+};
+
+
 struct LoaderGpuVersion {
+    using BatchBounds = LoaderBatchBounds;
+    using PendingBatch = LoaderPendingBatch;
+    using CameraState = LoaderCameraState;
+    using LoadPriority = LoaderLoadPriority;
+
     static inline std::deque<std::shared_ptr<PointBatch>> batchesQueue = {};
 	static inline std::deque<std::mutex> batchesQueueMutexes = {};
 
@@ -67,8 +111,54 @@ struct LoaderGpuVersion {
     };
     static inline std::vector<uint64_t> loadingAttributesIndices = {0};
 
-    static inline std::deque<std::shared_ptr<PointBatch>> batchesToEnqueue = {};
-    static inline std::mutex batchesToEnqueueMtx;
+    /// Every batch not loaded yet: ranked again with the current camera at each loading round
+    /// (`loadPendingBatches'); a queue slot is only taken when a batch is picked for loading
+    static inline std::vector<PendingBatch> pendingBatches = {};
+    static inline std::mutex pendingBatchesMtx;
+    /// Bounds of the batch in each slot of `batchesQueue' (guarded like the slot: written when the
+    /// slot is taken, then when the batch is loaded, before it is published in `loadedBatches')
+    static inline std::vector<BatchBounds> slotsBounds = {};
+    /// The loader stays at most this many device updates ahead (loaded but not yet sent batches, plus
+    /// one being loaded per worker): loading decisions are taken late, with the current camera
+    static inline uint32_t LOAD_AHEAD_FACTOR = 2;
+    /// When the loader is that far ahead, a pending batch replaces the worst loaded (not yet sent) one
+    /// if it is this many times better (screen-space size, or distance): the loaded batches of a
+    /// region the camera left don't hold back the region it flies to
+    static inline float PREEMPTION_FACTOR = 2.0f;
+    /// Centre bias of the loading priority, same formula as `VISIBILITY_CENTER_WEIGHT' in render.cu:
+    /// score *= 1 - weight * (distance of the box's on-screen centre to the screen centre / half
+    /// diagonal). 0 = no bias: boxes at the same distance score the same wherever they are on screen
+    static inline float LOAD_CENTER_WEIGHT = 0.5f;
+
+    static inline std::mutex cameraStateMtx;
+    static inline CameraState cameraState = {};
+    static CameraState getCameraState();
+
+    static LoadPriority loadPriority(const BatchBounds& bounds, const CameraState& camera);
+    static bool isClearlyBetter(const LoadPriority& a, const LoadPriority& b);
+    /// Load the highest priority pending batches (replaces `enqueueBatches' + `loadPointsInBatches'):
+    /// in parallel, starts the persistent loading workers on the first call
+    static void loadPendingBatches();
+    /// Load the current best pending batch (one worker step); false if nothing was loaded
+    static bool loadOneBatch();
+    /// Stop and join the loading workers (also registered with `std::atexit' when they start, so
+    /// that they never outlive the static data they use, whatever the way the program exits)
+    static void stopLoading();
+    /// A batch whose loading fails this many times is skipped (its points are never sent: after a
+    /// LAZ decoding error, the points decoded just before it can't be trusted)
+    static inline uint32_t MAX_LOAD_ATTEMPTS = 3;
+
+    /// Persistent loading workers (parallel mode)
+    static inline std::mutex loadingWorkersMtx;
+    static inline std::vector<std::thread> loadingWorkers = {};
+    static inline std::atomic<bool> stopLoadingWorkers{false};
+    /// Calls of `loadingRoutine' in progress (`stopLoading' waits for them: main.cpp's loading
+    /// thread is not joined when the program exits on an error)
+    static inline std::atomic<uint32_t> nbLoadingRoutinesRunning{0};
+    static inline uint32_t nbLoadingWorkers = 1;
+    /// Batches being loaded, and number of workers reading each file (guarded by `pendingBatchesMtx')
+    static inline std::atomic<uint32_t> nbLoadsInFlight{0};
+    static inline std::unordered_map<std::string, uint32_t> filesBeingRead = {};
 
     static inline std::mutex loadedBatchesMtx;
     static inline std::vector<std::pair<uint32_t, std::shared_ptr<PointBatch>>> loadedBatches;
@@ -110,7 +200,6 @@ struct LoaderGpuVersion {
     static bool sendToDevice();
 
     static void loadingRoutine();
-    static void enqueueBatches();
 
 
     static void filesRecordUi();

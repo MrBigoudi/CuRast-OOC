@@ -8,6 +8,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <execution>
 #include <fstream>
@@ -16,6 +17,7 @@
 #include <optional>
 #include <random>
 #include <thread>
+#include <unordered_set>
 
 
 void initLoadPointBatches(string file,
@@ -306,6 +308,88 @@ void LoaderGpuVersion::updateCameraSnapshot(){
     cameraPosX.store(pos.x, std::memory_order_relaxed);
     cameraPosY.store(pos.y, std::memory_order_relaxed);
     cameraPosZ.store(pos.z, std::memory_order_relaxed);
+
+    // Full camera for the screen-space priorities (read by the loading thread)
+    CameraState state = {};
+    state.view_proj = mat4(VKRenderer::view.proj) * view;
+    state.position = pos;
+    state.width = std::max(1.0f, static_cast<float>(VKRenderer::width));
+    state.height = std::max(1.0f, static_cast<float>(VKRenderer::height));
+    std::lock_guard<std::mutex> lock(cameraStateMtx);
+    cameraState = state;
+}
+
+LoaderGpuVersion::CameraState LoaderGpuVersion::getCameraState(){
+    std::lock_guard<std::mutex> lock(cameraStateMtx);
+    return cameraState;
+}
+
+LoaderGpuVersion::LoadPriority LoaderGpuVersion::loadPriority(const BatchBounds& bounds, const CameraState& camera){
+    LoadPriority priority = {};
+    if(!bounds.isValid()){ return priority; }   // tier 2: unknown
+
+    // Distance from the camera to the box (0 inside)
+    const glm::vec3 closest = glm::clamp(camera.position, bounds.mins, bounds.maxs);
+    const float distance = glm::length(camera.position - closest);
+    if(distance == 0.0f){
+        priority.tier = 0;
+        priority.key = -INFINITY;   // the camera is inside: first
+        return priority;
+    }
+
+    // Projected screen rectangle of the box (same idea as the visibility priority on the device)
+    float min_x =  INFINITY, min_y =  INFINITY;
+    float max_x = -INFINITY, max_y = -INFINITY;
+    bool any_behind = false;
+    bool all_behind = true;
+    for(uint32_t corner = 0; corner < 8; corner++){
+        const glm::vec4 p = glm::vec4(
+            (corner & 1) ? bounds.maxs.x : bounds.mins.x,
+            (corner & 2) ? bounds.maxs.y : bounds.mins.y,
+            (corner & 4) ? bounds.maxs.z : bounds.mins.z,
+            1.0f
+        );
+        const glm::vec4 clip = camera.view_proj * p;
+        if(!(clip.w > 1e-6f)){ any_behind = true; continue; }
+        all_behind = false;
+        const float ndc_x = clip.x / clip.w;
+        const float ndc_y = clip.y / clip.w;
+        min_x = std::min(min_x, ndc_x); max_x = std::max(max_x, ndc_x);
+        min_y = std::min(min_y, ndc_y); max_y = std::max(max_y, ndc_y);
+    }
+
+    priority.tier = 1;
+    priority.key = distance;
+    if(all_behind){ return priority; }
+    if(any_behind){
+        // Crosses the camera plane: right next to the camera
+        priority.tier = 0;
+        priority.key = -1.0f / (distance * distance);
+        return priority;
+    }
+
+    // Visible part of the rectangle
+    const float x0 = std::max(min_x, -1.0f), x1 = std::min(max_x, 1.0f);
+    const float y0 = std::max(min_y, -1.0f), y1 = std::min(max_y, 1.0f);
+    if(!(x0 < x1 && y0 < y1)){ return priority; }   // outside of the view
+
+    // Screen-space size of the data at the box's nearest point (~ 1 / distance^2), not the projected
+    // area of the whole box: before loading, a box is only the hull of the few chunk points of the
+    // batch, so its area is a noisy estimate, while its nearest point is well estimated; and a batch
+    // spread over a large area must not win over a closer one just for being large
+    const float size = 1.0f / (distance * distance);
+
+    // Centre weighting on the clipped rectangle's centre (as `getVisibilityPriority' on the device)
+    const glm::vec2 centre = glm::vec2(
+        0.5f * (x0 + x1) * 0.5f * camera.width,
+        0.5f * (y0 + y1) * 0.5f * camera.height
+    );
+    const float r_norm = std::clamp(glm::length(centre) / (0.5f * glm::length(glm::vec2(camera.width, camera.height))), 0.0f, 1.0f);
+    const float score = size * (1.0f - LOAD_CENTER_WEIGHT * r_norm);
+
+    priority.tier = 0;
+    priority.key = std::isfinite(score) ? -score : 0.0f;
+    return priority;
 }
 
 vec3 LoaderGpuVersion::getCameraSnapshot(){
@@ -501,6 +585,7 @@ void LoaderGpuVersion::init(){
 
 	batchesQueue = std::deque<std::shared_ptr<PointBatch>>(OocSimLodSettings::BATCHES_LIST_SIZE, nullptr);
     batchesQueueMutexes = std::deque<std::mutex>(OocSimLodSettings::BATCHES_LIST_SIZE);
+    slotsBounds = std::vector<BatchBounds>(OocSimLodSettings::BATCHES_LIST_SIZE);
 
 	batchesOnGpu = std::vector<uint32_t>(OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE, -1);
 	batchesOnGpuStatus = GpuVersion::allocHost<uint32_t>(OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE);
@@ -510,6 +595,9 @@ void LoaderGpuVersion::init(){
 }
 
 void LoaderGpuVersion::destroy(){
+    // The loading workers first (they use the queues)
+    stopLoading();
+
     CURuntime::assertCudaSuccess(cuEventDestroy(eventLoadComplete));
     CURuntime::assertCudaSuccess(cuMemFreeHost(batchesOnGpuStatus));
     CURuntime::assertCudaSuccess(cuStreamDestroy(stream));
@@ -560,15 +648,23 @@ bool LoaderGpuVersion::sendToDevice(){
         std::swap(overview, loadedOverviewBatches);
     }
 
-	// Sort by closest to camera
-	vec3 camera_pos = getCameraSnapshot();
-	std::sort(ready.begin(), ready.end(),
-	[&](const std::pair<uint32_t, std::shared_ptr<PointBatch>>& a,
-		const std::pair<uint32_t, std::shared_ptr<PointBatch>>& b){
-		glm::vec3 da = a.second->centroid - camera_pos;
-		glm::vec3 db = b.second->centroid - camera_pos;
-		return glm::dot(da, da) < glm::dot(db, db);
+	// Same priority as the loading (in view by screen-space size, then out of view by distance), with the
+	// exact bounds of the loaded batches (written before they were published in `loadedBatches')
+	const CameraState camera = getCameraState();
+	std::vector<std::pair<LoadPriority, uint32_t>> ranked(ready.size());
+	for(uint32_t k = 0; k < ready.size(); k++){
+		ranked[k] = {loadPriority(slotsBounds[ready[k].first], camera), k};
+	}
+	std::sort(ranked.begin(), ranked.end(), [](const auto& a, const auto& b){
+		if(a.first < b.first){ return true; }
+		if(b.first < a.first){ return false; }
+		return a.second < b.second;
 	});
+	{
+		std::vector<std::pair<uint32_t, std::shared_ptr<PointBatch>>> sorted(ready.size());
+		for(uint32_t k = 0; k < ranked.size(); k++){ sorted[k] = std::move(ready[ranked[k].second]); }
+		ready = std::move(sorted);
+	}
 
 	// The overview batches go before everything else (see `createNewBatchesFromFiles')
 	const uint32_t nb_overview = static_cast<uint32_t>(overview.size());
@@ -581,7 +677,11 @@ bool LoaderGpuVersion::sendToDevice(){
 
         auto& [slot, batch] = ready[ready_index++];
         batchesOnGpu[i] = slot;
-        batch->state = BatchState::Sent;
+        {
+            // Under the slot's mutex, like every other access to the state of a queued batch
+            std::lock_guard<std::mutex> lock(batchesQueueMutexes[slot]);
+            batch->state = BatchState::Sent;
+        }
 		{
 			std::lock_guard<std::mutex> lock(filesRecordMtx);
 			filesRecord[*batch->file].nb_batches_on_device.fetch_add(1);
@@ -653,12 +753,28 @@ void clearUnusedBatches(
 	}
 }
 
+namespace {
+/// True on a thread while it runs `loadingRoutine' (`stopLoading' must not wait for itself)
+thread_local bool loaderIsInsideLoadingRoutine = false;
+}
+
 void LoaderGpuVersion::loadingRoutine(){
-	enqueueBatches();
-	// Clear completed batches
-	clearUnusedBatches(batchesQueue, batchesQueueMutexes);
-	// Try loading points from disk
-	loadPointsInBatches(batchesQueue, batchesQueueMutexes);
+	// Once the loading is stopped (program exit), the loader's static data may be being destroyed:
+	// do nothing (main.cpp's loading thread may still be looping when the program exits on an error)
+	if(stopLoadingWorkers){
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		return;
+	}
+	nbLoadingRoutinesRunning++;
+	loaderIsInsideLoadingRoutine = true;
+	if(!stopLoadingWorkers){
+		// Clear completed batches
+		clearUnusedBatches(batchesQueue, batchesQueueMutexes);
+		// Load the highest priority batches from disk
+		loadPendingBatches();
+	}
+	loaderIsInsideLoadingRoutine = false;
+	nbLoadingRoutinesRunning--;
 }
 
 bool LoaderGpuVersion::run(CuRast* editor, CUcontext* context){
@@ -744,8 +860,14 @@ std::optional<LoaderFileEntry> loaderRegisterFile(const std::string& file){
 }
 
 /// Create the regular batches of a registered file (second half of the former `createNewBatches')
-void loaderCreateFileBatches(const LoaderFileEntry& entry){
-	std::lock_guard<std::mutex> lock(LoaderGpuVersion::batchesToEnqueueMtx);
+/// Their bounds are estimated from the overview sample: `samples[k]' is point `k * stride' of the
+/// file, so the samples in [first, first + count) outline the batch (else the header bounds)
+void loaderCreateFileBatches(const LoaderFileEntry& entry, const std::vector<Point>& samples, uint64_t stride){
+	LoaderGpuVersion::BatchBounds header_bounds = {};
+	header_bounds.extend(glm::vec3(float(entry.header->min_x), float(entry.header->min_y), float(entry.header->min_z)));
+	header_bounds.extend(glm::vec3(float(entry.header->max_x), float(entry.header->max_y), float(entry.header->max_z)));
+
+	std::lock_guard<std::mutex> lock(LoaderGpuVersion::pendingBatchesMtx);
 	for(uint64_t first_point = 0; first_point < entry.num_points; first_point += OocSimLodSettings::MAX_POINTS_PER_BATCHES){
 
 		std::shared_ptr<PointBatch> new_batch = std::make_shared<PointBatch>();
@@ -755,7 +877,16 @@ void loaderCreateFileBatches(const LoaderFileEntry& entry){
 		new_batch->count = std::min(entry.num_points - first_point, uint64_t(OocSimLodSettings::MAX_POINTS_PER_BATCHES));
 		new_batch->state = BatchState::ToLoad;
 
-		LoaderGpuVersion::batchesToEnqueue.push_back(new_batch);
+		LoaderGpuVersion::PendingBatch pending = {};
+		pending.batch = new_batch;
+		if(stride > 0){
+			const uint64_t last_point = first_point + new_batch->count;   // excluded
+			for(uint64_t k = (first_point + stride - 1) / stride; k < samples.size() && k * stride < last_point; k++){
+				pending.bounds.extend(samples[k].position);
+			}
+		}
+		if(!pending.bounds.isValid()){ pending.bounds = header_bounds; }
+		LoaderGpuVersion::pendingBatches.push_back(std::move(pending));
 	}
 }
 
@@ -830,7 +961,8 @@ Point loaderToPoint(const laszip_point* laz_point, const laszip_header& header){
 /// The overview sample of a file: the first point of every LAZ chunk (stored uncompressed, so
 /// seeking to it and reading it decompresses nothing else), or every `OVERVIEW_FALLBACK_STRIDE'-th
 /// point for uncompressed LAS files and LAZ files with variable-size chunks
-std::vector<Point> loaderReadChunkPoints(const LoaderFileEntry& entry){
+std::vector<Point> loaderReadChunkPoints(const LoaderFileEntry& entry, uint64_t& stride_out){
+	stride_out = 0;
 	std::vector<Point> points = {};
 	if(entry.num_points == 0){return points;}
 
@@ -866,9 +998,14 @@ std::vector<Point> loaderReadChunkPoints(const LoaderFileEntry& entry){
 		}
 	}
 	stride = std::max<uint64_t>(stride, 1);
+	stride_out = stride;
 
 	points.reserve((entry.num_points + stride - 1) / stride);
 	for(uint64_t index = 0; index < entry.num_points; index += stride){
+		// The first decoding reads the chunk table and may log (LASzip logging is global and not
+		// thread-safe): serialised like the opening
+		std::unique_lock<std::mutex> first_lock(LoaderGpuVersion::laszipReaderMtx, std::defer_lock);
+		if(index == 0){ first_lock.lock(); }
 		if(laszip_seek_point(laszip_reader, static_cast<laszip_I64>(index))){break;}
 		if(laszip_read_point(laszip_reader)){break;}
 		points.push_back(loaderToPoint(laz_point, *entry.header));
@@ -992,6 +1129,8 @@ void loaderCreateOverviewBatches(const std::vector<std::optional<LoaderFileEntry
 				std::lock_guard<std::mutex> lock(LoaderGpuVersion::batchesQueueMutexes[i]);
 				if(LoaderGpuVersion::batchesQueue[i]){continue;}
 				LoaderGpuVersion::batchesQueue[i] = new_batch;
+				LoaderGpuVersion::slotsBounds[i] = {};
+				for(const Point& point : *new_batch->points){ LoaderGpuVersion::slotsBounds[i].extend(point.position); }
 				overview_batches.push_back({i, new_batch});
 				found = true;
 				break;
@@ -1040,14 +1179,15 @@ void LoaderGpuVersion::createNewBatchesFromFiles(std::vector<std::string> files)
 
 	// 2. Overview: the chunk points of every file, sent before anything else
 	std::vector<std::vector<Point>> samples(files.size());
+	std::vector<uint64_t> strides(files.size(), 0);
 	for_each_file([&](uint32_t i){
-		if(entries[i]){ samples[i] = loaderReadChunkPoints(*entries[i]); }
+		if(entries[i]){ samples[i] = loaderReadChunkPoints(*entries[i], strides[i]); }
 	});
 	loaderCreateOverviewBatches(entries, samples);
 
 	// 3. The regular batches of every file
-	for(const std::optional<LoaderFileEntry>& entry : entries){
-		if(entry){ loaderCreateFileBatches(*entry); }
+	for(uint32_t i = 0; i < entries.size(); i++){
+		if(entries[i]){ loaderCreateFileBatches(*entries[i], samples[i], strides[i]); }
 	}
 }
 
@@ -1057,26 +1197,312 @@ void LoaderGpuVersion::createNewBatches(std::string file){
 }
 
 
-void LoaderGpuVersion::enqueueBatches(){
-	std::lock_guard<std::mutex> lock(batchesToEnqueueMtx);
-
-	while(!batchesToEnqueue.empty()){
-		std::shared_ptr<PointBatch> new_batch = batchesToEnqueue.front();
-
-		// Find the index where to put the new batch
-		bool found = false;
-		for(uint32_t i=0; i<OocSimLodSettings::BATCHES_LIST_SIZE; i++){
-			std::lock_guard<std::mutex> lock(batchesQueueMutexes[i]);
-			if(batchesQueue[i]){continue;}
-			batchesQueue[i] = new_batch;
-			batchesToEnqueue.pop_front();
-			found = true;
-			break;
-		}
-
-		if(!found){return;}
-	}
+bool LoaderGpuVersion::isClearlyBetter(const LoadPriority& a, const LoadPriority& b){
+    if(a.tier != b.tier){ return a.tier < b.tier; }
+    if(a.tier == 0){ return a.key < PREEMPTION_FACTOR * b.key; }          // keys are -scores: a's score > factor x b's
+    if(a.tier == 1){ return a.key * PREEMPTION_FACTOR < b.key; }          // keys are distances
+    return false;
 }
+
+bool LoaderGpuVersion::loadOneBatch(){
+    const CameraState camera = getCameraState();
+    const uint32_t max_ahead = std::max<uint32_t>(1u,
+        LOAD_AHEAD_FACTOR * OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE + nbLoadingWorkers
+    );
+
+    // 1. Pick a batch (lock order everywhere: pending -> loaded -> slot)
+    PendingBatch picked = {};
+    std::vector<PendingBatch> demoted = {};
+    {
+        std::lock_guard<std::mutex> lock(pendingBatchesMtx);
+        if(pendingBatches.empty()){ return false; }
+
+        // Best batch whose file no other worker is reading (they would wait on the file mutex),
+        // else the best batch
+        int64_t best_free = -1, best_any = -1;
+        LoadPriority best_free_priority = {}, best_any_priority = {};
+        for(uint32_t i = 0; i < pendingBatches.size(); i++){
+            const LoadPriority priority = loadPriority(pendingBatches[i].bounds, camera);
+            if(best_any < 0 || priority < best_any_priority){ best_any = i; best_any_priority = priority; }
+            auto busy = filesBeingRead.find(*pendingBatches[i].batch->file);
+            const bool is_free = (busy == filesBeingRead.end() || busy->second == 0);
+            if(is_free && (best_free < 0 || priority < best_free_priority)){ best_free = i; best_free_priority = priority; }
+        }
+        const int64_t chosen = (best_free >= 0) ? best_free : best_any;
+        const LoadPriority chosen_priority = (best_free >= 0) ? best_free_priority : best_any_priority;
+
+        // Throttle: at most `max_ahead' batches loaded (not yet sent) or being loaded. When full, a
+        // clearly better batch replaces the worst loaded one (stale after a camera move), which goes
+        // back to the pending batches
+        {
+            std::lock_guard<std::mutex> lock_loaded(loadedBatchesMtx);
+            const uint32_t nb_ahead = static_cast<uint32_t>(loadedBatches.size() + loadedOverviewBatches.size()) + nbLoadsInFlight.load();
+            if(nb_ahead >= max_ahead){
+                int64_t worst = -1;
+                LoadPriority worst_priority = {};
+                for(uint32_t k = 0; k < loadedBatches.size(); k++){
+                    const LoadPriority priority = loadPriority(slotsBounds[loadedBatches[k].first], camera);
+                    if(worst < 0 || worst_priority < priority){ worst = k; worst_priority = priority; }
+                }
+                if(worst < 0 || !isClearlyBetter(chosen_priority, worst_priority)){ return false; }
+
+                // Demote it: back to pending with its exact bounds, memory and slot freed
+                const auto [slot, batch] = loadedBatches[worst];
+                loadedBatches.erase(loadedBatches.begin() + worst);
+                PendingBatch back = {};
+                back.batch = batch;
+                back.bounds = slotsBounds[slot];
+                {
+                    std::lock_guard<std::mutex> lock_slot(batchesQueueMutexes[slot]);
+                    batch->points.reset();
+                    batch->state = BatchState::ToLoad;
+                    batchesQueue[slot] = nullptr;
+                }
+                demoted.push_back(std::move(back));
+            }
+        }
+
+        picked = std::move(pendingBatches[chosen]);
+        pendingBatches[chosen] = std::move(pendingBatches.back());
+        pendingBatches.pop_back();
+        pendingBatches.insert(pendingBatches.end(), demoted.begin(), demoted.end());
+        filesBeingRead[*picked.batch->file]++;
+        nbLoadsInFlight++;
+    }
+    for(const PendingBatch& back : demoted){
+        std::lock_guard<std::mutex> lock(filesRecordMtx);
+        filesRecord[*back.batch->file].nb_batches_loaded.fetch_sub(1);
+    }
+
+    // Undo the bookkeeping of step 1
+    auto finish = [&](){
+        std::lock_guard<std::mutex> lock(pendingBatchesMtx);
+        filesBeingRead[*picked.batch->file]--;
+        nbLoadsInFlight--;
+    };
+
+    // 2. A queue slot (the device side refers to batches by slot)
+    uint32_t slot = OocSimLodSettings::BATCHES_LIST_SIZE;
+    for(uint32_t i = 0; i < OocSimLodSettings::BATCHES_LIST_SIZE; i++){
+        std::lock_guard<std::mutex> lock(batchesQueueMutexes[i]);
+        if(batchesQueue[i]){continue;}
+        picked.batch->state = BatchState::Loading;
+        batchesQueue[i] = picked.batch;
+        slotsBounds[i] = picked.bounds;
+        slot = i;
+        break;
+    }
+    if(slot == OocSimLodSettings::BATCHES_LIST_SIZE){
+        // No free slot: back to the pending batches for later
+        {
+            std::lock_guard<std::mutex> lock(pendingBatchesMtx);
+            pendingBatches.push_back(picked);
+        }
+        finish();
+        return false;
+    }
+    const std::shared_ptr<PointBatch>& batch = picked.batch;
+
+    // 3. Load it into a local buffer: nothing is published unless the whole batch was read
+    //    (after a LAZ decoding error, the points decoded just before it can't be trusted)
+    auto fail = [&](const char* reason){
+        {
+            std::lock_guard<std::mutex> lock(batchesQueueMutexes[slot]);
+            batchesQueue[slot] = nullptr;
+        }
+        picked.nb_failures++;
+        if(picked.nb_failures < MAX_LOAD_ATTEMPTS){
+            println("WARNING: {} for '{}' (points {} to {}), attempt {}/{}; the batch will be loaded again",
+                reason, *batch->file, batch->first, batch->first + batch->count, picked.nb_failures, MAX_LOAD_ATTEMPTS
+            );
+            batch->points.reset();
+            batch->state = BatchState::ToLoad;
+            std::lock_guard<std::mutex> lock(pendingBatchesMtx);
+            pendingBatches.push_back(picked);
+        } else {
+            println("ERROR: {} for '{}' (points {} to {}), {} attempts failed; the batch is skipped",
+                reason, *batch->file, batch->first, batch->first + batch->count, picked.nb_failures
+            );
+        }
+        finish();
+    };
+
+    std::mutex* file_mutex = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(perFileMutexesMtx);
+        auto it = perFileMutexes.find(*batch->file);
+        if(it != perFileMutexes.end()){ file_mutex = &it->second; }
+    }
+    if(!file_mutex){ fail("no file mutex"); return true; }
+
+    std::vector<Point> points = {};
+    const char* failure = nullptr;
+    {
+        std::lock_guard<std::mutex> file_lock(*file_mutex);
+        laszip_POINTER laszip_reader = nullptr;
+        laszip_point* laz_point = nullptr;
+        bool is_open = false;
+        {
+            // LASzip's logging (lasmessage.cpp) is global and not thread-safe: opening a file and the
+            // first decoding (which reads the chunk table) may log, so they are serialised
+            std::lock_guard<std::mutex> lock(laszipReaderMtx);
+            laszip_BOOL is_compressed = 0;
+            if(laszip_create(&laszip_reader)){
+                laszip_reader = nullptr;
+                failure = "creating the laszip reader";
+            } else if(laszip_open_reader(laszip_reader, (*batch->file).c_str(), &is_compressed)){
+                failure = "opening the file";
+            } else {
+                is_open = true;
+                if(laszip_get_point_pointer(laszip_reader, &laz_point) || laszip_read_point(laszip_reader)){
+                    failure = "initialising the decoder";
+                }
+            }
+        }
+
+        if(!failure && laszip_seek_point(laszip_reader, static_cast<laszip_I64>(batch->first))){
+            failure = "seeking the first point";
+        }
+        if(!failure){
+            points.reserve(batch->count);
+            for(uint64_t i = 0; i < batch->count; i++){
+                if(laszip_read_point(laszip_reader)){
+                    failure = "reading a point";
+                    break;
+                }
+                points.push_back(loaderToPoint(laz_point, *batch->header));
+            }
+        }
+
+        if(is_open){ laszip_close_reader(laszip_reader); }
+        if(laszip_reader){ laszip_destroy(laszip_reader); }
+    }
+    if(failure){ fail(failure); return true; }
+
+    // Points outside of the file's extent can only be decoding garbage (a corrupted LAZ chunk is only
+    // detected some points after the decoder started producing garbage, possibly in the next batch):
+    // dropped. The tolerance covers the quantisation of the coordinates and a slightly stale header.
+    {
+        const laszip_header& h = *batch->header;
+        const double tolerance_x = 2.0 * h.x_scale_factor + 1e-3 * (h.max_x - h.min_x);
+        const double tolerance_y = 2.0 * h.y_scale_factor + 1e-3 * (h.max_y - h.min_y);
+        const double tolerance_z = 2.0 * h.z_scale_factor + 1e-3 * (h.max_z - h.min_z);
+        const glm::vec3 lo = glm::vec3(float(h.min_x - tolerance_x), float(h.min_y - tolerance_y), float(h.min_z - tolerance_z));
+        const glm::vec3 hi = glm::vec3(float(h.max_x + tolerance_x), float(h.max_y + tolerance_y), float(h.max_z + tolerance_z));
+        const size_t nb_read = points.size();
+        points.erase(std::remove_if(points.begin(), points.end(), [&](const Point& point){
+            const glm::vec3& p = point.position;
+            return !(p.x >= lo.x && p.x <= hi.x && p.y >= lo.y && p.y <= hi.y && p.z >= lo.z && p.z <= hi.z);
+        }), points.end());
+        if(points.size() != nb_read){
+            static std::mutex warned_mtx;
+            static std::unordered_set<std::string> warned_files;
+            std::lock_guard<std::mutex> lock(warned_mtx);
+            if(warned_files.insert(*batch->file).second){
+                println("WARNING: '{}' (points {} to {}): {} points outside of the file's extent were dropped; the file may be corrupted (further cases for this file not reported)",
+                    *batch->file, batch->first, batch->first + batch->count, nb_read - points.size()
+                );
+            }
+        }
+    }
+    if(points.empty()){
+        // Nothing valid: free the slot, nothing to send
+        {
+            std::lock_guard<std::mutex> lock(batchesQueueMutexes[slot]);
+            batchesQueue[slot] = nullptr;
+        }
+        finish();
+        return true;
+    }
+    batch->count = static_cast<uint32_t>(points.size());
+
+    BatchBounds loaded_bounds = {};
+    batch->centroid = vec3(0.0f);
+    for(const Point& point : points){
+        batch->centroid += point.position;
+        loaded_bounds.extend(point.position);
+    }
+    if(!points.empty()){ batch->centroid /= static_cast<float>(points.size()); }
+    batch->points = std::make_shared<vector<Point>>(std::move(points));
+
+    // 4. Publish it, with its exact bounds (written before it is visible in `loadedBatches')
+    slotsBounds[slot] = loaded_bounds;
+    {
+        std::lock_guard<std::mutex> lock(loadedBatchesMtx);
+        loadedBatches.push_back({slot, batch});
+    }
+    {
+        std::lock_guard<std::mutex> lock(filesRecordMtx);
+        filesRecord[*batch->file].nb_batches_loaded.fetch_add(1);
+    }
+    finish();
+    return true;
+}
+
+void LoaderGpuVersion::loadPendingBatches(){
+    if(!OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+        // Sequential: a few batches per call, on the calling thread
+        for(uint32_t k = 0; k < OocSimLodSettings::MAX_BATCHES_PER_LOAD; k++){
+            if(!loadOneBatch()){ break; }
+        }
+        return;
+    }
+
+    // Parallel: persistent workers, each loading the current best batch as soon as it is free
+    // (no round waiting for its slowest batch, decisions taken with the camera of the moment)
+    {
+        std::lock_guard<std::mutex> lock(loadingWorkersMtx);
+        if(loadingWorkers.empty() && !stopLoadingWorkers){
+            const uint32_t nb_workers = std::max(1u, std::min(
+                OocSimLodSettings::MAX_BATCHES_PER_LOAD, std::max(1u, std::thread::hardware_concurrency())
+            ));
+            nbLoadingWorkers = nb_workers;
+            // Joined before the static data they use is destroyed, however the program exits: an
+            // `atexit' handler registered now runs before the destructors of the statics constructed
+            // earlier (an error elsewhere used to destroy `filesBeingRead' under a running worker)
+            static std::once_flag exit_handler_flag;
+            std::call_once(exit_handler_flag, [](){ std::atexit([](){ LoaderGpuVersion::stopLoading(); }); });
+            for(uint32_t w = 0; w < nb_workers; w++){
+                loadingWorkers.emplace_back([](){
+                    while(!stopLoadingWorkers){
+                        bool has_loaded = false;
+                        try {
+                            has_loaded = loadOneBatch();
+                        } catch(const std::exception& e){
+                            println("ERROR: loading worker: {}", e.what());
+                        } catch(...){
+                            println("ERROR: loading worker: unknown exception");
+                        }
+                        if(!has_loaded){
+                            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                        }
+                    }
+                });
+            }
+        }
+    }
+    // The calling loop (`loadingRoutine') keeps clearing the inserted batches
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+}
+
+void LoaderGpuVersion::stopLoading(){
+    stopLoadingWorkers = true;
+    {
+        std::lock_guard<std::mutex> lock(loadingWorkersMtx);
+        for(std::thread& worker : loadingWorkers){
+            if(worker.joinable()){ worker.join(); }
+        }
+        loadingWorkers.clear();
+    }
+    // Wait for the calls of `loadingRoutine' in progress on other threads (they check
+    // `stopLoadingWorkers' after announcing themselves, so none can start after this)
+    const uint32_t own = loaderIsInsideLoadingRoutine ? 1u : 0u;
+    while(nbLoadingRoutinesRunning.load() > own){
+        std::this_thread::yield();
+    }
+}
+
+
 
 
 

@@ -25,6 +25,15 @@ void kernel_bottom_up_update_part_1_counting(){
     uint32_t thread_id = grid.thread_rank();
     uint32_t nb_threads = grid.num_threads();
 
+    // A new update cycle starts and no loading is in progress: no node can legitimately still be
+    // flagged `CFlagToLoad' (a loading sequence links every node it loads before it ends). Clear any
+    // stale flag, so that a node can never be skipped by the loading forever
+    for(uint32_t node_index = thread_id; node_index < globalVariables.totalNbNodes; node_index += nb_threads){
+        if(globalVariables.getFlag(node_index, CFlagToLoad)){
+            globalVariables.unsetFlagSync(node_index, CFlagToLoad);
+        }
+    }
+
     // if(nb_threads == 0){
     //     printf("kernel_bottom_up_update_part_1_counting\n");
     // }

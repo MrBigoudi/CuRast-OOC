@@ -10,17 +10,18 @@
 - [x] Generate new simple dataset
 - [x] Try running a training session on cluster (or locally if cluster not available)
 
-- [x] Fix rendering of just unloaded nodes / updating nodes
 - [x] Fix nodes sorting (wrong sorting creates random holes)
 - [x] Improve loading speed ? (maybe pre-read first points for first batch creation)
 - [x] Fix original bounding box
+- [x] Fix priority loading
 
 
 
 ## Today
 
-- [ ] Fix priority loading
+- [ ] Fix huge segfault
 - [ ] Fix UI values
+- [ ] Fix rendering of just unloaded nodes / updating nodes
 - [ ] Check all globalVariables and their initial values (rename some, destroy some, ...)
 - [ ] Send globalVariables buffers as kernel input
 - [ ] Store all remaining nodes on quit (or on button pressed)
