@@ -72,6 +72,15 @@ struct LoaderGpuVersion {
 
     static inline std::mutex loadedBatchesMtx;
     static inline std::vector<std::pair<uint32_t, std::shared_ptr<PointBatch>>> loadedBatches;
+    /// Overview batches (one point per LAZ chunk of every dropped file, see
+    /// `createNewBatchesFromFiles'): already in memory, sent to the device before any other batch
+    /// Guarded by `loadedBatchesMtx'
+    static inline std::vector<std::pair<uint32_t, std::shared_ptr<PointBatch>>> loadedOverviewBatches;
+
+    /// Stride of the overview sample when the chunk points of a file can't be used: uncompressed LAS
+    /// files (any point can be read directly) or LAZ files with variable-size chunks
+    /// (50000 is the LASzip default chunk size)
+    static inline uint32_t OVERVIEW_FALLBACK_STRIDE = 50000;
 
     struct FileInfo {
         std::shared_ptr<laszip_header> header = nullptr;
@@ -85,6 +94,14 @@ struct LoaderGpuVersion {
     static inline std::mutex filesRecordMtx;
 
     static void createNewBatches(string file);
+    /// Create the batches of several files dropped together (LidarScout-like first stage):
+    ///  1. the first point of every LAZ chunk (stored uncompressed: one seek and one point read
+    ///     each) of every file is read, and these points are mixed into "overview" batches sent
+    ///     before anything else: the first octree update sees the whole data set (overview of the
+    ///     entire cloud, tight octree root)
+    ///  2. then the regular batches of every file are created as before (the overview points are
+    ///     inserted a second time with them)
+    static void createNewBatchesFromFiles(std::vector<std::string> files);
     static bool run(CuRast* editor, CUcontext* context);
 
     static void init();

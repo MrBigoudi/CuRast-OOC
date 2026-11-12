@@ -559,16 +559,20 @@ int main(int argc, char** argv){
 
 		VKRenderer::onFileDrop([&](vector<string> files){
 			if(OocSimLodSettings::IS_USING_GPU_VERSION){
-				std::for_each(std::execution::par, files.begin(), files.end(), 
-					[&](string& file){
-						if(iEndsWith(file, ".las") || iEndsWith(file, ".laz")){
-							std::thread thread_init_batch([&](std::string file){
-								LoaderGpuVersion::createNewBatches(file);
-							}, file);
-							thread_init_batch.detach();
-						}
+				// All the dropped files together: their overview (one point per LAZ chunk of every
+				// file) is loaded first, then their regular batches (see `createNewBatchesFromFiles')
+				vector<string> point_cloud_files = {};
+				for(const string& file : files){
+					if(iEndsWith(file, ".las") || iEndsWith(file, ".laz")){
+						point_cloud_files.push_back(file);
 					}
-				);
+				}
+				if(!point_cloud_files.empty()){
+					std::thread thread_init_batches([](vector<string> point_cloud_files){
+						LoaderGpuVersion::createNewBatchesFromFiles(std::move(point_cloud_files));
+					}, std::move(point_cloud_files));
+					thread_init_batches.detach();
+				}
 			} else {
 				if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
 					std::for_each(std::execution::par, files.begin(), files.end(), 

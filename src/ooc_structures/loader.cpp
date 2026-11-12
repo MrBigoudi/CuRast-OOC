@@ -4,6 +4,18 @@
 #include "globals.h"
 #include "gpuVersion.h"
 
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstring>
+#include <execution>
+#include <fstream>
+#include <limits>
+#include <numeric>
+#include <optional>
+#include <random>
+#include <thread>
+
 
 void initLoadPointBatches(string file,
     std::deque<std::shared_ptr<PointBatch>>& batches_queue,
@@ -540,9 +552,11 @@ bool LoaderGpuVersion::sendToDevice(){
     std::vector<uint64_t> mask_sizes;
 
     std::vector<std::pair<uint32_t, std::shared_ptr<PointBatch>>> ready;
+    std::vector<std::pair<uint32_t, std::shared_ptr<PointBatch>>> overview;
     {
         std::lock_guard<std::mutex> lock(loadedBatchesMtx);
         std::swap(ready, loadedBatches);
+        std::swap(overview, loadedOverviewBatches);
     }
 
 	// Sort by closest to camera
@@ -554,6 +568,10 @@ bool LoaderGpuVersion::sendToDevice(){
 		glm::vec3 db = b.second->centroid - camera_pos;
 		return glm::dot(da, da) < glm::dot(db, db);
 	});
+
+	// The overview batches go before everything else (see `createNewBatchesFromFiles')
+	const uint32_t nb_overview = static_cast<uint32_t>(overview.size());
+	ready.insert(ready.begin(), overview.begin(), overview.end());
 
     uint32_t ready_index = 0;
     for(uint32_t i = 0; i < OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE; i++){
@@ -583,12 +601,18 @@ bool LoaderGpuVersion::sendToDevice(){
         has_send_new_points = true;
     }
 
-    // Put back any ready batches that didn't fit this frame
+    // Put back any ready batches that didn't fit this frame (the overview ones in their own list,
+    // so that they stay first)
     if(ready_index < ready.size()){
+        const uint32_t overview_end = std::max(ready_index, nb_overview);
         std::lock_guard<std::mutex> lock(loadedBatchesMtx);
+        loadedOverviewBatches.insert(
+            loadedOverviewBatches.begin(),
+            ready.begin() + ready_index, ready.begin() + overview_end
+        );
         loadedBatches.insert(
             loadedBatches.begin(),
-            ready.begin() + ready_index, ready.end()
+            ready.begin() + overview_end, ready.end()
         );
     }
 
@@ -651,29 +675,39 @@ bool LoaderGpuVersion::run(CuRast* editor, CUcontext* context){
 }
 
 
-void LoaderGpuVersion::createNewBatches(std::string file){
+namespace {
+
+/// A file registered for loading (header read, file mutex and record created)
+struct LoaderFileEntry {
+	std::shared_ptr<std::string> file = nullptr;
+	std::shared_ptr<laszip_header> header = nullptr;
+	uint64_t num_points = 0;
+};
+
+/// Read the header of `file' and register it (first half of the former `createNewBatches')
+std::optional<LoaderFileEntry> loaderRegisterFile(const std::string& file){
 	// Basic checks
 	if(!fs::exists(file)){
 		println("ERROR: file '{}' does not exist", file);
-		return;
+		return std::nullopt;
 	}
 	if(!iEndsWith(file, "las") && !iEndsWith(file, "laz")){
 		println("ERROR: file '{}' doesn't have a supported file type", file);
-		return;
+		return std::nullopt;
 	}
 
 	// Load header
 	laszip_POINTER laszip_reader;
 	if(laszip_create(&laszip_reader)){
 		println("ERROR: creating laszip reader for '{}'", file);
-		return;
+		return std::nullopt;
 	}
 	laszip_BOOL is_compressed = 0;
 	{
         std::lock_guard<std::mutex> lock(LoaderGpuVersion::laszipReaderMtx);
         if(laszip_open_reader(laszip_reader, file.c_str(), &is_compressed)){
             laszip_destroy(laszip_reader);
-            return;
+            return std::nullopt;
         }
     }
 	laszip_header* header;
@@ -681,43 +715,304 @@ void LoaderGpuVersion::createNewBatches(std::string file){
 		println("ERROR: getting laszip header pointer for '{}'", file);
 		laszip_close_reader(laszip_reader);
 		laszip_destroy(laszip_reader);
-		return;
+		return std::nullopt;
 	}
-	std::shared_ptr<laszip_header> shared_header = std::make_shared<laszip_header>(*header);
-	std::shared_ptr<string> shared_file = std::make_shared<string>(file);
+	LoaderFileEntry entry = {};
+	entry.header = std::make_shared<laszip_header>(*header);
+	entry.file = std::make_shared<string>(file);
 	laszip_close_reader(laszip_reader);
 	laszip_destroy(laszip_reader);
 	header = nullptr;
 
-	uint64_t num_points = shared_header->number_of_point_records 
-		? shared_header->number_of_point_records 
-		: shared_header->extended_number_of_point_records
+	entry.num_points = entry.header->number_of_point_records 
+		? entry.header->number_of_point_records 
+		: entry.header->extended_number_of_point_records
 	;
 
 	{
-		std::lock_guard<std::mutex> lock(perFileMutexesMtx);
-		perFileMutexes.try_emplace(*shared_file);
+		std::lock_guard<std::mutex> lock(LoaderGpuVersion::perFileMutexesMtx);
+		LoaderGpuVersion::perFileMutexes.try_emplace(*entry.file);
 		{
-			std::lock_guard<std::mutex> lock_record(filesRecordMtx);
-			filesRecord[file].header = shared_header;
-			uint32_t nb_batches = (num_points + OocSimLodSettings::MAX_POINTS_PER_BATCHES - 1) / OocSimLodSettings::MAX_POINTS_PER_BATCHES;
-			filesRecord[file].nb_batches += nb_batches;
+			std::lock_guard<std::mutex> lock_record(LoaderGpuVersion::filesRecordMtx);
+			LoaderGpuVersion::filesRecord[file].header = entry.header;
+			uint32_t nb_batches = (entry.num_points + OocSimLodSettings::MAX_POINTS_PER_BATCHES - 1) / OocSimLodSettings::MAX_POINTS_PER_BATCHES;
+			LoaderGpuVersion::filesRecord[file].nb_batches += nb_batches;
+		}
+	}
+	return entry;
+}
+
+/// Create the regular batches of a registered file (second half of the former `createNewBatches')
+void loaderCreateFileBatches(const LoaderFileEntry& entry){
+	std::lock_guard<std::mutex> lock(LoaderGpuVersion::batchesToEnqueueMtx);
+	for(uint64_t first_point = 0; first_point < entry.num_points; first_point += OocSimLodSettings::MAX_POINTS_PER_BATCHES){
+
+		std::shared_ptr<PointBatch> new_batch = std::make_shared<PointBatch>();
+		new_batch->file = entry.file;
+		new_batch->header = entry.header;
+		new_batch->first = first_point;
+		new_batch->count = std::min(entry.num_points - first_point, uint64_t(OocSimLodSettings::MAX_POINTS_PER_BATCHES));
+		new_batch->state = BatchState::ToLoad;
+
+		LoaderGpuVersion::batchesToEnqueue.push_back(new_batch);
+	}
+}
+
+/// Chunk size of a LAZ file, read from its LASzip VLR ("laszip encoded", record 22204: the chunk
+/// size is the U32 at byte 12 of the payload)
+/// The VLR is read from the file itself: the LASzip DLL may remove it from the header it exposes
+/// Returns 0 if not found (uncompressed file, unreadable file), U32_MAX for variable-size chunks
+uint32_t loaderReadLazChunkSize(const std::string& file){
+	std::ifstream stream(file, std::ios::binary);
+	if(!stream.is_open()){return 0;}
+
+	auto read_bytes = [&](uint64_t offset, void* dst, uint64_t size) -> bool {
+		stream.seekg(static_cast<std::streamoff>(offset));
+		stream.read(reinterpret_cast<char*>(dst), static_cast<std::streamsize>(size));
+		return static_cast<uint64_t>(stream.gcount()) == size;
+	};
+
+	// Public header block: signature, header size (offset 94), number of VLRs (offset 100)
+	char signature[4] = {};
+	uint16_t header_size = 0;
+	uint32_t nb_vlrs = 0;
+	if(!read_bytes(0, signature, 4) || std::memcmp(signature, "LASF", 4) != 0){return 0;}
+	if(!read_bytes(94, &header_size, sizeof(header_size))){return 0;}
+	if(!read_bytes(100, &nb_vlrs, sizeof(nb_vlrs))){return 0;}
+
+	// VLR header: reserved U16, user_id char[16], record_id U16, record_length_after_header U16,
+	// description char[32] (54 bytes)
+	uint64_t offset = header_size;
+	for(uint32_t i = 0; i < nb_vlrs; i++){
+		uint8_t vlr_header[54] = {};
+		if(!read_bytes(offset, vlr_header, sizeof(vlr_header))){return 0;}
+		char user_id[17] = {};
+		std::memcpy(user_id, vlr_header + 2, 16);
+		uint16_t record_id = 0;
+		uint16_t record_length = 0;
+		std::memcpy(&record_id, vlr_header + 18, sizeof(record_id));
+		std::memcpy(&record_length, vlr_header + 20, sizeof(record_length));
+
+		if(std::strncmp(user_id, "laszip encoded", 16) == 0 && record_id == 22204 && record_length >= 16){
+			uint32_t chunk_size = 0;
+			if(!read_bytes(offset + 54 + 12, &chunk_size, sizeof(chunk_size))){return 0;}
+			return chunk_size;
+		}
+		offset += 54 + uint64_t(record_length);
+	}
+	return 0;
+}
+
+/// Same conversion as `loadPointsInBatches'
+Point loaderToPoint(const laszip_point* laz_point, const laszip_header& header){
+	Point new_point = {};
+	float x = (float)(laz_point->X * header.x_scale_factor + header.x_offset);
+	float y = (float)(laz_point->Y * header.y_scale_factor + header.y_offset);
+	float z = (float)(laz_point->Z * header.z_scale_factor + header.z_offset);
+	new_point.position = {x,y,z};
+
+	uint8_t fmt = header.point_data_format;
+	bool has_rgb = (fmt == 2 || fmt == 3 || fmt == 5 || fmt == 7 || fmt == 8 || fmt == 10);
+	if(has_rgb){
+		for(size_t j=0; j<3; j++){
+			new_point.color[j] = laz_point->rgb[j] > 255 ? (uint8_t)(laz_point->rgb[j] >> 8) : (uint8_t)laz_point->rgb[j];
+		}
+	} else {
+		uint8_t intensity = (uint8_t)(laz_point->intensity >> 8);
+		for(size_t j=0; j<3; j++){
+			new_point.color[j] = intensity;
+		}
+	}
+	return new_point;
+}
+
+/// The overview sample of a file: the first point of every LAZ chunk (stored uncompressed, so
+/// seeking to it and reading it decompresses nothing else), or every `OVERVIEW_FALLBACK_STRIDE'-th
+/// point for uncompressed LAS files and LAZ files with variable-size chunks
+std::vector<Point> loaderReadChunkPoints(const LoaderFileEntry& entry){
+	std::vector<Point> points = {};
+	if(entry.num_points == 0){return points;}
+
+	std::mutex* file_mutex = nullptr;
+	{
+		std::lock_guard<std::mutex> lock(LoaderGpuVersion::perFileMutexesMtx);
+		file_mutex = &LoaderGpuVersion::perFileMutexes[*entry.file];
+	}
+	std::lock_guard<std::mutex> file_lock(*file_mutex);
+
+	laszip_POINTER laszip_reader;
+	if(laszip_create(&laszip_reader)){return points;}
+	laszip_BOOL is_compressed = 0;
+	{
+		std::lock_guard<std::mutex> lock(LoaderGpuVersion::laszipReaderMtx);
+		if(laszip_open_reader(laszip_reader, entry.file->c_str(), &is_compressed)){
+			laszip_destroy(laszip_reader);
+			return points;
+		}
+	}
+	laszip_point* laz_point = nullptr;
+	if(laszip_get_point_pointer(laszip_reader, &laz_point)){
+		laszip_close_reader(laszip_reader);
+		laszip_destroy(laszip_reader);
+		return points;
+	}
+
+	uint64_t stride = LoaderGpuVersion::OVERVIEW_FALLBACK_STRIDE;
+	if(is_compressed){
+		const uint32_t chunk_size = loaderReadLazChunkSize(*entry.file);
+		if(chunk_size != 0 && chunk_size != std::numeric_limits<uint32_t>::max()){
+			stride = chunk_size;
+		}
+	}
+	stride = std::max<uint64_t>(stride, 1);
+
+	points.reserve((entry.num_points + stride - 1) / stride);
+	for(uint64_t index = 0; index < entry.num_points; index += stride){
+		if(laszip_seek_point(laszip_reader, static_cast<laszip_I64>(index))){break;}
+		if(laszip_read_point(laszip_reader)){break;}
+		points.push_back(loaderToPoint(laz_point, *entry.header));
+	}
+
+	laszip_close_reader(laszip_reader);
+	laszip_destroy(laszip_reader);
+	return points;
+}
+
+/// Mix the overview samples of all the files into batches that are sent before any other batch
+void loaderCreateOverviewBatches(const std::vector<std::optional<LoaderFileEntry>>& entries,
+	const std::vector<std::vector<Point>>& samples
+){
+	uint64_t nb_samples = 0;
+	for(const std::vector<Point>& file_samples : samples){ nb_samples += file_samples.size(); }
+	if(nb_samples == 0){return;}
+
+	// All the samples, shuffled so that every overview batch spans every file
+	std::vector<Point> all_samples = {};
+	all_samples.reserve(nb_samples);
+	for(const std::vector<Point>& file_samples : samples){
+		all_samples.insert(all_samples.end(), file_samples.begin(), file_samples.end());
+	}
+	std::shuffle(all_samples.begin(), all_samples.end(), std::minstd_rand(0x5EEDu));
+
+	// Header covering every file: lets the file explorer frame the whole data set
+	uint32_t nb_files = 0;
+	std::shared_ptr<laszip_header> overview_header = nullptr;
+	for(const std::optional<LoaderFileEntry>& entry : entries){
+		if(!entry){continue;}
+		nb_files++;
+		const laszip_header& h = *entry->header;
+		if(!overview_header){
+			overview_header = std::make_shared<laszip_header>(h);
+			// Not owned by this copy
+			overview_header->number_of_variable_length_records = 0;
+			overview_header->vlrs = nullptr;
+			overview_header->user_data_in_header_size = 0;
+			overview_header->user_data_in_header = nullptr;
+			overview_header->user_data_after_header_size = 0;
+			overview_header->user_data_after_header = nullptr;
+			continue;
+		}
+		overview_header->min_x = std::min(overview_header->min_x, h.min_x);
+		overview_header->min_y = std::min(overview_header->min_y, h.min_y);
+		overview_header->min_z = std::min(overview_header->min_z, h.min_z);
+		overview_header->max_x = std::max(overview_header->max_x, h.max_x);
+		overview_header->max_y = std::max(overview_header->max_y, h.max_y);
+		overview_header->max_z = std::max(overview_header->max_z, h.max_z);
+	}
+
+	// Even split: every batch holds at most MAX_POINTS_PER_BATCHES points
+	const uint64_t batch_size = OocSimLodSettings::MAX_POINTS_PER_BATCHES;
+	const uint64_t nb_batches = (nb_samples + batch_size - 1) / batch_size;
+
+	// A record of its own in the file explorer (the batches belong to no single file)
+	static std::atomic<uint32_t> nb_overviews{0};
+	const std::string name = format("[Overview #{}]/{} chunk points of {} files",
+		nb_overviews.fetch_add(1) + 1, nb_samples, nb_files
+	);
+	std::shared_ptr<std::string> shared_name = std::make_shared<std::string>(name);
+	{
+		std::lock_guard<std::mutex> lock(LoaderGpuVersion::filesRecordMtx);
+		LoaderGpuVersion::filesRecord[name].header = overview_header;
+		LoaderGpuVersion::filesRecord[name].nb_batches += static_cast<uint32_t>(nb_batches);
+		LoaderGpuVersion::filesRecord[name].nb_batches_loaded.fetch_add(static_cast<uint32_t>(nb_batches));
+	}
+
+	std::vector<std::pair<uint32_t, std::shared_ptr<PointBatch>>> overview_batches = {};
+	for(uint64_t b = 0; b < nb_batches; b++){
+		const uint64_t begin = (b * nb_samples) / nb_batches;
+		const uint64_t end = ((b + 1) * nb_samples) / nb_batches;
+
+		std::shared_ptr<PointBatch> new_batch = std::make_shared<PointBatch>();
+		new_batch->file = shared_name;
+		new_batch->header = overview_header;
+		new_batch->first = 0;
+		new_batch->count = static_cast<uint32_t>(end - begin);
+		// Already in memory: never picked by the disk loader (only `ToLoad' batches are), it goes
+		// through the same states as a loaded batch from here (Sent, ToRemove)
+		new_batch->state = BatchState::Loading;
+		new_batch->points = std::make_shared<vector<Point>>(all_samples.begin() + begin, all_samples.begin() + end);
+		new_batch->centroid = vec3(0.0f);
+		for(const Point& point : *new_batch->points){ new_batch->centroid += point.position; }
+		if(new_batch->count > 0){ new_batch->centroid /= static_cast<float>(new_batch->count); }
+
+		// A slot in the batches queue (the device side refers to batches by slot)
+		while(true){
+			bool found = false;
+			for(uint32_t i = 0; i < OocSimLodSettings::BATCHES_LIST_SIZE; i++){
+				std::lock_guard<std::mutex> lock(LoaderGpuVersion::batchesQueueMutexes[i]);
+				if(LoaderGpuVersion::batchesQueue[i]){continue;}
+				LoaderGpuVersion::batchesQueue[i] = new_batch;
+				overview_batches.push_back({i, new_batch});
+				found = true;
+				break;
+			}
+			if(found){break;}
+			// Wait for the queue to be emptied
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
 		}
 	}
 
-	// Create batches
-	std::lock_guard<std::mutex> lock(batchesToEnqueueMtx);
-	for(uint64_t first_point = 0; first_point < num_points; first_point += OocSimLodSettings::MAX_POINTS_PER_BATCHES){
+	// All at once, so that they are sent together
+	std::lock_guard<std::mutex> lock(LoaderGpuVersion::loadedBatchesMtx);
+	LoaderGpuVersion::loadedOverviewBatches.insert(LoaderGpuVersion::loadedOverviewBatches.end(),
+		overview_batches.begin(), overview_batches.end()
+	);
+}
 
-		std::shared_ptr<PointBatch> new_batch = std::make_shared<PointBatch>();
-		new_batch->file = shared_file;
-		new_batch->header = shared_header;
-		new_batch->first = first_point;
-		new_batch->count = std::min(num_points - first_point, uint64_t(OocSimLodSettings::MAX_POINTS_PER_BATCHES));
-		new_batch->state = BatchState::ToLoad;
+} // namespace
 
-		batchesToEnqueue.push_back(new_batch);
+
+void LoaderGpuVersion::createNewBatchesFromFiles(std::vector<std::string> files){
+	std::vector<uint32_t> indices(files.size());
+	std::iota(indices.begin(), indices.end(), 0u);
+	auto for_each_file = [&](auto func){
+		if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
+			std::for_each(std::execution::par, indices.begin(), indices.end(), func);
+		} else {
+			std::for_each(indices.begin(), indices.end(), func);
+		}
+	};
+
+	// 1. Register every file (headers)
+	std::vector<std::optional<LoaderFileEntry>> entries(files.size());
+	for_each_file([&](uint32_t i){ entries[i] = loaderRegisterFile(files[i]); });
+
+	// 2. Overview: the chunk points of every file, sent before anything else
+	std::vector<std::vector<Point>> samples(files.size());
+	for_each_file([&](uint32_t i){
+		if(entries[i]){ samples[i] = loaderReadChunkPoints(*entries[i]); }
+	});
+	loaderCreateOverviewBatches(entries, samples);
+
+	// 3. The regular batches of every file
+	for(const std::optional<LoaderFileEntry>& entry : entries){
+		if(entry){ loaderCreateFileBatches(*entry); }
 	}
+}
+
+
+void LoaderGpuVersion::createNewBatches(std::string file){
+	createNewBatchesFromFiles({file});
 }
 
 
