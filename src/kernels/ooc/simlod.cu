@@ -1115,9 +1115,9 @@ void kernel_simlod_insertion_part_2_filling(){
             insertPoint(point, cur_node);
 
             // UI values
-            __nv_atomic_add(&globalVariables.nbNewPointsThisUpdate, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-            __nv_atomic_add(&globalVariables.nbTotalPoints, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-            __nv_atomic_add(&globalVariables.currentNbPoints, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            __nv_atomic_add(&globalVariables.nbNewPointsThisUpdate, 1ull, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            __nv_atomic_add(&globalVariables.nbTotalPoints, 1ull, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            __nv_atomic_add(&globalVariables.currentNbPoints, 1ull, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
         }
     }
 
@@ -1135,8 +1135,8 @@ void kernel_simlod_insertion_part_2_filling(){
         insertVoxel(voxel, node);
 
         // UI values
-        __nv_atomic_add(&globalVariables.nbNewVoxelsThisUpdate, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-        __nv_atomic_add(&globalVariables.nbTotalVoxels, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-        __nv_atomic_add(&globalVariables.currentNbVoxels, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+        __nv_atomic_add(&globalVariables.nbNewVoxelsThisUpdate, 1ull, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+        __nv_atomic_add(&globalVariables.nbTotalVoxels, 1ull, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+        __nv_atomic_add(&globalVariables.currentNbVoxels, 1ull, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
     }
 }

@@ -68,8 +68,8 @@ struct GpuVersionUI {
     static inline uint32_t nbTotalUpdates = 0;
 
     // Current update values
-    static inline uint32_t nbNewPointsThisUpdate = 0;
-	static inline uint32_t nbNewVoxelsThisUpdate = 0;
+    static inline uint64_t nbNewPointsThisUpdate = 0;
+	static inline uint64_t nbNewVoxelsThisUpdate = 0;
 	static inline uint32_t nbNewNodesThisUpdate = 0;
 	static inline uint32_t nbLoadedNodesThisUpdate = 0;
 	static inline uint32_t nbStoredNodesThisUpdate = 0;
@@ -84,11 +84,11 @@ struct GpuVersionUI {
     static inline uint32_t currentNbNodes = 0;
 	static inline uint32_t currentNbChunks = 0;
 	static inline uint32_t currentNbGrids = 0;
-    static inline uint32_t currentNbPoints = 0;
-    static inline uint32_t currentNbVoxels = 0;
+    static inline uint64_t currentNbPoints = 0;
+    static inline uint64_t currentNbVoxels = 0;
 
-    static inline uint32_t nbTotalPoints = 0;
-    static inline uint32_t nbTotalVoxels = 0;
+    static inline uint64_t nbTotalPoints = 0;
+    static inline uint64_t nbTotalVoxels = 0;
     static inline uint32_t nbTotalNewNodes = 0;
     static inline uint32_t nbTotalNewGrids = 0;
     static inline uint32_t nbTotalNewChunks = 0;
@@ -100,13 +100,13 @@ struct GpuVersionUI {
     static inline uint32_t nbTotalStoredNodes = 0;
 
     // Flow rates
-    static inline uint32_t maxNbNewPointsPerUpdate = 0;
-    static inline uint32_t minNbNewPointsPerUpdate = 0;
-    static inline uint32_t avgNbNewPointsPerUpdate = 0;
+    static inline uint64_t maxNbNewPointsPerUpdate = 0;
+    static inline uint64_t minNbNewPointsPerUpdate = 0;
+    static inline uint64_t avgNbNewPointsPerUpdate = 0;
 
-    static inline uint32_t maxNbNewVoxelsPerUpdate = 0;
-    static inline uint32_t minNbNewVoxelsPerUpdate = 0;
-    static inline uint32_t avgNbNewVoxelsPerUpdate = 0;
+    static inline uint64_t maxNbNewVoxelsPerUpdate = 0;
+    static inline uint64_t minNbNewVoxelsPerUpdate = 0;
+    static inline uint64_t avgNbNewVoxelsPerUpdate = 0;
 
     static inline uint32_t maxNbNewNodesPerUpdate = 0;
     static inline uint32_t minNbNewNodesPerUpdate = 0;
@@ -150,23 +150,26 @@ struct GpuVersionUI {
 
     // Rendering counters
     static inline uint32_t visNbNodes = 0;
-    static inline uint32_t visNbPoints = 0;
-    static inline uint32_t visNbVoxels = 0;
+    static inline uint64_t visNbPoints = 0;
+    static inline uint64_t visNbVoxels = 0;
 
 
     // Timers
     static inline std::chrono::time_point<std::chrono::high_resolution_clock> lastUpdateStart;
     static inline std::chrono::time_point<std::chrono::high_resolution_clock> firstUpdateStart;
 
+    /// Mirror of the UI block of `CGlobalVariables' (same order, same types; checked in gpuVersion.cpp)
     struct UIStats {
+        uint64_t nbTotalPoints;
+        uint64_t nbTotalVoxels;
+        uint64_t currentNbPoints;
+        uint64_t currentNbVoxels;
+        uint64_t nbNewPointsThisUpdate;
+        uint64_t nbNewVoxelsThisUpdate;
         uint32_t nbTotalUpdates;
         uint32_t curNbNodes;
         uint32_t currentNbChunks;
         uint32_t currentNbGrids;
-        uint32_t currentNbPoints;
-        uint32_t currentNbVoxels;
-        uint32_t nbTotalPoints;
-        uint32_t nbTotalVoxels;
         uint32_t nbTotalNewNodes;
         uint32_t nbTotalNewGrids;
         uint32_t nbTotalNewChunks;
@@ -176,8 +179,6 @@ struct GpuVersionUI {
         uint32_t nbTotalLoadedNodes;
         uint32_t nbTotalSplitNodes;
         uint32_t nbTotalStoredNodes;
-        uint32_t nbNewPointsThisUpdate;
-        uint32_t nbNewVoxelsThisUpdate;
         uint32_t nbNewNodesThisUpdate;
         uint32_t nbLoadedNodesThisUpdate;
         uint32_t nbStoredNodesThisUpdate;

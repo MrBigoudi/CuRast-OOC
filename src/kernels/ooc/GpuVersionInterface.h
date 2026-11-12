@@ -838,16 +838,20 @@ struct CGlobalVariables {
     ///////////////////////// UI DISPLAYED VALUES /////////////////////////
     ///////////////////////////////////////////////////////////////////////
 
+	// Point and voxel counters: 64 bits (billions of points overflow 32 bits)
+	uint64_t nbTotalPoints = 0;
+	uint64_t nbTotalVoxels = 0;
+	uint64_t currentNbPoints = 0;
+	uint64_t currentNbVoxels = 0;
+	uint64_t nbNewPointsThisUpdate = 0;
+	uint64_t nbNewVoxelsThisUpdate = 0;
+
 	uint32_t nbTotalUpdates = 0;
 	uint32_t curNbNodes = 0;
 
 	uint32_t currentNbChunks = 0;
 	uint32_t currentNbGrids = 0;
-    uint32_t currentNbPoints = 0;
-    uint32_t currentNbVoxels = 0;
 
-    uint32_t nbTotalPoints = 0;
-    uint32_t nbTotalVoxels = 0;
     uint32_t nbTotalNewNodes = 0;
     uint32_t nbTotalNewGrids = 0;
     uint32_t nbTotalNewChunks = 0;
@@ -858,8 +862,6 @@ struct CGlobalVariables {
     uint32_t nbTotalSplitNodes = 0;
     uint32_t nbTotalStoredNodes = 0;
 
-	uint32_t nbNewPointsThisUpdate = 0;
-	uint32_t nbNewVoxelsThisUpdate = 0;
 	uint32_t nbNewNodesThisUpdate = 0;
 	uint32_t nbLoadedNodesThisUpdate = 0;
 	uint32_t nbStoredNodesThisUpdate = 0;

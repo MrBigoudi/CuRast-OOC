@@ -249,8 +249,9 @@ void kernel_prepare_store_part_1_filling_buffers(){
                 // UI values
                 __nv_atomic_add(&globalVariables.nbStoredNodesThisUpdate, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
                 __nv_atomic_add(&globalVariables.nbTotalStoredNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-                __nv_atomic_sub(&globalVariables.currentNbPoints, node->points_stored, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-                __nv_atomic_sub(&globalVariables.currentNbVoxels, node->voxels_counter, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+                // 64-bit counters: there is no 64-bit `atomicSub', adding the two's complement subtracts
+                __nv_atomic_add(&globalVariables.currentNbPoints, 0ull - (uint64_t)node->points_stored, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+                __nv_atomic_add(&globalVariables.currentNbVoxels, 0ull - (uint64_t)node->voxels_counter, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
 
                 // TODO: slow, refactor to let each thread delete a chunk
                 // Deleting the node

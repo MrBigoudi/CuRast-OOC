@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstddef>
 #include <cstdlib>
 #include <cmath>
 #include <cstring>
@@ -9,6 +10,7 @@
 #include <limits>
 #include <random>
 #include <thread>
+#include <type_traits>
 #include <unordered_map>
 
 #include "loader.h"
@@ -1951,8 +1953,8 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
     *(uint32_t*)nb_rendered_voxels_host = static_cast<uint32_t>(total_voxels);
 
     GpuVersionUI::visNbNodes  = static_cast<uint32_t>(visibilityTasks.size());
-    GpuVersionUI::visNbPoints = static_cast<uint32_t>(total_points);
-    GpuVersionUI::visNbVoxels = static_cast<uint32_t>(total_voxels);
+    GpuVersionUI::visNbPoints = total_points;
+    GpuVersionUI::visNbVoxels = total_voxels;
 
     std::vector<CUdeviceptr> srcs_host = {
         (CUdeviceptr)nb_rendered_points_host,
@@ -2295,10 +2297,53 @@ void GpuVersionUI::destroy() {
     CURuntime::assertCudaSuccess(cuStreamDestroy(uiStream));
 }
 
+// `UIStats' is filled by a raw copy of the UI block of `CGlobalVariables' (from `nbTotalPoints' on):
+// every field must sit at the same offset in both, with the same size
+#define UI_STATS_MIRRORS(field) \
+    static_assert(offsetof(CGlobalVariables, field) - offsetof(CGlobalVariables, nbTotalPoints) \
+        == offsetof(GpuVersionUI::UIStats, field), "UIStats::" #field " is not at the same place as in CGlobalVariables"); \
+    static_assert(sizeof(CGlobalVariables::field) == sizeof(GpuVersionUI::UIStats::field), \
+        "UIStats::" #field " does not have the same size as in CGlobalVariables");
+UI_STATS_MIRRORS(nbTotalPoints)
+UI_STATS_MIRRORS(nbTotalVoxels)
+UI_STATS_MIRRORS(currentNbPoints)
+UI_STATS_MIRRORS(currentNbVoxels)
+UI_STATS_MIRRORS(nbNewPointsThisUpdate)
+UI_STATS_MIRRORS(nbNewVoxelsThisUpdate)
+UI_STATS_MIRRORS(nbTotalUpdates)
+UI_STATS_MIRRORS(curNbNodes)
+UI_STATS_MIRRORS(currentNbChunks)
+UI_STATS_MIRRORS(currentNbGrids)
+UI_STATS_MIRRORS(nbTotalNewNodes)
+UI_STATS_MIRRORS(nbTotalNewGrids)
+UI_STATS_MIRRORS(nbTotalNewChunks)
+UI_STATS_MIRRORS(nbTotalDeletedNodes)
+UI_STATS_MIRRORS(nbTotalDeletedGrids)
+UI_STATS_MIRRORS(nbTotalDeletedChunks)
+UI_STATS_MIRRORS(nbTotalLoadedNodes)
+UI_STATS_MIRRORS(nbTotalSplitNodes)
+UI_STATS_MIRRORS(nbTotalStoredNodes)
+UI_STATS_MIRRORS(nbNewNodesThisUpdate)
+UI_STATS_MIRRORS(nbLoadedNodesThisUpdate)
+UI_STATS_MIRRORS(nbStoredNodesThisUpdate)
+UI_STATS_MIRRORS(nbSplitNodesThisUpdate)
+UI_STATS_MIRRORS(nbDeletedNodesThisUpdate)
+UI_STATS_MIRRORS(nbDeletedChunksThisUpdate)
+UI_STATS_MIRRORS(nbDeletedGridsThisUpdate)
+UI_STATS_MIRRORS(nbNewChunksThisUpdate)
+UI_STATS_MIRRORS(nbNewGridsThisUpdate)
+static_assert(offsetof(CGlobalVariables, nbTotalPoints) % alignof(GpuVersionUI::UIStats) == 0,
+    "the UI block of CGlobalVariables must start aligned like UIStats");
+static_assert(offsetof(CGlobalVariables, nbNewGridsThisUpdate) + sizeof(uint32_t)
+    <= offsetof(CGlobalVariables, nbTotalPoints) + sizeof(GpuVersionUI::UIStats),
+    "UIStats must cover the whole UI block");
+#undef UI_STATS_MIRRORS
+
 void GpuVersionUI::kickoffStatsCopy(){
     // Single batched async copy of all UI fields into pinned memory
-    // The fields must be contiguous in CGlobalVariables for this to work
-    const uint64_t pad = reinterpret_cast<uintptr_t>(&GpuVersion::hostStaging.nbTotalUpdates)
+    // The fields must be contiguous in CGlobalVariables for this to work (checked above); the
+    // block starts at its first field, `nbTotalPoints'
+    const uint64_t pad = reinterpret_cast<uintptr_t>(&GpuVersion::hostStaging.nbTotalPoints)
                        - reinterpret_cast<uintptr_t>(&GpuVersion::hostStaging);
     CURuntime::assertCudaSuccess(cuMemcpyDtoHAsync(
         pinnedStats,
@@ -2357,14 +2402,18 @@ void GpuVersionUI::update() {
         nbNewChunksThisUpdate    = pinnedStats->nbNewChunksThisUpdate;
         nbNewGridsThisUpdate     = pinnedStats->nbNewGridsThisUpdate;
 
-        auto updateStats = [](uint32_t value, uint32_t& minValue, uint32_t& maxValue, uint32_t& avgValue) {
+        // Works for the 32-bit and the 64-bit statistics (the value is converted to their type)
+        auto updateStats = [](auto value, auto& minValue, auto& maxValue, auto& avgValue) {
+            using T = std::remove_reference_t<decltype(minValue)>;
+            const T v = static_cast<T>(value);
             if(nbTotalUpdates == 1){
-                minValue = value; maxValue = value; avgValue = value;
+                minValue = v; maxValue = v; avgValue = v;
             } else {
-                minValue = std::min(minValue, value);
-                maxValue = std::max(maxValue, value);
-                avgValue = static_cast<uint32_t>(
-                    (static_cast<uint64_t>(avgValue) * (nbTotalUpdates - 1) + value) / nbTotalUpdates
+                minValue = std::min(minValue, v);
+                maxValue = std::max(maxValue, v);
+                // Running mean in floating point: avg * (n - 1) can overflow 64 bits for 64-bit counters
+                avgValue = static_cast<T>(
+                    (static_cast<double>(avgValue) * (nbTotalUpdates - 1) + static_cast<double>(v)) / nbTotalUpdates
                 );
             }
         };
