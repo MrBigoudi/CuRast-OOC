@@ -27,7 +27,7 @@
 ## This month
 
 <!-- Quality of life -->
-- [ ] Rewrite everything more cleanly (delete unnecessary parts + better comments)
+- [ ] Rewrite everything more cleanly (delete unnecessary parts + better comments + refactor settings)
 - [ ] Check all globalVariables and their initial values (rename some, destroy some, ...)
 - [ ] Store all remaining nodes on quit (or on button pressed) + load them to init the octree / scene
 - [ ] Properly put down the entire method
