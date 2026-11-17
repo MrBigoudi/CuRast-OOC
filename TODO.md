@@ -26,24 +26,30 @@
 
 ## This month
 
+<!-- Quality of life -->
+- [ ] Rewrite everything more cleanly (delete unnecessary parts + better comments)
 - [ ] Check all globalVariables and their initial values (rename some, destroy some, ...)
-- [ ] Send globalVariables buffers as kernel input
-
-- [ ] Fix memory limitations
-- [ ] Find a way to compress stored nodes
-- [ ] What about storage limitations
-
-- [ ] Fix IO contention
-- [ ] Optimise kernels (rendering and update)
 - [ ] Store all remaining nodes on quit (or on button pressed) + load them to init the octree / scene
+- [ ] Properly put down the entire method
+- [ ] Update the latex algorithms
 
+<!-- Bug fixing -->
+- [ ] Fix memory limitations (do not crash if too much RAM is used)
+- [ ] What about storage limitations (do not crash if too much Disk Space is used)
+
+<!-- Optimizations -->
+- [ ] Send globalVariables buffers as kernel input
+- [ ] Optimise kernels (rendering and update)
+- [ ] Fix IO contention
+
+<!-- New contributions -->
+- [ ] Find a way to compress stored nodes
+- [ ] Find a way to average colors in the voxels (or other color-filtering algorithms)
+
+<!-- Neural Network -->
 - [ ] Improve inference speed
 - [ ] Script to automatically generate a better dataset
 
-- [ ] Properly put down the entire method
-- [ ] Rewrite everything more cleanly
-- [ ] Update the latex algorithms
-- [ ] Improve Color-filtering
 
 
 <!-- regex:^(?!kernel_clearFramebuffer$|kernel_dummy$|kernel_resolve_colorbuffer_to_opengl_2D$|kernel_resolve_visbuffer_to_colorbuffer2D$|kernel_init_availableMcuSlots$).*kernel_ -->
