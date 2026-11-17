@@ -29,9 +29,7 @@ namespace std {
 #include "./glm/glm/gtx/transform.hpp"
 #include "./glm/glm/gtc/quaternion.hpp"
 
-
 #include "./GpuVersionInterface.h"
-#include "./GpuVersionStructs.h"
 #include "./GpuVersionAllocator.h"
 #include "./GpuVersionGlobals.h"
 
@@ -90,53 +88,6 @@ __device__ __forceinline__ void displayOctreeNode(const COctreeNode* node, uint3
         aabb.mins.x, aabb.mins.y, aabb.mins.z,
         aabb.maxs.x, aabb.maxs.y, aabb.maxs.z
     );
-}
-
-
-__device__ __forceinline__ void displayOctreeRec(const COctreeNode* node, uint32_t id = 0, uint32_t level = 0){
-    displayOctreeNode(node, id, level);
-    for(size_t i=0; i<8; i++){
-        if(node->children[i]){
-            displayOctreeRec(node->children[i], i, level+1);
-        }
-    }
-}
-
-
-__device__ __forceinline__ void displayOctreeIt(const COctreeNode* node, uint32_t id = 0, uint32_t level = 0){
-
-    struct Tmp {
-        const COctreeNode* node;
-        uint32_t id;
-        uint32_t level;
-    };
-
-    CDoubleLinkedList<Tmp> to_display = {};
-    to_display.init();
-    to_display.pushBack({node, id, level});
-
-    uint32_t total_points = 0;
-    uint32_t total_voxels = 0;
-
-    while(!to_display.isEmpty()){
-        Tmp* tmp = to_display.front();
-        const COctreeNode* cur_node = tmp->node;
-        uint32_t cur_id = tmp->id;
-        uint32_t cur_level = tmp->level;
-        to_display.popFront();
-
-        total_points += cur_node->points_counter;
-        total_voxels += cur_node->voxels_counter;
-
-        displayOctreeNode(cur_node, cur_id, cur_level);
-        for(uint32_t i=0; i<8; i++){
-            if(cur_node->children[i]){
-                to_display.pushBack({cur_node->children[i], i, cur_level+1});
-            }
-        }
-    }
-
-    printf("Total points: %d, total voxels: %d\n\n", total_points, total_voxels);
 }
 
 
@@ -219,51 +170,3 @@ inline uint64_t nanotime(){
 
 	return nanotime;
 }
-
-
-// extern "C" __global__
-// void kernel_test_display(PipelineLevel level, bool display_octree){
-//     if(!globalVariables.isInitialised){return;}
-//     printf("\n\n\n\n\n");
-//     switch (level) {
-//         case LevelInit:
-//             printf("Init\n\n");
-//             break;
-//         case LevelBottomUp:
-//             printf("Bottom up\n\n");
-//             break;
-//         case LevelSimlodLoad:
-//             printf("Simlod load\n\n");
-//             break;
-//         case LevelSimlodSplitCount:
-//             printf("Simlod split count\n\n");
-//             break;
-//         case LevelSimlodVoxelSampling:
-//             printf("Simlod voxel sampling\n\n");
-//             break;
-//         case LevelSimlodInsertion:
-//             printf("Simlod insertion\n\n");
-//             break;
-//         case LevelSimlod:
-//             printf("Simlod\n\n");
-//             break;
-//         case LevelCacheUpdate:
-//             printf("Cache update\n\n");
-//             break;
-//     }
-    
-//     if(display_octree){
-//         displayOctreeIt(globalVariables.mainOctree);
-//         printf("\n\n");
-//     }
-// }
-
-
-
-// uint64_t t_start = nanotime();
-// cg::this_grid().sync();
-// uint64_t nanos = nanotime() - t_start;
-// float micros = nanos / 1000;
-// if(cg::this_grid().thread_rank() == 0){
-//     printf("microseconds: %f \n", micros);
-// }

@@ -2,7 +2,6 @@
 
 #include <cmath>
 #include "../../ooc_structures/settings.h"
-#include "./GpuVersionStructs.h"
 
 typedef uint32_t CIdAABB;
 constexpr CIdAABB CINVALID_ID = UINT32_MAX;

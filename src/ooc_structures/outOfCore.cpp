@@ -8,9 +8,13 @@
 std::string getNodeFilePath(const CIdAABB& aabb_index){
     return format("{}/{}.node", OocSimLodSettings::TEMPORARY_NODE_STORAGE_DIRECTORY, aabb_index);
 }
+
+
 std::string getOccupancyFilePath(const CIdAABB& aabb_index){
     return format("{}/{}.grid", OocSimLodSettings::TEMPORARY_NODE_STORAGE_DIRECTORY, aabb_index);
 }
+
+
 std::string getChunkFilePath(const CIdAABB& aabb_index, bool is_voxel){
     return format( "{}/{}.{}", 
         OocSimLodSettings::TEMPORARY_NODE_STORAGE_DIRECTORY, aabb_index,
@@ -41,6 +45,7 @@ void ChunkSerializable::serialize(
 
     file.close();
 }
+
 
 void ChunkSerializable::deserialize(
     const std::string& filepath, CPoint* points, 
@@ -109,7 +114,9 @@ void OccupancyGridSerializable::deserialize(
 //////////////////////////////// NODE HANDLER /////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
 
-void OctreeNodeSerializable::serialize(const std::shared_ptr<HostStorageNode> node){
+void OctreeNodeSerializable::serialize(
+    const std::shared_ptr<HostStorageNode> node
+){
     // Store node
     {
         std::string node_filepath = getNodeFilePath(node->node.aabb_index);
@@ -155,7 +162,11 @@ void OctreeNodeSerializable::serialize(const std::shared_ptr<HostStorageNode> no
     node->node.voxels_last_stored = node->node.voxels_counter;
 }
 
-void OctreeNodeSerializable::deserialize(HostStorageNode* node, const CIdAABB& aabb_index, const std::string& msg){
+
+void OctreeNodeSerializable::deserialize(
+    HostStorageNode* node, const CIdAABB& aabb_index, 
+    const std::string& msg
+){
     node->node.aabb_index = aabb_index;
     
     // Read node

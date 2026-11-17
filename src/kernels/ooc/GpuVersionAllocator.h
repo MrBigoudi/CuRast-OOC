@@ -1,7 +1,6 @@
 #pragma once
 
 #include "./GpuVersionInterface.h"
-#include "./GpuVersionStructs.h"
 #include "./GpuVersionGlobals.h"
 
 enum AllocatorId {

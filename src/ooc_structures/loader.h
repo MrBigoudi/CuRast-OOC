@@ -1,8 +1,7 @@
 #pragma once
 
-#include "CuRast.h"
+#include "gpuVersion.h"
 #include "laszip/laszip_api.h"
-#include "../kernels/ooc/GpuVersionInterface.h"
 
 /// The state of a batch
 enum BatchState {
@@ -23,7 +22,6 @@ struct PointBatch {
 	shared_ptr<vector<CPoint>> points = nullptr;
 	shared_ptr<laszip_header> header = nullptr;
 	BatchState state = BatchState::Empty;
-	glm::vec3 centroid = glm::vec3(0.0f);
 };
 
 // Helper types of `LoaderGpuVersion', at namespace scope: a static member of a nested type can't use
@@ -191,7 +189,6 @@ struct LoaderGpuVersion {
 
     static void filesRecordUi();
     static glm::vec3 batchHeaderCenter(const laszip_header& h);
-    static glm::vec3 batchPointsCentroid(const std::shared_ptr<PointBatch>& batch);
 
     static inline std::atomic<float> cameraPosX{0.0f};
     static inline std::atomic<float> cameraPosY{0.0f};

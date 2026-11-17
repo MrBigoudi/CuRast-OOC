@@ -53,6 +53,11 @@ struct OccupancyGridSerializable {
 ///////////////////////////////////////////////////////////////////////////////
 
 struct OctreeNodeSerializable {
-    static void serialize(const std::shared_ptr<HostStorageNode> node);
-    static void deserialize(HostStorageNode* node, const CIdAABB& aabb_index, const std::string& msg = "");
+    static void serialize(
+        const std::shared_ptr<HostStorageNode> node
+    );
+    static void deserialize(
+        HostStorageNode* node, const CIdAABB& aabb_index, 
+        const std::string& msg = ""
+    );
 };

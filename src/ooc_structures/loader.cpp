@@ -1,7 +1,5 @@
 #include "loader.h"
 
-#include "gpuVersion.h"
-
 
 /////////////////////////////////////////////////////////////////
 ////////////////////////// GPU VERSION //////////////////////////
@@ -15,15 +13,6 @@ vec3 LoaderGpuVersion::batchHeaderCenter(const laszip_header& h){
     );
 }
 
-// Precise position for a batch that has already been loaded: centroid of its points.
-vec3 LoaderGpuVersion::batchPointsCentroid(const std::shared_ptr<PointBatch>& batch){
-    if(batch->points && !batch->points->empty()){
-        vec3 sum(0.0f);
-        for(const auto& p : *batch->points){ sum += p.position; }
-        return sum / static_cast<float>(batch->points->size());
-    }
-    return batchHeaderCenter(*batch->header);
-}
 
 void LoaderGpuVersion::updateCameraSnapshot(){
     const mat4 view = VKRenderer::view.view;
@@ -672,9 +661,6 @@ void loaderCreateOverviewBatches(const std::vector<std::optional<LoaderFileEntry
 		// through the same states as a loaded batch from here (Sent, ToRemove)
 		new_batch->state = BatchState::Loading;
 		new_batch->points = std::make_shared<vector<CPoint>>(all_samples.begin() + begin, all_samples.begin() + end);
-		new_batch->centroid = vec3(0.0f);
-		for(const CPoint& point : *new_batch->points){ new_batch->centroid += point.position; }
-		if(new_batch->count > 0){ new_batch->centroid /= static_cast<float>(new_batch->count); }
 
 		// A slot in the batches queue (the device side refers to batches by slot)
 		while(true){
@@ -1025,12 +1011,9 @@ bool LoaderGpuVersion::loadOneBatch(){
     batch->count = static_cast<uint32_t>(points.size());
 
     BatchBounds loaded_bounds = {};
-    batch->centroid = vec3(0.0f);
     for(const CPoint& point : points){
-        batch->centroid += point.position;
         loaded_bounds.extend(point.position);
     }
-    if(!points.empty()){ batch->centroid /= static_cast<float>(points.size()); }
     try {
         batch->points = std::make_shared<vector<CPoint>>(std::move(points));
     } catch(const std::bad_alloc&){
