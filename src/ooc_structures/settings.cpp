@@ -59,10 +59,7 @@ void OocSimLodSettings::init_device_properties(){
 
 void OocSimLodSettings::init_miscellaneous(){
     /// Miscellaneous
-    IS_RUNNING_IN_PARALLEL = init_field<bool>("IS_RUNNING_IN_PARALLEL", false);
-    NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE = init_field<uint32_t>("NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE", 60);
     MEASURE_TIMINGS = init_field<bool>("MEASURE_TIMINGS", false);
-    IS_USING_GPU_VERSION = init_field<bool>("IS_USING_GPU_VERSION", false);
     DERIVE_AUTOMATIC_PROPERTIES = init_field<bool>("DERIVE_AUTOMATIC_PROPERTIES", false);
     IS_USING_NN = init_field<bool>("IS_USING_NN", false);
 }
@@ -223,10 +220,9 @@ void OocSimLodSettings::display(){
 
     println("");
     println("Miscellaneous:");
-    println("    - IS_RUNNING_IN_PARALLEL: {}", IS_RUNNING_IN_PARALLEL);
-    println("    - NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE: {}", NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE);
     println("    - MEASURE_TIMINGS: {}", MEASURE_TIMINGS);
-    println("    - IS_USING_GPU_VERSION: {}", IS_USING_GPU_VERSION);
+    println("    - DERIVE_AUTOMATIC_PROPERTIES: {}", DERIVE_AUTOMATIC_PROPERTIES);
+    println("    - IS_USING_NN: {}", IS_USING_NN);
 
     println("");
     println("Batch sizes:");

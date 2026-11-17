@@ -61,14 +61,8 @@ struct OocSimLodSettings {
     ///////////////////////////// MISCELLANEOUS /////////////////////////////
     /////////////////////////////////////////////////////////////////////////
 
-    /// Tells if the program should be entirely sequential or as parallelised as possible
-    static inline bool IS_RUNNING_IN_PARALLEL;
-    /// The number of frames between each GPU data transfer and visibility update
-    static inline uint32_t NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE;
     /// Measure the timings
     static inline bool MEASURE_TIMINGS;
-    /// Run the GPU version
-    static inline bool IS_USING_GPU_VERSION;
     /// Tells if need to find automatic properties
     static inline bool DERIVE_AUTOMATIC_PROPERTIES;
     /// Tells if the point cloud filling network can be used

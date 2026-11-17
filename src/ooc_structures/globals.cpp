@@ -1,7 +1,6 @@
 #include "globals.h"
 
 #include "allocator.h"
-#include "structureUpdate.h"
 #include "visibility.h"
 #include "outOfCore.h"
 #include "gpuVersion.h"
@@ -706,9 +705,6 @@ void GlobalVariables::destroy(CuRast* instance, CUcontext* context){
     }
 
     cudaDeviceSynchronize();
-    freeOctreesOnGPU(CuRast::instance);
-
-    cudaDeviceSynchronize();
     freeOctreesOnCPU();
 
     std::lock_guard<std::mutex> lock1(isUpdatingMtx);
@@ -1198,9 +1194,6 @@ void BatchedMemory::copyMemory(CUcontext* context, CUstream* stream) {
     );
     CURuntime::assertCudaSuccess(cuda_status);
 
-    if(!OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-        cudaDeviceSynchronize();
-    }
 }
 
 void BatchedMemory::display() const {
@@ -1295,7 +1288,6 @@ void GlobalVariables::updateGPU(CuRast* instance, CUcontext* context, View* view
     std::shared_ptr<AABBRelationshipMap> relationship_map_ref)
 {
     if(mainLoopIsTerminating){return;}
-    if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL || elapsedFrames > OocSimLodSettings::NUMBER_OF_FRAMES_BETWEEN_DATA_EXCHANGE){
         elapsedFrames = 0;
 
         // Skip the update if too many octrees are in the scene
@@ -1304,9 +1296,7 @@ void GlobalVariables::updateGPU(CuRast* instance, CUcontext* context, View* view
         }
         
         {
-            auto lock = OocSimLodSettings::IS_RUNNING_IN_PARALLEL
-                ? std::unique_lock<std::mutex>(GlobalVariables::isUpdatingMtx) 
-                : std::unique_lock<std::mutex>();
+            auto lock = std::unique_lock<std::mutex>(GlobalVariables::isUpdatingMtx);
                 
             if(octree_ref.has_value() && octree_ref.value()){
                 allOctreesRefCounter[octree_ref.value()]--;
@@ -1322,13 +1312,6 @@ void GlobalVariables::updateGPU(CuRast* instance, CUcontext* context, View* view
         bool has_scene_changed = Visibility::updateVisibilityCache(VKRenderer::view.view, VKRenderer::view.proj,
             *octree_ref, relationship_map_ref
         );
-        if(has_scene_changed){
-            loadOctreeOnGPU(instance, context,
-                *octree_ref, relationship_map_ref
-            );
-        }
-
-    }
 }
 
 

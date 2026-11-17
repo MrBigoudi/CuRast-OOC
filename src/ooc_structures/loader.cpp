@@ -87,15 +87,8 @@ void initLoadPointBatches(string file,
 			}
 			if(found){break;}
 
-			if(!OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-				uint32_t old_queue_size = OocSimLodSettings::BATCHES_LIST_SIZE;
-				OocSimLodSettings::BATCHES_LIST_SIZE *= 2;
-				batches_queue.resize(OocSimLodSettings::BATCHES_LIST_SIZE);
-				batches_queue_mutexes.resize(OocSimLodSettings::BATCHES_LIST_SIZE);
-			} else {
-				// Wait a bit to give time for the queue to be emptied
-				std::this_thread::sleep_for(std::chrono::milliseconds(1));
-			}
+            // Wait a bit to give time for the queue to be emptied
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
 		}
 	}
 
@@ -125,7 +118,7 @@ void loadBatchesOnGPU(CuRast* editor, CUcontext* ctx,
 	}
 	if(last_index == 0){return;}
 	static uint32_t lastGPULoadAttempt = 0;
-	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL && batches_indices.size() < OocSimLodSettings::MIN_BATCHES_PER_GPU_LOAD){
+	if(batches_indices.size() < OocSimLodSettings::MIN_BATCHES_PER_GPU_LOAD){
 		if(lastGPULoadAttempt < OocSimLodSettings::MAX_ATTEMPTS_BEFORE_IGNORING_MIN_VARIABLES){
 			lastGPULoadAttempt++;
 			return;
@@ -144,68 +137,7 @@ void loadBatchesOnGPU(CuRast* editor, CUcontext* ctx,
         // Upload positions and colors to GPU
         CUdeviceptr cptr_positions, cptr_colors;
 
-		if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-			cuCtxSetCurrent(*ctx);
-		}
-
-		// // Check if enough memory is available
-		// // TODO: Debug display to remove
-		// uint64_t free_byte = 0;
-		// uint64_t total_byte = 0;
-		// double free_db, total_db, used_db = 0.;
-		// CUresult cuda_status = CUDA_SUCCESS;
-		// const char* name = nullptr;
-		// const char* desc = nullptr;
-		// {
-		// 	cuda_status = cuMemGetInfo(&free_byte, &total_byte);
-		// 	if(cuda_status != CUDA_SUCCESS){
-		// 		cuGetErrorName(cuda_status, &name);
-		// 		cuGetErrorString(cuda_status, &desc);
-		// 		println(stderr, "Error: cuMemGetInfo failed before, {} ({}): {}\n ",
-		// 			int(cuda_status),
-		// 			name ? name : "unknown",
-		// 			desc ? desc : "unknown"
-		// 		);
-		// 		throw(EXIT_FAILURE);
-		// 	}
-		// 	free_db = (double)free_byte;
-		// 	total_db = (double)total_byte;
-		// 	used_db = total_db - free_db;
-		// }
-
-		// size_t positions_sizes = batch->count * sizeof(vec3);
-		// size_t colors_sizes = batch->count * sizeof(uint32_t);
-		// float threshold = 10.f;
-		// double requested_db = threshold * (positions_sizes + colors_sizes);
-		// println("free: {} Mb, requested: {} Mb",
-		// 	free_db/1024/1024, requested_db/1024/1024
-		// );
-		// if(free_db < requested_db){
-		// 	println("Can't load more points to the GPU; insufficient memory available\n    memory usage: used = {} Mb, free = {} Mb, total = {} Mb",
-		// 		used_db/1024.0/1024.0, free_db/1024.0/1024.0, total_db/1024.0/1024.0
-		// 	);
-		// 	return;
-		// }
-
-        // cuMemAlloc(&cptr_positions, positions_sizes);
-        // cuMemAlloc(&cptr_colors, colors_sizes);
-        // cuMemcpyHtoD(cptr_positions, batch->getPositions().data(), positions_sizes);
-        // cuMemcpyHtoD(cptr_colors, batch->getColors().data(),colors_sizes);
-
-        // auto node = make_shared<SNCPoints>("pointcloud");
-        // node->cptr_positions = cptr_positions;
-        // node->cptr_colors    = cptr_colors;
-        // node->numPoints      = batch->count;
-
-		// {
-		// 	// Unified memory rendering
-		// 	auto tmp_positions = std::make_shared<std::vector<vec3>>(batch->getPositions());
-		// 	auto tmp_colors = std::make_shared<std::vector<uint32_t>>(batch->getColors());
-		// 	unified_positions.push_back(tmp_positions);
-		// 	unified_colors.push_back(tmp_colors);
-		// 	node->ptr_positions = tmp_positions.get()->data();
-		// 	node->ptr_colors    = tmp_colors.get()->data();
-		// }
+        cuCtxSetCurrent(*ctx);
 
 		batch->state = BatchState::ToRemove;
 
@@ -220,11 +152,7 @@ void loadBatchesOnGPU(CuRast* editor, CUcontext* ctx,
 
 	auto first = batches_indices.begin();
 	auto last = first + last_index;
-	if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-		std::for_each(std::execution::par, first, last, lambda);
-	} else {
-		std::for_each(first, last, lambda);
-	}
+    std::for_each(std::execution::par, first, last, lambda);
 
     timing->stop_clock();
 }
@@ -457,7 +385,7 @@ void loadPointsInBatches(
     }
 
     static uint32_t lastLoadAttempt = 0;
-    if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL && candidates.size() < OocSimLodSettings::MIN_BATCHES_PER_LOAD){
+    if(candidates.size() < OocSimLodSettings::MIN_BATCHES_PER_LOAD){
         if(lastLoadAttempt < OocSimLodSettings::MAX_ATTEMPTS_BEFORE_IGNORING_MIN_VARIABLES){
             lastLoadAttempt++;
             return;
@@ -572,11 +500,7 @@ void loadPointsInBatches(
 
     auto first = batches_indices.begin();
     auto last = first + last_index;
-    if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-        std::for_each(std::execution::par, first, last, lambda);
-    } else {
-        std::for_each(first, last, lambda);
-    }
+    std::for_each(std::execution::par, first, last, lambda);
 
     timing->stop_clock();
 }
@@ -784,10 +708,6 @@ bool LoaderGpuVersion::run(CuRast* editor, CUcontext* context){
 
 	// Check if batches are done on GPU side
 	fetchFromDevice();
-
-	if(!OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-		loadingRoutine();
-	}
 
 	// Get the batches to send to device side
 	return sendToDevice();
@@ -1187,10 +1107,6 @@ void LoaderGpuVersion::createNewBatchesFromFiles(std::vector<std::string> files)
 	std::iota(indices.begin(), indices.end(), 0u);
 	// At most `nbLoadingThreads()' threads (std::execution::par would use every core)
 	auto for_each_file = [&](auto func){
-		if(!OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-			std::for_each(indices.begin(), indices.end(), func);
-			return;
-		}
 		const uint32_t nb_threads = std::min<uint32_t>(nbLoadingThreads(), static_cast<uint32_t>(indices.size()));
 		std::atomic<uint32_t> next{0};
 		auto work = [&](){
@@ -1504,14 +1420,6 @@ bool LoaderGpuVersion::loadOneBatch(){
 }
 
 void LoaderGpuVersion::loadPendingBatches(){
-    if(!OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-        // Sequential: a few batches per call, on the calling thread
-        for(uint32_t k = 0; k < OocSimLodSettings::MAX_BATCHES_PER_LOAD; k++){
-            if(!loadOneBatch()){ break; }
-        }
-        return;
-    }
-
     // Parallel: persistent workers, each loading the current best batch as soon as it is free
     // (no round waiting for its slowest batch, decisions taken with the camera of the moment)
     {

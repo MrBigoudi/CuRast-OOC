@@ -738,24 +738,17 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
         if(!loadingToDeserialise.empty()){
             isDoneDeserializingForLoading = false;
 
-            if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-                std::thread deserialize_thread([&]() {
-                    std::for_each(loadingToDeserialise.begin(), loadingToDeserialise.end(),
-                        [](const CIdAABB& id){
-                            OctreeNodeSerializable::deserializeV2(updateNodes[id].get(), id, "From simlod load");
-                        }
-                    );
-                    isDoneDeserializingForLoading = true;
-                });
-                deserialize_thread.detach();
-                // Skip sending to device this frame; the next frame will pick it up
-                return;
-            } else {
-                std::for_each(loadingToDeserialise.begin(), loadingToDeserialise.end(), [](const CIdAABB& id){
-                    OctreeNodeSerializable::deserializeV2(updateNodes[id].get(), id, "From simlod load");
-                });
+            std::thread deserialize_thread([&]() {
+                std::for_each(loadingToDeserialise.begin(), loadingToDeserialise.end(),
+                    [](const CIdAABB& id){
+                        OctreeNodeSerializable::deserializeV2(updateNodes[id].get(), id, "From simlod load");
+                    }
+                );
                 isDoneDeserializingForLoading = true;
-            }
+            });
+            deserialize_thread.detach();
+            // Skip sending to device this frame; the next frame will pick it up
+            return;
         }
     }
     hasStartedLoading = false;
@@ -1121,24 +1114,17 @@ void GpuVersion::storeNodes(uint32_t nb_nodes_to_store){
         if(!storingToDeserialise.empty()){
             isDoneDeserializingForStoring = false;
 
-            if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-                std::thread deserialize_thread([&]() {
-                    std::for_each(storingToDeserialise.begin(), storingToDeserialise.end(),
-                        [](const CIdAABB& id){
-                            OctreeNodeSerializable::deserializeV2(updateNodes[id].get(), id, "From update cache");
-                        }
-                    );
-                    isDoneDeserializingForStoring = true;
-                });
-                deserialize_thread.detach();
-                // Skip sending to device this frame; the next frame will pick it up
-                return;
-            } else {
-                std::for_each(storingToDeserialise.begin(), storingToDeserialise.end(), [](const CIdAABB& id){
-                    OctreeNodeSerializable::deserializeV2(updateNodes[id].get(), id, "From update cache");
-                });
+            std::thread deserialize_thread([&]() {
+                std::for_each(storingToDeserialise.begin(), storingToDeserialise.end(),
+                    [](const CIdAABB& id){
+                        OctreeNodeSerializable::deserializeV2(updateNodes[id].get(), id, "From update cache");
+                    }
+                );
                 isDoneDeserializingForStoring = true;
-            }
+            });
+            deserialize_thread.detach();
+            // Skip sending to device this frame; the next frame will pick it up
+            return;
         }
     }
     hasStartedStoring = false;
@@ -1986,20 +1972,16 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
 
         if(!visibilityTasks.empty()){
             const uint32_t max_nb_workers = std::max(1u, std::thread::hardware_concurrency() / 4);
-            if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-                isDoneDeserializingForVisibility = false;
-                // `visibilityTasks' and the staging buffers belong to the workers until
-                // `isDoneDeserializingForVisibility' is true again
-                std::thread coordinator([max_nb_workers](){
-                    visRunTasks(max_nb_workers);
-                    isDoneDeserializingForVisibility = true;
-                });
-                coordinator.detach();
-                // The next frames will pick it up
-                return;
-            } else {
-                visRunTasks(1);
-            }
+            isDoneDeserializingForVisibility = false;
+            // `visibilityTasks' and the staging buffers belong to the workers until
+            // `isDoneDeserializingForVisibility' is true again
+            std::thread coordinator([max_nb_workers](){
+                visRunTasks(max_nb_workers);
+                isDoneDeserializingForVisibility = true;
+            });
+            coordinator.detach();
+            // The next frames will pick it up
+            return;
         }
     }
 
@@ -2170,17 +2152,12 @@ void GpuVersion::updateHostCache(){
     if(hostCacheToSerialise.empty()){return;}
     isDoneUpdatingHostCache = false;
 
-    if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL){
-        std::thread update_host_cache_thread([]()  {
-                serialiseHostCacheNodes();
-                isDoneUpdatingHostCache = true;
-            }
-        );
-        update_host_cache_thread.detach();
-    } else {
-        serialiseHostCacheNodes();
-        isDoneUpdatingHostCache = true;
-    }
+    std::thread update_host_cache_thread([]()  {
+            serialiseHostCacheNodes();
+            isDoneUpdatingHostCache = true;
+        }
+    );
+    update_host_cache_thread.detach();
 
 }
 

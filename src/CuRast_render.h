@@ -892,159 +892,85 @@ void CuRast::draw(Scene* scene, vector<View> views){
 			cfo = unifiedOctreeBuilder.build();
 		}
 
-		if(OocSimLodSettings::IS_USING_GPU_VERSION){
-			GpuVersion::renderOctree(target);
-			if(OocSimLodSettings::IS_USING_NN && CuRastSettings::useNN){
-				NeuralNet::infer(target);
-			}
-		} else {
-			if(CuRastSettings::bruteForceRendering){
-				drawPoints(scene, view, target);
-			} else {
-				if(CuRastSettings::useUnifiedMemory){ drawOctreeUnified(scene, view, target, cfo); } 
-				else { drawOctree(scene, view, target); }
-			}
-			if(CuRastSettings::showBoundingBoxes){
-				if(CuRastSettings::useUnifiedMemory){ drawOctreeAABBUnified(scene, view, target, cfo); } 
-				else { drawOctreeAABB(scene, view, target); }
-			}
+		GpuVersion::renderOctree(target);
+		if(OocSimLodSettings::IS_USING_NN && CuRastSettings::useNN){
+			NeuralNet::infer(target);
 		}
+
+
+		dvlist.push_back({"Total allocated size:    ", GlobalVariables::formatMemSize(GpuVersion::totalAllocatedMemory)});
+		dvlist.push_back({"Current values:          ", std::string(42, ' ')});
+		dvlist.push_back({"    # current nodes      ", format("{:40L}  ", GpuVersionUI::currentNbNodes)});
+		dvlist.push_back({"    # current chunks     ", format("{:40L}  ", GpuVersionUI::currentNbChunks)});
+		dvlist.push_back({"    # current grids      ", format("{:40L}  ", GpuVersionUI::currentNbGrids)});
+		dvlist.push_back({"    # current points     ", format("{:40L}  ", GpuVersionUI::currentNbPoints)});
+		dvlist.push_back({"    # current voxels     ", format("{:40L}  ", GpuVersionUI::currentNbVoxels)});
+		dvlist.push_back({"    # current vis nodes  ", format("{:40L}  ", GpuVersionUI::visNbNodes)});
+		dvlist.push_back({"    # current vis points ", format("{:40L}  ", GpuVersionUI::visNbPoints)});
+		dvlist.push_back({"    # current vis voxels ", format("{:40L}  ", GpuVersionUI::visNbVoxels)});
+		dvlist.push_back({"Current update:          ", format("{:40L}  ", GpuVersionUI::nbTotalUpdates)});
+		dvlist.push_back({"    # new points         ", format("{:40L}  ", GpuVersionUI::nbNewPointsThisUpdate)});
+		dvlist.push_back({"    # new voxels         ", format("{:40L}  ", GpuVersionUI::nbNewVoxelsThisUpdate)});
+		dvlist.push_back({"    # new chunks         ", format("{:40L}  ", GpuVersionUI::nbNewChunksThisUpdate)});
+		dvlist.push_back({"    # new grids          ", format("{:40L}  ", GpuVersionUI::nbNewGridsThisUpdate)});
+		dvlist.push_back({"    # new nodes          ", format("{:40L}  ", GpuVersionUI::nbNewNodesThisUpdate)});
+		dvlist.push_back({"    # del chunks         ", format("{:40L}  ", GpuVersionUI::nbDeletedChunksThisUpdate)});
+		dvlist.push_back({"    # del grids          ", format("{:40L}  ", GpuVersionUI::nbDeletedGridsThisUpdate)});
+		dvlist.push_back({"    # del nodes          ", format("{:40L}  ", GpuVersionUI::nbDeletedNodesThisUpdate)});
+		dvlist.push_back({"    # loaded nodes       ", format("{:40L}  ", GpuVersionUI::nbLoadedNodesThisUpdate)});
+		dvlist.push_back({"    # stored nodes       ", format("{:40L}  ", GpuVersionUI::nbStoredNodesThisUpdate)});
+		dvlist.push_back({"    # split nodes        ", format("{:40L}  ", GpuVersionUI::nbSplitNodesThisUpdate)});
+		dvlist.push_back({"Total values:            ", std::string(42, ' ')});
+		dvlist.push_back({"    # total points       ", format("{:40L}  ", GpuVersionUI::nbTotalPoints)});
+		dvlist.push_back({"    # total voxels       ", format("{:40L}  ", GpuVersionUI::nbTotalVoxels)});
+		dvlist.push_back({"    # total new chunks   ", format("{:40L}  ", GpuVersionUI::nbTotalNewChunks)});
+		dvlist.push_back({"    # total new grids    ", format("{:40L}  ", GpuVersionUI::nbTotalNewGrids)});
+		dvlist.push_back({"    # total new nodes    ", format("{:40L}  ", GpuVersionUI::nbTotalNewNodes)});
+		dvlist.push_back({"    # total del chunks   ", format("{:40L}  ", GpuVersionUI::nbTotalDeletedChunks)});
+		dvlist.push_back({"    # total del grids    ", format("{:40L}  ", GpuVersionUI::nbTotalDeletedGrids)});
+		dvlist.push_back({"    # total del nodes    ", format("{:40L}  ", GpuVersionUI::nbTotalDeletedNodes)});
+		dvlist.push_back({"    # total loaded nodes ", format("{:40L}  ", GpuVersionUI::nbTotalLoadedNodes)});
+		dvlist.push_back({"    # total stored nodes ", format("{:40L}  ", GpuVersionUI::nbTotalStoredNodes)});
+		dvlist.push_back({"    # total split nodes  ", format("{:40L}  ", GpuVersionUI::nbTotalSplitNodes)});
+		dvlist.push_back({"Flow rates (per second): ", std::string(42, ' ')});
+		dvlist.push_back({"    # updates            ", format("max: {:7L}, min: {:7L}, avg: {:7L}  ", 
+			GpuVersionUI::maxNbUpdatesPerSecond, GpuVersionUI::minNbUpdatesPerSecond, GpuVersionUI::avgNbUpdatesPerSecond
+		)});
+		dvlist.push_back({"Flow rates (per update): ", std::string(42, ' ')});
+		dvlist.push_back({"    # new points         ", format("max: {:7L}, min: {:7L}, avg: {:7L}  ", 
+			GpuVersionUI::maxNbNewPointsPerUpdate, GpuVersionUI::minNbNewPointsPerUpdate, GpuVersionUI::avgNbNewPointsPerUpdate
+		)});
+		dvlist.push_back({"    # new voxels         ", format("max: {:7L}, min: {:7L}, avg: {:7L}  ", 
+			GpuVersionUI::maxNbNewVoxelsPerUpdate, GpuVersionUI::minNbNewVoxelsPerUpdate, GpuVersionUI::avgNbNewVoxelsPerUpdate
+		)});
+		dvlist.push_back({"    # new chunks         ", format("max: {:7L}, min: {:7L}, avg: {:7L}  ", 
+			GpuVersionUI::maxNbNewChunksPerUpdate, GpuVersionUI::minNbNewChunksPerUpdate, GpuVersionUI::avgNbNewChunksPerUpdate
+		)});
+		dvlist.push_back({"    # new grids          ", format("max: {:7L}, min: {:7L}, avg: {:7L}  ", 
+			GpuVersionUI::maxNbNewGridsPerUpdate, GpuVersionUI::minNbNewGridsPerUpdate, GpuVersionUI::avgNbNewGridsPerUpdate
+		)});
+		dvlist.push_back({"    # new nodes          ", format("max: {:7L}, min: {:7L}, avg: {:7L}  ", 
+			GpuVersionUI::maxNbNewNodesPerUpdate, GpuVersionUI::minNbNewNodesPerUpdate, GpuVersionUI::avgNbNewNodesPerUpdate
+		)});
+		dvlist.push_back({"    # del chunks         ", format("max: {:7L}, min: {:7L}, avg: {:7L}  ", 
+			GpuVersionUI::maxNbDeletedChunksPerUpdate, GpuVersionUI::minNbDeletedChunksPerUpdate, GpuVersionUI::avgNbDeletedChunksPerUpdate
+		)});
+		dvlist.push_back({"    # del grids          ", format("max: {:7L}, min: {:7L}, avg: {:7L}  ", 
+			GpuVersionUI::maxNbDeletedGridsPerUpdate, GpuVersionUI::minNbDeletedGridsPerUpdate, GpuVersionUI::avgNbDeletedGridsPerUpdate
+		)});
+		dvlist.push_back({"    # del nodes          ", format("max: {:7L}, min: {:7L}, avg: {:7L}  ", 
+			GpuVersionUI::maxNbDeletedNodesPerUpdate, GpuVersionUI::minNbDeletedNodesPerUpdate, GpuVersionUI::avgNbDeletedNodesPerUpdate
+		)});
+		dvlist.push_back({"    # loaded nodes       ", format("max: {:7L}, min: {:7L}, avg: {:7L}  ", 
+			GpuVersionUI::maxNbLoadedNodesPerUpdate, GpuVersionUI::minNbLoadedNodesPerUpdate, GpuVersionUI::avgNbLoadedNodesPerUpdate
+		)});
+		dvlist.push_back({"    # stored nodes       ", format("max: {:7L}, min: {:7L}, avg: {:7L}  ", 
+			GpuVersionUI::maxNbStoredNodesPerUpdate, GpuVersionUI::minNbStoredNodesPerUpdate, GpuVersionUI::avgNbStoredNodesPerUpdate
+		)});
+		dvlist.push_back({"    # split nodes        ", format("max: {:7L}, min: {:7L}, avg: {:7L}  ", 
+			GpuVersionUI::maxNbSplitNodesPerUpdate, GpuVersionUI::minNbSplitNodesPerUpdate, GpuVersionUI::avgNbSplitNodesPerUpdate
+		)});
 		
-
-
-
-		if(OocSimLodSettings::IS_USING_GPU_VERSION){
-			dvlist.push_back({"Total allocated size:    ", GlobalVariables::formatMemSize(GpuVersion::totalAllocatedMemory)});
-			dvlist.push_back({"Current values:          ", std::string(42, ' ')});
-			dvlist.push_back({"    # current nodes      ", format("{:40L}  ", GpuVersionUI::currentNbNodes)});
-			dvlist.push_back({"    # current chunks     ", format("{:40L}  ", GpuVersionUI::currentNbChunks)});
-			dvlist.push_back({"    # current grids      ", format("{:40L}  ", GpuVersionUI::currentNbGrids)});
-			dvlist.push_back({"    # current points     ", format("{:40L}  ", GpuVersionUI::currentNbPoints)});
-			dvlist.push_back({"    # current voxels     ", format("{:40L}  ", GpuVersionUI::currentNbVoxels)});
-			dvlist.push_back({"    # current vis nodes  ", format("{:40L}  ", GpuVersionUI::visNbNodes)});
-			dvlist.push_back({"    # current vis points ", format("{:40L}  ", GpuVersionUI::visNbPoints)});
-			dvlist.push_back({"    # current vis voxels ", format("{:40L}  ", GpuVersionUI::visNbVoxels)});
-			dvlist.push_back({"Current update:          ", format("{:40L}  ", GpuVersionUI::nbTotalUpdates)});
-			dvlist.push_back({"    # new points         ", format("{:40L}  ", GpuVersionUI::nbNewPointsThisUpdate)});
-			dvlist.push_back({"    # new voxels         ", format("{:40L}  ", GpuVersionUI::nbNewVoxelsThisUpdate)});
-			dvlist.push_back({"    # new chunks         ", format("{:40L}  ", GpuVersionUI::nbNewChunksThisUpdate)});
-			dvlist.push_back({"    # new grids          ", format("{:40L}  ", GpuVersionUI::nbNewGridsThisUpdate)});
-			dvlist.push_back({"    # new nodes          ", format("{:40L}  ", GpuVersionUI::nbNewNodesThisUpdate)});
-			dvlist.push_back({"    # del chunks         ", format("{:40L}  ", GpuVersionUI::nbDeletedChunksThisUpdate)});
-			dvlist.push_back({"    # del grids          ", format("{:40L}  ", GpuVersionUI::nbDeletedGridsThisUpdate)});
-			dvlist.push_back({"    # del nodes          ", format("{:40L}  ", GpuVersionUI::nbDeletedNodesThisUpdate)});
-			dvlist.push_back({"    # loaded nodes       ", format("{:40L}  ", GpuVersionUI::nbLoadedNodesThisUpdate)});
-			dvlist.push_back({"    # stored nodes       ", format("{:40L}  ", GpuVersionUI::nbStoredNodesThisUpdate)});
-			dvlist.push_back({"    # split nodes        ", format("{:40L}  ", GpuVersionUI::nbSplitNodesThisUpdate)});
-			dvlist.push_back({"Total values:            ", std::string(42, ' ')});
-			dvlist.push_back({"    # total points       ", format("{:40L}  ", GpuVersionUI::nbTotalPoints)});
-			dvlist.push_back({"    # total voxels       ", format("{:40L}  ", GpuVersionUI::nbTotalVoxels)});
-			dvlist.push_back({"    # total new chunks   ", format("{:40L}  ", GpuVersionUI::nbTotalNewChunks)});
-			dvlist.push_back({"    # total new grids    ", format("{:40L}  ", GpuVersionUI::nbTotalNewGrids)});
-			dvlist.push_back({"    # total new nodes    ", format("{:40L}  ", GpuVersionUI::nbTotalNewNodes)});
-			dvlist.push_back({"    # total del chunks   ", format("{:40L}  ", GpuVersionUI::nbTotalDeletedChunks)});
-			dvlist.push_back({"    # total del grids    ", format("{:40L}  ", GpuVersionUI::nbTotalDeletedGrids)});
-			dvlist.push_back({"    # total del nodes    ", format("{:40L}  ", GpuVersionUI::nbTotalDeletedNodes)});
-			dvlist.push_back({"    # total loaded nodes ", format("{:40L}  ", GpuVersionUI::nbTotalLoadedNodes)});
-			dvlist.push_back({"    # total stored nodes ", format("{:40L}  ", GpuVersionUI::nbTotalStoredNodes)});
-			dvlist.push_back({"    # total split nodes  ", format("{:40L}  ", GpuVersionUI::nbTotalSplitNodes)});
-			dvlist.push_back({"Flow rates (per second): ", std::string(42, ' ')});
-			dvlist.push_back({"    # updates            ", format("max: {:7L}, min: {:7L}, avg: {:7L}  ", 
-				GpuVersionUI::maxNbUpdatesPerSecond, GpuVersionUI::minNbUpdatesPerSecond, GpuVersionUI::avgNbUpdatesPerSecond
-			)});
-			dvlist.push_back({"Flow rates (per update): ", std::string(42, ' ')});
-			dvlist.push_back({"    # new points         ", format("max: {:7L}, min: {:7L}, avg: {:7L}  ", 
-				GpuVersionUI::maxNbNewPointsPerUpdate, GpuVersionUI::minNbNewPointsPerUpdate, GpuVersionUI::avgNbNewPointsPerUpdate
-			)});
-			dvlist.push_back({"    # new voxels         ", format("max: {:7L}, min: {:7L}, avg: {:7L}  ", 
-				GpuVersionUI::maxNbNewVoxelsPerUpdate, GpuVersionUI::minNbNewVoxelsPerUpdate, GpuVersionUI::avgNbNewVoxelsPerUpdate
-			)});
-			dvlist.push_back({"    # new chunks         ", format("max: {:7L}, min: {:7L}, avg: {:7L}  ", 
-				GpuVersionUI::maxNbNewChunksPerUpdate, GpuVersionUI::minNbNewChunksPerUpdate, GpuVersionUI::avgNbNewChunksPerUpdate
-			)});
-			dvlist.push_back({"    # new grids          ", format("max: {:7L}, min: {:7L}, avg: {:7L}  ", 
-				GpuVersionUI::maxNbNewGridsPerUpdate, GpuVersionUI::minNbNewGridsPerUpdate, GpuVersionUI::avgNbNewGridsPerUpdate
-			)});
-			dvlist.push_back({"    # new nodes          ", format("max: {:7L}, min: {:7L}, avg: {:7L}  ", 
-				GpuVersionUI::maxNbNewNodesPerUpdate, GpuVersionUI::minNbNewNodesPerUpdate, GpuVersionUI::avgNbNewNodesPerUpdate
-			)});
-			dvlist.push_back({"    # del chunks         ", format("max: {:7L}, min: {:7L}, avg: {:7L}  ", 
-				GpuVersionUI::maxNbDeletedChunksPerUpdate, GpuVersionUI::minNbDeletedChunksPerUpdate, GpuVersionUI::avgNbDeletedChunksPerUpdate
-			)});
-			dvlist.push_back({"    # del grids          ", format("max: {:7L}, min: {:7L}, avg: {:7L}  ", 
-				GpuVersionUI::maxNbDeletedGridsPerUpdate, GpuVersionUI::minNbDeletedGridsPerUpdate, GpuVersionUI::avgNbDeletedGridsPerUpdate
-			)});
-			dvlist.push_back({"    # del nodes          ", format("max: {:7L}, min: {:7L}, avg: {:7L}  ", 
-				GpuVersionUI::maxNbDeletedNodesPerUpdate, GpuVersionUI::minNbDeletedNodesPerUpdate, GpuVersionUI::avgNbDeletedNodesPerUpdate
-			)});
-			dvlist.push_back({"    # loaded nodes       ", format("max: {:7L}, min: {:7L}, avg: {:7L}  ", 
-				GpuVersionUI::maxNbLoadedNodesPerUpdate, GpuVersionUI::minNbLoadedNodesPerUpdate, GpuVersionUI::avgNbLoadedNodesPerUpdate
-			)});
-			dvlist.push_back({"    # stored nodes       ", format("max: {:7L}, min: {:7L}, avg: {:7L}  ", 
-				GpuVersionUI::maxNbStoredNodesPerUpdate, GpuVersionUI::minNbStoredNodesPerUpdate, GpuVersionUI::avgNbStoredNodesPerUpdate
-			)});
-			dvlist.push_back({"    # split nodes        ", format("max: {:7L}, min: {:7L}, avg: {:7L}  ", 
-				GpuVersionUI::maxNbSplitNodesPerUpdate, GpuVersionUI::minNbSplitNodesPerUpdate, GpuVersionUI::avgNbSplitNodesPerUpdate
-			)});
-		} else {
-			// DEBUG
-			std::vector<SNCPoints*> batches = {};
-			SNCOctree* octree = nullptr;
-
-			uint64_t nb_batches  = 0;
-			uint64_t nb_points  = 0;
-			uint64_t nb_points_octree = 0;
-			uint64_t points_gpu_memory = 0;
-			uint64_t total_gpu_memory = 0;
-
-			for(const BatchedMemory& memory : GlobalVariables::batchedMemories){
-				total_gpu_memory += memory.memory_size;
-			}
-
-			{
-				uint32_t max_id = 0;
-				std::lock_guard<std::mutex> lock(GlobalVariables::updateSceneMutex);
-				scene->forEach<SNCOctree>([&](SNCOctree* node){
-					if(!node){return;}
-					total_gpu_memory += node->getOverheadGPUMemoryUsage();
-					if(node->octree_id < max_id){return;}
-					if(node->need_to_be_executed){return;}
-					if(!node->isDoneLoadingToGpu()){return;}
-
-					max_id = node->octree_id;
-					octree = node;
-					nb_points_octree = node->nb_points;
-				});
-				scene->forEach<SNCPoints>([&](SNCPoints* node){
-					batches.push_back(node);
-					nb_batches++;
-					nb_points += node->numPoints;
-					points_gpu_memory += node->getGpuMemoryUsage();
-					total_gpu_memory += node->getGpuMemoryUsage();
-				});
-				if(nb_points == 0){
-					nb_points = nb_points_octree;
-				}
-			}
-
-			// Octree info
-			if(octree){
-				dvlist.push_back({format("octree '{}' ", octree->name), ""});
-				dvlist.push_back({"     - # nodes           ", format("{:40L}", octree->nb_nodes)});
-				dvlist.push_back({"     - # chunks          ", format("{:40L}", octree->nb_chunks)});
-				dvlist.push_back({"     - # voxels          ", format("{:40L}", octree->nb_voxels)});
-				dvlist.push_back({"     - # points          ", format("{:40L}", octree->nb_points)});
-				dvlist.push_back({"     - GPU memory usage  ", GlobalVariables::formatMemSize(octree->getGpuMemoryUsage(), 25)});
-			}
-
-			// Batches info
-			dvlist.push_back({"\n# total batches          ", format("{:40L}", nb_batches)});
-			dvlist.push_back({"# total points           ", format("{:40L}", GlobalVariables::nbPoints)});
-			dvlist.push_back({"# total nodes            ", format("{:40L}", GlobalVariables::allAABBs.size())});
-			dvlist.push_back({"batches GPU memory usage ", GlobalVariables::formatMemSize(points_gpu_memory, 25)});
-			dvlist.push_back({"total GPU memory usage   ", GlobalVariables::formatMemSize(total_gpu_memory, 25)});
-			
-		}
 
 
 		// SCREEN SPACE AMBIENT OCCLUSION
@@ -1063,20 +989,7 @@ void CuRast::draw(Scene* scene, vector<View> views){
 			prog->launch2D("kernel_ssaoOcclusion", argsSSAO, target.width, target.height);
 			prog->launch2D("kernel_ssaoBlur", argsSSAO, target.width, target.height);
 		}
-
-		// static CUdeviceptr cptr_enlarged = CURuntime::alloc("enlarge", 4096 * 4096 * 8);
-		// prog->launchCooperative("kernel_enlarge", {
-		// 	&mappings.surfaces[0],
-		// 	&cptr_ssaoShadebuffer,
-		// 	&cptr_enlarged,
-		// 	&view.framebuffer->width, 
-		// 	&view.framebuffer->height,
-		// 	&mouse_X,
-		// 	&mouse_Y,
-		// 	&cptr_state,
-		// 	&CuRastSettings::enableEDL,
-		// 	&CuRastSettings::enableSSAO,
-		// });
+		
 
 		{ // RESOLVE COLOR BUFFER (write to graphics API framebuffer)
 			int viewWidth = view.framebuffer->width;
