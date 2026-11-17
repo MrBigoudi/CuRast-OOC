@@ -400,7 +400,9 @@ enum CGlobalNodeFlagType {
 	// chunks): its voxels are an incomplete representation, its children (which hold all the data
 	// behind its voxels) are drawn instead (see `isLargeForRendering' in render.cu)
 	CFlagHasIncompleteVoxels,
-	CGlobalFlagPad12,
+	// Visibility of the published host rendering buffers (copied from `CFlagIsVisibleHost' with the
+	// cut, see `kernel_publish_host_cut'): the device draws the out-of-view fallback with it
+	CFlagIsVisiblePublished,
 	CGlobalFlagPad13,
 	CGlobalFlagPad14,
 	CGlobalFlagPad15,
@@ -659,6 +661,17 @@ struct CSemaphore {
 #endif // __CUDACC__
 };
 
+/// A node evicted from the device and kept drawable from a device copy of its in-memory data until
+/// the published host rendering buffers show it (see `CGlobalVariables::retainedEvictedNodes')
+struct CEvictedRetainEntry {
+	CIdAABB id = CINVALID_ID;
+	uint32_t generation = 0;      // eviction pass that evicted the node
+	uint32_t points_offset = 0;   // in `retainedEvictedPoints'
+	uint32_t nb_points = 0;
+	uint32_t voxels_offset = 0;   // in `retainedEvictedVoxels'
+	uint32_t nb_voxels = 0;
+};
+
 struct CGlobalVariables {
     ///////////////////////////////////////////////////////////////////////
     /////////////////////////// UNBOUNDED DATA ////////////////////////////
@@ -787,6 +800,23 @@ struct CGlobalVariables {
 	/// drawn while `evictionGeneration > coveredEvictionGeneration'
 	uint32_t evictionGeneration = 0;
 	uint32_t coveredEvictionGeneration = 0;
+
+	/// Older evicted batches: the exchange buffers only hold the last eviction pass, so every pass also
+	/// copies the evicted nodes the device was drawing (large or cut in the published cut, or created
+	/// since it) into these buffers. They are drawn while their generation is not covered, so a new
+	/// eviction pass does not have to wait for the previous one to be covered.
+	/// Append-only, emptied when every generation is covered (`kernel_reset_evicted_retain'). When full
+	/// (`retainOverflowGeneration'), the host makes the next pass wait for the coverage instead
+	uint32_t maxNbRetainedEvictedNodes = 0;
+	uint32_t maxNbRetainedEvictedPoints = 0;
+	uint32_t maxNbRetainedEvictedVoxels = 0;
+	uint32_t nbRetainedEvictedNodes = 0;     // may exceed the capacity (overflow): min() when reading
+	uint32_t nbRetainedEvictedPoints = 0;    // idem
+	uint32_t nbRetainedEvictedVoxels = 0;    // idem
+	uint32_t retainOverflowGeneration = 0;   // latest generation that did not fit entirely, 0 if none
+	CEvictedRetainEntry* retainedEvictedNodes = nullptr;
+	CPoint* retainedEvictedPoints = nullptr;
+	CPoint* retainedEvictedVoxels = nullptr;
 
 	/// Number of nodes covered by the published cut (`CFlagIsLargePublished' / `CFlagIsCutPublished'):
 	/// the nodes created after it are only on the device and keep the live cut (current camera)

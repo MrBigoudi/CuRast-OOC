@@ -5,6 +5,7 @@
 #include "../kernels/ooc/GpuVersionAllocator.h"
 
 #include <list>
+#include <deque>
 
 struct LoaderGpuVersion;
 struct HostStorageNode;
@@ -306,9 +307,38 @@ struct GpuVersion {
         uint32_t nb_voxels = 0;
     };
     static inline std::vector<EvictedNodeRecord> lastEvictedNodes = {};
+    /// Every eviction generation not covered by published host buffers yet, in order (the device draws
+    /// them: the last one from the exchange buffers, the older ones from their retained copies)
+    struct PendingEviction {
+        uint32_t generation = 0;
+        std::vector<EvictedNodeRecord> records = {};
+    };
+    static inline std::deque<PendingEviction> pendingEvictions = {};
+    /// The last eviction pass did not fit entirely in the retained copies (device
+    /// `retainOverflowGeneration'): the next pass must wait for its coverage
+    static inline bool hasLastPassOverflowedRetain = false;
+    /// Capacity of the retained copies of evicted nodes, as a fraction of the rendering budgets
+    /// (points and voxels); entries: this many eviction passes of `maxNbNodesExchanged' nodes
+    static constexpr double EVICTION_RETAIN_BUDGET_FRACTION = 0.25;
+    static constexpr uint32_t EVICTION_RETAIN_NB_PASSES = 16;
     /// Latest eviction generation shown by the visibility update in progress (computed in
     /// `visibilityUpdateSort', published with its buffers in `updateVisCache')
     static inline uint32_t visCoveredEvictionGeneration = 0;
+    /// Latest eviction generation covered by the host rendering buffers the device draws (host mirror
+    /// of `CGlobalVariables::coveredEvictionGeneration', set when they are published)
+    static inline uint32_t publishedCoveredGeneration = 0;
+    /// The device draws the evicted batches until published host buffers cover them: the last one from
+    /// the exchange buffers (overwritten by the next eviction pass), the older ones from their retained
+    /// copies. When the last pass did not fit in the retained copies, a new pass waits until it is
+    /// covered. True while the cache update is held back for that reason (nothing else of the update
+    /// pipeline may run meanwhile: the update in progress is not finished before its cache update)
+    static inline bool isCacheUpdateDeferred = false;
+    static inline std::chrono::time_point<std::chrono::steady_clock> cacheUpdateDeferredSince;
+    /// Longest wait for the coverage before evicting anyway (the device then stops drawing the
+    /// previous batch: holes until the next publication)
+    static constexpr double MAX_EVICTION_COVERAGE_WAIT_SECONDS = 5.0;
+    /// True if a new eviction pass would overwrite a batch the device still has to draw
+    static bool isWaitingForEvictionCoverage();
 
     static inline std::vector<CUdeviceptr> exchangedPointsPointers = {};
 	static inline std::vector<CUdeviceptr> exchangedVoxelsPointers = {};

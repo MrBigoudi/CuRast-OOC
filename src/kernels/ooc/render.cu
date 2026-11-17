@@ -395,6 +395,85 @@ bool isLargeForRendering(
 }
 
 
+/// The device renderers (resident nodes, last evicted batch) draw with the cut of the published host
+/// rendering buffers, not with the live camera: both renderers always agree on the level drawn in
+/// every region, and the cut changes for everybody at once, when new host buffers are published
+/// (`kernel_publish_host_cut'). A node evicted from the device is then drawn at the same level before
+/// and after it reaches the host buffers.
+/// The nodes created since the last publication are not in that cut: they keep the live cut
+__device__ __forceinline__
+bool isInPublishedCut(CIdAABB node_id){
+    return node_id < globalVariables.publishedNbNodes;
+}
+
+/// Large for the device renderers (its points are drawn, its children decide for their region)
+__device__
+bool isLargeForDeviceRendering(
+    const CRenderTarget& target,
+    CRenderingSettings settings,
+    CIdAABB node_id
+){
+    if(isInPublishedCut(node_id)){
+        return globalVariables.getFlag(node_id, CFlagIsLargePublished);
+    }
+    return isLargeForRendering(target, settings, node_id);
+}
+
+/// Cut for the device renderers (its voxels and points are drawn)
+/// In the published cut, the children of a large node that were outside the view are neither large
+/// nor cut: their region is drawn by the out-of-view fallback of their parent (its voxels)
+__device__
+bool isCutForDeviceRendering(
+    const CRenderTarget& target,
+    CRenderingSettings settings,
+    CIdAABB node_id
+){
+    if(isInPublishedCut(node_id)){
+        return globalVariables.getFlag(node_id, CFlagIsCutPublished);
+    }
+    if(isLargeForDeviceRendering(target, settings, node_id)){return false;}
+    const CIdAABB parent = globalVariables.relationshipMap[node_id].parent;
+    return parent == CINVALID_ID || isLargeForDeviceRendering(target, settings, parent);
+}
+
+
+
+/// Publish the cut of the host rendering buffers the device is about to draw (run by the host when
+/// it switches to them, see `updateVisCache'): `CFlagIs*Host' still hold the cut of their visibility
+/// update (the next update only starts once these buffers are published)
+/// Same cut as the host lists: large = `CFlagIsLargeHost'; cut = visible, not large, and cut by a large
+/// parent or the root ("minimal draw" of part 4)
+extern "C" __global__
+void kernel_publish_host_cut(){
+	auto grid = cg::this_grid();
+    uint32_t thread_id = grid.thread_rank();
+    uint32_t nb_threads = grid.num_threads();
+
+    const uint32_t nb_nodes = globalVariables.totalNbNodesForVisibility;
+
+    for(uint32_t node_index = thread_id; node_index < nb_nodes; node_index += nb_threads){
+        const bool is_visible = globalVariables.getFlag(node_index, CFlagIsVisibleHost);
+        const bool is_large = globalVariables.getFlag(node_index, CFlagIsLargeHost);
+        const bool is_root = globalVariables.relationshipMap[node_index].parent == CINVALID_ID;
+        const bool is_cut = is_visible && !is_large
+            && (globalVariables.getFlag(node_index, CFlagIsCutHost) || is_root);
+
+        // Atomics: the update kernels may modify other flags of the same node meanwhile
+        if(is_large){ globalVariables.setFlagSync(node_index, CFlagIsLargePublished); }
+        else        { globalVariables.unsetFlagSync(node_index, CFlagIsLargePublished); }
+        if(is_cut)  { globalVariables.setFlagSync(node_index, CFlagIsCutPublished); }
+        else        { globalVariables.unsetFlagSync(node_index, CFlagIsCutPublished); }
+        if(is_visible){ globalVariables.setFlagSync(node_index, CFlagIsVisiblePublished); }
+        else          { globalVariables.unsetFlagSync(node_index, CFlagIsVisiblePublished); }
+    }
+
+    // Read by the next kernels only (kernel boundaries order the flag writes above before them)
+    if(thread_id == 0){
+        globalVariables.publishedNbNodes = nb_nodes;
+    }
+}
+
+
 
 /// Run on "NB SMs" blocks of size min("Max threads per SM", "Max block dim")
 extern "C" __global__
@@ -466,7 +545,7 @@ void kernel_visibility_pass(
             continue;
         }
 
-        if(isLargeForRendering(target, settings, node->aabb_index)){
+        if(isLargeForDeviceRendering(target, settings, node->aabb_index)){
             node->flags |= (0x01 << CFlagIsLarge);
             // // TODO: to remove
             // __nv_atomic_add(&globalVariables.curNbVisNode, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
@@ -627,13 +706,48 @@ void kernel_draw_visibility_cache(
 
 
 
-/// Draw the last evicted batch straight from the exchange buffers, until the published host
-/// rendering buffers show it (closes the gap between the deletion of an evicted node on the device
-/// and its arrival in the host rendering buffers)
-/// The slots hold exactly what the device drew before the eviction (the in-memory points / voxels of
-/// the node), so the same LOD rule as `kernel_draw_octree_large' / `_small' is applied:
-/// large node -> its points; cut node (not large, parent large) -> its voxels and points;
-/// root not large -> its voxels and points
+/// Draw the evicted nodes the published host rendering buffers don't show yet (closes the gap between
+/// the deletion of an evicted node on the device and its arrival in the host rendering buffers):
+///  - the last eviction pass straight from the exchange buffers (overwritten by the next pass),
+///  - the older passes from their retained copies (`retainedEvictedNodes', written by
+///    `kernel_prepare_store_part_1_filling_buffers'), until their generation is covered.
+/// Same cut as the resident nodes (see `isLargeForDeviceRendering'): large node -> its points;
+/// cut node -> its voxels and points
+__device__
+void drawEvictedNode(
+	const CRenderTarget& target,
+    CRenderingSettings settings,
+    CIdAABB node_id,
+    const CPoint* points, uint32_t nb_points,
+    const CPoint* voxels, uint32_t nb_voxels
+){
+    auto block = cg::this_thread_block();
+    uint32_t thread_id = block.thread_rank();
+    uint32_t nb_threads_per_block = block.num_threads();
+
+    const bool is_large = isLargeForDeviceRendering(target, settings, node_id);
+    const bool is_cut = !is_large && isCutForDeviceRendering(target, settings, node_id);
+    if(!is_large && !is_cut){return;}
+
+    for(uint32_t i = thread_id; i < nb_points; i += nb_threads_per_block){
+        // For dataset creation
+        if(i % settings.draw_every_x_points != 0){continue;}
+        const CPoint& point = points[i];
+        drawPoint(target, settings, point.position, point.color);
+    }
+
+    if(is_cut){
+        for(uint32_t i = thread_id; i < nb_voxels; i += nb_threads_per_block){
+            // For dataset creation
+            if(i % settings.draw_every_x_points != 0){continue;}
+            const CPoint& voxel = voxels[i];
+            drawPoint(target, settings, voxel.position,
+                settings.use_voxels_debug_color ? 0xffff00ff : voxel.color
+            );
+        }
+    }
+}
+
 /// Run on "NB SMs" blocks of size min("Max threads per SM", "Max block dim")
 extern "C" __global__
 void kernel_draw_evicted_nodes(
@@ -641,53 +755,36 @@ void kernel_draw_evicted_nodes(
     CRenderingSettings settings
 ){
     if(settings.debug_lod_to_render != -1){return;}
-    if(!(globalVariables.evictionGeneration > globalVariables.coveredEvictionGeneration)){return;}
+
+    const uint32_t covered = globalVariables.coveredEvictionGeneration;
+    const uint32_t last_generation = globalVariables.evictionGeneration;
+    if(!(last_generation > covered)){return;}
 
 	auto grid = cg::this_grid();
-    auto block = cg::this_thread_block();
     uint32_t nb_blocks = grid.num_blocks();
-
     uint32_t block_id = grid.block_rank();
-    uint32_t thread_id = block.thread_rank();
-    uint32_t nb_threads_per_block = block.num_threads();
 
+    // Last pass: from the exchange buffers. One slot per thread block (uniform conditions in a block)
     const uint32_t nb_slots = min(globalVariables.nbEvictedNodes, globalVariables.maxNbNodesExchanged);
-
-    // Assign each slot to one thread block (all the conditions below are uniform in a block)
     for(uint32_t slot = block_id; slot < nb_slots; slot += nb_blocks){
         const CIdAABB node_id = globalVariables.evictedNodesIds[slot];
         if(node_id == CINVALID_ID){continue;}
+        drawEvictedNode(target, settings, node_id,
+            globalVariables.exchangedPoints[slot], globalVariables.evictedNodesNbPoints[slot],
+            globalVariables.exchangedVoxels[slot], globalVariables.evictedNodesNbVoxels[slot]
+        );
+    }
 
-        const CGlobalVariables::Relationship& relationship = globalVariables.relationshipMap[node_id];
-        const bool is_large = isLargeForRendering(target, settings, node_id);
-        const bool is_parent_large = (relationship.parent == CINVALID_ID)
-            || isLargeForRendering(target, settings, relationship.parent);
-
-        const bool draw_points = is_large || is_parent_large;
-        const bool draw_voxels = !is_large && is_parent_large;
-        if(!draw_points){continue;}
-
-        const CPoint* points = globalVariables.exchangedPoints[slot];
-        const uint32_t nb_points = globalVariables.evictedNodesNbPoints[slot];
-        for(uint32_t i = thread_id; i < nb_points; i += nb_threads_per_block){
-            // For dataset creation
-            if(i % settings.draw_every_x_points != 0){continue;}
-            const CPoint& point = points[i];
-            drawPoint(target, settings, point.position, point.color);
-        }
-
-        if(draw_voxels){
-            const CPoint* voxels = globalVariables.exchangedVoxels[slot];
-            const uint32_t nb_voxels = globalVariables.evictedNodesNbVoxels[slot];
-            for(uint32_t i = thread_id; i < nb_voxels; i += nb_threads_per_block){
-                // For dataset creation
-                if(i % settings.draw_every_x_points != 0){continue;}
-                const CPoint& voxel = voxels[i];
-                drawPoint(target, settings, voxel.position,
-                    settings.use_voxels_debug_color ? 0xffff00ff : voxel.color
-                );
-            }
-        }
+    // Older passes not covered yet: from their retained copies (the last pass is drawn above)
+    const uint32_t nb_entries = min(globalVariables.nbRetainedEvictedNodes, globalVariables.maxNbRetainedEvictedNodes);
+    for(uint32_t entry_index = block_id; entry_index < nb_entries; entry_index += nb_blocks){
+        const CEvictedRetainEntry entry = globalVariables.retainedEvictedNodes[entry_index];
+        if(entry.id == CINVALID_ID){continue;}
+        if(entry.generation <= covered || entry.generation >= last_generation){continue;}
+        drawEvictedNode(target, settings, entry.id,
+            globalVariables.retainedEvictedPoints + entry.points_offset, entry.nb_points,
+            globalVariables.retainedEvictedVoxels + entry.voxels_offset, entry.nb_voxels
+        );
     }
 }
 
@@ -758,20 +855,20 @@ void kernel_draw_octree_large(
 
         drawAllPoints(target, settings, node);
 
-        // Out-of-view fallback ("Vox"), device side: the resident voxels of a visible large node in
-        // the octants of its children that are outside the view (last visibility update) and not
-        // resident. The host draws the on-disk voxels of these octants (see part 3); a resident child
-        // is drawn by this device path itself. Uniform in the block (one node per block)
+        // Out-of-view fallback ("Vox"), device side: the resident voxels of a large node of the
+        // published cut in the octants of its children that were outside the view (they are neither
+        // large nor cut in the published cut, resident or not: nothing else draws their region).
+        // The host buffers draw the on-disk voxels of these octants (see part 3).
+        // Children created since the publication are not decided by it (live cut): not replaced.
+        // Uniform in the block (one node per block)
         const CIdAABB node_id = node->aabb_index;
-        const uint32_t nb_vis_nodes = globalVariables.totalNbNodesForVisibility;
-        if(node_id < nb_vis_nodes && globalVariables.getFlag(node_id, CFlagIsVisibleHost)){
+        if(isInPublishedCut(node_id) && globalVariables.getFlag(node_id, CFlagIsVisiblePublished)){
             const CIdAABB* rel_children = globalVariables.relationshipMap[node_id].children;
             uint32_t vox_mask = 0;
             for(uint32_t i = 0; i < 8; i++){
                 const CIdAABB child_id = rel_children[i];
-                if(child_id == CINVALID_ID || child_id >= nb_vis_nodes){continue;}   // no flags yet: not decided
-                if(node->children[i]){continue;}                                     // resident: drawn by the device
-                if(globalVariables.getFlag(child_id, CFlagIsVisibleHost)){continue;}
+                if(child_id == CINVALID_ID || !isInPublishedCut(child_id)){continue;}
+                if(globalVariables.getFlag(child_id, CFlagIsVisiblePublished)){continue;}
                 vox_mask |= (1u << i);
             }
             if(vox_mask != 0){
@@ -785,6 +882,10 @@ void kernel_draw_octree_large(
                 COctreeNode* child = node->children[i];
                 if(!child){continue;}
                 if(child->flags & (0x01 << CFlagIsLarge)){continue;}
+                // Published cut: a child outside the view is not cut (drawn by the out-of-view fallback above)
+                if(isInPublishedCut(child->aabb_index)
+                    && !globalVariables.getFlag(child->aabb_index, CFlagIsCutPublished)
+                ){continue;}
                 child->flags |= (0x01 << CFlagIsCut);
                 // // TODO: to remove
                 // if(child->voxels_counter > 0){

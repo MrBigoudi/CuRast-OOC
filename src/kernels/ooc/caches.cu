@@ -142,6 +142,12 @@ void kernel_prepare_store_part_1_filling_buffers(){
 
     const uint32_t MAX_NB_VOXELS = globalVariables.maxNbVoxelsChunksPerExchangedNode * OocSimLodSettings::NB_POINTS_PER_CHUNK;
     __shared__ uint32_t shExchangedIndex;
+    // Copy of the node kept drawable after this pass (see `CGlobalVariables::retainedEvictedNodes')
+    __shared__ bool shIsRetained;
+    __shared__ uint32_t shRetainPointsOffset;
+    __shared__ uint32_t shRetainNbPoints;
+    __shared__ uint32_t shRetainVoxelsOffset;
+    __shared__ uint32_t shRetainNbVoxels;
 
     for(uint32_t node_index = block_id; node_index < globalVariables.curNbNodes; node_index += nb_blocks){
 
@@ -241,6 +247,62 @@ void kernel_prepare_store_part_1_filling_buffers(){
                     auto gi = COccupancyGrid::getCellIndices(aabb, v);
                     exchanged_voxels[idx] = v;
                     exchanged_grids[idx]  = (uint64_t(gi.word) << 32) | gi.bit;
+                }
+            }
+
+            // Keep a device copy of what the device was drawing of this node, so that it stays drawn
+            // after the next pass overwrites the exchange buffers, until the published host
+            // buffers show it (see `kernel_draw_evicted_nodes'). Only the nodes of the published cut
+            // (large or cut, or created since it): the others are not drawn by the device anyway
+            if(thread_id == 0){
+                shIsRetained = false;
+                const bool is_drawn = (aabb_index >= globalVariables.publishedNbNodes)
+                    || globalVariables.getFlag(aabb_index, CFlagIsLargePublished)
+                    || globalVariables.getFlag(aabb_index, CFlagIsCutPublished);
+                const uint32_t nb_points = node->points_counter - node->points_last_stored;
+                const uint32_t nb_voxels = min(MAX_NB_VOXELS, node->voxels_counter);
+                if(is_drawn && (nb_points > 0 || nb_voxels > 0)){
+                    // The host increments `evictionGeneration' once this pass is packed
+                    const uint32_t generation = globalVariables.evictionGeneration + 1;
+                    bool is_complete = false;
+                    const uint32_t entry_index = __nv_atomic_fetch_add(&globalVariables.nbRetainedEvictedNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+                    if(entry_index < globalVariables.maxNbRetainedEvictedNodes){
+                        const uint32_t points_offset = __nv_atomic_fetch_add(&globalVariables.nbRetainedEvictedPoints, nb_points, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+                        const uint32_t voxels_offset = __nv_atomic_fetch_add(&globalVariables.nbRetainedEvictedVoxels, nb_voxels, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+                        const bool points_fit = uint64_t(points_offset) + nb_points <= globalVariables.maxNbRetainedEvictedPoints;
+                        const bool voxels_fit = uint64_t(voxels_offset) + nb_voxels <= globalVariables.maxNbRetainedEvictedVoxels;
+                        is_complete = points_fit && voxels_fit;
+
+                        // Always written (the entry index is taken): what does not fit is dropped
+                        CEvictedRetainEntry entry = {};
+                        entry.id = aabb_index;
+                        entry.generation = generation;
+                        entry.points_offset = points_offset;
+                        entry.nb_points = points_fit ? nb_points : 0;
+                        entry.voxels_offset = voxels_offset;
+                        entry.nb_voxels = voxels_fit ? nb_voxels : 0;
+                        globalVariables.retainedEvictedNodes[entry_index] = entry;
+
+                        shIsRetained = (entry.nb_points > 0 || entry.nb_voxels > 0);
+                        shRetainPointsOffset = points_offset;
+                        shRetainNbPoints = entry.nb_points;
+                        shRetainVoxelsOffset = voxels_offset;
+                        shRetainNbVoxels = entry.nb_voxels;
+                    }
+                    if(!is_complete){
+                        __nv_atomic_max(&globalVariables.retainOverflowGeneration, generation, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+                    }
+                }
+            }
+            __syncthreads(); // The exchange slot is complete and the retain decision is shared
+            if(shIsRetained){
+                CPoint* retained_points = globalVariables.retainedEvictedPoints + shRetainPointsOffset;
+                for(uint32_t i = thread_id; i < shRetainNbPoints; i += nb_threads_per_block){
+                    retained_points[i] = exchanged_points[i];
+                }
+                CPoint* retained_voxels = globalVariables.retainedEvictedVoxels + shRetainVoxelsOffset;
+                for(uint32_t i = thread_id; i < shRetainNbVoxels; i += nb_threads_per_block){
+                    retained_voxels[i] = exchanged_voxels[i];
                 }
             }
 
@@ -473,6 +535,19 @@ void kernel_prepare_store_part_0_check_stored(){
             globalVariables.unsetFlag(i, CFlagWillBeStored);
         }
     }
+}
+
+
+
+/// Empty the retained evicted nodes once every eviction generation is covered by the published host
+/// rendering buffers (launched by the host when it publishes them). Single thread
+extern "C" __global__
+void kernel_reset_evicted_retain(){
+    if(globalVariables.coveredEvictionGeneration < globalVariables.evictionGeneration){return;}
+    globalVariables.nbRetainedEvictedNodes = 0;
+    globalVariables.nbRetainedEvictedPoints = 0;
+    globalVariables.nbRetainedEvictedVoxels = 0;
+    globalVariables.retainOverflowGeneration = 0;
 }
 
 

@@ -274,6 +274,17 @@ void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
     CURuntime::assertCudaSuccess(cuMemsetD32((CUdeviceptr)hostStaging.evictedNodesIds, CINVALID_ID, hostStaging.maxNbNodesExchanged));
     CURuntime::assertCudaSuccess(cuMemsetD32((CUdeviceptr)hostStaging.evictedNodesNbPoints, 0, hostStaging.maxNbNodesExchanged));
     CURuntime::assertCudaSuccess(cuMemsetD32((CUdeviceptr)hostStaging.evictedNodesNbVoxels, 0, hostStaging.maxNbNodesExchanged));
+    // Retained copies of the older evicted batches (see `CGlobalVariables::retainedEvictedNodes')
+    hostStaging.maxNbRetainedEvictedNodes = EVICTION_RETAIN_NB_PASSES * hostStaging.maxNbNodesExchanged;
+    hostStaging.maxNbRetainedEvictedPoints = std::max(1u, static_cast<uint32_t>(double(hostStaging.maxNbRenderedPoints) * EVICTION_RETAIN_BUDGET_FRACTION));
+    hostStaging.maxNbRetainedEvictedVoxels = std::max(1u, static_cast<uint32_t>(double(hostStaging.maxNbRenderedVoxels) * EVICTION_RETAIN_BUDGET_FRACTION));
+    hostStaging.nbRetainedEvictedNodes = 0;
+    hostStaging.nbRetainedEvictedPoints = 0;
+    hostStaging.nbRetainedEvictedVoxels = 0;
+    hostStaging.retainOverflowGeneration = 0;
+    hostStaging.retainedEvictedNodes = alloc<CEvictedRetainEntry>(hostStaging.maxNbRetainedEvictedNodes);
+    hostStaging.retainedEvictedPoints = alloc<CPoint>(hostStaging.maxNbRetainedEvictedPoints);
+    hostStaging.retainedEvictedVoxels = alloc<CPoint>(hostStaging.maxNbRetainedEvictedVoxels);
     for(uint32_t i=0; i<hostStaging.maxNbNodesExchanged; i++){
         uint64_t real_size = 0;
 
@@ -1020,6 +1031,12 @@ void GpuVersion::octreeUpdateCacheUpdate(CuRast* editor, CUcontext* context){
         // published host rendering buffers show them
         evictionGenerationHost++;
         COPY_TO_GPU(evictionGeneration, &evictionGenerationHost, uint32_t);
+        // Did this pass fit in the retained copies? If not, the next pass waits for its coverage
+        {
+            uint32_t overflow_generation = 0;
+            COPY_FROM_GPU(retainOverflowGeneration, &overflow_generation, uint32_t);
+            hasLastPassOverflowedRetain = (overflow_generation >= evictionGenerationHost);
+        }
         // println("\n\nNb nodes to store: {}\n\n\n", nbNodesToStore);
     }
 
@@ -1211,6 +1228,8 @@ void GpuVersion::storeNodes(uint32_t nb_nodes_to_store){
     // The data of the last eviction generation is on its way to host RAM (complete once
     // `eventStoringComplete' is reached): record what each of its nodes must show in the host
     // rendering buffers before the device can stop drawing it (counts capped like the host reads)
+    PendingEviction pending = {};
+    pending.generation = evictionGenerationHost;
     lastEvictedNodes.clear();
     lastEvictedNodes.reserve(nb_nodes_to_store);
     for(uint32_t i = 0; i < nb_nodes_to_store; i++){
@@ -1221,6 +1240,8 @@ void GpuVersion::storeNodes(uint32_t nb_nodes_to_store){
         record.nb_voxels = std::min(node->node.voxels_counter, OocSimLodSettings::MAX_POINTS_PER_LEAF);
         lastEvictedNodes.push_back(record);
     }
+    pending.records = lastEvictedNodes;
+    pendingEvictions.push_back(std::move(pending));
     evictionGenerationStored = evictionGenerationHost;
 }
 
@@ -1824,15 +1845,19 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
             task.points_priority = ((float*)(exchangedPrioritiesVisPoints))[i];
         }
 
-        // Eviction hand-over: this update shows the last evicted batch if every node of it can be
-        // read (from host RAM or from disk) with at least the data it had when it reached host RAM.
-        // Once these buffers are published (`updateVisCache'), the device stops drawing the batch
-        // from the exchange buffers. Otherwise the device keeps drawing it (if a node is also
-        // drawn by these buffers meanwhile, it is drawn twice with the same points: no visual change)
-        uint32_t covered_generation = (evictionGenerationHost > 0) ? evictionGenerationHost - 1 : 0;
-        if(evictionGenerationHost > 0 && evictionGenerationStored == evictionGenerationHost){
+        // Eviction hand-over: this update shows an evicted batch if every node of it can be read (from
+        // host RAM or from disk) with at least the data it had when it reached host RAM. The covered
+        // generations are a prefix: once these buffers are published (`updateVisCache'), the device
+        // stops drawing them (exchange buffers for the last one, retained copies for the older ones).
+        // The others stay drawn by the device (if a node is also drawn by these buffers meanwhile,
+        // it is drawn twice with the same points: no visual change)
+        // Every generation up to `evictionGenerationStored' is in `pendingEvictions' unless already
+        // published as covered
+        uint32_t covered_generation = evictionGenerationStored;
+        for(const PendingEviction& pending : pendingEvictions){
+            if(pending.generation > evictionGenerationStored){break;}
             bool is_covered = true;
-            for(const EvictedNodeRecord& record : lastEvictedNodes){
+            for(const EvictedNodeRecord& record : pending.records){
                 if(record.nb_points == 0 && record.nb_voxels == 0){continue;}
                 const VisSource source = resolve_source(record.id);
                 if(!source.valid || source.nb_points < record.nb_points || source.nb_voxels < record.nb_voxels){
@@ -1840,9 +1865,12 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
                     break;
                 }
             }
-            if(is_covered){ covered_generation = evictionGenerationHost; }
+            if(!is_covered){
+                covered_generation = pending.generation - 1;
+                break;
+            }
         }
-        visCoveredEvictionGeneration = covered_generation;
+        visCoveredEvictionGeneration = std::max(covered_generation, publishedCoveredGeneration);
     }
 
     // Quotas and reserved slots in the staging buffers (the sum of the quotas fits the budget)
@@ -2186,6 +2214,33 @@ void GpuVersion::serialiseHostCacheNodes(){
 }
 
 
+bool GpuVersion::isWaitingForEvictionCoverage(){
+    // Only before a new eviction pass (a pass in progress must finish)
+    if(hasStartedStoring || hasStartedSynchronisingEventInStoreNodes){ return false; }
+    if(evictionGenerationHost <= publishedCoveredGeneration){ return false; }
+    // The older batches stay drawn from their retained copies: only wait when the last pass did not
+    // fit in them (it would be lost once the exchange buffers are overwritten)
+    if(!hasLastPassOverflowedRetain){ return false; }
+
+    const auto now = std::chrono::steady_clock::now();
+    if(!isCacheUpdateDeferred){
+        cacheUpdateDeferredSince = now;
+        return true;
+    }
+    const double waited = std::chrono::duration<double>(now - cacheUpdateDeferredSince).count();
+    if(waited < MAX_EVICTION_COVERAGE_WAIT_SECONDS){ return true; }
+
+    static bool has_warned = false;
+    if(!has_warned){
+        has_warned = true;
+        println("WARN: eviction pass {} not covered by the rendering buffers after {:.1f} s, evicting anyway",
+            evictionGenerationHost, waited
+        );
+    }
+    return false;
+}
+
+
 void GpuVersion::updateVisCache(){
     // Nothing to publish while the workers are filling the staging buffers
     if(!isDoneDeserializingForVisibility || hasStartedVisibilityUpdate){return;}
@@ -2200,6 +2255,29 @@ void GpuVersion::updateVisCache(){
                 // From now on the device draws these buffers: it can stop drawing the evicted batch
                 // they cover (see `kernel_draw_evicted_nodes')
                 COPY_TO_GPU(coveredEvictionGeneration, &visCoveredEvictionGeneration, uint32_t);
+                publishedCoveredGeneration = visCoveredEvictionGeneration;
+                while(!pendingEvictions.empty() && pendingEvictions.front().generation <= publishedCoveredGeneration){
+                    pendingEvictions.pop_front();
+                }
+                // Every generation covered: the retained copies can be reused (checked on the device too)
+                if(publishedCoveredGeneration >= evictionGenerationHost){
+                    hasLastPassOverflowedRetain = false;
+                    prog->launch("kernel_reset_evicted_retain", {}, OptionalLaunchSettings{ .gridsize = 1, .blocksize = 1 });
+                }
+                // The device renderers switch to the cut of these buffers at the same time
+                // (`CFlagIs*Host' still hold it: the next visibility update only starts now)
+                {
+                    uint32_t block_size = 256;
+                    uint32_t grid_size =
+                        (OocSimLodSettings::DEVICE_ATTRIBUTE_NB_SM * OocSimLodSettings::DEVICE_ATTRIBUTE_MAX_THREADS_PER_SM + block_size - 1)
+                        / block_size
+                    ;
+                    OptionalLaunchSettings launch_settings = {
+                        .gridsize  = grid_size,
+                        .blocksize = block_size
+                    };
+                    prog->launch("kernel_publish_host_cut", {}, launch_settings);
+                }
                 isVisibilityPublishPending = false;
             }
             break;
@@ -2253,19 +2331,30 @@ void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
         }
 
         // Only run the bottom up kernels if nothing else is stalling
-        if(*(bool*)isDoneLoading && *(bool*)isDoneStoring && *(bool*)isDoneIterating){
+        // (nor while the cache update of the update in progress is held back)
+        if(*(bool*)isDoneLoading && *(bool*)isDoneStoring && *(bool*)isDoneIterating && !isCacheUpdateDeferred){
             octreeUpdateBottomUp(editor, context);
         }
     }
 
     if(*(bool*)isUpdating){
-        if(!hasStartedStoring && isDoneSynchronisingEventInStoreNodes && *(bool*)isDoneStoring){
+        // While the cache update is held back, the SimLOD iteration is complete: running it again
+        // would start a new iteration on the same batches
+        if(!hasStartedStoring && isDoneSynchronisingEventInStoreNodes && *(bool*)isDoneStoring && !isCacheUpdateDeferred){
             octreeUpdateSimLOD(editor, context);
             if(hasStartedLoading){return;}
             // if(!isDoneDeserializingForLoading){return;}
         }
 
         if(!hasStartedLoading && *(bool*)isDoneLoading && *(bool*)isDoneIterating){
+            // A new eviction pass would overwrite the exchange buffers the device still draws the last
+            // evicted batch from (see `kernel_draw_evicted_nodes'): wait until published host
+            // buffers show that batch (the visibility updates keep running above)
+            if(isWaitingForEvictionCoverage()){
+                isCacheUpdateDeferred = true;
+                return;
+            }
+            isCacheUpdateDeferred = false;
             octreeUpdateCacheUpdate(editor, context);
             if(!isDoneDeserializingForStoring){return;}
         }

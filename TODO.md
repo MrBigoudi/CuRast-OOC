@@ -19,8 +19,8 @@
 
 ## Today
 
-- [ ] Fix rendering of just unloaded nodes / updating nodes (from device to disk to device)
-- [ ] Downgrade rendering to a simple octree cut to avoid having things diseapearing
+- [x] Downgrade rendering to a simple octree cut to avoid having things diseapearing
+- [x] Fix rendering of just unloaded nodes / updating nodes (from device to disk to device)
 
 
 
