@@ -230,6 +230,7 @@ void GpuVersion::initHostSide(CuRast* editor, CUcontext* context) {
     exchangedAABBIndicesVisVoxels = allocHost<CIdAABB>(hostStaging.maxNbConcurrentNodes);
     exchangedPrioritiesVisPoints = allocHost<float>(hostStaging.maxNbConcurrentNodes);
     exchangedPrioritiesVisVoxels = allocHost<float>(hostStaging.maxNbConcurrentNodes);
+    exchangedVisVoxelsChildMasks = allocHost<uint8_t>(hostStaging.maxNbConcurrentNodes);
 
     // Staging buffers for the rendered points / voxels (same capacity as the device buffers)
     visStagingPoints = static_cast<CPoint*>(allocHost<CPoint>(hostStaging.maxNbRenderedPoints));
@@ -341,6 +342,8 @@ void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
     hostStaging.exchangedAABBIndicesVisVoxels = alloc<CIdAABB>(hostStaging.maxNbConcurrentNodes);
     hostStaging.exchangedAABBIndicesVisVoxelsTmp = alloc<CIdAABB>(hostStaging.maxNbConcurrentNodes);
     hostStaging.exchangedAABBIndicesVisVoxelsScreenSpaceSize = alloc<float>(hostStaging.maxNbConcurrentNodes);
+    hostStaging.visVoxChildMask = alloc<uint8_t>(hostStaging.maxNbConcurrentNodes);
+    hostStaging.exchangedVisVoxelsChildMasks = alloc<uint8_t>(hostStaging.maxNbConcurrentNodes);
 
     hostStaging.renderedPoints = alloc<CPoint>(hostStaging.maxNbRenderedPoints);
     hostStaging.renderedVoxels = alloc<CPoint>(hostStaging.maxNbRenderedVoxels);
@@ -484,6 +487,7 @@ void GpuVersion::destroy(CuRast *editor, CUcontext *context){
     CURuntime::assertCudaSuccess(cuMemFreeHost(exchangedAABBIndicesVisVoxels));
     CURuntime::assertCudaSuccess(cuMemFreeHost(exchangedPrioritiesVisPoints));
     CURuntime::assertCudaSuccess(cuMemFreeHost(exchangedPrioritiesVisVoxels));
+    CURuntime::assertCudaSuccess(cuMemFreeHost(exchangedVisVoxelsChildMasks));
     CURuntime::assertCudaSuccess(cuMemFreeHost(visStagingPoints));
     CURuntime::assertCudaSuccess(cuMemFreeHost(visStagingVoxels));
 
@@ -1354,6 +1358,35 @@ constexpr double VIS_DISTANCE_EXPONENT = 3.0;
 /// The distance is floored to this fraction of the node diagonal (the camera can be at the center)
 constexpr double VIS_DISTANCE_FLOOR_FRACTION = 0.01;
 
+/// Entries outside the view (negative device priority: the out-of-view fallback, see part 3 in
+/// render.cu) get what the in-view entries leave of the budget, and at least this fraction of it
+/// when they need it (so that the regions around the view always keep some data)
+constexpr double VIS_OUT_OF_VIEW_BUDGET_FRACTION = 0.15;
+
+/// Number of elements a node with `nb_elements' elements is expected to keep with `child_mask'
+/// (the voxels are not counted per octant before reading them: an even spread is assumed; the
+/// workers never write more than their quota, and fewer leave a gap that `append_segments' skips)
+uint32_t visMaskedCountEstimate(uint32_t nb_elements, uint8_t child_mask){
+    if(child_mask == 0){ return nb_elements; }
+    const uint32_t nb_octants = static_cast<uint32_t>(__builtin_popcount(child_mask));
+    return static_cast<uint32_t>((uint64_t(nb_elements) * nb_octants + 7u) / 8u);
+}
+
+/// Keep, in place, the first `nb_elements' elements of `data' lying in the octants of `child_mask'
+/// (same octant rule as the device, `CAABB::getNextChildIndex'); returns how many are kept
+uint32_t visKeepOctants(CPoint* data, uint32_t nb_elements, const CAABB& aabb, uint8_t child_mask){
+    if(child_mask == 0){ return nb_elements; }
+    uint32_t kept = 0;
+    for(uint32_t i = 0; i < nb_elements; i++){
+        const uint32_t octant = static_cast<uint32_t>(aabb.getNextChildIndex(data[i].position));
+        if(child_mask & (1u << octant)){
+            if(kept != i){ data[kept] = data[i]; }
+            kept++;
+        }
+    }
+    return kept;
+}
+
 /// Floored distance from `position' to the center of `aabb'; negative if it can't be computed
 double visNodeCenterDistance(const glm::vec3& position, const CAABB& aabb){
     if(!(aabb.mins.x <= aabb.maxs.x && aabb.mins.y <= aabb.maxs.y && aabb.mins.z <= aabb.maxs.z)){
@@ -1574,6 +1607,8 @@ void visLoadTask(GpuVersion::VisibilityTask& task,
         );
     }
     if(wants_voxels){
+        // Out-of-view fallback: only the octants of the children outside the view
+        nb_voxels_read = visKeepOctants(voxels_buffer.data(), nb_voxels_read, task.voxels_aabb, task.voxels_child_mask);
         task.voxels_written = visCopyRandomSubset(voxels_buffer, nb_voxels_read, task.voxels_quota, seed + 2u,
             GpuVersion::visStagingVoxels + task.voxels_offset
         );
@@ -1672,6 +1707,10 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
         dsts_host.push_back((CUdeviceptr)exchangedPrioritiesVisVoxels);
         srcs_device.push_back((CUdeviceptr)hostStaging.exchangedAABBIndicesVisVoxelsScreenSpaceSize);
         sizes.push_back(sizeof(float) * nb_vis_voxels);
+
+        dsts_host.push_back((CUdeviceptr)exchangedVisVoxelsChildMasks);
+        srcs_device.push_back((CUdeviceptr)hostStaging.exchangedVisVoxelsChildMasks);
+        sizes.push_back(sizeof(uint8_t) * nb_vis_voxels);
     }
 
     // Nothing visible: no copy, but the rest still runs (empty tasks, eviction hand-over below)
@@ -1770,6 +1809,11 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
             VisibilityTask& task = get_task(id, source);
             task.nb_voxels_on_disk = source.nb_voxels;
             task.voxels_priority = ((float*)(exchangedPrioritiesVisVoxels))[i];
+            task.voxels_child_mask = ((uint8_t*)(exchangedVisVoxelsChildMasks))[i];
+            if(task.voxels_child_mask != 0){
+                // Filled by `storeNodes' for every node sent to the host (a Vox entry has voxels on disk)
+                task.voxels_aabb = aabbsMap[id];
+            }
         }
         for(uint32_t i = 0; i < nb_vis_points; i++){
             const CIdAABB id = ((CIdAABB*)(exchangedAABBIndicesVisPoints))[i];
@@ -1807,46 +1851,55 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
     // (`aabbsMap' is filled by `storeNodes' for every node sent to the host, so for every node on disk;
     // `renderingTarget' is the camera the kernels above used)
     const glm::vec3 camera_pos = renderingTarget.camera_pos;
-    {
-        std::vector<uint32_t> task_ids = {};
-        std::vector<uint32_t> counts = {};
-        std::vector<CAABB> aabbs = {};
+    // In-view entries (positive priority) are served first, as before; the entries outside the view
+    // (out-of-view fallback, negative priority) get what is left, and at least
+    // `VIS_OUT_OF_VIEW_BUDGET_FRACTION' of the budget when they need it.
+    // The offsets follow the task order (consecutive tasks stay contiguous: fewer copies)
+    auto assign_quotas = [&](
+        uint32_t VisibilityTask::* count_member, float VisibilityTask::* priority_member,
+        uint32_t VisibilityTask::* quota_member, uint64_t VisibilityTask::* offset_member,
+        bool is_voxels, uint32_t budget
+    ){
+        std::vector<uint32_t> task_ids[2] = {};   // 0: in view, 1: outside the view
+        std::vector<uint32_t> counts[2] = {};
+        std::vector<CAABB> aabbs[2] = {};
+        uint64_t outside_total = 0;
         for(uint32_t i = 0; i < visibilityTasks.size(); i++){
-            if(visibilityTasks[i].nb_points_on_disk == 0){continue;}
-            task_ids.push_back(i);
-            counts.push_back(visibilityTasks[i].nb_points_on_disk);
-            aabbs.push_back(aabbsMap[visibilityTasks[i].id]);
+            const VisibilityTask& task = visibilityTasks[i];
+            if(task.*count_member == 0){continue;}
+            const uint32_t count = is_voxels
+                ? visMaskedCountEstimate(task.*count_member, task.voxels_child_mask)
+                : task.*count_member;
+            const uint32_t group = (task.*priority_member > 0.0f) ? 0 : 1;
+            task_ids[group].push_back(i);
+            counts[group].push_back(count);
+            aabbs[group].push_back(aabbsMap[task.id]);
+            if(group == 1){ outside_total += count; }
         }
-        const std::vector<float> weights = visDistanceWeights(aabbs, camera_pos);
-        std::vector<uint32_t> quotas = visPriorityQuotas(counts, weights, hostStaging.maxNbRenderedPoints);
+
+        const uint32_t reserve = static_cast<uint32_t>(std::min<uint64_t>(outside_total,
+            static_cast<uint64_t>(double(budget) * VIS_OUT_OF_VIEW_BUDGET_FRACTION)));
+        const std::vector<uint32_t> quotas_in = visPriorityQuotas(counts[0],
+            visDistanceWeights(aabbs[0], camera_pos), budget - reserve);
+        uint64_t used = 0;
+        for(uint32_t q : quotas_in){ used += q; }
+        const std::vector<uint32_t> quotas_out = visPriorityQuotas(counts[1],
+            visDistanceWeights(aabbs[1], camera_pos), static_cast<uint32_t>(uint64_t(budget) - used));
+
+        for(uint32_t k = 0; k < task_ids[0].size(); k++){ visibilityTasks[task_ids[0][k]].*quota_member = quotas_in[k]; }
+        for(uint32_t k = 0; k < task_ids[1].size(); k++){ visibilityTasks[task_ids[1][k]].*quota_member = quotas_out[k]; }
+
         uint64_t offset = 0;
-        for(uint32_t j = 0; j < task_ids.size(); j++){
-            VisibilityTask& task = visibilityTasks[task_ids[j]];
-            task.points_quota = quotas[j];
-            task.points_offset = offset;
-            offset += quotas[j];
+        for(VisibilityTask& task : visibilityTasks){
+            if(task.*count_member == 0){continue;}
+            task.*offset_member = offset;
+            offset += task.*quota_member;
         }
-    }
-    {
-        std::vector<uint32_t> task_ids = {};
-        std::vector<uint32_t> counts = {};
-        std::vector<CAABB> aabbs = {};
-        for(uint32_t i = 0; i < visibilityTasks.size(); i++){
-            if(visibilityTasks[i].nb_voxels_on_disk == 0){continue;}
-            task_ids.push_back(i);
-            counts.push_back(visibilityTasks[i].nb_voxels_on_disk);
-            aabbs.push_back(aabbsMap[visibilityTasks[i].id]);
-        }
-        const std::vector<float> weights = visDistanceWeights(aabbs, camera_pos);
-        std::vector<uint32_t> quotas = visPriorityQuotas(counts, weights, hostStaging.maxNbRenderedVoxels);
-        uint64_t offset = 0;
-        for(uint32_t j = 0; j < task_ids.size(); j++){
-            VisibilityTask& task = visibilityTasks[task_ids[j]];
-            task.voxels_quota = quotas[j];
-            task.voxels_offset = offset;
-            offset += quotas[j];
-        }
-    }
+    };
+    assign_quotas(&VisibilityTask::nb_points_on_disk, &VisibilityTask::points_priority,
+        &VisibilityTask::points_quota, &VisibilityTask::points_offset, false, hostStaging.maxNbRenderedPoints);
+    assign_quotas(&VisibilityTask::nb_voxels_on_disk, &VisibilityTask::voxels_priority,
+        &VisibilityTask::voxels_quota, &VisibilityTask::voxels_offset, true, hostStaging.maxNbRenderedVoxels);
 
     // Host RAM nodes: copied now, on the main thread which owns `updateNodes' (nothing modified them
     // since `resolve_source'). The staging buffers are free: `visibilityUpdate' only starts a new
@@ -1857,9 +1910,20 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
         task.points_written = visCopyStridedSubset(src->points, task.nb_points_on_disk, task.points_quota,
             visStagingPoints + task.points_offset
         );
-        task.voxels_written = visCopyStridedSubset(src->voxels, task.nb_voxels_on_disk, task.voxels_quota,
-            visStagingVoxels + task.voxels_offset
-        );
+        if(task.voxels_child_mask == 0){
+            task.voxels_written = visCopyStridedSubset(src->voxels, task.nb_voxels_on_disk, task.voxels_quota,
+                visStagingVoxels + task.voxels_offset
+            );
+        } else if(task.voxels_quota > 0){
+            // Out-of-view fallback: only the octants of the children outside the view (the host RAM
+            // node is not modified: filtered into a scratch copy)
+            std::vector<CPoint> filtered(src->voxels, src->voxels + task.nb_voxels_on_disk);
+            const uint32_t nb_kept = visKeepOctants(filtered.data(), task.nb_voxels_on_disk,
+                task.voxels_aabb, task.voxels_child_mask);
+            task.voxels_written = visCopyStridedSubset(filtered.data(), nb_kept, task.voxels_quota,
+                visStagingVoxels + task.voxels_offset
+            );
+        }
         task.update_node = nullptr;   // not valid after this function
     }
 }

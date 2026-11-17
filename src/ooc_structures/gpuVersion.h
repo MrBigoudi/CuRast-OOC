@@ -266,7 +266,14 @@ struct GpuVersion {
         uint64_t voxels_offset = 0;
         uint32_t voxels_written = 0;
         float points_priority = 0.0f;   // device visibility priority (~ screen area covered, in pixels)
-        float voxels_priority = 0.0f;
+        float voxels_priority = 0.0f;   // negative: outside the view (out-of-view fallback, see below)
+
+        /// Out-of-view fallback ("Vox", see part 3 in render.cu): only the voxels lying in these
+        /// octants are drawn (bit i: octant of child i); 0 = every voxel (cut node)
+        uint8_t voxels_child_mask = 0;
+        /// Bounding box of the node, to find the octant of each voxel (copied on the main thread:
+        /// the workers don't read `aabbsMap')
+        CAABB voxels_aabb;
 
         /// Source of the node: its on-disk files (default) or its host RAM copy in `updateNodes'
         /// (node evicted from the device but not written to disk yet, or with newer data than on
@@ -353,6 +360,8 @@ struct GpuVersion {
     /// Priorities of the visible lists (sorted on device together with the ids above)
     static inline void* exchangedPrioritiesVisPoints = nullptr;
     static inline void* exchangedPrioritiesVisVoxels = nullptr;
+    /// Child masks of the voxels list (see `CGlobalVariables::exchangedVisVoxelsChildMasks')
+    static inline void* exchangedVisVoxelsChildMasks = nullptr;
     static inline void* nbNodesExchangedVisPoints = nullptr;
     static inline void* nbNodesExchangedVisVoxels = nullptr;
     static inline void* curNbVisNode = nullptr;

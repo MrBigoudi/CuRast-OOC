@@ -297,6 +297,15 @@ bool isCameraInside(const CRenderTarget& target, const CAABB& aabb){
         && cam.z > aabb.mins.z && cam.z < aabb.maxs.z;
 }
 
+/// Euclidean distance from `p' to the box (0 inside)
+__device__ __forceinline__
+float distanceToAABB(const vec3& p, const CAABB& aabb){
+    const float dx = fmaxf(fmaxf(aabb.mins.x - p.x, p.x - aabb.maxs.x), 0.0f);
+    const float dy = fmaxf(fmaxf(aabb.mins.y - p.y, p.y - aabb.maxs.y), 0.0f);
+    const float dz = fmaxf(fmaxf(aabb.mins.z - p.z, p.z - aabb.maxs.z), 0.0f);
+    return sqrtf(dx * dx + dy * dy + dz * dz);
+}
+
 
 
 
@@ -684,6 +693,45 @@ void kernel_draw_evicted_nodes(
 
 
 
+/// Out-of-view fallback ("Vox") for a resident node: draws its resident voxels lying in the octants
+/// of `child_mask' (bit i: octant of `children[i]'). Same colors / LOD as `drawAllVoxels'
+__device__
+void drawVoxelsInOctants(
+	const CRenderTarget& target,
+	CRenderingSettings settings,
+    COctreeNode* node,
+    uint32_t child_mask
+){
+    auto block = cg::this_thread_block();
+    uint32_t thread_id = block.thread_rank();
+    uint32_t nb_threads_per_block = block.num_threads();
+
+    const CAABB& aabb = globalVariables.relationshipMap[node->aabb_index].aabb;
+    CChunk* cur_voxels = node->voxels;
+
+    uint32_t depth = globalVariables.octreeDepth;
+    float color_factor = float(node->level) / float(max(depth, 1));
+    color_factor = clamp(color_factor, 0.0f, 1.0f);
+    uint32_t min_level_color = 0xffffff00; // cyan
+    uint32_t max_level_color = 0xff00ffff; // yellow
+    uint32_t color = linearGradient(color_factor, min_level_color, max_level_color);
+
+    while(cur_voxels){
+        for(uint32_t i = thread_id; i < cur_voxels->size; i += nb_threads_per_block){
+            // For dataset creation
+            if(i % settings.draw_every_x_points != 0){continue;}
+
+            const CPoint& voxel = cur_voxels->points[i];
+            const uint32_t octant = uint32_t(aabb.getNextChildIndex(voxel.position));
+            if(!(child_mask & (1u << octant))){continue;}
+
+            uint32_t voxel_color = settings.use_voxels_debug_color ? color : voxel.color;
+            drawPoint(target, settings, voxel.position, voxel_color, node->level + 1);
+        }
+        cur_voxels = cur_voxels->next;
+    }
+}
+
 /// Run on "NB SMs" blocks of size min("Max threads per SM", "Max block dim")
 extern "C" __global__
 void kernel_draw_octree_large(
@@ -709,6 +757,27 @@ void kernel_draw_octree_large(
         if(!(node->flags & (0x01 << CFlagIsLarge))){continue;}
 
         drawAllPoints(target, settings, node);
+
+        // Out-of-view fallback ("Vox"), device side: the resident voxels of a visible large node in
+        // the octants of its children that are outside the view (last visibility update) and not
+        // resident. The host draws the on-disk voxels of these octants (see part 3); a resident child
+        // is drawn by this device path itself. Uniform in the block (one node per block)
+        const CIdAABB node_id = node->aabb_index;
+        const uint32_t nb_vis_nodes = globalVariables.totalNbNodesForVisibility;
+        if(node_id < nb_vis_nodes && globalVariables.getFlag(node_id, CFlagIsVisibleHost)){
+            const CIdAABB* rel_children = globalVariables.relationshipMap[node_id].children;
+            uint32_t vox_mask = 0;
+            for(uint32_t i = 0; i < 8; i++){
+                const CIdAABB child_id = rel_children[i];
+                if(child_id == CINVALID_ID || child_id >= nb_vis_nodes){continue;}   // no flags yet: not decided
+                if(node->children[i]){continue;}                                     // resident: drawn by the device
+                if(globalVariables.getFlag(child_id, CFlagIsVisibleHost)){continue;}
+                vox_mask |= (1u << i);
+            }
+            if(vox_mask != 0){
+                drawVoxelsInOctants(target, settings, node, vox_mask);
+            }
+        }
 
         // Update flags
         if(thread_id == 0){
@@ -1155,6 +1224,7 @@ void kernel_get_renderable_nodes_part_1_visibility(
         globalVariables.unsetFlag(node_index, CFlagIsCutHost);
         globalVariables.exchangedAABBIndicesVisPointsScreenSpaceSize[node_index] = 0.;
         globalVariables.exchangedAABBIndicesVisVoxelsScreenSpaceSize[node_index] = 0.;
+        globalVariables.visVoxChildMask[node_index] = 0;
 
         // The visibility / large / cut flags are evaluated on the WHOLE hierarchy, stored or not:
         // a node that only lives on the device (never evicted, e.g. the top of the octree, always in
@@ -1188,6 +1258,7 @@ void kernel_get_renderable_nodes_part_2_flagging_large(
     // Flag all large nodes
     for(uint32_t node_index = thread_id; node_index < nb_nodes; node_index += nb_threads){
         if(!globalVariables.getFlag(node_index, CFlagIsVisibleHost)){continue;}
+        // To avoid random holes in the cloud due to incomplete nodes
         if(isLargeForRendering(target, settings, node_index)){
             globalVariables.setFlag(node_index, CFlagIsLargeHost);
             // TODO: to remove
@@ -1237,6 +1308,33 @@ void kernel_get_renderable_nodes_part_3_large_nodes(
             if(children_tmp[i] == CINVALID_ID){continue;}
             if(globalVariables.getFlag(children_tmp[i], CFlagIsLargeHost)){continue;}
             globalVariables.setFlag(children_tmp[i], CFlagIsCutHost);
+        }
+
+        // Out-of-view fallback ("Vox"): the children outside the view are never visited by the cut
+        // (only visible nodes are large or cut), so their region is drawn by nobody. This node draws
+        // instead its own voxels lying in their octants (a voxel is only created where a child exists,
+        // and its octant is a function of its position, see `CAABB::getNextChildIndex').
+        // With it, the cut covers the whole domain: when the camera turns back, the region is drawn
+        // right away (coarsely) until the next visibility update refines it.
+        // Every node is visited by one thread only: no atomics on the mask
+        uint8_t vox_mask = 0;
+        for(uint32_t i = 0; i < 8; i++){
+            if(children_tmp[i] == CINVALID_ID){continue;}
+            if(globalVariables.getFlag(children_tmp[i], CFlagIsVisibleHost)){continue;}
+            vox_mask |= uint8_t(1u << i);
+        }
+        globalVariables.visVoxChildMask[node_index] = vox_mask;
+
+        // On-disk voxels, streamed by the host (the resident ones are drawn by `kernel_draw_octree_large')
+        // A large node is never a cut node, so it is at most once in the voxels list
+        if(vox_mask != 0 && globalVariables.relationshipMap[node_index].voxels_stored > 0){
+            uint32_t buffer_id = __nv_atomic_fetch_add(&globalVariables.nbNodesExchangedVisVoxels, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
+            globalVariables.exchangedAABBIndicesVisVoxelsTmp[buffer_id] = node_index;
+            // Negative priority: after every in-view entry in the sort (dropped first when the lists
+            // are truncated, served last by the host budget), the closer the higher
+            const CAABB& aabb = globalVariables.relationshipMap[node_index].aabb;
+            globalVariables.exchangedAABBIndicesVisVoxelsScreenSpaceSize[buffer_id] =
+                -(1.0f + distanceToAABB(target.camera_pos, aabb));
         }
     }
 }
@@ -1400,6 +1498,11 @@ void kernel_get_renderable_nodes_part_5_reorder(
         if(i < nb_voxels){
             CIdAABB new_voxels_id = globalVariables.exchangedAABBIndicesVisVoxelsTmp[i];
             globalVariables.exchangedAABBIndicesVisVoxels[i] = new_voxels_id;
+            // Child mask of the entry, gathered by id after the sort (the sort only moves ids / keys):
+            // 0 for a cut node (all its voxels), the octants to draw for a Vox node
+            globalVariables.exchangedVisVoxelsChildMasks[i] = (new_voxels_id != CINVALID_ID)
+                ? globalVariables.visVoxChildMask[new_voxels_id]
+                : uint8_t(0);
             if(new_voxels_id != CINVALID_ID){
                 globalVariables.setFlagSync(new_voxels_id, CFlagWasVisibleHost);
             }

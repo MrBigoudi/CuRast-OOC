@@ -799,6 +799,15 @@ struct CGlobalVariables {
 	CIdAABB* exchangedAABBIndicesVisVoxelsTmp = nullptr;
 	float* exchangedAABBIndicesVisVoxelsScreenSpaceSize = nullptr;
 
+	/// Out-of-view fallback ("Vox"): a large visible node whose children are not all visible draws,
+	/// instead of its non-visible children, its own voxels lying in their octants (see part 3 in
+	/// render.cu). The cut never reaches these children, so nothing else draws their region.
+	/// Child mask of every node (bit i: `children[i]' exists and is not visible), 0 for nodes not in Vox
+	uint8_t* visVoxChildMask = nullptr;
+	/// Child mask of every entry of `exchangedAABBIndicesVisVoxels' (gathered after the sort,
+	/// 0: every voxel of the node is drawn, i.e. a cut node)
+	uint8_t* exchangedVisVoxelsChildMasks = nullptr;
+
 
 
     ///////////////////////////////////////////////////////////////////////
