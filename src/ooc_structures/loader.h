@@ -1,47 +1,30 @@
 #pragma once
 
 #include "CuRast.h"
-#include "globals.h"
+#include "laszip/laszip_api.h"
+#include "../kernels/ooc/GpuVersionInterface.h"
 
-/// Initialized empty batches of points from las/laz files
-/// Updates the global `batchesToLoad` variable
-void initLoadPointBatches(string file,
-    std::deque<std::shared_ptr<PointBatch>>& batches_queue = GlobalVariables::batchesQueue,
-    std::deque<std::mutex>& batches_queue_mutexes = GlobalVariables::batchesQueueMutexes
-);
+/// The state of a batch
+enum BatchState {
+	Empty,
+	ToLoad,
+	Loading,
+	Loaded,
+	Sent,
+	Inserted,
+	ToRemove
+};
 
-/// Load points from the global `batchesToLoad` variable
-void loadPointsInBatches(
-    std::deque<std::shared_ptr<PointBatch>>& batches_queue = GlobalVariables::batchesQueue,
-    std::deque<std::mutex>& batches_queue_mutexes = GlobalVariables::batchesQueueMutexes
-);
-
-/// Asynchronously load the point clouds into queues of batches
-void loadPointcloudRoutine(
-    std::deque<std::shared_ptr<PointBatch>>& batches_queue = GlobalVariables::batchesQueue,
-    std::deque<std::mutex>& batches_queue_mutexes = GlobalVariables::batchesQueueMutexes
-);
-
-/// TODO: temporary function
-/// Send points to CUDA memory
-/// Used to get baseline timings but consumes a lot of memory
-void loadBatchesOnGPU(CuRast* editor, CUcontext* ctx = nullptr,
-    std::deque<std::shared_ptr<PointBatch>>& batches_queue = GlobalVariables::batchesQueue,
-    std::deque<std::mutex>& batches_queue_mutexes = GlobalVariables::batchesQueueMutexes
-);
-
-/// Clear the unused batches
-void clearUnusedBatches(
-    std::deque<std::shared_ptr<PointBatch>>& batches_queue = GlobalVariables::batchesQueue,
-    std::deque<std::mutex>& batches_queue_mutexes = GlobalVariables::batchesQueueMutexes
-);
-/// Asynchronously clear the unused batches
-void clearUnusedBatchesRoutine(
-    std::deque<std::shared_ptr<PointBatch>>& batches_queue = GlobalVariables::batchesQueue,
-    std::deque<std::mutex>& batches_queue_mutexes = GlobalVariables::batchesQueueMutexes
-);
-
-
+/// A set of points read from a las / laz file
+struct PointBatch {
+	uint64_t first = 0;
+	uint64_t count = 0;
+	shared_ptr<string> file = nullptr;
+	shared_ptr<vector<CPoint>> points = nullptr;
+	shared_ptr<laszip_header> header = nullptr;
+	BatchState state = BatchState::Empty;
+	glm::vec3 centroid = glm::vec3(0.0f);
+};
 
 // Helper types of `LoaderGpuVersion', at namespace scope: a static member of a nested type can't use
 // its default member initializers inside the enclosing class
@@ -215,4 +198,7 @@ struct LoaderGpuVersion {
     static inline std::atomic<float> cameraPosZ{0.0f};
     static void updateCameraSnapshot();
     static vec3 getCameraSnapshot();
+
+    /// Clear the unused batches
+    static void clearUnusedBatches();
 };

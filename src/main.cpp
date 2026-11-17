@@ -39,7 +39,6 @@
 #include "ooc_structures/settings.h"
 #include "ooc_structures/gpuVersion.h"
 #include "ooc_structures/neural.h"
-#include "ooc_structures/crashDiagnostics.h"
 
 
 CUcontext context;
@@ -51,36 +50,6 @@ void initCuda() {
 	CUctxCreateParams creation_params = {};
 	cuDeviceGet(&CURuntime::device, 0);
 	cuCtxCreate(&context, &creation_params, 0, CURuntime::device);
-}
-
-
-
-void initScene() {
-	CuRast* editor = CuRast::instance;
-	Scene& scene = editor->scene;
-
-	// position: 124.54672426747658, -42.72048538939598, -12.2730454323992 
-	Runtime::controls->yaw    = -5.179;
-	Runtime::controls->pitch  = 0.108;
-	Runtime::controls->radius = 142.656;
-	Runtime::controls->target = { -2.859, 21.085, -5.387, };
-
-	auto loadLion = [=]() {
-		std::string file = "./lion.laz";
-
-		// position: 4.283698075250294, -4.795270477550499, 6.400710991008715 
-		Runtime::controls->yaw    = -5.582;
-		Runtime::controls->pitch  = -0.294;
-		Runtime::controls->radius = 5.584;
-		Runtime::controls->target = { 0.679, -0.714, 5.163};
-
-		std::thread thread_loadLion([&](std::string file){
-			initLoadPointBatches(file);
-		}, file);
-		thread_loadLion.detach();
-	};
-	
-	loadLion();
 }
 
 
@@ -120,7 +89,6 @@ void initApp(CuRast* instance, CUcontext* context) {
 
 	// Init custom callbacks
 	VKRenderer::onFileDrop([&](vector<string> files){fileDropCallback(files);});
-	// initScene();
 }
 
 
@@ -144,7 +112,7 @@ void update(CuRast* instance, CUcontext* context){
 
 void clean(std::vector<std::thread*> all_threads){
 	// Destruction procedure
-	GlobalVariables::mainLoopIsTerminating = true;
+	GpuVersion::mainLoopIsTerminating = true;
 	
 	for(std::thread* thread : all_threads){
 		if(thread){
@@ -154,14 +122,14 @@ void clean(std::vector<std::thread*> all_threads){
 	}
 
 	cudaDeviceSynchronize();
-	println("GPU Memory Usage before destroy:\n{}", GlobalVariables::getGpuMemoryUsage());
+	println("GPU Memory Usage before destroy:\n{}", GpuVersion::getGpuMemoryUsage());
 	OocSimLodSettings::display();
 	GpuVersion::destroy(CuRast::instance, &context);
 	cudaDeviceSynchronize();
 
 	std::filesystem::remove_all(OocSimLodSettings::TEMPORARY_NODE_STORAGE_DIRECTORY);
 	VKRenderer::destroy();
-	println("GPU Memory Usage final:\n{}", GlobalVariables::getGpuMemoryUsage());
+	println("GPU Memory Usage final:\n{}", GpuVersion::getGpuMemoryUsage());
 }
 
 
@@ -177,18 +145,17 @@ int main(int argc, char** argv){
 	std::locale::global(getSaneLocale());
 
 	std::thread* thread_points_loader = nullptr;
-	// installCrashHandler();
 
 	try {
 		// Initialisation
-		println("GPU Memory Usage Before initialisation:\n{}", GlobalVariables::getGpuMemoryUsage());
+		println("GPU Memory Usage Before initialisation:\n{}", GpuVersion::getGpuMemoryUsage());
 		initApp(CuRast::instance, &context);
 		thread_points_loader = new std::thread([&](){
-			while(!GlobalVariables::mainLoopIsTerminating){
+			while(!GpuVersion::mainLoopIsTerminating){
 				LoaderGpuVersion::loadingRoutine();
 			}
 		});
-		println("GPU Memory Usage After initialisation:\n{}", GlobalVariables::getGpuMemoryUsage());
+		println("GPU Memory Usage After initialisation:\n{}", GpuVersion::getGpuMemoryUsage());
 
 		// Main loop
 		VKRenderer::loop(

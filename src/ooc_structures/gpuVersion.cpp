@@ -1,18 +1,5 @@
 #include "gpuVersion.h"
 
-#include <algorithm>
-#include <atomic>
-#include <cstddef>
-#include <cstdlib>
-#include <cmath>
-#include <cstring>
-#include <fstream>
-#include <limits>
-#include <random>
-#include <thread>
-#include <type_traits>
-#include <unordered_map>
-
 #include "loader.h"
 #include "outOfCore.h"
 
@@ -741,7 +728,7 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
             std::thread deserialize_thread([&]() {
                 std::for_each(loadingToDeserialise.begin(), loadingToDeserialise.end(),
                     [](const CIdAABB& id){
-                        OctreeNodeSerializable::deserializeV2(updateNodes[id].get(), id, "From simlod load");
+                        OctreeNodeSerializable::deserialize(updateNodes[id].get(), id, "From simlod load");
                     }
                 );
                 isDoneDeserializingForLoading = true;
@@ -1117,7 +1104,7 @@ void GpuVersion::storeNodes(uint32_t nb_nodes_to_store){
             std::thread deserialize_thread([&]() {
                 std::for_each(storingToDeserialise.begin(), storingToDeserialise.end(),
                     [](const CIdAABB& id){
-                        OctreeNodeSerializable::deserializeV2(updateNodes[id].get(), id, "From update cache");
+                        OctreeNodeSerializable::deserialize(updateNodes[id].get(), id, "From update cache");
                     }
                 );
                 isDoneDeserializingForStoring = true;
@@ -1590,10 +1577,10 @@ void visLoadTask(GpuVersion::VisibilityTask& task,
         // The serialization thread writes these files under the same lock
         std::lock_guard<std::mutex> lock(GpuVersion::storedNodesMtx[task.id]);
         if(wants_points){
-            nb_points_read = visReadPointsFile(getChunkFilePathV2(task.id, false), task.nb_points_on_disk, points_buffer);
+            nb_points_read = visReadPointsFile(getChunkFilePath(task.id, false), task.nb_points_on_disk, points_buffer);
         }
         if(wants_voxels){
-            nb_voxels_read = visReadPointsFile(getChunkFilePathV2(task.id, true), task.nb_voxels_on_disk, voxels_buffer);
+            nb_voxels_read = visReadPointsFile(getChunkFilePath(task.id, true), task.nb_voxels_on_disk, voxels_buffer);
         }
     }
 
@@ -2169,7 +2156,7 @@ void GpuVersion::serialiseHostCacheNodes(){
     for(std::shared_ptr<HostStorageNode>& node : hostCacheToSerialise){
         const CIdAABB id = node->node.aabb_index;
         std::lock_guard<std::mutex> lock(storedNodesMtx[id]);
-        OctreeNodeSerializable::serializeV2(node);
+        OctreeNodeSerializable::serialize(node);
         written_counters.emplace_back(id, StoredNodeCounters{node->node.points_counter, node->node.voxels_counter});
     }
 
@@ -3015,4 +3002,48 @@ void GpuVersion::takeSingleScreenShot(){
 
         screenshotCounter++;
     }
+}
+
+
+std::string GpuVersion::getGpuMemoryUsage() {
+    cudaDeviceSynchronize();
+
+    // https://forums.developer.nvidia.com/t/best-way-to-report-memory-consumption-in-cuda/21042
+    uint64_t free_byte, total_byte = 0;
+    double free_db, total_db, used_db = 0.;
+
+    CURuntime::assertCudaSuccess(cuMemGetInfo(&free_byte, &total_byte));
+    free_db = (double)free_byte; total_db = (double)total_byte; used_db = total_db - free_db;
+    free_db /= (1024 * 1024); total_db /= (1024 * 1024); used_db /= (1024 * 1024);
+    return format("    Total: {:L} Mb\n    InUse: {:L} Mb\n    Available: {:L} Mb",
+        total_db, used_db, free_db
+    );
+}
+
+std::string GpuVersion::formatMemSize(uint64_t size_bytes, uint32_t pad){
+    uint64_t nb_bytes = size_bytes;
+    uint64_t nb_tbs = uint64_t(floor(nb_bytes / 1'024 / 1'024 / 1'024 / 1'024));
+    nb_tbs = clamp(nb_tbs, uint64_t(0), uint64_t(999));
+    nb_bytes -= nb_tbs * 1'024 * 1'024 * 1'024 * 1'024;
+    uint64_t nb_gbs = uint64_t(floor(nb_bytes / 1'024 / 1'024 / 1'024));
+    nb_gbs = clamp(nb_gbs, uint64_t(0), uint64_t(999));
+    nb_bytes -= nb_gbs * 1'024 * 1'024 * 1'024;
+    uint64_t nb_mbs = uint64_t(floor(nb_bytes / 1'024 / 1'024));
+    nb_mbs = clamp(nb_mbs, uint64_t(0), uint64_t(999));
+    nb_bytes -= nb_mbs * 1'024 * 1'024;
+    uint64_t nb_kbs = uint64_t(floor(nb_bytes / 1'024));
+    nb_kbs = clamp(nb_kbs, uint64_t(0), uint64_t(999));
+    nb_bytes -= nb_kbs * 1'024;
+    nb_bytes = clamp(nb_bytes, uint64_t(0), uint64_t(999));
+
+    std::string pad_tbs = std::string(max(int32_t(pad - 20), 0), ' ');
+    std::string pad_gbs = std::string(max(int32_t(pad - 15), 0), ' ');
+    std::string pad_mbs = std::string(max(int32_t(pad - 10), 0), ' ');
+    std::string pad_kbs = std::string(max(int32_t(pad - 5), 0), ' ');
+    std::string pad_bs  = std::string(max(int32_t(pad), 0), ' ');
+    if(nb_tbs){return format("{}{:3L}T {:3L}G {:3L}M {:3L}k {:3L}b", pad_tbs, nb_tbs, nb_gbs, nb_mbs, nb_kbs, nb_bytes);}
+    if(nb_gbs){return format("{}{:3L}G {:3L}M {:3L}k {:3L}b", pad_gbs, nb_gbs, nb_mbs, nb_kbs, nb_bytes);}
+    if(nb_mbs){return format("{}{:3L}M {:3L}k {:3L}b", pad_mbs, nb_mbs, nb_kbs, nb_bytes);}
+    if(nb_kbs){return format("{}{:3L}k {:3L}b", pad_kbs, nb_kbs, nb_bytes);}
+    return format("{}{:3L}b", pad_bs, nb_bytes);
 }

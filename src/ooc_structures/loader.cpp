@@ -1,213 +1,6 @@
 #include "loader.h"
 
-#include "laszip/laszip_api.h"
-#include "globals.h"
 #include "gpuVersion.h"
-
-#include <algorithm>
-#include <atomic>
-#include <chrono>
-#include <cmath>
-#include <cstdlib>
-#include <cstring>
-#include <execution>
-#include <fstream>
-#include <limits>
-#include <new>
-#include <numeric>
-#include <optional>
-#include <random>
-#include <semaphore>
-#include <thread>
-#include <unordered_set>
-
-
-void initLoadPointBatches(string file,
-    std::deque<std::shared_ptr<PointBatch>>& batches_queue,
-    std::deque<std::mutex>& batches_queue_mutexes
-){
-    std::shared_ptr<Timing> timing = Timing::addTiming(format("init load file: {}", file), true);
-
-	// Basic checks
-	if(!fs::exists(file)){
-		println("ERROR: file '{}' does not exist", file);
-		return;
-	}
-	if(!iEndsWith(file, "las") && !iEndsWith(file, "laz")){
-		println("ERROR: file '{}' doesn't have a supported file type", file);
-		return;
-	}
-
-	// Load header
-	laszip_POINTER laszip_reader;
-	if(laszip_create(&laszip_reader)){
-		println("ERROR: creating laszip reader for '{}'", file);
-		return;
-	}
-	laszip_BOOL is_compressed = 0;
-	{
-        std::lock_guard<std::mutex> lock(LoaderGpuVersion::laszipReaderMtx);
-        if(laszip_open_reader(laszip_reader, file.c_str(), &is_compressed)){
-            laszip_destroy(laszip_reader);
-            return;
-        }
-    }
-	laszip_header* header;
-	if(laszip_get_header_pointer(laszip_reader, &header)){
-		println("ERROR: getting laszip header pointer for '{}'", file);
-		laszip_close_reader(laszip_reader);
-		laszip_destroy(laszip_reader);
-		return;
-	}
-	std::shared_ptr<laszip_header> shared_header = std::make_shared<laszip_header>(*header);
-	std::shared_ptr<string> shared_file = std::make_shared<string>(file);
-
-	// Create batches
-	uint64_t num_points = header->number_of_point_records ? header->number_of_point_records : header->extended_number_of_point_records;
-
-	for(uint64_t first_point = 0; first_point < num_points; first_point += OocSimLodSettings::MAX_POINTS_PER_BATCHES){
-
-		std::shared_ptr<PointBatch> new_batch = std::make_shared<PointBatch>();
-		new_batch->file = shared_file;
-		new_batch->header = shared_header;
-		new_batch->first = first_point;
-		new_batch->count = std::min(num_points - first_point, uint64_t(OocSimLodSettings::MAX_POINTS_PER_BATCHES));
-		new_batch->state = BatchState::ToLoad;
-
-		// Find the index where to put the new batch
-		// If no space is free on the queue, wait until space is found
-		while(true){
-			bool found = false;
-			for(uint32_t i=0; i<OocSimLodSettings::BATCHES_LIST_SIZE; i++){
-				std::lock_guard<std::mutex> lock(batches_queue_mutexes[i]);
-				if(batches_queue[i]){continue;}
-				batches_queue[i] = new_batch;
-				found = true;
-				break;
-			}
-			if(found){break;}
-
-            // Wait a bit to give time for the queue to be emptied
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-		}
-	}
-
-    timing->stop_clock();
-
-}
-
-
-
-
-
-
-void loadBatchesOnGPU(CuRast* editor, CUcontext* ctx,
-    std::deque<std::shared_ptr<PointBatch>>& batches_queue,
-    std::deque<std::mutex>& batches_queue_mutexes
-){
-	std::vector<uint32_t> batches_indices(OocSimLodSettings::MAX_BATCHES_PER_GPU_LOAD, 0);
-	uint32_t last_index = 0;
-
-	for(uint32_t i=0; i<OocSimLodSettings::BATCHES_LIST_SIZE; i++){
-		std::lock_guard<std::mutex> lock(batches_queue_mutexes[i]);
-		if(batches_queue[i] && batches_queue[i]->state == BatchState::Inserted){
-			batches_indices[last_index] = i;
-			last_index++;
-			if(last_index >= OocSimLodSettings::MAX_BATCHES_PER_GPU_LOAD){break;}
-		}
-	}
-	if(last_index == 0){return;}
-	static uint32_t lastGPULoadAttempt = 0;
-	if(batches_indices.size() < OocSimLodSettings::MIN_BATCHES_PER_GPU_LOAD){
-		if(lastGPULoadAttempt < OocSimLodSettings::MAX_ATTEMPTS_BEFORE_IGNORING_MIN_VARIABLES){
-			lastGPULoadAttempt++;
-			return;
-		} 
-	}
-	lastGPULoadAttempt = 0;
-
-    std::shared_ptr<Timing> timing = Timing::addTiming("send points to GPU memory", true);
-
-	std::mutex mtx_counter;
-
-	auto lambda = [&](uint32_t index){
-		std::lock_guard<std::mutex> lock(batches_queue_mutexes[index]);
-		std::shared_ptr<PointBatch> batch = batches_queue[index];
-
-        // Upload positions and colors to GPU
-        CUdeviceptr cptr_positions, cptr_colors;
-
-        cuCtxSetCurrent(*ctx);
-
-		batch->state = BatchState::ToRemove;
-
-		{
-			std::lock_guard<std::mutex> lock_counter(mtx_counter);
-			GlobalVariables::nbPoints += batch->count;
-		}
-
-		// std::lock_guard<std::mutex> lock_scene(updateSceneMutex);
-        // editor->scene.world->children.push_back(node);
-    };
-
-	auto first = batches_indices.begin();
-	auto last = first + last_index;
-    std::for_each(std::execution::par, first, last, lambda);
-
-    timing->stop_clock();
-}
-
-
-void loadPointcloudRoutine(
-    std::deque<std::shared_ptr<PointBatch>>& batches_queue,
-    std::deque<std::mutex>& batches_queue_mutexes
-){
-    while(true){
-        loadPointsInBatches(batches_queue, batches_queue_mutexes);
-		if(GlobalVariables::mainLoopIsTerminating){return;}
-    }
-};
-
-
-
-void clearUnusedBatchesRoutine(
-    std::deque<std::shared_ptr<PointBatch>>& batches_queue,
-    std::deque<std::mutex>& batches_queue_mutexes
-){
-	while(true){
-		clearUnusedBatches(batches_queue, batches_queue_mutexes);
-		if(GlobalVariables::mainLoopIsTerminating){return;}
-	}
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 /////////////////////////////////////////////////////////////////
@@ -330,180 +123,7 @@ vec3 LoaderGpuVersion::getCameraSnapshot(){
     );
 }
 
-void loadPointsInBatches(
-    std::deque<std::shared_ptr<PointBatch>>& batches_queue,
-    std::deque<std::mutex>& batches_queue_mutexes
-){
-	// std::vector<uint32_t> batches_indices(OocSimLodSettings::MAX_BATCHES_PER_LOAD, 0);
-	// uint32_t last_index = 0;
-	
-	// for(uint32_t i=0; i<OocSimLodSettings::BATCHES_LIST_SIZE; i++){
-	// 	std::lock_guard<std::mutex> lock(batches_queue_mutexes[i]);
-	// 	if(batches_queue[i] && batches_queue[i]->state == BatchState::ToLoad){
-	// 		batches_indices[last_index] = i;
-	// 		last_index++;
-	// 		if(last_index >= OocSimLodSettings::MAX_BATCHES_PER_LOAD){break;}
-	// 	}
-	// }
-	// if(last_index == 0){return;}
-	// static uint32_t lastLoadAttempt = 0;
-	// if(OocSimLodSettings::IS_RUNNING_IN_PARALLEL && batches_indices.size() < OocSimLodSettings::MIN_BATCHES_PER_LOAD){
-	// 	if(lastLoadAttempt < OocSimLodSettings::MAX_ATTEMPTS_BEFORE_IGNORING_MIN_VARIABLES){
-	// 		lastLoadAttempt++;
-	// 		return;
-	// 	} 
-	// }
-	// lastLoadAttempt = 0;
 
-	struct Candidate { uint32_t index; float dist2; };
-    std::vector<Candidate> candidates;
-    candidates.reserve(OocSimLodSettings::BATCHES_LIST_SIZE);
-
-    vec3 camera_pos = LoaderGpuVersion::getCameraSnapshot();
-
-    for(uint32_t i=0; i<OocSimLodSettings::BATCHES_LIST_SIZE; i++){
-        std::lock_guard<std::mutex> lock(batches_queue_mutexes[i]);
-        std::shared_ptr<PointBatch>& batch = batches_queue[i];
-        if(batch && batch->state == BatchState::ToLoad){
-            vec3 d = LoaderGpuVersion::batchHeaderCenter(*batch->header) - camera_pos;
-            candidates.push_back({i, glm::dot(d, d)});
-        }
-    }
-    if(candidates.empty()){return;}
-
-    // Sort by distance to the camera, closest first
-    std::sort(candidates.begin(), candidates.end(),
-        [](const Candidate& a, const Candidate& b){ return a.dist2 < b.dist2; });
-
-    uint32_t last_index = std::min<uint32_t>(
-        (uint32_t)candidates.size(), OocSimLodSettings::MAX_BATCHES_PER_LOAD
-    );
-
-    std::vector<uint32_t> batches_indices(last_index);
-    for(uint32_t k=0; k<last_index; k++){
-        batches_indices[k] = candidates[k].index;
-    }
-
-    static uint32_t lastLoadAttempt = 0;
-    if(candidates.size() < OocSimLodSettings::MIN_BATCHES_PER_LOAD){
-        if(lastLoadAttempt < OocSimLodSettings::MAX_ATTEMPTS_BEFORE_IGNORING_MIN_VARIABLES){
-            lastLoadAttempt++;
-            return;
-        }
-    }
-    lastLoadAttempt = 0;
-
-    std::shared_ptr<Timing> timing = Timing::addTiming("load points in batches", true);
-
-    auto lambda = [&](uint32_t index){
-        std::shared_ptr<PointBatch> batch;
-        {
-            std::lock_guard<std::mutex> lock(batches_queue_mutexes[index]);
-            batch = batches_queue[index];
-            if(!batch || batch->state != BatchState::ToLoad){ return; }
-            batch->state = BatchState::Loading;
-        }
-
-        // Get or create a mutex for this specific file
-        std::mutex* file_mutex = nullptr;
-        {
-            std::lock_guard<std::mutex> lock(LoaderGpuVersion::perFileMutexesMtx);
-            auto it = LoaderGpuVersion::perFileMutexes.find(*batch->file);
-            if(it == LoaderGpuVersion::perFileMutexes.end()){
-                printf("ERROR: no file mutex for '%s' — was createNewBatches called?\n", batch->file->c_str());
-                throw(EXIT_FAILURE);
-            }
-            file_mutex = &it->second;
-        }
-
-        laszip_POINTER laszip_reader;
-        if(laszip_create(&laszip_reader)){
-            std::lock_guard<std::mutex> lock(batches_queue_mutexes[index]);
-            batch->state = BatchState::ToLoad;
-            return;
-        }
-
-        laszip_BOOL is_compressed = 0;
-        laszip_point* laz_point;
-
-        {
-            std::lock_guard<std::mutex> file_lock(*file_mutex);
-            if(laszip_open_reader(laszip_reader, (*batch->file).c_str(), &is_compressed)){
-                laszip_destroy(laszip_reader);
-                return;
-            }
-            if(laszip_get_point_pointer(laszip_reader, &laz_point)){
-                laszip_close_reader(laszip_reader);
-                laszip_destroy(laszip_reader);
-                return;
-            }
-            if(laszip_seek_point(laszip_reader, batch->first)){
-                laszip_close_reader(laszip_reader);
-                laszip_destroy(laszip_reader);
-                return;
-            }
-
-            double scale_x = batch->header->x_scale_factor;
-            double scale_y = batch->header->y_scale_factor;
-            double scale_z = batch->header->z_scale_factor;
-            double offset_x = batch->header->x_offset;
-            double offset_y = batch->header->y_offset;
-            double offset_z = batch->header->z_offset;
-
-            uint8_t fmt = batch->header->point_data_format;
-            bool has_rgb = (fmt == 2 || fmt == 3 || fmt == 5 || fmt == 7 || fmt == 8 || fmt == 10);
-            batch->points = std::make_shared<vector<Point>>(vector<Point>());
-
-            for (uint64_t i = 0; i < batch->count; i++) {
-                if(laszip_read_point(laszip_reader)){
-                    println("ERROR: reading point {} for '{}'", i+batch->first, *batch->file);
-                    batch->count = i+1;
-                    break;
-                }
-
-                Point new_point = {};
-                float x = (float)(laz_point->X * scale_x + offset_x);
-                float y = (float)(laz_point->Y * scale_y + offset_y);
-                float z = (float)(laz_point->Z * scale_z + offset_z);
-                new_point.position = {x,y,z};
-
-                if(has_rgb){
-                    for(size_t j=0; j<3; j++){
-                        new_point.color[j] = laz_point->rgb[j] > 255 ? (uint8_t)(laz_point->rgb[j] >> 8) : (uint8_t)laz_point->rgb[j];
-                    }
-                } else {
-                    uint8_t intensity = (uint8_t)(laz_point->intensity >> 8);
-                    for(size_t j=0; j<3; j++){
-                        new_point.color[j] = intensity;
-                    }
-                }
-
-                batch->points->push_back(new_point);
-				batch->centroid += new_point.position;
-            }
-			if(batch->count > 0){batch->centroid /= batch->count;}
-
-            laszip_close_reader(laszip_reader);
-            laszip_destroy(laszip_reader);
-        }
-
-        {
-            std::lock_guard<std::mutex> lock(LoaderGpuVersion::loadedBatchesMtx);
-            LoaderGpuVersion::loadedBatches.push_back({index, batch});
-        }
-
-        {
-            std::lock_guard<std::mutex> lock(LoaderGpuVersion::filesRecordMtx);
-            LoaderGpuVersion::filesRecord[*batch->file].nb_batches_loaded.fetch_add(1);
-        }
-    };
-
-    auto first = batches_indices.begin();
-    auto last = first + last_index;
-    std::for_each(std::execution::par, first, last, lambda);
-
-    timing->stop_clock();
-}
 
 void LoaderGpuVersion::init(){
     CURuntime::assertCudaSuccess(cuStreamCreate(&stream, CU_STREAM_NON_BLOCKING));
@@ -667,14 +287,11 @@ bool LoaderGpuVersion::sendToDevice(){
     return has_send_new_points;
 }
 
-void clearUnusedBatches(
-    std::deque<std::shared_ptr<PointBatch>>& batches_queue,
-    std::deque<std::mutex>& batches_queue_mutexes
-){
+void LoaderGpuVersion::clearUnusedBatches(){
 	for(uint32_t i=0; i<OocSimLodSettings::BATCHES_LIST_SIZE; i++){
-		std::lock_guard<std::mutex> lock(batches_queue_mutexes[i]);
-		if(batches_queue[i] && batches_queue[i]->state == BatchState::ToRemove){
-			batches_queue[i] = nullptr;
+		std::lock_guard<std::mutex> lock(batchesQueueMutexes[i]);
+		if(batchesQueue[i] && batchesQueue[i]->state == BatchState::ToRemove){
+			batchesQueue[i] = nullptr;
 		}
 	}
 }
@@ -695,7 +312,7 @@ void LoaderGpuVersion::loadingRoutine(){
 	loaderIsInsideLoadingRoutine = true;
 	if(!stopLoadingWorkers){
 		// Clear completed batches
-		clearUnusedBatches(batchesQueue, batchesQueueMutexes);
+		clearUnusedBatches();
 		// Load the highest priority batches from disk
 		loadPendingBatches();
 	}
@@ -784,7 +401,7 @@ std::optional<LoaderFileEntry> loaderRegisterFile(const std::string& file){
 /// Create the regular batches of a registered file (second half of the former `createNewBatches')
 /// Their bounds are estimated from the overview sample: `samples[k]' is point `k * stride' of the
 /// file, so the samples in [first, first + count) outline the batch (else the header bounds)
-void loaderCreateFileBatches(const LoaderFileEntry& entry, const std::vector<Point>& samples, uint64_t stride){
+void loaderCreateFileBatches(const LoaderFileEntry& entry, const std::vector<CPoint>& samples, uint64_t stride){
 	LoaderGpuVersion::BatchBounds header_bounds = {};
 	header_bounds.extend(glm::vec3(float(entry.header->min_x), float(entry.header->min_y), float(entry.header->min_z)));
 	header_bounds.extend(glm::vec3(float(entry.header->max_x), float(entry.header->max_y), float(entry.header->max_z)));
@@ -857,35 +474,49 @@ uint32_t loaderReadLazChunkSize(const std::string& file){
 	return 0;
 }
 
-/// Same conversion as `loadPointsInBatches'
-Point loaderToPoint(const laszip_point* laz_point, const laszip_header& header){
-	Point new_point = {};
-	float x = (float)(laz_point->X * header.x_scale_factor + header.x_offset);
-	float y = (float)(laz_point->Y * header.y_scale_factor + header.y_offset);
-	float z = (float)(laz_point->Z * header.z_scale_factor + header.z_offset);
-	new_point.position = {x,y,z};
+/// LAS / LAZ point to `CPoint': the header fields are resolved once (per file or batch), not per point,
+/// and the points are written in place into their destination (no temporary, no conversion)
+struct LoaderPointConverter {
+	double scale_x = 1.0, scale_y = 1.0, scale_z = 1.0;
+	double offset_x = 0.0, offset_y = 0.0, offset_z = 0.0;
+	bool has_rgb = false;
 
-	uint8_t fmt = header.point_data_format;
-	bool has_rgb = (fmt == 2 || fmt == 3 || fmt == 5 || fmt == 7 || fmt == 8 || fmt == 10);
-	if(has_rgb){
-		for(size_t j=0; j<3; j++){
-			new_point.color[j] = laz_point->rgb[j] > 255 ? (uint8_t)(laz_point->rgb[j] >> 8) : (uint8_t)laz_point->rgb[j];
-		}
-	} else {
-		uint8_t intensity = (uint8_t)(laz_point->intensity >> 8);
-		for(size_t j=0; j<3; j++){
-			new_point.color[j] = intensity;
-		}
+	explicit LoaderPointConverter(const laszip_header& header)
+		: scale_x(header.x_scale_factor), scale_y(header.y_scale_factor), scale_z(header.z_scale_factor)
+		, offset_x(header.x_offset), offset_y(header.y_offset), offset_z(header.z_offset)
+	{
+		const uint8_t fmt = header.point_data_format;
+		has_rgb = (fmt == 2 || fmt == 3 || fmt == 5 || fmt == 7 || fmt == 8 || fmt == 10);
 	}
-	return new_point;
-}
+
+	/// Color bytes in memory: R, G, B, then A = 0 (the alpha byte is left at 0, as before)
+	void operator()(const laszip_point* laz_point, CPoint& out) const {
+		out.position = glm::vec3(
+			static_cast<float>(laz_point->X * scale_x + offset_x),
+			static_cast<float>(laz_point->Y * scale_y + offset_y),
+			static_cast<float>(laz_point->Z * scale_z + offset_z)
+		);
+
+		uint32_t r, g, b;
+		if(has_rgb){
+			// 16-bit channels (or 8-bit values stored as is)
+			auto to8 = [](uint16_t c) -> uint32_t { return c > 255 ? uint32_t(c >> 8) : uint32_t(c); };
+			r = to8(laz_point->rgb[0]);
+			g = to8(laz_point->rgb[1]);
+			b = to8(laz_point->rgb[2]);
+		} else {
+			r = g = b = uint32_t(laz_point->intensity >> 8);
+		}
+		out.color = r | (g << 8) | (b << 16);
+	}
+};
 
 /// The overview sample of a file: the first point of every LAZ chunk (stored uncompressed, so
 /// seeking to it and reading it decompresses nothing else), or every `OVERVIEW_FALLBACK_STRIDE'-th
 /// point for uncompressed LAS files and LAZ files with variable-size chunks
-std::vector<Point> loaderReadChunkPoints(const LoaderFileEntry& entry, uint64_t& stride_out){
+std::vector<CPoint> loaderReadChunkPoints(const LoaderFileEntry& entry, uint64_t& stride_out){
 	stride_out = 0;
-	std::vector<Point> points = {};
+	std::vector<CPoint> points = {};
 	if(entry.num_points == 0){return points;}
 
 	std::mutex* file_mutex = nullptr;
@@ -922,6 +553,7 @@ std::vector<Point> loaderReadChunkPoints(const LoaderFileEntry& entry, uint64_t&
 	stride = std::max<uint64_t>(stride, 1);
 	stride_out = stride;
 
+	const LoaderPointConverter convert(*entry.header);
 	points.reserve((entry.num_points + stride - 1) / stride);
 	for(uint64_t index = 0; index < entry.num_points; index += stride){
 		// The first decoding reads the chunk table and may log (LASzip logging is global and not
@@ -930,7 +562,7 @@ std::vector<Point> loaderReadChunkPoints(const LoaderFileEntry& entry, uint64_t&
 		if(index == 0){ first_lock.lock(); }
 		if(laszip_seek_point(laszip_reader, static_cast<laszip_I64>(index))){break;}
 		if(laszip_read_point(laszip_reader)){break;}
-		points.push_back(loaderToPoint(laz_point, *entry.header));
+		convert(laz_point, points.emplace_back());
 	}
 
 	laszip_close_reader(laszip_reader);
@@ -969,16 +601,16 @@ bool loaderHeadersBounds(const std::vector<std::optional<LoaderFileEntry>>& entr
 
 /// Mix the overview samples of all the files into batches that are sent before any other batch
 void loaderCreateOverviewBatches(const std::vector<std::optional<LoaderFileEntry>>& entries,
-	const std::vector<std::vector<Point>>& samples
+	const std::vector<std::vector<CPoint>>& samples
 ){
 	uint64_t nb_samples = 0;
-	for(const std::vector<Point>& file_samples : samples){ nb_samples += file_samples.size(); }
+	for(const std::vector<CPoint>& file_samples : samples){ nb_samples += file_samples.size(); }
 	if(nb_samples == 0){return;}
 
 	// All the samples, shuffled so that every overview batch spans every file
-	std::vector<Point> all_samples = {};
+	std::vector<CPoint> all_samples = {};
 	all_samples.reserve(nb_samples);
-	for(const std::vector<Point>& file_samples : samples){
+	for(const std::vector<CPoint>& file_samples : samples){
 		all_samples.insert(all_samples.end(), file_samples.begin(), file_samples.end());
 	}
 	std::shuffle(all_samples.begin(), all_samples.end(), std::minstd_rand(0x5EEDu));
@@ -1039,9 +671,9 @@ void loaderCreateOverviewBatches(const std::vector<std::optional<LoaderFileEntry
 		// Already in memory: never picked by the disk loader (only `ToLoad' batches are), it goes
 		// through the same states as a loaded batch from here (Sent, ToRemove)
 		new_batch->state = BatchState::Loading;
-		new_batch->points = std::make_shared<vector<Point>>(all_samples.begin() + begin, all_samples.begin() + end);
+		new_batch->points = std::make_shared<vector<CPoint>>(all_samples.begin() + begin, all_samples.begin() + end);
 		new_batch->centroid = vec3(0.0f);
-		for(const Point& point : *new_batch->points){ new_batch->centroid += point.position; }
+		for(const CPoint& point : *new_batch->points){ new_batch->centroid += point.position; }
 		if(new_batch->count > 0){ new_batch->centroid /= static_cast<float>(new_batch->count); }
 
 		// A slot in the batches queue (the device side refers to batches by slot)
@@ -1052,7 +684,7 @@ void loaderCreateOverviewBatches(const std::vector<std::optional<LoaderFileEntry
 				if(LoaderGpuVersion::batchesQueue[i]){continue;}
 				LoaderGpuVersion::batchesQueue[i] = new_batch;
 				LoaderGpuVersion::slotsBounds[i] = {};
-				for(const Point& point : *new_batch->points){ LoaderGpuVersion::slotsBounds[i].extend(point.position); }
+				for(const CPoint& point : *new_batch->points){ LoaderGpuVersion::slotsBounds[i].extend(point.position); }
 				overview_batches.push_back({i, new_batch});
 				found = true;
 				break;
@@ -1137,7 +769,7 @@ void LoaderGpuVersion::createNewBatchesFromFiles(std::vector<std::string> files)
 	}
 
 	// 2. Overview: the chunk points of every file, sent before anything else
-	std::vector<std::vector<Point>> samples(files.size());
+	std::vector<std::vector<CPoint>> samples(files.size());
 	std::vector<uint64_t> strides(files.size(), 0);
 	for_each_file([&](uint32_t i){
 		if(!entries[i]){ return; }
@@ -1296,7 +928,7 @@ bool LoaderGpuVersion::loadOneBatch(){
     }
     if(!file_mutex){ fail("no file mutex"); return true; }
 
-    std::vector<Point> points = {};
+    std::vector<CPoint> points = {};
     const char* failure = nullptr;
     {
         // At most `nbLoadingThreads()' decodings at once (taken before the file mutex, everywhere)
@@ -1337,6 +969,7 @@ bool LoaderGpuVersion::loadOneBatch(){
         if(!failure){
             // The batch size is read once: nothing may change it while it is being loaded
             const uint64_t nb_points_to_read = batch->count;
+            const LoaderPointConverter convert(*batch->header);
             try {
                 points.reserve(nb_points_to_read);
                 for(uint64_t i = 0; i < nb_points_to_read; i++){
@@ -1344,7 +977,7 @@ bool LoaderGpuVersion::loadOneBatch(){
                         failure = "reading a point";
                         break;
                     }
-                    points.push_back(loaderToPoint(laz_point, *batch->header));
+                    convert(laz_point, points.emplace_back());   // written in place (capacity reserved)
                 }
             } catch(const std::bad_alloc&){
                 failure = "out of host memory";
@@ -1365,7 +998,7 @@ bool LoaderGpuVersion::loadOneBatch(){
         const glm::vec3 lo = glm::vec3(float(h.min_x - tolerance_x), float(h.min_y - tolerance_y), float(h.min_z - tolerance_z));
         const glm::vec3 hi = glm::vec3(float(h.max_x + tolerance_x), float(h.max_y + tolerance_y), float(h.max_z + tolerance_z));
         const size_t nb_read = points.size();
-        points.erase(std::remove_if(points.begin(), points.end(), [&](const Point& point){
+        points.erase(std::remove_if(points.begin(), points.end(), [&](const CPoint& point){
             const glm::vec3& p = point.position;
             return !(p.x >= lo.x && p.x <= hi.x && p.y >= lo.y && p.y <= hi.y && p.z >= lo.z && p.z <= hi.z);
         }), points.end());
@@ -1393,13 +1026,13 @@ bool LoaderGpuVersion::loadOneBatch(){
 
     BatchBounds loaded_bounds = {};
     batch->centroid = vec3(0.0f);
-    for(const Point& point : points){
+    for(const CPoint& point : points){
         batch->centroid += point.position;
         loaded_bounds.extend(point.position);
     }
     if(!points.empty()){ batch->centroid /= static_cast<float>(points.size()); }
     try {
-        batch->points = std::make_shared<vector<Point>>(std::move(points));
+        batch->points = std::make_shared<vector<CPoint>>(std::move(points));
     } catch(const std::bad_alloc&){
         fail("out of host memory");
         return true;
@@ -1481,7 +1114,6 @@ void LoaderGpuVersion::stopLoading(){
 
 
 
-// From claude
 void LoaderGpuVersion::filesRecordUi(){
 	ImGui::SetNextWindowSize(ImVec2(500, 400), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("File Explorer")) {

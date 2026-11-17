@@ -7,7 +7,6 @@
 #include "VKRenderer.h"
 #include "TextureManager.h"
 
-#include "ooc_structures/globals.h"
 #include "ooc_structures/gpuVersion.h"
 #include "ooc_structures/neural.h"
 
@@ -303,72 +302,6 @@ void drawPoints(Scene* scene, View view, RenderTarget& target){
 	});
 }
 
-void drawOctreeAABB(Scene* scene, View view, RenderTarget& target){
-	static CudaModularProgram* prog = new CudaModularProgram({"./src/kernels/octree.cu"});
-
-	std::lock_guard<std::mutex> lock_scene(GlobalVariables::updateSceneMutex);
-	scene->forEach<SNCOctree>([&](SNCOctree* octree){
-		// Sanity check
-		if(!octree){return;}
-		if(octree->need_to_be_executed){return;}
-		if(!octree->isDoneLoadingToGpu()){return;}
-		CFullOctree cfo = octree->toFullOctree();
-		cfo.use_aabb_debug_color = CuRastSettings::showVisibleNodes;
-
-		prog->launch("kernel_drawOctreeAABB", {&cfo, &target}, cfo.num_nodes);
-	});
-}
-
-void drawOctree(Scene* scene, View view, RenderTarget& target){
-	static CudaModularProgram* prog = new CudaModularProgram({"./src/kernels/octree.cu"});
-
-	std::lock_guard<std::mutex> lock_scene(GlobalVariables::updateSceneMutex);
-    scene->forEach<SNCOctree>([&](SNCOctree* octree){
-		// Sanity check
-		if(!octree){return;}
-		if(octree->need_to_be_executed){return;}
-		if(!octree->isDoneLoadingToGpu()){return;}
-		CFullOctree cfo = octree->toFullOctree();
-
-		cfo.debug_lod_to_render = CuRastSettings::debugLodToRender;
-		cfo.voxels_nb_points_per_axis = uint32_t(CuRastSettings::voxelsPointsPerAxis);
-		cfo.min_pixel_span = CuRastSettings::minPixelSpan;
-		cfo.use_voxels_debug_color = CuRastSettings::voxelsDebugColor;
-		cfo.nb_blocks_per_node = 1;
-        
-		OptionalLaunchSettings launch_settings = {
-			.gridsize = cfo.num_nodes,
-			.blocksize = 1024
-		};
-
-		prog->launch("kernel_visibilityPass", {&cfo, &target}, launch_settings);
-		prog->launch("kernel_drawOctreeLarge", {&cfo, &target}, launch_settings);
-		prog->launch("kernel_drawOctreeSmall", {&cfo, &target}, launch_settings);
-    });
-}
-
-void drawOctreeAABBUnified(Scene* scene, View view, RenderTarget& target, CFullOctreeUnified& cfo){
-	static CudaModularProgram* prog = new CudaModularProgram({"./src/kernels/octreeUnified.cu"});
-	prog->launch("kernel_drawOctreeAABB", {&cfo, &target}, cfo.num_nodes);
-}
-
-void drawOctreeUnified(Scene* scene, View view, RenderTarget& target, CFullOctreeUnified& cfo){
-	static CudaModularProgram* prog = new CudaModularProgram({"./src/kernels/octreeUnified.cu"});
-	cfo.debug_lod_to_render = CuRastSettings::debugLodToRender;
-	cfo.voxels_nb_points_per_axis = uint32_t(CuRastSettings::voxelsPointsPerAxis);
-	cfo.min_pixel_span = CuRastSettings::minPixelSpan;
-	cfo.use_voxels_debug_color = CuRastSettings::voxelsDebugColor;
-        
-	uint32_t numThreads = cfo.num_nodes * 1024;
-	OptionalLaunchSettings launch_settings = {
-		.gridsize = cfo.num_nodes,
-		.blocksize = 1024
-	};
-
-	prog->launch("kernel_visibilityPass", {&cfo, &target}, launch_settings);
-	prog->launch("kernel_drawOctreeLarge", {&cfo, &target}, launch_settings);
-	prog->launch("kernel_drawOctreeSmall", {&cfo, &target}, launch_settings);
-}
 
 
 #include "CuRast_vulkanRender.h"
@@ -886,11 +819,6 @@ void CuRast::draw(Scene* scene, vector<View> views){
 		// 	Timer::recordDuration("kernel_drawHeightmap", custart, Timer::recordCudaTimestamp());
 		// }
 
-		CFullOctreeUnified cfo = {};
-		if(CuRastSettings::useUnifiedMemory){
-			unifiedOctreeBuilder.update();
-			cfo = unifiedOctreeBuilder.build();
-		}
 
 		GpuVersion::renderOctree(target);
 		if(OocSimLodSettings::IS_USING_NN && CuRastSettings::useNN){
@@ -898,7 +826,7 @@ void CuRast::draw(Scene* scene, vector<View> views){
 		}
 
 
-		dvlist.push_back({"Total allocated size:    ", GlobalVariables::formatMemSize(GpuVersion::totalAllocatedMemory)});
+		dvlist.push_back({"Total allocated size:    ", GpuVersion::formatMemSize(GpuVersion::totalAllocatedMemory)});
 		dvlist.push_back({"Current values:          ", std::string(42, ' ')});
 		dvlist.push_back({"    # current nodes      ", format("{:40L}  ", GpuVersionUI::currentNbNodes)});
 		dvlist.push_back({"    # current chunks     ", format("{:40L}  ", GpuVersionUI::currentNbChunks)});
@@ -989,7 +917,7 @@ void CuRast::draw(Scene* scene, vector<View> views){
 			prog->launch2D("kernel_ssaoOcclusion", argsSSAO, target.width, target.height);
 			prog->launch2D("kernel_ssaoBlur", argsSSAO, target.width, target.height);
 		}
-		
+
 
 		{ // RESOLVE COLOR BUFFER (write to graphics API framebuffer)
 			int viewWidth = view.framebuffer->width;

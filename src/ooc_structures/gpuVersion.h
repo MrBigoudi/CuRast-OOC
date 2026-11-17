@@ -1,11 +1,11 @@
 #pragma once
 
-#include "globals.h"
+#include "CuRast.h"
 #include "../kernels/ooc/GpuVersionInterface.h"
 #include "../kernels/ooc/GpuVersionAllocator.h"
 
 #include <list>
-#include <deque>
+#include <unordered_set>
 
 struct LoaderGpuVersion;
 struct HostStorageNode;
@@ -14,8 +14,8 @@ struct HostStorageNode;
 /// https://www.geeksforgeeks.org/dsa/lru-cache-implementation-using-double-linked-lists/ + ChatGPT
 struct CLRUCache {
 	const uint32_t CACHE_SIZE;
-    list<CIdAABB> cache;
-    std::unordered_map<CIdAABB, list<CIdAABB>::iterator> cache_map;
+    std::list<CIdAABB> cache;
+    std::unordered_map<CIdAABB, std::list<CIdAABB>::iterator> cache_map;
 
     CLRUCache(uint32_t cache_size) : CACHE_SIZE(cache_size) {
         cache_map.reserve(CACHE_SIZE);
@@ -214,6 +214,9 @@ struct GpuVersion {
     static inline CUstream visStream;
     static inline uint64_t totalAllocatedMemory = 0;
     static inline bool isTakingScreenshots = false;
+	static inline bool mainLoopIsTerminating = false;
+	static std::string getGpuMemoryUsage();
+	static std::string formatMemSize(uint64_t size_bytes, uint32_t pad = 0);
 
     static inline std::vector<CIdAABB> parentsMap = {};
     static inline std::vector<CAABB> aabbsMap = {};
