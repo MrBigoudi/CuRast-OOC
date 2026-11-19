@@ -278,6 +278,9 @@ struct GpuVersion {
         /// Bounding box of the node, to find the octant of each voxel (copied on the main thread:
         /// the workers don't read `aabbsMap')
         CAABB voxels_aabb;
+        /// Size code of the voxels of the node, written into the alpha byte of every voxel copied into
+        /// the staging buffers (see `VOXEL_SIZE_CODE_BIAS'); 0 = unknown (drawn as a point)
+        uint8_t voxels_size_code = 0;
 
         /// Source of the node: its on-disk files (default) or its host RAM copy in `updateNodes'
         /// (node evicted from the device but not written to disk yet, or with newer data than on
@@ -288,6 +291,18 @@ struct GpuVersion {
         const HostStorageNode* update_node = nullptr;
     };
     static inline std::vector<VisibilityTask> visibilityTasks = {};
+
+    /// Voxel splats (see `drawSplat' in render.cu): every voxel is drawn as a camera-facing square of
+    /// side `VOXEL_SPLAT_SCALE' voxel cells (cell = root size / (GRID_SIZE_PER_DIMENSION * 2^level of
+    /// its node)), at most `VOXEL_SPLAT_MAX_PIXELS' pixels wide. A scale <= 0 draws one point per voxel
+    static inline float VOXEL_SPLAT_SCALE = 1.0f;
+    static inline uint32_t VOXEL_SPLAT_MAX_PIXELS = 32;
+    /// The host rendering buffers hold no node id: the size of their voxels is encoded in the alpha
+    /// byte of their color, as the level of their node relative to the initial root (node 0) plus this
+    /// bias (code 0: unknown). Same constant as `VOXEL_SIZE_CODE_BIAS' in render.cu
+    static constexpr int32_t VOXEL_SIZE_CODE_BIAS = 128;
+    /// Size of the initial root (node 0), read from the device by each visibility update
+    static inline float voxelReferenceSize = 0.0f;
 
     /// Pinned staging buffers, as large as the device rendering buffers
     /// Written by the visibility workers, read by a single batched copy to the device

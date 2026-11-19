@@ -175,6 +175,129 @@ void drawPoint(
     }
 }
 
+/// Voxel splats: a voxel is drawn as a camera-facing square (constant depth: a square parallel to the
+/// image plane has the same view depth everywhere) instead of a single point, so that it covers its
+/// voxel cell on screen whatever the distance
+/// Its side is the cell of the voxel grid of its node, `scale' times: root bounding box size /
+/// (GRID_SIZE_PER_DIMENSION * 2^level of the node)
+struct CVoxelSplatSettings {
+    /// Side of the square, in voxel cells (1: exactly the cell); <= 0: one point per voxel (as before)
+    float scale = 1.0f;
+    /// Longest side of a square, in pixels of the finest level (bounds the cost of a voxel right in
+    /// front of the camera)
+    uint32_t max_pixels = 32;
+};
+
+/// Size of a voxel of the host rendering buffers, encoded by the host in the alpha byte of its color
+/// (they hold no node id): the level of its node relative to the initial root (node 0, never resized:
+/// the root only grows by doubling around it, see the bottom-up update), biased.
+/// Cell size = size(node 0) * 2^-(code - VOXEL_SIZE_CODE_BIAS) / GRID_SIZE_PER_DIMENSION; 0 = unknown
+/// Same constant as `GpuVersion::VOXEL_SIZE_CODE_BIAS' on the host
+__device__ constexpr int32_t VOXEL_SIZE_CODE_BIAS = 128;
+
+/// Largest side of a box
+__device__ __forceinline__
+float maxSide(const CAABB& aabb){
+    const vec3 size = aabb.getSize();
+    return fmaxf(size.x, fmaxf(size.y, size.z));
+}
+
+/// Side of a voxel cell of the node with this bounding box (the nodes are exact subdivisions of the
+/// root: root size / (GRID_SIZE_PER_DIMENSION * 2^level))
+__device__ __forceinline__
+float voxelCellSize(const CAABB& node_aabb){
+    return maxSide(node_aabb) / float(OocSimLodSettings::GRID_SIZE_PER_DIMENSION);
+}
+
+/// Side of a voxel cell from the size code of a host rendering buffer voxel (0 if unknown)
+__device__ __forceinline__
+float voxelCellSizeFromCode(uint32_t code, float reference_size){
+    if(code == 0){return 0.0f;}
+    const float exponent = float(int32_t(code) - VOXEL_SIZE_CODE_BIAS);
+    return reference_size * exp2f(-exponent) / float(OocSimLodSettings::GRID_SIZE_PER_DIMENSION);
+}
+
+/// Size of the initial root (node 0), reference of the size codes
+__device__ __forceinline__
+float voxelReferenceSize(){
+    return maxSide(globalVariables.relationshipMap[0].aabb);
+}
+
+/// Draw a voxel as a camera-facing square of side `cell_size * splat.scale' (world units), in every
+/// pyramid level like `drawPoint'. A square smaller than a pixel covers the pixel of its centre (same
+/// as `drawPoint'); `cell_size <= 0' or `splat.scale <= 0' falls back to `drawPoint'
+__device__
+void drawSplat(
+	const CRenderTarget& target,
+    const CRenderingSettings settings,
+    const CVoxelSplatSettings& splat,
+	vec3 position,
+    uint32_t color,
+    float cell_size,
+    uint8_t lod = 0
+){
+    const float side = cell_size * splat.scale;
+    if(!(side > 0.0f)){
+        drawPoint(target, settings, position, color, lod);
+        return;
+    }
+
+	vec4 projected = target.proj * target.view * vec4(position, 1.0f);
+    float depth = projected.w;
+    if(depth <= 0.0f) return;
+
+    uint64_t udepth   = __float_as_uint(depth);
+    uint64_t fragment = (udepth << 32) | color;
+    uint64_t lod_frag = lod;
+
+    float ndc_x = projected.x / depth;
+    float ndc_y = projected.y / depth;
+    // Half extents of the square in NDC: an offset `d' in view space along x (y) moves the projection
+    // by proj[0][0] * d / depth (proj[1][1] * d / depth)
+    float half_ndc_x = 0.5f * side * fabsf(target.proj[0][0]) / depth;
+    float half_ndc_y = 0.5f * side * fabsf(target.proj[1][1]) / depth;
+    if(!isfinite(ndc_x) || !isfinite(ndc_y) || !isfinite(half_ndc_x) || !isfinite(half_ndc_y)) return;
+
+    const float max_half_pixels = 0.5f * float(max(splat.max_pixels, 1u));
+
+    uint32_t loop_end = settings.use_multiscale ? CRenderingSettings::NB_PYRAMID_LEVELS : 1;
+    for(uint32_t level = 0; level < loop_end; level++){
+        uint64_t* colorbuffer  = target.colorbuffers[level];
+        uint64_t* framebuffer  = target.framebuffers[level];
+
+        const int w = int(target.width >> level);
+        const int h = int(target.height >> level);
+
+        // Centre and half sides in pixels (the side limit shrinks with the level like the voxel)
+        const float cx = (ndc_x * 0.5f + 0.5f) * float(w);
+        const float cy = (ndc_y * 0.5f + 0.5f) * float(h);
+        const float hx = fminf(half_ndc_x * 0.5f * float(w), max_half_pixels / float(1u << level));
+        const float hy = fminf(half_ndc_y * 0.5f * float(h), max_half_pixels / float(1u << level));
+        if(cx + hx < 0.0f || cy + hy < 0.0f || cx - hx >= float(w) || cy - hy >= float(h)) continue;
+
+        // Pixels whose centre lies in the square [c - h, c + h) (half-open: two adjacent squares never
+        // share a pixel column / row); at least the pixel of the centre
+        int x0 = int(ceilf(cx - hx - 0.5f));
+        int x1 = int(ceilf(cx + hx - 0.5f)) - 1;
+        int y0 = int(ceilf(cy - hy - 0.5f));
+        int y1 = int(ceilf(cy + hy - 0.5f)) - 1;
+        if(x1 < x0){ x0 = x1 = int(floorf(cx)); }
+        if(y1 < y0){ y0 = y1 = int(floorf(cy)); }
+        x0 = max(x0, 0); y0 = max(y0, 0);
+        x1 = min(x1, w - 1); y1 = min(y1, h - 1);
+
+        for(int py = y0; py <= y1; py++){
+            for(int px = x0; px <= x1; px++){
+                const int pixelID = px + py * w;
+                if(fragment < colorbuffer[pixelID]){
+                    atomicMin(&colorbuffer[pixelID], fragment);
+                    atomicMin(&framebuffer[pixelID], lod_frag);
+                }
+            }
+        }
+    }
+}
+
 __device__
 void drawVoxel(
     const CRenderTarget& target,
@@ -648,8 +771,11 @@ void kernel_replace_unloaded_nodes(
 extern "C" __global__
 void kernel_draw_visibility_cache(
 	CRenderTarget target,
-    CRenderingSettings settings
+    CRenderingSettings settings,
+    float voxel_splat_scale,
+    uint32_t voxel_splat_max_pixels
 ){
+    const CVoxelSplatSettings splat = {voxel_splat_scale, voxel_splat_max_pixels};
     auto grid = cg::this_grid();
     uint32_t thread_id = grid.thread_rank();
     uint32_t nb_threads = grid.num_threads();
@@ -679,7 +805,8 @@ void kernel_draw_visibility_cache(
         );
     }
 
-    // Render voxels
+    // Render voxels (their size code is in the alpha byte of their color, see `VOXEL_SIZE_CODE_BIAS')
+    const float reference_size = voxelReferenceSize();
     for(uint32_t voxel_id = thread_id; voxel_id < nb_voxels; voxel_id += nb_threads){
         // For dataset creation
         if(voxel_id % settings.draw_every_x_points != 0){continue;}
@@ -697,7 +824,11 @@ void kernel_draw_visibility_cache(
         //     continue;
         // }
 
-        drawPoint(target, settings, voxel.position, settings.use_voxels_debug_color ? 0xffff00ff : voxel.color);
+        const float cell_size = voxelCellSizeFromCode(voxel.color >> 24, reference_size);
+        const uint32_t voxel_color = voxel.color & 0x00FFFFFFu;
+        drawSplat(target, settings, splat, voxel.position,
+            settings.use_voxels_debug_color ? 0xffff00ff : voxel_color, cell_size
+        );
     }
 }
 
@@ -717,6 +848,7 @@ __device__
 void drawEvictedNode(
 	const CRenderTarget& target,
     CRenderingSettings settings,
+    const CVoxelSplatSettings& splat,
     CIdAABB node_id,
     const CPoint* points, uint32_t nb_points,
     const CPoint* voxels, uint32_t nb_voxels
@@ -737,12 +869,13 @@ void drawEvictedNode(
     }
 
     if(is_cut){
+        const float cell_size = voxelCellSize(globalVariables.relationshipMap[node_id].aabb);
         for(uint32_t i = thread_id; i < nb_voxels; i += nb_threads_per_block){
             // For dataset creation
             if(i % settings.draw_every_x_points != 0){continue;}
             const CPoint& voxel = voxels[i];
-            drawPoint(target, settings, voxel.position,
-                settings.use_voxels_debug_color ? 0xffff00ff : voxel.color
+            drawSplat(target, settings, splat, voxel.position,
+                settings.use_voxels_debug_color ? 0xffff00ff : (voxel.color & 0x00FFFFFFu), cell_size
             );
         }
     }
@@ -752,8 +885,11 @@ void drawEvictedNode(
 extern "C" __global__
 void kernel_draw_evicted_nodes(
 	CRenderTarget target,
-    CRenderingSettings settings
+    CRenderingSettings settings,
+    float voxel_splat_scale,
+    uint32_t voxel_splat_max_pixels
 ){
+    const CVoxelSplatSettings splat = {voxel_splat_scale, voxel_splat_max_pixels};
     if(settings.debug_lod_to_render != -1){return;}
 
     const uint32_t covered = globalVariables.coveredEvictionGeneration;
@@ -769,7 +905,7 @@ void kernel_draw_evicted_nodes(
     for(uint32_t slot = block_id; slot < nb_slots; slot += nb_blocks){
         const CIdAABB node_id = globalVariables.evictedNodesIds[slot];
         if(node_id == CINVALID_ID){continue;}
-        drawEvictedNode(target, settings, node_id,
+        drawEvictedNode(target, settings, splat, node_id,
             globalVariables.exchangedPoints[slot], globalVariables.evictedNodesNbPoints[slot],
             globalVariables.exchangedVoxels[slot], globalVariables.evictedNodesNbVoxels[slot]
         );
@@ -781,7 +917,7 @@ void kernel_draw_evicted_nodes(
         const CEvictedRetainEntry entry = globalVariables.retainedEvictedNodes[entry_index];
         if(entry.id == CINVALID_ID){continue;}
         if(entry.generation <= covered || entry.generation >= last_generation){continue;}
-        drawEvictedNode(target, settings, entry.id,
+        drawEvictedNode(target, settings, splat, entry.id,
             globalVariables.retainedEvictedPoints + entry.points_offset, entry.nb_points,
             globalVariables.retainedEvictedVoxels + entry.voxels_offset, entry.nb_voxels
         );
@@ -796,6 +932,7 @@ __device__
 void drawVoxelsInOctants(
 	const CRenderTarget& target,
 	CRenderingSettings settings,
+    const CVoxelSplatSettings& splat,
     COctreeNode* node,
     uint32_t child_mask
 ){
@@ -804,6 +941,7 @@ void drawVoxelsInOctants(
     uint32_t nb_threads_per_block = block.num_threads();
 
     const CAABB& aabb = globalVariables.relationshipMap[node->aabb_index].aabb;
+    const float cell_size = voxelCellSize(aabb);
     CChunk* cur_voxels = node->voxels;
 
     uint32_t depth = globalVariables.octreeDepth;
@@ -822,8 +960,8 @@ void drawVoxelsInOctants(
             const uint32_t octant = uint32_t(aabb.getNextChildIndex(voxel.position));
             if(!(child_mask & (1u << octant))){continue;}
 
-            uint32_t voxel_color = settings.use_voxels_debug_color ? color : voxel.color;
-            drawPoint(target, settings, voxel.position, voxel_color, node->level + 1);
+            uint32_t voxel_color = settings.use_voxels_debug_color ? color : (voxel.color & 0x00FFFFFFu);
+            drawSplat(target, settings, splat, voxel.position, voxel_color, cell_size, node->level + 1);
         }
         cur_voxels = cur_voxels->next;
     }
@@ -833,8 +971,11 @@ void drawVoxelsInOctants(
 extern "C" __global__
 void kernel_draw_octree_large(
 	CRenderTarget target,
-    CRenderingSettings settings
+    CRenderingSettings settings,
+    float voxel_splat_scale,
+    uint32_t voxel_splat_max_pixels
 ){
+    const CVoxelSplatSettings splat = {voxel_splat_scale, voxel_splat_max_pixels};
     if(settings.debug_lod_to_render != -1){return;}
 	auto grid = cg::this_grid();
     auto block = cg::this_thread_block();
@@ -872,7 +1013,7 @@ void kernel_draw_octree_large(
                 vox_mask |= (1u << i);
             }
             if(vox_mask != 0){
-                drawVoxelsInOctants(target, settings, node, vox_mask);
+                drawVoxelsInOctants(target, settings, splat, node, vox_mask);
             }
         }
 
@@ -903,6 +1044,7 @@ __device__
 void drawAllVoxels(
 	const CRenderTarget& target,
 	CRenderingSettings settings,
+    const CVoxelSplatSettings& splat,
     COctreeNode* node
 ){
     auto block = cg::this_thread_block();
@@ -910,6 +1052,7 @@ void drawAllVoxels(
     uint32_t nb_threads_per_block = block.num_threads();
 
     CChunk* cur_voxels = node->voxels;
+    const float cell_size = voxelCellSize(globalVariables.relationshipMap[node->aabb_index].aabb);
 
     uint32_t depth = globalVariables.octreeDepth;
     float color_factor = float(node->level) / float(max(depth, 1));
@@ -924,8 +1067,8 @@ void drawAllVoxels(
             if(i % settings.draw_every_x_points != 0){continue;}
 
             const CPoint& voxel = cur_voxels->points[i];
-            uint32_t voxel_color = settings.use_voxels_debug_color ? color : voxel.color;
-            drawPoint(target, settings, voxel.position, voxel_color,
+            uint32_t voxel_color = settings.use_voxels_debug_color ? color : (voxel.color & 0x00FFFFFFu);
+            drawSplat(target, settings, splat, voxel.position, voxel_color, cell_size,
                 node->level + 1
             );
         }
@@ -943,8 +1086,11 @@ void drawAllVoxels(
 extern "C" __global__
 void kernel_draw_octree_small(
 	CRenderTarget target,
-    CRenderingSettings settings
+    CRenderingSettings settings,
+    float voxel_splat_scale,
+    uint32_t voxel_splat_max_pixels
 ){
+    const CVoxelSplatSettings splat = {voxel_splat_scale, voxel_splat_max_pixels};
 	auto grid = cg::this_grid();
     auto block = cg::this_thread_block();
     uint32_t nb_blocks = grid.num_blocks();
@@ -967,13 +1113,13 @@ void kernel_draw_octree_small(
 
         if(settings.debug_lod_to_render != -1){
             if(node->level <= settings.debug_lod_to_render){
-                drawAllVoxels(target, settings, node);
+                drawAllVoxels(target, settings, splat, node);
                 drawAllPoints(target, settings, node);
             }
         } else {
             bool is_minimal_draw = (node->level == 0) && !(node->flags & (0x01 << CFlagIsLarge));
             if((node->flags & (0x01 << CFlagIsCut)) || is_minimal_draw){
-                drawAllVoxels(target, settings, node);
+                drawAllVoxels(target, settings, splat, node);
                 drawAllPoints(target, settings, node);
             }
         }

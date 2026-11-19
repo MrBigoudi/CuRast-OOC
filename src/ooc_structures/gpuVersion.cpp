@@ -1556,6 +1556,28 @@ uint32_t visCopyStridedSubset(const CPoint* src, uint32_t nb_elements, uint32_t 
     return nb_to_copy;
 }
 
+/// Size code of the voxels of a node (see `GpuVersion::VOXEL_SIZE_CODE_BIAS'): its level relative to
+/// the initial root, log2(size of node 0 / size of the node), biased; 0 if it can't be computed
+uint8_t visVoxelSizeCode(const CAABB& node_aabb, float reference_size){
+    const glm::vec3 size = node_aabb.maxs - node_aabb.mins;
+    const float node_size = std::max(size.x, std::max(size.y, size.z));
+    if(!(node_size > 0.0f) || !std::isfinite(node_size) || !(reference_size > 0.0f) || !std::isfinite(reference_size)){
+        return 0;
+    }
+    const double level = std::round(std::log2(double(reference_size) / double(node_size)));
+    const double code = level + double(GpuVersion::VOXEL_SIZE_CODE_BIAS);
+    if(!(code >= 1.0 && code <= 255.0)){ return 0; }
+    return static_cast<uint8_t>(code);
+}
+
+/// Write the size code into the alpha byte of `nb' voxels (copies in the staging buffers only)
+void visWriteVoxelSizeCode(CPoint* voxels, uint32_t nb, uint8_t code){
+    const uint32_t alpha = uint32_t(code) << 24;
+    for(uint32_t i = 0; i < nb; i++){
+        voxels[i].color = (voxels[i].color & 0x00FFFFFFu) | alpha;
+    }
+}
+
 /// Stream one node: read it from disk into regular RAM, then copy its quota into the staging buffers
 /// `points_buffer' / `voxels_buffer' are per-worker scratch buffers, reused between nodes
 void visLoadTask(GpuVersion::VisibilityTask& task,
@@ -1606,6 +1628,7 @@ void visLoadTask(GpuVersion::VisibilityTask& task,
         task.voxels_written = visCopyRandomSubset(voxels_buffer, nb_voxels_read, task.voxels_quota, seed + 2u,
             GpuVersion::visStagingVoxels + task.voxels_offset
         );
+        visWriteVoxelSizeCode(GpuVersion::visStagingVoxels + task.voxels_offset, task.voxels_written, task.voxels_size_code);
     }
 }
 
@@ -1671,6 +1694,18 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
 
     COPY_FROM_GPU(nbNodesExchangedVisPoints, nbNodesExchangedVisPoints, uint32_t);
     COPY_FROM_GPU(nbNodesExchangedVisVoxels, nbNodesExchangedVisVoxels, uint32_t);
+
+    // Size of the initial root (node 0: its box never changes after the initialisation, the root only
+    // grows by doubling around it), reference of the voxel size codes (see `VOXEL_SIZE_CODE_BIAS')
+    {
+        CAABB root_aabb;
+        CURuntime::assertCudaSuccess(cuMemcpyDtoH(&root_aabb,
+            (CUdeviceptr)hostStaging.relationshipMap + offsetof(CGlobalVariables::Relationship, aabb),
+            sizeof(CAABB)
+        ));
+        const glm::vec3 size = root_aabb.maxs - root_aabb.mins;
+        voxelReferenceSize = std::max(size.x, std::max(size.y, size.z));
+    }
 
     // The device lists (and the host copies) hold at most `maxNbConcurrentNodes' entries
     const uint32_t nb_vis_points = min(*(uint32_t*)nbNodesExchangedVisPoints, hostStaging.maxNbConcurrentNodes);
@@ -1808,6 +1843,8 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
                 // Filled by `storeNodes' for every node sent to the host (a Vox entry has voxels on disk)
                 task.voxels_aabb = aabbsMap[id];
             }
+            // Voxel size of the node, for the splats (the rendering buffers hold no node id)
+            task.voxels_size_code = (id < aabbsMap.size()) ? visVoxelSizeCode(aabbsMap[id], voxelReferenceSize) : 0;
         }
         for(uint32_t i = 0; i < nb_vis_points; i++){
             const CIdAABB id = ((CIdAABB*)(exchangedAABBIndicesVisPoints))[i];
@@ -1975,6 +2012,7 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
                 visStagingVoxels + task.voxels_offset
             );
         }
+        visWriteVoxelSizeCode(visStagingVoxels + task.voxels_offset, task.voxels_written, task.voxels_size_code);
         task.update_node = nullptr;   // not valid after this function
     }
 }
@@ -2439,10 +2477,13 @@ void GpuVersion::renderOctree(RenderTarget& target){
 
         prog->launch("kernel_visibility_pass", {&renderingTarget, &renderingSettings}, launch_settings);
         // prog->launch("kernel_replace_unloaded_nodes", {&renderingTarget, &renderingSettings}, launch_settings);
-        prog->launch("kernel_draw_visibility_cache", {&renderingTarget, &renderingSettings}, launch_settings);
-        prog->launch("kernel_draw_evicted_nodes", {&renderingTarget, &renderingSettings}, launch_settings);
-        prog->launch("kernel_draw_octree_large", {&renderingTarget, &renderingSettings}, launch_settings);
-        prog->launch("kernel_draw_octree_small", {&renderingTarget, &renderingSettings}, launch_settings);
+        // Voxels drawn as camera-facing squares (see `drawSplat' in render.cu)
+        float voxel_splat_scale = VOXEL_SPLAT_SCALE;
+        uint32_t voxel_splat_max_pixels = VOXEL_SPLAT_MAX_PIXELS;
+        prog->launch("kernel_draw_visibility_cache", {&renderingTarget, &renderingSettings, &voxel_splat_scale, &voxel_splat_max_pixels}, launch_settings);
+        prog->launch("kernel_draw_evicted_nodes", {&renderingTarget, &renderingSettings, &voxel_splat_scale, &voxel_splat_max_pixels}, launch_settings);
+        prog->launch("kernel_draw_octree_large", {&renderingTarget, &renderingSettings, &voxel_splat_scale, &voxel_splat_max_pixels}, launch_settings);
+        prog->launch("kernel_draw_octree_small", {&renderingTarget, &renderingSettings, &voxel_splat_scale, &voxel_splat_max_pixels}, launch_settings);
     }
 
     updateHostCache();
