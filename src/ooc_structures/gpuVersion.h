@@ -273,7 +273,23 @@ struct GpuVersion {
     static inline std::unordered_map<CIdAABB, std::unique_ptr<VisRamCacheEntry>> visRamCache = {};
     static inline uint64_t visRamCacheGeneration = 0;
     /// Memory of the cache (points and voxels); beyond it, the least recently used entries are freed
-    static inline uint64_t VIS_RAM_CACHE_MAX_BYTES = 8ull * 1024 * 1024 * 1024; // 8Gb
+    static inline uint64_t VIS_RAM_CACHE_MAX_BYTES = 4ull * 1024 * 1024 * 1024;
+
+    /// Host RAM nodes (`updateNodes') the visibility workers still have to copy into the staging
+    /// buffers (they copy them first). The host cache update (which frees the buffers of the nodes it
+    /// drops) waits for it to reach 0
+    static inline std::atomic<uint32_t> visPendingUpdateNodeCopies{0};
+
+    /// Threads reading / writing the node files of the octree update (deserialisation for loading and
+    /// storing, serialisation of the host cache); 0 = automatic (a quarter of the cores, 1 to 8)
+    static inline uint32_t DISK_IO_THREADS = 0;
+    static uint32_t nbDiskIoThreads();
+    /// True while the octree update reads or writes node files: no visibility update is started
+    /// meanwhile (their disk reads would slow it down), unless the last one started more than
+    /// `VIS_MAX_PAUSE_SECONDS' ago (the rendering must keep up while the update loads a lot)
+    static bool isOctreeDoingDiskWork();
+    static constexpr double VIS_MAX_PAUSE_SECONDS = 0.5;
+    static inline std::chrono::steady_clock::time_point lastVisibilityUpdateStart = {};
 
     /// One visible node streamed from disk into the rendering staging buffers
     /// Built on the main thread, filled by exactly one worker (`*_written'), read back on the main thread
@@ -305,8 +321,9 @@ struct GpuVersion {
         /// disk). Host RAM nodes are copied on the main thread in `visibilityUpdateSort' (the
         /// workers skip them); `nb_*_on_disk' then hold the counts available in host RAM.
         bool is_from_update_node = false;
-        /// Only valid during `visibilityUpdateSort' (main thread), reset to nullptr afterwards
-        const HostStorageNode* update_node = nullptr;
+        /// The host RAM node to copy (kept alive until the worker of the task copied it; its buffers
+        /// are not given back to the pinned allocators meanwhile, see `visPendingUpdateNodeCopies')
+        std::shared_ptr<const HostStorageNode> update_node = nullptr;
         /// RAM cache entry of the node (nodes read from disk), filled by the worker of the task
         VisRamCacheEntry* ram_cache_entry = nullptr;
     };
