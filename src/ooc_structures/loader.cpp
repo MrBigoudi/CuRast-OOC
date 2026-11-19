@@ -117,6 +117,7 @@ vec3 LoaderGpuVersion::getCameraSnapshot(){
 void LoaderGpuVersion::init(){
     CURuntime::assertCudaSuccess(cuStreamCreate(&stream, CU_STREAM_NON_BLOCKING));
     CURuntime::assertCudaSuccess(cuEventCreate(&eventLoadComplete, CU_EVENT_DISABLE_TIMING));
+    initPreview();
 
 	batchesQueue = std::deque<std::shared_ptr<PointBatch>>(OocSimLodSettings::BATCHES_LIST_SIZE, nullptr);
     batchesQueueMutexes = std::deque<std::mutex>(OocSimLodSettings::BATCHES_LIST_SIZE);
@@ -132,6 +133,7 @@ void LoaderGpuVersion::init(){
 void LoaderGpuVersion::destroy(){
     // The loading workers first (they use the queues)
     stopLoading();
+    destroyPreview();
 
     CURuntime::assertCudaSuccess(cuEventDestroy(eventLoadComplete));
     CURuntime::assertCudaSuccess(cuMemFreeHost(batchesOnGpuStatus));
@@ -263,7 +265,9 @@ bool LoaderGpuVersion::sendToDevice(){
 		else { kept_overview.push_back(std::move(entry)); }
 	}
 	for(uint32_t k = 0; k < ready.size(); k++){
-		const bool is_held_back = hold_back_out_of_view && ready_priorities[k].tier != 0;
+		// A previewed batch is never held back: its preview is only released once it is sent
+		const bool is_held_back = hold_back_out_of_view && ready_priorities[k].tier != 0
+			&& !ready[k].second->is_previewed;
 		if(!is_held_back && nb_used_device_slots < free_device_slots.size()){ send(ready[k].first, ready[k].second); }
 		else { kept_ready.push_back(std::move(ready[k])); }
 	}
@@ -307,6 +311,178 @@ void LoaderGpuVersion::clearUnusedBatches(){
 	}
 }
 
+void LoaderGpuVersion::initPreview(){
+    const uint32_t nb_regions = std::min(PREVIEW_NB_REGIONS, LOADER_PREVIEW_MAX_REGIONS);
+    previewPointsPerRegion = PREVIEW_POINTS_PER_REGION;
+    if(!PREVIEW_ENABLED || nb_regions == 0 || previewPointsPerRegion == 0){ return; }
+
+    const uint64_t nb_points = uint64_t(nb_regions) * previewPointsPerRegion;
+    CUdeviceptr device_points = 0;
+    CURuntime::assertCudaSuccess(cuMemAlloc(&device_points, nb_points * sizeof(CPoint)));
+    previewDevicePoints = reinterpret_cast<CPoint*>(device_points);
+    void* pinned_points = nullptr;
+    CURuntime::assertCudaSuccess(cuMemAllocHost(&pinned_points, nb_points * sizeof(CPoint)));
+    previewPinnedPoints = reinterpret_cast<CPoint*>(pinned_points);
+
+    CURuntime::assertCudaSuccess(cuStreamCreate(&previewStream, CU_STREAM_NON_BLOCKING));
+    CURuntime::assertCudaSuccess(cuEventCreate(&previewDrawnEvent, CU_EVENT_DISABLE_TIMING));
+    previewRegions = std::vector<LoaderPreviewRegion>(nb_regions);
+    for(LoaderPreviewRegion& region : previewRegions){
+        CURuntime::assertCudaSuccess(cuEventCreate(&region.upload_event, CU_EVENT_DISABLE_TIMING));
+    }
+}
+
+void LoaderGpuVersion::destroyPreview(){
+    if(!previewDevicePoints){ return; }
+    CURuntime::assertCudaSuccess(cuStreamSynchronize(previewStream));
+    for(LoaderPreviewRegion& region : previewRegions){
+        CURuntime::assertCudaSuccess(cuEventDestroy(region.upload_event));
+    }
+    previewRegions.clear();
+    CURuntime::assertCudaSuccess(cuEventDestroy(previewDrawnEvent));
+    CURuntime::assertCudaSuccess(cuStreamDestroy(previewStream));
+    CURuntime::assertCudaSuccess(cuMemFreeHost(previewPinnedPoints));
+    CURuntime::assertCudaSuccess(cuMemFree(reinterpret_cast<CUdeviceptr>(previewDevicePoints)));
+    previewPinnedPoints = nullptr;
+    previewDevicePoints = nullptr;
+}
+
+void LoaderGpuVersion::updatePreview(){
+    if(!previewDevicePoints){ return; }
+
+    // 1. Completed uploads become visible (if their batch is still previewed)
+    for(LoaderPreviewRegion& region : previewRegions){
+        if(!region.is_uploading){continue;}
+        const CUresult res = cuEventQuery(region.upload_event);
+        if(res == CUDA_ERROR_NOT_READY){continue;}
+        CURuntime::assertCudaSuccess(res);
+        region.is_uploading = false;
+        region.is_visible = (region.batch != nullptr);
+    }
+
+    // What has been drawn once is never lost: a region keeps its batch, whatever the camera does,
+    // until that batch is sent to the device. From the next frame on, `kernel_draw_pending_batches'
+    // draws it from its device slot, then the octree once it is inserted.
+    // For that, a previewed batch is never demoted back to the pending batches (its points would be
+    // dropped while the preview still shows them, see `loaderDemoteWorstLoaded') nor held back at send
+    // time (`sendToDevice'): it always goes on to the device, and its region is always freed.
+    struct Upload {
+        uint32_t region = 0;
+        std::shared_ptr<PointBatch> batch = nullptr;
+        std::shared_ptr<vector<CPoint>> points = nullptr;   // kept alive while it is copied
+    };
+    std::vector<Upload> uploads = {};
+    {
+        // Under `loadedBatchesMtx': the batches leave the loaded lists only under it (sent by the main
+        // thread, demoted by the workers), `is_previewed' is set under it too, so a batch is either
+        // demoted before it is previewed, or previewed and never demoted.
+        // `batch->points' of a published batch is only written under it; so is `slotsBounds' read here
+        std::lock_guard<std::mutex> lock(loadedBatchesMtx);
+
+        std::unordered_set<const PointBatch*> loaded = {};
+        for(const auto& [slot, batch] : loadedOverviewBatches){ loaded.insert(batch.get()); }
+        for(const auto& [slot, batch] : loadedBatches){ loaded.insert(batch.get()); }
+
+        // 2. Regions of the batches that left the loaded lists: sent (a previewed batch is never
+        //    demoted). `run' calls this before `sendToDevice', after `fetchFromDevice' synchronised the
+        //    copies of the loading stream: their device slot is complete and drawn from this frame on
+        for(LoaderPreviewRegion& region : previewRegions){
+            if(!region.batch || loaded.contains(region.batch.get())){continue;}
+            region.batch->is_previewed = false;
+            region.batch.reset();
+            region.is_visible = false;
+            region.nb_points = 0;
+        }
+
+        // 3. New previews: the best loaded batches in view without a region, as many as free regions
+        //    (a region released while its copy is in flight is free once the copy is complete)
+        uint32_t nb_free = 0;
+        for(const LoaderPreviewRegion& region : previewRegions){
+            if(!region.batch && !region.is_uploading){ nb_free++; }
+        }
+        if(PREVIEW_ENABLED && nb_free > 0){
+            struct Candidate {
+                LoadPriority priority = {};
+                std::shared_ptr<PointBatch> batch = nullptr;
+            };
+            std::vector<Candidate> candidates = {};
+            const CameraState camera = getCameraState();
+            auto add = [&](const std::vector<std::pair<uint32_t, std::shared_ptr<PointBatch>>>& list){
+                for(const auto& [slot, batch] : list){
+                    if(!batch || batch->is_previewed || !batch->points || batch->points->empty()){continue;}
+                    const LoadPriority priority = loadPriority(slotsBounds[slot], camera);
+                    if(priority.tier != 0){continue;}
+                    candidates.push_back({priority, batch});
+                }
+            };
+            add(loadedOverviewBatches);
+            add(loadedBatches);
+            std::stable_sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b){
+                return a.priority < b.priority;
+            });
+
+            uint32_t next_region = 0;
+            for(const Candidate& candidate : candidates){
+                while(next_region < previewRegions.size()
+                    && (previewRegions[next_region].batch || previewRegions[next_region].is_uploading)
+                ){ next_region++; }
+                if(next_region == previewRegions.size()){break;}
+
+                // Previewed from now on: not demoted anymore, not held back at send time
+                candidate.batch->is_previewed = true;
+                LoaderPreviewRegion& region = previewRegions[next_region];
+                region.batch = candidate.batch;
+                region.nb_points = 0;
+                region.is_visible = false;
+                uploads.push_back({next_region, candidate.batch, candidate.batch->points});
+                next_region++;
+            }
+        }
+    }
+
+    // 4. Copies: an even subsample of the batch into its region; the region is drawn once the copy
+    //    is complete (step 1 of a next frame). If the batch is sent meanwhile, its region is released
+    //    before it was ever drawn: nothing disappears
+    for(const Upload& upload : uploads){
+        LoaderPreviewRegion& region = previewRegions[upload.region];
+        const std::vector<CPoint>& source = *upload.points;
+        const uint64_t nb_source = source.size();
+        const uint32_t nb_points = static_cast<uint32_t>(std::min<uint64_t>(nb_source, previewPointsPerRegion));
+
+        CPoint* pinned = previewPinnedPoints + uint64_t(upload.region) * previewPointsPerRegion;
+        for(uint32_t j = 0; j < nb_points; j++){
+            pinned[j] = source[(uint64_t(j) * nb_source) / nb_points];
+        }
+
+        // The draws launched before may still read this region (drawn for another batch by the frames
+        // in flight): the copy waits for them
+        CURuntime::assertCudaSuccess(cuStreamWaitEvent(previewStream, previewDrawnEvent, 0));
+        const CUdeviceptr destination = reinterpret_cast<CUdeviceptr>(previewDevicePoints + uint64_t(upload.region) * previewPointsPerRegion);
+        CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync(destination, pinned, uint64_t(nb_points) * sizeof(CPoint), previewStream));
+        CURuntime::assertCudaSuccess(cuEventRecord(region.upload_event, previewStream));
+        region.nb_points = nb_points;
+        region.is_uploading = true;
+    }
+}
+
+bool LoaderGpuVersion::previewDrawCounts(LoaderPreviewCounts& counts){
+    counts = {};
+    bool has_visible = false;
+    for(uint32_t r = 0; r < previewRegions.size() && r < LOADER_PREVIEW_MAX_REGIONS; r++){
+        const LoaderPreviewRegion& region = previewRegions[r];
+        if(!region.is_visible){continue;}
+        counts.counts[r] = region.nb_points;
+        has_visible = has_visible || (region.nb_points > 0);
+    }
+    return has_visible;
+}
+
+void LoaderGpuVersion::previewRecordDrawn(){
+    if(!previewDevicePoints){ return; }
+    // Same stream as the draws (the default stream)
+    CURuntime::assertCudaSuccess(cuEventRecord(previewDrawnEvent, 0));
+}
+
 namespace {
 /// True on a thread while it runs `loadingRoutine' (`stopLoading' must not wait for itself)
 thread_local bool loaderIsInsideLoadingRoutine = false;
@@ -336,6 +512,9 @@ bool LoaderGpuVersion::run(CuRast* editor, CUcontext* context){
 
 	// Check if batches are done on GPU side
 	fetchFromDevice();
+
+	// Preview of the loaded batches in view (before sending: see `updatePreview')
+	updatePreview();
 
 	// Get the batches to send to device side
 	return sendToDevice();
@@ -889,6 +1068,7 @@ namespace {
 
 /// Demote the worst loaded (not yet sent) batch if `candidate' is clearly better than it: back to
 /// the pending batches (in `demoted', with its exact bounds), its memory and queue slot freed
+/// The previewed batches are never demoted (see `updatePreview')
 /// `pendingBatchesMtx' and `loadedBatchesMtx' must be held (lock order: pending -> loaded -> slot)
 bool loaderDemoteWorstLoaded(
     const LoaderGpuVersion::LoadPriority& candidate,
@@ -898,6 +1078,8 @@ bool loaderDemoteWorstLoaded(
     int64_t worst = -1;
     LoaderGpuVersion::LoadPriority worst_priority = {};
     for(uint32_t k = 0; k < LoaderGpuVersion::loadedBatches.size(); k++){
+        // A previewed batch is drawn: it must go on to the device (see `updatePreview')
+        if(LoaderGpuVersion::loadedBatches[k].second->is_previewed){continue;}
         const LoaderGpuVersion::LoadPriority priority = LoaderGpuVersion::loadPriority(
             LoaderGpuVersion::slotsBounds[LoaderGpuVersion::loadedBatches[k].first], camera
         );

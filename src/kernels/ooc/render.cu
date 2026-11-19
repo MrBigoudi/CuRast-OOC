@@ -908,6 +908,48 @@ void kernel_draw_pending_batches(
 
 
 
+/// Draw the preview of the loaded batches waiting on the host ("stage 1", see
+/// `LoaderGpuVersion::updatePreview'): region r of `points' holds `counts.counts[r]' points of one
+/// batch (0: not drawn). Same layout as `LoaderPreviewCounts' on the host
+/// Run on "NB SMs" blocks of size min("Max threads per SM", "Max block dim")
+__device__ constexpr uint32_t PREVIEW_MAX_REGIONS = 32;
+struct CPreviewCounts {
+    uint32_t counts[PREVIEW_MAX_REGIONS];
+};
+
+extern "C" __global__
+void kernel_draw_preview_batches(
+	CRenderTarget target,
+    CRenderingSettings settings,
+    const CPoint* points,
+    uint32_t points_per_region,
+    uint32_t nb_regions,
+    CPreviewCounts counts
+){
+    if(settings.debug_lod_to_render != -1){return;}
+
+	auto grid = cg::this_grid();
+    const uint64_t thread_id = grid.thread_rank();
+    const uint64_t nb_threads = grid.num_threads();
+
+    nb_regions = min(nb_regions, PREVIEW_MAX_REGIONS);
+    const uint64_t nb_slots = uint64_t(nb_regions) * points_per_region;
+    for(uint64_t i = thread_id; i < nb_slots; i += nb_threads){
+        const uint32_t region = uint32_t(i / points_per_region);
+        const uint32_t j = uint32_t(i - uint64_t(region) * points_per_region);
+        if(j >= counts.counts[region]){continue;}
+        // For dataset creation
+        if(j % settings.draw_every_x_points != 0){continue;}
+
+        const CPoint point = points[i];
+        drawPoint(target, settings, point.position,
+            settings.use_voxels_debug_color ? 0xff0080ffu : point.color
+        );
+    }
+}
+
+
+
 /// Draw the evicted nodes the published host rendering buffers don't show yet (closes the gap between
 /// the deletion of an evicted node on the device and its arrival in the host rendering buffers):
 ///  - the last eviction pass straight from the exchange buffers (overwritten by the next pass),

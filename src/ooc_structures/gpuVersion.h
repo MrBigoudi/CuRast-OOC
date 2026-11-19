@@ -310,8 +310,8 @@ struct GpuVersion {
     static inline bool DRAW_PENDING_BATCHES = true;
     /// At most about this many pending points drawn per frame (strided over every pending batch);
     /// 0 = all of them
-    static inline uint32_t PENDING_BATCHES_MAX_POINTS = 0;
     // static inline uint32_t PENDING_BATCHES_MAX_POINTS = 4'000'000;
+    static inline uint32_t PENDING_BATCHES_MAX_POINTS = 0;
 
     /// Pinned staging buffers, as large as the device rendering buffers
     /// Written by the visibility workers, read by a single batched copy to the device

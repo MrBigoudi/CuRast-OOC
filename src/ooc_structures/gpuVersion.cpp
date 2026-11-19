@@ -2490,6 +2490,21 @@ void GpuVersion::renderOctree(RenderTarget& target){
             uint32_t pending_max_points = PENDING_BATCHES_MAX_POINTS;
             prog->launch("kernel_draw_pending_batches", {&renderingTarget, &renderingSettings, &pending_max_points}, launch_settings);
         }
+
+        // Loaded batches in view still waiting on the host for a device slot (drawn until sent)
+        if(LoaderGpuVersion::previewDevicePoints){
+            LoaderPreviewCounts preview_counts = {};
+            if(LoaderGpuVersion::previewDrawCounts(preview_counts)){
+                CPoint* preview_points = LoaderGpuVersion::previewDevicePoints;
+                uint32_t preview_points_per_region = LoaderGpuVersion::previewPointsPerRegion;
+                uint32_t preview_nb_regions = static_cast<uint32_t>(LoaderGpuVersion::previewRegions.size());
+                prog->launch("kernel_draw_preview_batches", {
+                    &renderingTarget, &renderingSettings,
+                    &preview_points, &preview_points_per_region, &preview_nb_regions, &preview_counts
+                }, launch_settings);
+            }
+            LoaderGpuVersion::previewRecordDrawn();
+        }
     }
 
     updateHostCache();

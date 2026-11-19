@@ -22,6 +22,9 @@ struct PointBatch {
 	shared_ptr<vector<CPoint>> points = nullptr;
 	shared_ptr<laszip_header> header = nullptr;
 	BatchState state = BatchState::Empty;
+	/// Drawn by the preview of the loaded batches (`LoaderGpuVersion::updatePreview'): never demoted,
+	/// never held back, until it is sent. Written by the main thread under `loadedBatchesMtx'
+	std::atomic<bool> is_previewed{false};
 };
 
 // Helper types of `LoaderGpuVersion', at namespace scope: a static member of a nested type can't use
@@ -68,6 +71,23 @@ struct LoaderLoadPriority {
 struct LoaderPendingSummary {
     bool has_any = false;                   // some pending batch can be picked
     LoaderLoadPriority best = {};           // its priority (camera of the scan)
+};
+
+/// Preview of the loaded batches not sent to the device yet (see `LoaderGpuVersion::updatePreview'):
+/// one region of the device preview buffer per previewed batch
+struct LoaderPreviewRegion {
+    std::shared_ptr<PointBatch> batch = nullptr;   // previewed batch (nullptr: free region)
+    uint32_t nb_points = 0;                        // points of the batch in the region (subsample)
+    bool is_uploading = false;                     // copy to the device in flight (`upload_event')
+    bool is_visible = false;                       // drawn (its copy is complete, it is still previewed)
+    CUevent upload_event = nullptr;
+};
+
+/// Number of points to draw in each preview region (kernel parameter: same layout as
+/// `CPreviewCounts' in render.cu)
+constexpr uint32_t LOADER_PREVIEW_MAX_REGIONS = 32;
+struct LoaderPreviewCounts {
+    uint32_t counts[LOADER_PREVIEW_MAX_REGIONS] = {};
 };
 
 
@@ -238,4 +258,35 @@ struct LoaderGpuVersion {
 
     /// Clear the unused batches
     static void clearUnusedBatches();
+
+    /// Preview of the loaded batches not sent yet ("stage 1"): the batches in view waiting on the host
+    /// for a free device slot are drawn from a small device buffer until they are sent (from then on,
+    /// `kernel_draw_pending_batches' draws them from their device slot until they are inserted)
+    /// The buffer has `PREVIEW_NB_REGIONS' regions of `PREVIEW_POINTS_PER_REGION' points: the best
+    /// batches in view get one each, with an even subsample of their points. A batch is only uploaded
+    /// when it enters the preview (no copy when nothing changes)
+    /// What is drawn once is never lost: a batch keeps its region until it is sent (then its device
+    /// slot, then the octree draw it), whatever the camera does; a previewed batch is neither demoted
+    /// nor held back, so its region is always freed
+    static inline bool PREVIEW_ENABLED = true;
+    static inline uint32_t PREVIEW_NB_REGIONS = 16;                // at most LOADER_PREVIEW_MAX_REGIONS
+    static inline uint32_t PREVIEW_POINTS_PER_REGION = 262'144;
+    static inline std::vector<LoaderPreviewRegion> previewRegions = {};
+    static inline uint32_t previewPointsPerRegion = 0;            // as allocated
+    static inline CPoint* previewDevicePoints = nullptr;           // nb regions x points per region
+    static inline CPoint* previewPinnedPoints = nullptr;           // staging of the uploads (same layout)
+    static inline CUstream previewStream;
+    /// Recorded after the preview draw of every frame: a region is only overwritten once the draws
+    /// launched before have read it
+    static inline CUevent previewDrawnEvent;
+    static void initPreview();
+    static void destroyPreview();
+    /// Main thread, every frame before `sendToDevice' (a batch sent this frame stays previewed one more
+    /// frame: its device slot is drawn from the next frame on, once `fetchFromDevice' synchronised
+    /// the copies of the loading stream)
+    static void updatePreview();
+    /// Points to draw per region; returns false if nothing is visible (main thread)
+    static bool previewDrawCounts(LoaderPreviewCounts& counts);
+    /// After the preview draw (main thread)
+    static void previewRecordDrawn();
 };
