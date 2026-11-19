@@ -1,5 +1,7 @@
 # TODO list
 
+
+
 ## Last week
 
 - [x] Implement visibility cache (for disk loading)
@@ -15,12 +17,21 @@
 - [x] Fix huge segfault (caused by intel CPU multithreading on too many cores apparently...)
 - [x] Fix UI values
 
+- [x] Downgrade rendering to a simple octree cut to avoid having things diseapearing
+- [x] Fix rendering of just unloaded nodes / updating nodes (from device to disk to device)
+
 
 
 ## Today
 
-- [x] Downgrade rendering to a simple octree cut to avoid having things diseapearing
-- [x] Fix rendering of just unloaded nodes / updating nodes (from device to disk to device)
+- [x] Allow dropping folders directly
+
+<!-- VERY HIGH PRIORITY -->
+- [ ] Slider to change the points budget
+- [ ] Coloring per node
+- [ ] Coloring per level
+- [ ] Change how voxels are rendered (quad )
+- [ ] Load immediately when zooming in a region 
 
 
 
@@ -32,8 +43,9 @@
 - [ ] Store all remaining nodes on quit (or on button pressed) + load them to init the octree / scene
 - [ ] Properly put down the entire method
 - [ ] Update the latex algorithms
-
+  
 <!-- Bug fixing -->
+- [ ] Rethink point distribution
 - [ ] Fix memory limitations (do not crash if too much RAM is used)
 - [ ] What about storage limitations (do not crash if too much Disk Space is used)
 

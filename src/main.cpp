@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <execution>
 #include <thread>
+#include <unordered_set>
 
 #include "unsuck.hpp"
 
@@ -54,21 +55,69 @@ void initCuda() {
 
 
 
-void fileDropCallback(vector<string> files){
-	// All the dropped files together: their overview (one point per LAZ chunk of every
-	// file) is loaded first, then their regular batches (see `createNewBatchesFromFiles')
+bool isPointCloudFile(const string& file){
+	return iEndsWith(file, ".las") || iEndsWith(file, ".laz");
+}
+
+/// The point cloud files among the dropped paths: the dropped .las / .laz files, plus every .las /
+/// .laz file found recursively in the dropped folders (sorted per folder, each file once)
+vector<string> collectPointCloudFiles(const vector<string>& dropped){
 	vector<string> point_cloud_files = {};
-	for(const string& file : files){
-		if(iEndsWith(file, ".las") || iEndsWith(file, ".laz")){
-			point_cloud_files.push_back(file);
+	std::unordered_set<string> seen = {};   // same file dropped twice (directly and through its folder)
+
+	auto add = [&](const std::filesystem::path& path){
+		std::error_code ec;
+		const std::filesystem::path key_path = std::filesystem::weakly_canonical(path, ec);
+		const string key = ec ? path.lexically_normal().string() : key_path.string();
+		if(seen.insert(key).second){
+			point_cloud_files.push_back(path.string());
+		}
+	};
+
+	for(const string& item : dropped){
+		std::error_code ec;
+		if(std::filesystem::is_directory(item, ec)){
+			vector<std::filesystem::path> found = {};
+			const auto options = std::filesystem::directory_options::skip_permission_denied;
+			std::filesystem::recursive_directory_iterator it(item, options, ec);
+			if(ec){
+				println("ERROR: can't open the folder '{}': {}", item, ec.message());
+				continue;
+			}
+			for(const std::filesystem::recursive_directory_iterator end; it != end; it.increment(ec)){
+				if(ec){
+					println("WARNING: in the folder '{}': {}", item, ec.message());
+					ec.clear();
+					continue;
+				}
+				std::error_code type_ec;
+				if(!it->is_regular_file(type_ec) || type_ec){continue;}
+				if(isPointCloudFile(it->path().string())){
+					found.push_back(it->path());
+				}
+			}
+			// Deterministic order: sorted paths (files of a same folder together)
+			std::sort(found.begin(), found.end());
+			println("Folder '{}': {} point cloud files found", item, found.size());
+			for(const std::filesystem::path& path : found){ add(path); }
+		} else if(isPointCloudFile(item)){
+			add(item);
 		}
 	}
-	if(!point_cloud_files.empty()){
-		std::thread thread_init_batches([](vector<string> point_cloud_files){
-			LoaderGpuVersion::createNewBatchesFromFiles(std::move(point_cloud_files));
-		}, std::move(point_cloud_files));
-		thread_init_batches.detach();
-	}
+	return point_cloud_files;
+}
+
+void fileDropCallback(vector<string> files){
+	// The dropped files and every .las / .laz file of the dropped folders (recursively), all
+	// together: their overview (one point per LAZ chunk of every file) is loaded first, then their
+	// regular batches (see `createNewBatchesFromFiles')
+	// The folders are walked on the thread, not in the callback (large folders take a while)
+	std::thread thread_init_batches([](vector<string> dropped){
+		vector<string> point_cloud_files = collectPointCloudFiles(dropped);
+		if(point_cloud_files.empty()){return;}
+		LoaderGpuVersion::createNewBatchesFromFiles(std::move(point_cloud_files));
+	}, std::move(files));
+	thread_init_batches.detach();
 }
 
 

@@ -195,22 +195,38 @@ bool LoaderGpuVersion::sendToDevice(){
 		if(b.first < a.first){ return false; }
 		return a.second < b.second;
 	});
+	std::vector<LoadPriority> ready_priorities(ready.size());
 	{
 		std::vector<std::pair<uint32_t, std::shared_ptr<PointBatch>>> sorted(ready.size());
-		for(uint32_t k = 0; k < ranked.size(); k++){ sorted[k] = std::move(ready[ranked[k].second]); }
+		for(uint32_t k = 0; k < ranked.size(); k++){
+			sorted[k] = std::move(ready[ranked[k].second]);
+			ready_priorities[k] = ranked[k].first;
+		}
 		ready = std::move(sorted);
 	}
 
-	// The overview batches go before everything else (see `createNewBatchesFromFiles')
-	const uint32_t nb_overview = static_cast<uint32_t>(overview.size());
-	ready.insert(ready.begin(), overview.begin(), overview.end());
+	// Free device batch slots (freed by `fetchFromDevice' once the device has inserted their batch)
+	std::vector<uint32_t> free_device_slots = {};
+	for(uint32_t i = 0; i < OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE; i++){
+		if(batchesOnGpu[i] == -1){ free_device_slots.push_back(i); }
+	}
 
-    uint32_t ready_index = 0;
-    for(uint32_t i = 0; i < OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE; i++){
-        if(batchesOnGpu[i] != -1){continue;}
-        if(ready_index >= ready.size()){break;}
+	// While a batch in view is still pending or being loaded, the out-of-view batches are held back:
+	// once sent, a batch belongs to the device update until it completes, so sending them would spend
+	// a whole update on data the camera left. They stay loaded (the workers can still demote them
+	// for better batches: a batch in view is always clearly better) and are sent once nothing in
+	// view is left to load
+	bool hold_back_out_of_view = false;
+	if(!free_device_slots.empty()){
+		const bool has_out_of_view = std::any_of(ready_priorities.begin(), ready_priorities.end(),
+			[](const LoadPriority& priority){ return priority.tier != 0; }
+		);
+		if(has_out_of_view){ hold_back_out_of_view = hasInViewWork(camera); }
+	}
 
-        auto& [slot, batch] = ready[ready_index++];
+	uint32_t nb_used_device_slots = 0;
+	auto send = [&](uint32_t slot, const std::shared_ptr<PointBatch>& batch){
+		const uint32_t i = free_device_slots[nb_used_device_slots++];
         batchesOnGpu[i] = slot;
         {
             // Under the slot's mutex, like every other access to the state of a queued batch
@@ -235,21 +251,27 @@ bool LoaderGpuVersion::sendToDevice(){
         mask_sizes.push_back(sizeof(uint32_t));
 
         has_send_new_points = true;
-    }
+	};
 
-    // Put back any ready batches that didn't fit this frame (the overview ones in their own list,
-    // so that they stay first)
-    if(ready_index < ready.size()){
-        const uint32_t overview_end = std::max(ready_index, nb_overview);
+	// The overview batches go before everything else (see `createNewBatchesFromFiles'), then the
+	// loaded batches by priority. What is not sent goes back (the overview ones in their own list,
+	// so that they stay first)
+	std::vector<std::pair<uint32_t, std::shared_ptr<PointBatch>>> kept_overview = {};
+	std::vector<std::pair<uint32_t, std::shared_ptr<PointBatch>>> kept_ready = {};
+	for(auto& entry : overview){
+		if(nb_used_device_slots < free_device_slots.size()){ send(entry.first, entry.second); }
+		else { kept_overview.push_back(std::move(entry)); }
+	}
+	for(uint32_t k = 0; k < ready.size(); k++){
+		const bool is_held_back = hold_back_out_of_view && ready_priorities[k].tier != 0;
+		if(!is_held_back && nb_used_device_slots < free_device_slots.size()){ send(ready[k].first, ready[k].second); }
+		else { kept_ready.push_back(std::move(ready[k])); }
+	}
+
+    if(!kept_overview.empty() || !kept_ready.empty()){
         std::lock_guard<std::mutex> lock(loadedBatchesMtx);
-        loadedOverviewBatches.insert(
-            loadedOverviewBatches.begin(),
-            ready.begin() + ready_index, ready.begin() + overview_end
-        );
-        loadedBatches.insert(
-            loadedBatches.begin(),
-            ready.begin() + overview_end, ready.end()
-        );
+        loadedOverviewBatches.insert(loadedOverviewBatches.begin(), kept_overview.begin(), kept_overview.end());
+        loadedBatches.insert(loadedBatches.begin(), kept_ready.begin(), kept_ready.end());
     }
 
     if(has_send_new_points){
@@ -588,6 +610,20 @@ bool loaderHeadersBounds(const std::vector<std::optional<LoaderFileEntry>>& entr
 	return true;
 }
 
+/// Bounds of the first overview ("Overview 0"), for the "zoom to Overview 0" entry of the file
+/// explorer: the exact bounds of its chunk points (the header bounds may be missing or inaccurate)
+/// Function-local static: built on first use, whatever the initialisation order of this file
+struct LoaderFirstOverview {
+	std::mutex mtx;
+	bool is_valid = false;
+	glm::vec3 mins = glm::vec3(0.0f);
+	glm::vec3 maxs = glm::vec3(0.0f);
+};
+LoaderFirstOverview& loaderFirstOverview(){
+	static LoaderFirstOverview first_overview;
+	return first_overview;
+}
+
 /// Mix the overview samples of all the files into batches that are sent before any other batch
 void loaderCreateOverviewBatches(const std::vector<std::optional<LoaderFileEntry>>& entries,
 	const std::vector<std::vector<CPoint>>& samples
@@ -635,10 +671,25 @@ void loaderCreateOverviewBatches(const std::vector<std::optional<LoaderFileEntry
 	const uint64_t nb_batches = (nb_samples + batch_size - 1) / batch_size;
 
 	// A record of its own in the file explorer (the batches belong to no single file)
+	// Numbered from 0: "Overview 0" is the overview of the first dropped files
 	static std::atomic<uint32_t> nb_overviews{0};
+	const uint32_t overview_index = nb_overviews.fetch_add(1);
 	const std::string name = format("[Overview #{}]/{} chunk points of {} files",
-		nb_overviews.fetch_add(1) + 1, nb_samples, nb_files
+		overview_index, nb_samples, nb_files
 	);
+
+	// The first overview's bounds, for the "Overview 0" entry of the file explorer
+	if(overview_index == 0){
+		LoaderGpuVersion::BatchBounds bounds = {};
+		for(const CPoint& point : all_samples){ bounds.extend(point.position); }
+		if(bounds.isValid()){
+			LoaderFirstOverview& first_overview = loaderFirstOverview();
+			std::lock_guard<std::mutex> lock(first_overview.mtx);
+			first_overview.mins = bounds.mins;
+			first_overview.maxs = bounds.maxs;
+			first_overview.is_valid = true;
+		}
+	}
 	std::shared_ptr<std::string> shared_name = std::make_shared<std::string>(name);
 	{
 		std::lock_guard<std::mutex> lock(LoaderGpuVersion::filesRecordMtx);
@@ -702,8 +753,9 @@ uint32_t LoaderGpuVersion::nbLoadingThreads(){
 
 namespace {
 
-/// Bounds the LASzip decoding running at the same time, whatever thread does it (loading workers,
-/// overview reading of newly dropped files): at most `nbLoadingThreads()' cores decode at once
+/// Bounds the LASzip decoding of the loading workers: at most `nbLoadingThreads()' cores decode at
+/// once (the overview of newly dropped files is read with every core instead, see
+/// `createNewBatchesFromFiles': one seek and one point per chunk, a short burst)
 std::counting_semaphore<4096>& loaderDecodingSlots(){
 	static std::counting_semaphore<4096> slots(static_cast<std::ptrdiff_t>(LoaderGpuVersion::nbLoadingThreads()));
 	return slots;
@@ -723,9 +775,12 @@ struct LoaderDecodingSlot {
 void LoaderGpuVersion::createNewBatchesFromFiles(std::vector<std::string> files){
 	std::vector<uint32_t> indices(files.size());
 	std::iota(indices.begin(), indices.end(), 0u);
-	// At most `nbLoadingThreads()' threads (std::execution::par would use every core)
+	// The overview (headers + one point per LAZ chunk of every file) is created with the full
+	// parallelism: every core. Only this step: the regular batches are then loaded by the
+	// `nbLoadingThreads()' loading workers, as before
+	const uint32_t nb_overview_threads = std::max(1u, std::thread::hardware_concurrency());
 	auto for_each_file = [&](auto func){
-		const uint32_t nb_threads = std::min<uint32_t>(nbLoadingThreads(), static_cast<uint32_t>(indices.size()));
+		const uint32_t nb_threads = std::max(1u, std::min<uint32_t>(nb_overview_threads, static_cast<uint32_t>(indices.size())));
 		std::atomic<uint32_t> next{0};
 		auto work = [&](){
 			for(uint32_t k = next.fetch_add(1); k < indices.size(); k = next.fetch_add(1)){
@@ -757,9 +812,9 @@ void LoaderGpuVersion::createNewBatchesFromFiles(std::vector<std::string> files)
 	// 2. Overview: the chunk points of every file, sent before anything else
 	std::vector<std::vector<CPoint>> samples(files.size());
 	std::vector<uint64_t> strides(files.size(), 0);
+	// Full parallelism: no decoding slot here (the slots only limit the loading workers)
 	for_each_file([&](uint32_t i){
 		if(!entries[i]){ return; }
-		LoaderDecodingSlot slot;   // shared with the loading workers
 		samples[i] = loaderReadChunkPoints(*entries[i], strides[i]);
 	});
 	loaderCreateOverviewBatches(entries, samples);
@@ -783,61 +838,125 @@ bool LoaderGpuVersion::isClearlyBetter(const LoadPriority& a, const LoadPriority
     return false;
 }
 
+int64_t LoaderGpuVersion::selectBestPending(const CameraState& camera, LoadPriority& best_priority){
+    int64_t best = -1;
+    best_priority = {};
+    for(uint32_t i = 0; i < pendingBatches.size(); i++){
+        if(MAX_READERS_PER_FILE > 0){
+            auto busy = filesBeingRead.find(*pendingBatches[i].batch->file);
+            if(busy != filesBeingRead.end() && busy->second >= MAX_READERS_PER_FILE){continue;}
+        }
+        const LoadPriority priority = loadPriority(pendingBatches[i].bounds, camera);
+        if(best < 0 || priority < best_priority){ best = i; best_priority = priority; }
+    }
+    return best;
+}
+
+LoaderGpuVersion::PendingSummary LoaderGpuVersion::getPendingSummary(){
+    const auto now = std::chrono::steady_clock::now();
+    const auto max_age = std::chrono::duration<double>(PENDING_SUMMARY_REFRESH_SECONDS);
+    {
+        std::lock_guard<std::mutex> lock(pendingSummaryMtx);
+        if(pendingSummaryIsValid && (now - pendingSummaryTime) < max_age){ return pendingSummary; }
+    }
+
+    // Scanned and stored under `pendingBatchesMtx' (lock order: pending -> summary), so that a pick
+    // (which invalidates the summary under the same lock) can't be overwritten by an older scan
+    const CameraState camera = getCameraState();
+    std::lock_guard<std::mutex> lock(pendingBatchesMtx);
+    PendingSummary summary = {};
+    LoadPriority best = {};
+    summary.has_any = selectBestPending(camera, best) >= 0;
+    summary.best = best;
+    std::lock_guard<std::mutex> lock_summary(pendingSummaryMtx);
+    pendingSummary = summary;
+    pendingSummaryTime = now;
+    pendingSummaryIsValid = true;
+    return summary;
+}
+
+bool LoaderGpuVersion::hasInViewWork(const CameraState& camera){
+    const PendingSummary summary = getPendingSummary();
+    if(summary.has_any && summary.best.tier == 0){ return true; }
+    std::lock_guard<std::mutex> lock(pendingBatchesMtx);
+    for(const auto& [batch, bounds] : loadsInFlightBounds){
+        if(loadPriority(bounds, camera).tier == 0){ return true; }
+    }
+    return false;
+}
+
+namespace {
+
+/// Demote the worst loaded (not yet sent) batch if `candidate' is clearly better than it: back to
+/// the pending batches (in `demoted', with its exact bounds), its memory and queue slot freed
+/// `pendingBatchesMtx' and `loadedBatchesMtx' must be held (lock order: pending -> loaded -> slot)
+bool loaderDemoteWorstLoaded(
+    const LoaderGpuVersion::LoadPriority& candidate,
+    const LoaderGpuVersion::CameraState& camera,
+    std::vector<LoaderGpuVersion::PendingBatch>& demoted
+){
+    int64_t worst = -1;
+    LoaderGpuVersion::LoadPriority worst_priority = {};
+    for(uint32_t k = 0; k < LoaderGpuVersion::loadedBatches.size(); k++){
+        const LoaderGpuVersion::LoadPriority priority = LoaderGpuVersion::loadPriority(
+            LoaderGpuVersion::slotsBounds[LoaderGpuVersion::loadedBatches[k].first], camera
+        );
+        if(worst < 0 || worst_priority < priority){ worst = k; worst_priority = priority; }
+    }
+    if(worst < 0 || !LoaderGpuVersion::isClearlyBetter(candidate, worst_priority)){ return false; }
+
+    const auto [slot, batch] = LoaderGpuVersion::loadedBatches[worst];   // copy: erased below
+    LoaderGpuVersion::loadedBatches.erase(LoaderGpuVersion::loadedBatches.begin() + worst);
+    LoaderGpuVersion::PendingBatch back = {};
+    back.batch = batch;
+    back.bounds = LoaderGpuVersion::slotsBounds[slot];
+    {
+        std::lock_guard<std::mutex> lock_slot(LoaderGpuVersion::batchesQueueMutexes[slot]);
+        batch->points.reset();
+        batch->state = BatchState::ToLoad;
+        LoaderGpuVersion::batchesQueue[slot] = nullptr;
+    }
+    demoted.push_back(std::move(back));
+    return true;
+}
+
+} // namespace
+
 bool LoaderGpuVersion::loadOneBatch(){
     const CameraState camera = getCameraState();
     const uint32_t max_ahead = std::max<uint32_t>(1u,
         LOAD_AHEAD_FACTOR * OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE + nbLoadingWorkers
     );
 
-    // 1. Pick a batch (lock order everywhere: pending -> loaded -> slot)
-    PendingBatch picked = {};
+    // Demoted batches are back in `pendingBatches' (under its lock); their file records after
     std::vector<PendingBatch> demoted = {};
+    auto record_demoted = [&](){
+        for(const PendingBatch& back : demoted){
+            std::lock_guard<std::mutex> lock(filesRecordMtx);
+            filesRecord[*back.batch->file].nb_batches_loaded.fetch_sub(1);
+        }
+        demoted.clear();
+    };
+
+    // 1. Pick a batch (lock order everywhere: pending -> loaded -> slot; pending -> summary)
+    PendingBatch picked = {};
+    LoadPriority picked_priority = {};
     {
         std::lock_guard<std::mutex> lock(pendingBatchesMtx);
         if(pendingBatches.empty()){ return false; }
 
-        // Best batch whose file no other worker is reading (they would wait on the file mutex),
-        // else the best batch
-        int64_t best_free = -1, best_any = -1;
-        LoadPriority best_free_priority = {}, best_any_priority = {};
-        for(uint32_t i = 0; i < pendingBatches.size(); i++){
-            const LoadPriority priority = loadPriority(pendingBatches[i].bounds, camera);
-            if(best_any < 0 || priority < best_any_priority){ best_any = i; best_any_priority = priority; }
-            auto busy = filesBeingRead.find(*pendingBatches[i].batch->file);
-            const bool is_free = (busy == filesBeingRead.end() || busy->second == 0);
-            if(is_free && (best_free < 0 || priority < best_free_priority)){ best_free = i; best_free_priority = priority; }
-        }
-        const int64_t chosen = (best_free >= 0) ? best_free : best_any;
-        const LoadPriority chosen_priority = (best_free >= 0) ? best_free_priority : best_any_priority;
+        // Best batch overall (several workers may read the same file, up to `MAX_READERS_PER_FILE')
+        const int64_t chosen = selectBestPending(camera, picked_priority);
+        if(chosen < 0){ return false; }
 
         // Throttle: at most `max_ahead' batches loaded (not yet sent) or being loaded. When full, a
-        // clearly better batch replaces the worst loaded one (stale after a camera move), which goes
-        // back to the pending batches
+        // clearly better batch replaces the worst loaded one (stale after a camera move, or held back
+        // by `sendToDevice' because it is out of view), which goes back to the pending batches
         {
             std::lock_guard<std::mutex> lock_loaded(loadedBatchesMtx);
             const uint32_t nb_ahead = static_cast<uint32_t>(loadedBatches.size() + loadedOverviewBatches.size()) + nbLoadsInFlight.load();
-            if(nb_ahead >= max_ahead){
-                int64_t worst = -1;
-                LoadPriority worst_priority = {};
-                for(uint32_t k = 0; k < loadedBatches.size(); k++){
-                    const LoadPriority priority = loadPriority(slotsBounds[loadedBatches[k].first], camera);
-                    if(worst < 0 || worst_priority < priority){ worst = k; worst_priority = priority; }
-                }
-                if(worst < 0 || !isClearlyBetter(chosen_priority, worst_priority)){ return false; }
-
-                // Demote it: back to pending with its exact bounds, memory and slot freed
-                const auto [slot, batch] = loadedBatches[worst];
-                loadedBatches.erase(loadedBatches.begin() + worst);
-                PendingBatch back = {};
-                back.batch = batch;
-                back.bounds = slotsBounds[slot];
-                {
-                    std::lock_guard<std::mutex> lock_slot(batchesQueueMutexes[slot]);
-                    batch->points.reset();
-                    batch->state = BatchState::ToLoad;
-                    batchesQueue[slot] = nullptr;
-                }
-                demoted.push_back(std::move(back));
+            if(nb_ahead >= max_ahead && !loaderDemoteWorstLoaded(picked_priority, camera, demoted)){
+                return false;
             }
         }
 
@@ -846,80 +965,104 @@ bool LoaderGpuVersion::loadOneBatch(){
         pendingBatches.pop_back();
         pendingBatches.insert(pendingBatches.end(), demoted.begin(), demoted.end());
         filesBeingRead[*picked.batch->file]++;
+        loadsInFlightBounds[picked.batch.get()] = picked.bounds;
         nbLoadsInFlight++;
-    }
-    for(const PendingBatch& back : demoted){
-        std::lock_guard<std::mutex> lock(filesRecordMtx);
-        filesRecord[*back.batch->file].nb_batches_loaded.fetch_sub(1);
-    }
 
-    // Undo the bookkeeping of step 1
-    auto finish = [&](){
+        // The summary may name the batch just picked: scanned again on its next use
+        std::lock_guard<std::mutex> lock_summary(pendingSummaryMtx);
+        pendingSummaryIsValid = false;
+    }
+    record_demoted();
+
+    // Undo the bookkeeping of step 1, and put the batch back into the pending batches if asked
+    // (in the same critical section: another worker may pick it right away)
+    auto finish = [&](bool back_to_pending){
         std::lock_guard<std::mutex> lock(pendingBatchesMtx);
         filesBeingRead[*picked.batch->file]--;
+        loadsInFlightBounds.erase(picked.batch.get());
         nbLoadsInFlight--;
+        if(back_to_pending){ pendingBatches.push_back(picked); }
     };
 
     // 2. A queue slot (the device side refers to batches by slot)
-    uint32_t slot = OocSimLodSettings::BATCHES_LIST_SIZE;
-    for(uint32_t i = 0; i < OocSimLodSettings::BATCHES_LIST_SIZE; i++){
-        std::lock_guard<std::mutex> lock(batchesQueueMutexes[i]);
-        if(batchesQueue[i]){continue;}
-        picked.batch->state = BatchState::Loading;
-        batchesQueue[i] = picked.batch;
-        slotsBounds[i] = picked.bounds;
-        slot = i;
-        break;
+    auto take_slot = [&]() -> uint32_t {
+        for(uint32_t i = 0; i < OocSimLodSettings::BATCHES_LIST_SIZE; i++){
+            std::lock_guard<std::mutex> lock(batchesQueueMutexes[i]);
+            if(batchesQueue[i]){continue;}
+            picked.batch->state = BatchState::Loading;
+            batchesQueue[i] = picked.batch;
+            slotsBounds[i] = picked.bounds;
+            return i;
+        }
+        return OocSimLodSettings::BATCHES_LIST_SIZE;
+    };
+    uint32_t slot = take_slot();
+    if(slot == OocSimLodSettings::BATCHES_LIST_SIZE){
+        // Every slot is taken: free the slot of the worst loaded batch if this one is clearly better
+        // (the batches held back by `sendToDevice' must never block a batch in view)
+        bool has_demoted = false;
+        {
+            std::lock_guard<std::mutex> lock(pendingBatchesMtx);
+            std::lock_guard<std::mutex> lock_loaded(loadedBatchesMtx);
+            has_demoted = loaderDemoteWorstLoaded(picked_priority, camera, demoted);
+            pendingBatches.insert(pendingBatches.end(), demoted.begin(), demoted.end());
+        }
+        record_demoted();
+        if(has_demoted){ slot = take_slot(); }
     }
     if(slot == OocSimLodSettings::BATCHES_LIST_SIZE){
         // No free slot: back to the pending batches for later
-        {
-            std::lock_guard<std::mutex> lock(pendingBatchesMtx);
-            pendingBatches.push_back(picked);
-        }
-        finish();
+        finish(true);
         return false;
     }
     const std::shared_ptr<PointBatch>& batch = picked.batch;
 
     // 3. Load it into a local buffer: nothing is published unless the whole batch was read
     //    (after a LAZ decoding error, the points decoded just before it can't be trusted)
+    auto release_slot = [&](){
+        std::lock_guard<std::mutex> lock(batchesQueueMutexes[slot]);
+        batchesQueue[slot] = nullptr;
+    };
     auto fail = [&](const char* reason){
-        {
-            std::lock_guard<std::mutex> lock(batchesQueueMutexes[slot]);
-            batchesQueue[slot] = nullptr;
-        }
+        release_slot();
         picked.nb_failures++;
-        if(picked.nb_failures < MAX_LOAD_ATTEMPTS){
+        const bool will_retry = picked.nb_failures < MAX_LOAD_ATTEMPTS;
+        if(will_retry){
             println("WARNING: {} for '{}' (points {} to {}), attempt {}/{}; the batch will be loaded again",
                 reason, *batch->file, batch->first, batch->first + batch->count, picked.nb_failures, MAX_LOAD_ATTEMPTS
             );
             batch->points.reset();
             batch->state = BatchState::ToLoad;
-            std::lock_guard<std::mutex> lock(pendingBatchesMtx);
-            pendingBatches.push_back(picked);
         } else {
             println("ERROR: {} for '{}' (points {} to {}), {} attempts failed; the batch is skipped",
                 reason, *batch->file, batch->first, batch->first + batch->count, picked.nb_failures
             );
         }
-        finish();
+        finish(will_retry);
     };
-
-    std::mutex* file_mutex = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(perFileMutexesMtx);
-        auto it = perFileMutexes.find(*batch->file);
-        if(it != perFileMutexes.end()){ file_mutex = &it->second; }
-    }
-    if(!file_mutex){ fail("no file mutex"); return true; }
+    // Cancelled because a pending batch became clearly better (camera move): nothing of it was
+    // published, it goes back to the pending batches as it was (not a failure)
+    auto cancel = [&](){
+        release_slot();
+        batch->points.reset();
+        batch->state = BatchState::ToLoad;
+        finish(true);
+    };
+    auto should_cancel = [&]() -> bool {
+        if(stopLoadingWorkers){ return true; }
+        const LoadPriority mine = loadPriority(picked.bounds, getCameraState());
+        const PendingSummary summary = getPendingSummary();
+        return summary.has_any && isClearlyBetter(summary.best, mine);
+    };
 
     std::vector<CPoint> points = {};
     const char* failure = nullptr;
+    bool is_cancelled = false;
     {
-        // At most `nbLoadingThreads()' decodings at once (taken before the file mutex, everywhere)
+        // At most `nbLoadingThreads()' decodings at once
+        // (no per-file lock: every worker has its own LASzip reader, so several workers can decode
+        // different batches of the same file, see `MAX_READERS_PER_FILE')
         LoaderDecodingSlot decoding_slot;
-        std::lock_guard<std::mutex> file_lock(*file_mutex);
         // Closed and destroyed on every exit of this scope, exceptions included (an escaping
         // exception used to leak the reader, its file, the slot and the in-flight counters)
         struct ReaderGuard {
@@ -955,10 +1098,16 @@ bool LoaderGpuVersion::loadOneBatch(){
         if(!failure){
             // The batch size is read once: nothing may change it while it is being loaded
             const uint64_t nb_points_to_read = batch->count;
+            const uint64_t check_interval = std::max<uint64_t>(1, CANCEL_CHECK_INTERVAL);
             const LoaderPointConverter convert(*batch->header);
             try {
                 points.reserve(nb_points_to_read);
                 for(uint64_t i = 0; i < nb_points_to_read; i++){
+                    // Still worth it with the current camera? (not once half of it is decoded)
+                    if(i > 0 && (i % check_interval) == 0 && 2 * i < nb_points_to_read && should_cancel()){
+                        is_cancelled = true;
+                        break;
+                    }
                     if(laszip_read_point(guard.reader)){
                         failure = "reading a point";
                         break;
@@ -972,6 +1121,7 @@ bool LoaderGpuVersion::loadOneBatch(){
         }
     }
     if(failure){ fail(failure); return true; }
+    if(is_cancelled){ cancel(); return true; }
 
     // Points outside of the file's extent can only be decoding garbage (a corrupted LAZ chunk is only
     // detected some points after the decoder started producing garbage, possibly in the next batch):
@@ -1001,11 +1151,8 @@ bool LoaderGpuVersion::loadOneBatch(){
     }
     if(points.empty()){
         // Nothing valid: free the slot, nothing to send
-        {
-            std::lock_guard<std::mutex> lock(batchesQueueMutexes[slot]);
-            batchesQueue[slot] = nullptr;
-        }
-        finish();
+        release_slot();
+        finish(false);
         return true;
     }
     batch->count = static_cast<uint32_t>(points.size());
@@ -1031,7 +1178,7 @@ bool LoaderGpuVersion::loadOneBatch(){
         std::lock_guard<std::mutex> lock(filesRecordMtx);
         filesRecord[*batch->file].nb_batches_loaded.fetch_add(1);
     }
-    finish();
+    finish(false);
     return true;
 }
 
@@ -1104,6 +1251,27 @@ void LoaderGpuVersion::filesRecordUi(){
         return;
     }
 
+    // Zoom on the first overview (the chunk points of the first dropped files)
+    {
+        bool has_first_overview = false;
+        glm::vec3 mins = glm::vec3(0.0f);
+        glm::vec3 maxs = glm::vec3(0.0f);
+        {
+            LoaderFirstOverview& first_overview = loaderFirstOverview();
+            std::lock_guard<std::mutex> lock(first_overview.mtx);
+            has_first_overview = first_overview.is_valid;
+            mins = first_overview.mins;
+            maxs = first_overview.maxs;
+        }
+        if (!has_first_overview) { ImGui::BeginDisabled(); }
+        if (ImGui::Selectable("Overview", false, ImGuiSelectableFlags_None, ImVec2(0, 0)) && has_first_overview) {
+            printf("Zooming out on the entire cloud\n");
+            Runtime::controls->focus(mins, maxs, 1.f);
+        }
+        if (!has_first_overview) { ImGui::EndDisabled(); }
+        ImGui::Separator();
+    }
+
     // Build directory tree from filesRecord
     // Map: directory path -> list of (filename, full path)
     std::map<std::string, std::vector<std::pair<std::string, std::string>>> dirTree;
@@ -1121,8 +1289,9 @@ void LoaderGpuVersion::filesRecordUi(){
     // Render tree
     for (auto& [dir, files] : dirTree) {
         // Use the directory path as the tree node label
+        // Collapsed when it first appears (no `ImGuiTreeNodeFlags_DefaultOpen'): ImGui then keeps
+        // the open / closed state chosen by the user (the label is the node id)
         bool dirOpen = ImGui::TreeNodeEx(dir.c_str(),
-                                         ImGuiTreeNodeFlags_DefaultOpen |
                                          ImGuiTreeNodeFlags_SpanAvailWidth);
 
         if (dirOpen) {
@@ -1152,7 +1321,7 @@ void LoaderGpuVersion::filesRecordUi(){
                 bool clicked = ImGui::Selectable(filename.c_str(), false,
                                                   ImGuiSelectableFlags_None,
                                                   ImVec2(0, 0));
-                if (clicked) {
+                if (clicked && header) {
                     printf("Zooming in on: %s\n", fullPath.c_str());
 					glm::vec3 mins = {header->min_x, header->min_y, header->min_z};
 					glm::vec3 maxs = {header->max_x, header->max_y, header->max_z};

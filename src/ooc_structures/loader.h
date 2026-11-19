@@ -62,12 +62,21 @@ struct LoaderLoadPriority {
     }
 };
 
+/// Best batch a worker could pick right now (see `LoaderGpuVersion::getPendingSummary'): used to
+/// cancel the loads in progress that became clearly worse, and to hold back the out-of-view batches
+/// at send time while batches in view still wait
+struct LoaderPendingSummary {
+    bool has_any = false;                   // some pending batch can be picked
+    LoaderLoadPriority best = {};           // its priority (camera of the scan)
+};
+
 
 struct LoaderGpuVersion {
     using BatchBounds = LoaderBatchBounds;
     using PendingBatch = LoaderPendingBatch;
     using CameraState = LoaderCameraState;
     using LoadPriority = LoaderLoadPriority;
+    using PendingSummary = LoaderPendingSummary;
 
     static inline std::deque<std::shared_ptr<PointBatch>> batchesQueue = {};
 	static inline std::deque<std::mutex> batchesQueueMutexes = {};
@@ -101,7 +110,8 @@ struct LoaderGpuVersion {
     static inline std::vector<BatchBounds> slotsBounds = {};
     /// The loader stays at most this many device updates ahead (loaded but not yet sent batches, plus
     /// one being loaded per worker): loading decisions are taken late, with the current camera
-    static inline uint32_t LOAD_AHEAD_FACTOR = 2;
+    /// (1: fewer stale batches to work through after a camera move)
+    static inline uint32_t LOAD_AHEAD_FACTOR = 1;
     /// When the loader is that far ahead, a pending batch replaces the worst loaded (not yet sent) one
     /// if it is this many times better (screen-space size, or distance): the loaded batches of a
     /// region the camera left don't hold back the region it flies to
@@ -117,14 +127,42 @@ struct LoaderGpuVersion {
 
     static LoadPriority loadPriority(const BatchBounds& bounds, const CameraState& camera);
     static bool isClearlyBetter(const LoadPriority& a, const LoadPriority& b);
+
+    /// At most this many workers decode batches of the same file at once (each one has its own
+    /// LASzip reader); 0 = no limit: the region in front of the camera, often one or two tiles, is
+    /// loaded by every worker instead of one
+    static inline uint32_t MAX_READERS_PER_FILE = 0;
+    /// A load in progress re-ranks its batch with the current camera every this many points, and is
+    /// cancelled when a pending batch is clearly better (`isClearlyBetter'); it goes
+    /// back to the pending batches, nothing of it was published. Not after half of the batch
+    static inline uint32_t CANCEL_CHECK_INTERVAL = 65536;
+    /// Age after which `getPendingSummary' scans the pending batches again
+    static inline double PENDING_SUMMARY_REFRESH_SECONDS = 0.05;
+
+    /// Index of the best pending batch a worker may pick (its file has fewer than
+    /// `MAX_READERS_PER_FILE' readers), -1 if none. `pendingBatchesMtx' must be held
+    static int64_t selectBestPending(const CameraState& camera, LoadPriority& best_priority);
+    /// Best pending batch with the current camera, scanned at most every
+    /// `PENDING_SUMMARY_REFRESH_SECONDS', and again after every pick (a pick invalidates it).
+    /// `pendingBatchesMtx' must NOT be held
+    static PendingSummary getPendingSummary();
+    /// True if some batch in view (tier 0 with the current camera) is pending or being loaded: the
+    /// out-of-view loaded batches are then not sent (see `sendToDevice')
+    static bool hasInViewWork(const CameraState& camera);
+    static inline std::mutex pendingSummaryMtx;
+    static inline PendingSummary pendingSummary = {};
+    static inline std::chrono::steady_clock::time_point pendingSummaryTime = {};
+    /// False when a batch was picked since the last scan (the summary may name it: scanned again)
+    static inline bool pendingSummaryIsValid = false;
     /// Load the highest priority pending batches (replaces `enqueueBatches' + `loadPointsInBatches'):
     /// in parallel, starts the persistent loading workers on the first call
     static void loadPendingBatches();
     /// Load the current best pending batch (one worker step); false if nothing was loaded
     static bool loadOneBatch();
-    /// Number of threads decoding point cloud files at the same time (loading workers and overview
-    /// reading together): `MAX_LOADING_THREADS', or half of the CPU cores when it is 0, at most the
-    /// number of cores and `MAX_BATCHES_PER_LOAD'
+    /// Number of loading workers decoding point cloud files at the same time: `MAX_LOADING_THREADS',
+    /// or a quarter of the CPU cores when it is 0, at most the number of cores and
+    /// `MAX_BATCHES_PER_LOAD'. The overview of dropped files is read with every core instead
+    /// (see `createNewBatchesFromFiles')
     static uint32_t nbLoadingThreads();
     /// Stop and join the loading workers (also registered with `std::atexit' when they start, so
     /// that they never outlive the static data they use, whatever the way the program exits)
@@ -144,6 +182,8 @@ struct LoaderGpuVersion {
     /// Batches being loaded, and number of workers reading each file (guarded by `pendingBatchesMtx')
     static inline std::atomic<uint32_t> nbLoadsInFlight{0};
     static inline std::unordered_map<std::string, uint32_t> filesBeingRead = {};
+    /// Estimated bounds of the batches being loaded (guarded by `pendingBatchesMtx')
+    static inline std::unordered_map<const PointBatch*, BatchBounds> loadsInFlightBounds = {};
 
     static inline std::mutex loadedBatchesMtx;
     static inline std::vector<std::pair<uint32_t, std::shared_ptr<PointBatch>>> loadedBatches;

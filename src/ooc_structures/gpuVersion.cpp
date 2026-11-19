@@ -1897,6 +1897,56 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
             offset += task.*quota_member;
         }
     };
+
+    // // TODO: temporary
+    // auto assign_quotas = [&](
+    //     uint32_t VisibilityTask::* count_member, float VisibilityTask::* priority_member,
+    //     uint32_t VisibilityTask::* quota_member, uint64_t VisibilityTask::* offset_member,
+    //     bool is_voxels, uint32_t budget
+    // ){
+    //     std::vector<uint32_t> task_ids[2] = {};   // 0: in view, 1: outside the view
+    //     std::vector<uint32_t> counts[2] = {};
+    //     std::vector<float> weights_in = {};       // screen-space area of the in-view entries
+    //     std::vector<CAABB> aabbs_out = {};        // boxes of the out-of-view entries
+    //     uint64_t outside_total = 0;
+    //     for(uint32_t i = 0; i < visibilityTasks.size(); i++){
+    //         const VisibilityTask& task = visibilityTasks[i];
+    //         if(task.*count_member == 0){continue;}
+    //         const uint32_t count = is_voxels
+    //             ? visMaskedCountEstimate(task.*count_member, task.voxels_child_mask)
+    //             : task.*count_member;
+    //         const float priority = task.*priority_member;
+    //         const uint32_t group = (priority > 0.0f) ? 0 : 1;
+    //         task_ids[group].push_back(i);
+    //         counts[group].push_back(count);
+    //         if(group == 0){
+    //             weights_in.push_back(priority);
+    //         } else {
+    //             aabbs_out.push_back(aabbsMap[task.id]);
+    //             outside_total += count;
+    //         }
+    //     }
+
+    //     const uint32_t reserve = static_cast<uint32_t>(std::min<uint64_t>(outside_total,
+    //         static_cast<uint64_t>(double(budget) * VIS_OUT_OF_VIEW_BUDGET_FRACTION)));
+    //     const std::vector<uint32_t> quotas_in = visPriorityQuotas(counts[0], weights_in, budget - reserve);
+    //     uint64_t used = 0;
+    //     for(uint32_t q : quotas_in){ used += q; }
+    //     const std::vector<uint32_t> quotas_out = visPriorityQuotas(counts[1],
+    //         visDistanceWeights(aabbs_out, camera_pos), static_cast<uint32_t>(uint64_t(budget) - used));
+
+    //     for(uint32_t k = 0; k < task_ids[0].size(); k++){ visibilityTasks[task_ids[0][k]].*quota_member = quotas_in[k]; }
+    //     for(uint32_t k = 0; k < task_ids[1].size(); k++){ visibilityTasks[task_ids[1][k]].*quota_member = quotas_out[k]; }
+
+    //     uint64_t offset = 0;
+    //     for(VisibilityTask& task : visibilityTasks){
+    //         if(task.*count_member == 0){continue;}
+    //         task.*offset_member = offset;
+    //         offset += task.*quota_member;
+    //     }
+    // };
+
+
     assign_quotas(&VisibilityTask::nb_points_on_disk, &VisibilityTask::points_priority,
         &VisibilityTask::points_quota, &VisibilityTask::points_offset, false, hostStaging.maxNbRenderedPoints);
     assign_quotas(&VisibilityTask::nb_voxels_on_disk, &VisibilityTask::voxels_priority,
@@ -2602,18 +2652,6 @@ void GpuVersion::tryToCenterTarget(){
         cuMemcpyDtoH(&main_relationship, src_device, sizeof(CGlobalVariables::Relationship))
     );
     CAABB main_aabb = main_relationship.aabb;
-
-    // for(auto& [id, node] : GpuVersion::persistentStoredNodes){
-    //     for(uint32_t i = 0; i < node->node.points_counter; i++){
-    //         const CPoint& point = node->points[i];
-    //         mainAABB.mins.x = min(mainAABB.mins.x, point.position.x);
-    //         mainAABB.mins.y = min(mainAABB.mins.y, point.position.y);
-    //         mainAABB.mins.z = min(mainAABB.mins.z, point.position.z);
-    //         mainAABB.maxs.x = max(mainAABB.maxs.x, point.position.x);
-    //         mainAABB.maxs.y = max(mainAABB.maxs.y, point.position.y);
-    //         mainAABB.maxs.z = max(mainAABB.maxs.z, point.position.z);
-    //     }
-    // }
 
     glm::dvec3 center = glm::dvec3((main_aabb.mins + main_aabb.maxs) * 0.5f);
     double diagonal = double(glm::length(main_aabb.maxs - main_aabb.mins));
