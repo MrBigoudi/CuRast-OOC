@@ -1489,39 +1489,35 @@ std::vector<uint32_t> visPriorityQuotas(const std::vector<uint32_t>& counts,
     return quota;
 }
 
-/// Read the first `nb_elements' points of an append-only points / voxels file
-/// Returns the number of elements really read
-uint32_t visReadPointsFile(const std::string& filepath, uint32_t nb_elements, std::vector<CPoint>& out){
-    if(nb_elements == 0){ return 0; }
-    if(out.size() < nb_elements){ out.resize(nb_elements); }
+/// Bring `data' up to date with the first `nb_elements' elements of an append-only points / voxels
+/// file: `data' (a node's entry of the visibility RAM cache) holds a uniform random permutation of
+/// the first `data.size()' elements of the file; only the missing tail is read, then shuffled in
+/// (inside-out Fisher-Yates: the whole stays a uniform random permutation)
+/// Returns the number of elements available (<= nb_elements if the file is shorter)
+uint32_t visSyncCachedFile(const std::string& filepath, uint32_t nb_elements, std::vector<CPoint>& data, uint32_t seed){
+    // The files only grow: more elements cached than on disk can't happen; start over if it does
+    if(data.size() > nb_elements){ data.clear(); }
+    const uint64_t old_size = data.size();
+    if(old_size == nb_elements){ return static_cast<uint32_t>(old_size); }
 
     std::ifstream file(filepath, std::ios::binary);
-    if(!file.is_open()){ return 0; }
+    if(!file.is_open()){ return static_cast<uint32_t>(old_size); }
+    file.seekg(static_cast<std::streamoff>(old_size * sizeof(CPoint)));
+    data.resize(nb_elements);
     file.read(
-        reinterpret_cast<char*>(out.data()),
-        static_cast<std::streamsize>(uint64_t(nb_elements) * sizeof(CPoint))
+        reinterpret_cast<char*>(data.data() + old_size),
+        static_cast<std::streamsize>((uint64_t(nb_elements) - old_size) * sizeof(CPoint))
     );
-    return static_cast<uint32_t>(uint64_t(file.gcount()) / sizeof(CPoint));
-}
+    const uint64_t nb_read = uint64_t(std::max<std::streamsize>(file.gcount(), 0)) / sizeof(CPoint);
+    data.resize(old_size + nb_read);
 
-/// Copy `quota' uniformly chosen elements among the first `nb_read' ones into `dst'
-/// Deterministic for a given seed: a smaller quota selects a prefix of a larger one's selection,
-/// so the rendered subset of a node stays stable from one update to the next
-uint32_t visCopyRandomSubset(std::vector<CPoint>& data, uint32_t nb_read, uint32_t quota, uint32_t seed, CPoint* dst){
-    const uint32_t nb_to_copy = std::min(quota, nb_read);
-    if(nb_to_copy == 0){ return 0; }
-
-    if(nb_to_copy < nb_read){
-        // Partial Fisher-Yates: the first `nb_to_copy' elements become a uniform random subset
-        std::minstd_rand rng(seed);
-        for(uint32_t i = 0; i < nb_to_copy; i++){
-            std::uniform_int_distribution<uint32_t> dist(i, nb_read - 1);
-            std::swap(data[i], data[dist(rng)]);
-        }
+    std::minstd_rand rng(seed ^ static_cast<uint32_t>(old_size * 2654435761ull));
+    for(uint64_t i = old_size; i < data.size(); i++){
+        std::uniform_int_distribution<uint64_t> dist(0, i);
+        const uint64_t j = dist(rng);
+        if(j != i){ std::swap(data[i], data[j]); }
     }
-
-    std::copy_n(data.data(), nb_to_copy, dst);
-    return nb_to_copy;
+    return static_cast<uint32_t>(data.size());
 }
 
 std::atomic<bool> visHasWarnedShortRead{false};
@@ -1580,11 +1576,9 @@ void visWriteVoxelSizeCode(CPoint* voxels, uint32_t nb, uint8_t code){
     }
 }
 
-/// Stream one node: read it from disk into regular RAM, then copy its quota into the staging buffers
-/// `points_buffer' / `voxels_buffer' are per-worker scratch buffers, reused between nodes
-void visLoadTask(GpuVersion::VisibilityTask& task,
-    std::vector<CPoint>& points_buffer, std::vector<CPoint>& voxels_buffer
-){
+/// Stream one node: bring its RAM cache entry up to date with its files (only what it gained since
+/// the last visibility update is read), then copy its quota into the staging buffers
+void visLoadTask(GpuVersion::VisibilityTask& task){
     // Already copied from the host RAM on the main thread (`visibilityUpdateSort')
     if(task.is_from_update_node){ return; }
 
@@ -1595,16 +1589,21 @@ void visLoadTask(GpuVersion::VisibilityTask& task,
     const bool wants_voxels = task.voxels_quota > 0;
     if(!wants_points && !wants_voxels){ return; }
 
+    // The cache entry of the node (always set for these tasks; a local copy otherwise)
+    GpuVersion::VisRamCacheEntry local_entry = {};
+    GpuVersion::VisRamCacheEntry& entry = task.ram_cache_entry ? *task.ram_cache_entry : local_entry;
+
+    const uint32_t seed = static_cast<uint32_t>(task.id) * 2654435761u;
     uint32_t nb_points_read = 0;
     uint32_t nb_voxels_read = 0;
     {
         // The serialization thread writes these files under the same lock
         std::lock_guard<std::mutex> lock(GpuVersion::storedNodesMtx[task.id]);
         if(wants_points){
-            nb_points_read = visReadPointsFile(getChunkFilePath(task.id, false), task.nb_points_on_disk, points_buffer);
+            nb_points_read = visSyncCachedFile(getChunkFilePath(task.id, false), task.nb_points_on_disk, entry.points, seed + 1u);
         }
         if(wants_voxels){
-            nb_voxels_read = visReadPointsFile(getChunkFilePath(task.id, true), task.nb_voxels_on_disk, voxels_buffer);
+            nb_voxels_read = visSyncCachedFile(getChunkFilePath(task.id, true), task.nb_voxels_on_disk, entry.voxels, seed + 2u);
         }
     }
 
@@ -1618,19 +1617,31 @@ void visLoadTask(GpuVersion::VisibilityTask& task,
         }
     }
 
-    const uint32_t seed = static_cast<uint32_t>(task.id) * 2654435761u;
+    // The cached elements are a uniform random permutation: their first `quota' elements are a
+    // uniform random subset (stable from one update to the next while the node does not change)
     if(wants_points){
-        task.points_written = visCopyRandomSubset(points_buffer, nb_points_read, task.points_quota, seed + 1u,
-            GpuVersion::visStagingPoints + task.points_offset
-        );
+        const uint32_t nb = std::min(task.points_quota, nb_points_read);
+        std::copy_n(entry.points.data(), nb, GpuVersion::visStagingPoints + task.points_offset);
+        task.points_written = nb;
     }
     if(wants_voxels){
-        // Out-of-view fallback: only the octants of the children outside the view
-        nb_voxels_read = visKeepOctants(voxels_buffer.data(), nb_voxels_read, task.voxels_aabb, task.voxels_child_mask);
-        task.voxels_written = visCopyRandomSubset(voxels_buffer, nb_voxels_read, task.voxels_quota, seed + 2u,
-            GpuVersion::visStagingVoxels + task.voxels_offset
-        );
-        visWriteVoxelSizeCode(GpuVersion::visStagingVoxels + task.voxels_offset, task.voxels_written, task.voxels_size_code);
+        CPoint* dst = GpuVersion::visStagingVoxels + task.voxels_offset;
+        if(task.voxels_child_mask == 0){
+            const uint32_t nb = std::min(task.voxels_quota, nb_voxels_read);
+            std::copy_n(entry.voxels.data(), nb, dst);
+            task.voxels_written = nb;
+        } else {
+            // Out-of-view fallback: only the octants of the children outside the view (the first
+            // ones of the permutation lying in them: a uniform random subset of them)
+            uint32_t nb = 0;
+            for(uint32_t i = 0; i < nb_voxels_read && nb < task.voxels_quota; i++){
+                const CPoint& voxel = entry.voxels[i];
+                const uint32_t octant = static_cast<uint32_t>(task.voxels_aabb.getNextChildIndex(voxel.position));
+                if(task.voxels_child_mask & (1u << octant)){ dst[nb++] = voxel; }
+            }
+            task.voxels_written = nb;
+        }
+        visWriteVoxelSizeCode(dst, task.voxels_written, task.voxels_size_code);
     }
 }
 
@@ -1643,10 +1654,8 @@ void visRunTasks(uint32_t max_nb_workers){
 
     std::atomic<uint32_t> next = 0;
     auto work = [&](){
-        std::vector<CPoint> points_buffer;
-        std::vector<CPoint> voxels_buffer;
         for(uint32_t i = next.fetch_add(1); i < nb_tasks; i = next.fetch_add(1)){
-            visLoadTask(tasks[i], points_buffer, voxels_buffer);
+            visLoadTask(tasks[i]);
         }
     };
 
@@ -2016,6 +2025,41 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
         }
         visWriteVoxelSizeCode(visStagingVoxels + task.voxels_offset, task.voxels_written, task.voxels_size_code);
         task.update_node = nullptr;   // not valid after this function
+    }
+
+    // RAM cache of the nodes read from disk: an entry per disk task, kept across visibility updates
+    // (the workers of the previous update are done: this update only starts once they are)
+    visRamCacheGeneration++;
+    for(VisibilityTask& task : visibilityTasks){
+        task.ram_cache_entry = nullptr;
+        if(task.is_from_update_node){continue;}
+        if(task.points_quota == 0 && task.voxels_quota == 0){continue;}
+        std::unique_ptr<VisRamCacheEntry>& entry = visRamCache[task.id];
+        if(!entry){ entry = std::make_unique<VisRamCacheEntry>(); }
+        entry->last_used = visRamCacheGeneration;
+        task.ram_cache_entry = entry.get();
+    }
+    // Beyond its memory budget, the least recently used entries are freed (never the ones of this
+    // update; they may still grow while the workers fill them: the budget is checked again next time)
+    {
+        auto entry_bytes = [](const VisRamCacheEntry& entry){
+            return uint64_t(entry.points.capacity() + entry.voxels.capacity()) * sizeof(CPoint);
+        };
+        uint64_t total_bytes = 0;
+        std::vector<std::pair<uint64_t, CIdAABB>> evictable = {};
+        for(const auto& [id, entry] : visRamCache){
+            total_bytes += entry_bytes(*entry);
+            if(entry->last_used != visRamCacheGeneration){ evictable.push_back({entry->last_used, id}); }
+        }
+        if(total_bytes > VIS_RAM_CACHE_MAX_BYTES){
+            std::sort(evictable.begin(), evictable.end());
+            for(const auto& [last_used, id] : evictable){
+                if(total_bytes <= VIS_RAM_CACHE_MAX_BYTES){break;}
+                auto it = visRamCache.find(id);
+                total_bytes -= entry_bytes(*it->second);
+                visRamCache.erase(it);
+            }
+        }
     }
 }
 

@@ -257,6 +257,24 @@ struct GpuVersion {
     };
     static inline std::unordered_map<CIdAABB, StoredNodeCounters> storedNodesVisibilityCounters = {};
 
+    /// RAM cache of the visible nodes read from disk by the visibility updates: the content of their
+    /// append-only points / voxels files, kept from one visibility update to the next, so that an
+    /// update only reads what a node gained since (usually nothing) instead of every visible node
+    /// The elements are kept as a uniform random permutation of the file's elements (extended with
+    /// an inside-out shuffle when the file grows): the first `quota' elements are a uniform random
+    /// subset, the same from one update to the next while the node does not change
+    /// Owned by the main thread, except the vectors of the entries of the current tasks, filled by the
+    /// visibility workers (one task per node: one worker per entry)
+    struct VisRamCacheEntry {
+        std::vector<CPoint> points = {};
+        std::vector<CPoint> voxels = {};
+        uint64_t last_used = 0;   // visibility update that used it last (`visRamCacheGeneration')
+    };
+    static inline std::unordered_map<CIdAABB, std::unique_ptr<VisRamCacheEntry>> visRamCache = {};
+    static inline uint64_t visRamCacheGeneration = 0;
+    /// Memory of the cache (points and voxels); beyond it, the least recently used entries are freed
+    static inline uint64_t VIS_RAM_CACHE_MAX_BYTES = 8ull * 1024 * 1024 * 1024; // 8Gb
+
     /// One visible node streamed from disk into the rendering staging buffers
     /// Built on the main thread, filled by exactly one worker (`*_written'), read back on the main thread
     struct VisibilityTask {
@@ -289,6 +307,8 @@ struct GpuVersion {
         bool is_from_update_node = false;
         /// Only valid during `visibilityUpdateSort' (main thread), reset to nullptr afterwards
         const HostStorageNode* update_node = nullptr;
+        /// RAM cache entry of the node (nodes read from disk), filled by the worker of the task
+        VisRamCacheEntry* ram_cache_entry = nullptr;
     };
     static inline std::vector<VisibilityTask> visibilityTasks = {};
 
