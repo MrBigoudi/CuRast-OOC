@@ -304,6 +304,15 @@ struct GpuVersion {
     /// Size of the initial root (node 0), read from the device by each visibility update
     static inline float voxelReferenceSize = 0.0f;
 
+    /// Draw the batches already on the device but not inserted in the octree yet (see
+    /// `kernel_draw_pending_batches' in render.cu): the points near the camera show up as soon as
+    /// they are sent, instead of when the device update inserting them completes
+    static inline bool DRAW_PENDING_BATCHES = true;
+    /// At most about this many pending points drawn per frame (strided over every pending batch);
+    /// 0 = all of them
+    static inline uint32_t PENDING_BATCHES_MAX_POINTS = 0;
+    // static inline uint32_t PENDING_BATCHES_MAX_POINTS = 4'000'000;
+
     /// Pinned staging buffers, as large as the device rendering buffers
     /// Written by the visibility workers, read by a single batched copy to the device
     static inline CPoint* visStagingPoints = nullptr;

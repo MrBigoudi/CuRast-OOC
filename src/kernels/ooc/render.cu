@@ -837,6 +837,77 @@ void kernel_draw_visibility_cache(
 
 
 
+/// Draw the batches already on the device but not inserted in the octree yet ("pending" batches):
+/// the slots of `batchesToAddPoints' whose state is `BatchToHandle' (sent, waiting for the next
+/// update) or `BatchInUse' (the update in progress inserts them). A batch is drawn from the moment
+/// its points are on the device: the loader writes its points, then its state (same stream), so a
+/// slot reads `BatchToHandle' only once its points are complete. It stops being drawn when the
+/// update that inserted it ends (`kernel_reset_batches' sets `BatchHandled'): from then on the
+/// octree draws the same points (and the eviction hand-over for the nodes evicted by that update).
+/// While the update runs, some points are drawn twice, at the same place with the same color.
+/// A slot is only written again once the host has seen it handled (`fetchFromDevice'), after this
+/// kernel's previous launches
+/// At most about `max_points' points are drawn (evenly strided over every pending batch); 0: all
+/// Run on "NB SMs" blocks of size min("Max threads per SM", "Max block dim")
+extern "C" __global__
+void kernel_draw_pending_batches(
+	CRenderTarget target,
+    CRenderingSettings settings,
+    uint32_t max_points
+){
+    if(settings.debug_lod_to_render != -1){return;}
+
+	auto grid = cg::this_grid();
+    auto block = cg::this_thread_block();
+    const uint32_t thread_id = grid.thread_rank();
+    const uint32_t nb_threads = grid.num_threads();
+
+    const uint32_t nb_batches = globalVariables.maxNbBatches;
+    const uint32_t max_batch_size = globalVariables.maxBatchSize;
+
+    // Points pending, for the stride (one thread per block counts, the others wait)
+    __shared__ uint64_t shNbPendingPoints;
+    if(block.thread_rank() == 0){
+        uint64_t nb_pending_points = 0;
+        for(uint32_t batch = 0; batch < nb_batches; batch++){
+            const uint32_t state = globalVariables.batchesAddedMask[batch];
+            if(state != BatchToHandle && state != BatchInUse){continue;}
+            nb_pending_points += min(globalVariables.batchesToAddCounts[batch], max_batch_size);
+        }
+        shNbPendingPoints = nb_pending_points;
+    }
+    __syncthreads();
+    const uint64_t nb_pending_points = shNbPendingPoints;
+    if(nb_pending_points == 0){return;}
+
+    const uint64_t stride = (max_points == 0 || nb_pending_points <= max_points)
+        ? 1ull
+        : (nb_pending_points + max_points - 1) / max_points;
+    const uint64_t step = uint64_t(nb_threads) * stride;
+
+    for(uint32_t batch = 0; batch < nb_batches; batch++){
+        const uint32_t state = globalVariables.batchesAddedMask[batch];
+        if(state != BatchToHandle && state != BatchInUse){continue;}
+        const CPoint* points = globalVariables.batchesToAddPoints[batch];
+        const uint32_t nb_points = min(globalVariables.batchesToAddCounts[batch], max_batch_size);
+        if(!points){continue;}
+
+        for(uint64_t i = uint64_t(thread_id) * stride; i < nb_points; i += step){
+            // For dataset creation
+            if(i % settings.draw_every_x_points != 0){continue;}
+
+            const CPoint point = points[i];
+            // Points outside of the octree root are moved to the origin by the update: not data
+            if(point.position == vec3(0.0f, 0.0f, 0.0f)){continue;}
+            drawPoint(target, settings, point.position,
+                settings.use_voxels_debug_color ? 0xff00ff00u : point.color
+            );
+        }
+    }
+}
+
+
+
 /// Draw the evicted nodes the published host rendering buffers don't show yet (closes the gap between
 /// the deletion of an evicted node on the device and its arrival in the host rendering buffers):
 ///  - the last eviction pass straight from the exchange buffers (overwritten by the next pass),

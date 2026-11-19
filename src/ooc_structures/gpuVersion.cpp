@@ -2484,6 +2484,12 @@ void GpuVersion::renderOctree(RenderTarget& target){
         prog->launch("kernel_draw_evicted_nodes", {&renderingTarget, &renderingSettings, &voxel_splat_scale, &voxel_splat_max_pixels}, launch_settings);
         prog->launch("kernel_draw_octree_large", {&renderingTarget, &renderingSettings, &voxel_splat_scale, &voxel_splat_max_pixels}, launch_settings);
         prog->launch("kernel_draw_octree_small", {&renderingTarget, &renderingSettings, &voxel_splat_scale, &voxel_splat_max_pixels}, launch_settings);
+
+        // Batches sent to the device but not inserted yet (drawn until the update inserting them ends)
+        if(DRAW_PENDING_BATCHES){
+            uint32_t pending_max_points = PENDING_BATCHES_MAX_POINTS;
+            prog->launch("kernel_draw_pending_batches", {&renderingTarget, &renderingSettings, &pending_max_points}, launch_settings);
+        }
     }
 
     updateHostCache();
