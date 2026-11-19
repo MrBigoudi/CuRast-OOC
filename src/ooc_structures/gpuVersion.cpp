@@ -146,8 +146,10 @@ void GpuVersion::initConstraints(CuRast* editor, CUcontext* context) {
     ;
     hostStaging.maxNbVoxelsChunksPerExchangedNode = OocSimLodSettings::MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE;
 
-    hostStaging.maxNbRenderedPoints = OocSimLodSettings::MAX_NB_RENDERED_POINTS;
-    hostStaging.maxNbRenderedVoxels = OocSimLodSettings::MAX_NB_RENDERED_VOXELS;
+    // The host rendering buffers hold every budget: points of the cut nodes + points of the large nodes,
+    // voxels of the cut nodes + side voxels (each budget is enforced separately, see `assign_quotas')
+    hostStaging.maxNbRenderedPoints = OocSimLodSettings::MAX_NB_RENDERED_POINTS + OocSimLodSettings::MAX_NB_RENDERED_LARGE_POINTS;
+    hostStaging.maxNbRenderedVoxels = OocSimLodSettings::MAX_NB_RENDERED_VOXELS + OocSimLodSettings::MAX_NB_RENDERED_SIDE_VOXELS;
 
     hostStaging.maxNbBatches = OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE;
     hostStaging.maxBatchSize = OocSimLodSettings::MAX_POINTS_PER_BATCHES;
@@ -1352,10 +1354,10 @@ constexpr double VIS_DISTANCE_EXPONENT = 3.0;
 /// The distance is floored to this fraction of the node diagonal (the camera can be at the center)
 constexpr double VIS_DISTANCE_FLOOR_FRACTION = 0.01;
 
-/// Entries outside the view (negative device priority: the out-of-view fallback, see part 3 in
-/// render.cu) get what the in-view entries leave of the budget, and at least this fraction of it
-/// when they need it (so that the regions around the view always keep some data)
-constexpr double VIS_OUT_OF_VIEW_BUDGET_FRACTION = 0.15;
+/// Device priorities <= this mark the entries of the secondary budgets (see part 3 in render.cu):
+/// points of a large node (-(1 + screen area)) and side voxels of the out-of-view fallback
+/// (-(1 + distance)); the entries of the cut nodes have a priority >= 0
+constexpr float VIS_SECONDARY_PRIORITY_THRESHOLD = -0.5f;
 
 /// Number of elements a node with `nb_elements' elements is expected to keep with `child_mask'
 /// (the voxels are not counted per octant before reading them: an even spread is assumed; the
@@ -1889,43 +1891,41 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
     // (`aabbsMap' is filled by `storeNodes' for every node sent to the host, so for every node on disk;
     // `renderingTarget' is the camera the kernels above used)
     const glm::vec3 camera_pos = renderingTarget.camera_pos;
-    // In-view entries (positive priority) are served first, as before; the entries outside the view
-    // (out-of-view fallback, negative priority) get what is left, and at least
-    // `VIS_OUT_OF_VIEW_BUDGET_FRACTION' of the budget when they need it.
+    // Three separate budgets, each shared by its own entries only (a group never takes from another):
+    //  - points of the cut nodes (`MAX_NB_RENDERED_POINTS') and voxels of the cut nodes
+    //    (`MAX_NB_RENDERED_VOXELS'): device priority >= 0,
+    //  - points of the large nodes (`MAX_NB_RENDERED_LARGE_POINTS'): priority -(1 + screen area),
+    //  - side voxels of the out-of-view fallback (`MAX_NB_RENDERED_SIDE_VOXELS'): priority
+    //    -(1 + distance).
+    // The host buffers hold the sum of the budgets of their kind (see `initConstraints').
     // The offsets follow the task order (consecutive tasks stay contiguous: fewer copies)
     auto assign_quotas = [&](
         uint32_t VisibilityTask::* count_member, float VisibilityTask::* priority_member,
         uint32_t VisibilityTask::* quota_member, uint64_t VisibilityTask::* offset_member,
-        bool is_voxels, uint32_t budget
+        bool is_voxels, uint32_t main_budget, uint32_t secondary_budget
     ){
-        std::vector<uint32_t> task_ids[2] = {};   // 0: in view, 1: outside the view
+        std::vector<uint32_t> task_ids[2] = {};   // 0: cut nodes, 1: large nodes (points) / side voxels
         std::vector<uint32_t> counts[2] = {};
         std::vector<CAABB> aabbs[2] = {};
-        uint64_t outside_total = 0;
         for(uint32_t i = 0; i < visibilityTasks.size(); i++){
             const VisibilityTask& task = visibilityTasks[i];
             if(task.*count_member == 0){continue;}
             const uint32_t count = is_voxels
                 ? visMaskedCountEstimate(task.*count_member, task.voxels_child_mask)
                 : task.*count_member;
-            const uint32_t group = (task.*priority_member > 0.0f) ? 0 : 1;
+            const uint32_t group = (task.*priority_member > VIS_SECONDARY_PRIORITY_THRESHOLD) ? 0 : 1;
             task_ids[group].push_back(i);
             counts[group].push_back(count);
             aabbs[group].push_back(aabbsMap[task.id]);
-            if(group == 1){ outside_total += count; }
         }
 
-        const uint32_t reserve = static_cast<uint32_t>(std::min<uint64_t>(outside_total,
-            static_cast<uint64_t>(double(budget) * VIS_OUT_OF_VIEW_BUDGET_FRACTION)));
-        const std::vector<uint32_t> quotas_in = visPriorityQuotas(counts[0],
-            visDistanceWeights(aabbs[0], camera_pos), budget - reserve);
-        uint64_t used = 0;
-        for(uint32_t q : quotas_in){ used += q; }
-        const std::vector<uint32_t> quotas_out = visPriorityQuotas(counts[1],
-            visDistanceWeights(aabbs[1], camera_pos), static_cast<uint32_t>(uint64_t(budget) - used));
+        const std::vector<uint32_t> quotas_main = visPriorityQuotas(counts[0],
+            visDistanceWeights(aabbs[0], camera_pos), main_budget);
+        const std::vector<uint32_t> quotas_secondary = visPriorityQuotas(counts[1],
+            visDistanceWeights(aabbs[1], camera_pos), secondary_budget);
 
-        for(uint32_t k = 0; k < task_ids[0].size(); k++){ visibilityTasks[task_ids[0][k]].*quota_member = quotas_in[k]; }
-        for(uint32_t k = 0; k < task_ids[1].size(); k++){ visibilityTasks[task_ids[1][k]].*quota_member = quotas_out[k]; }
+        for(uint32_t k = 0; k < task_ids[0].size(); k++){ visibilityTasks[task_ids[0][k]].*quota_member = quotas_main[k]; }
+        for(uint32_t k = 0; k < task_ids[1].size(); k++){ visibilityTasks[task_ids[1][k]].*quota_member = quotas_secondary[k]; }
 
         uint64_t offset = 0;
         for(VisibilityTask& task : visibilityTasks){
@@ -1985,9 +1985,11 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
 
 
     assign_quotas(&VisibilityTask::nb_points_on_disk, &VisibilityTask::points_priority,
-        &VisibilityTask::points_quota, &VisibilityTask::points_offset, false, hostStaging.maxNbRenderedPoints);
+        &VisibilityTask::points_quota, &VisibilityTask::points_offset, false,
+        OocSimLodSettings::MAX_NB_RENDERED_POINTS, OocSimLodSettings::MAX_NB_RENDERED_LARGE_POINTS);
     assign_quotas(&VisibilityTask::nb_voxels_on_disk, &VisibilityTask::voxels_priority,
-        &VisibilityTask::voxels_quota, &VisibilityTask::voxels_offset, true, hostStaging.maxNbRenderedVoxels);
+        &VisibilityTask::voxels_quota, &VisibilityTask::voxels_offset, true,
+        OocSimLodSettings::MAX_NB_RENDERED_VOXELS, OocSimLodSettings::MAX_NB_RENDERED_SIDE_VOXELS);
 
     // Host RAM nodes: copied now, on the main thread which owns `updateNodes' (nothing modified them
     // since `resolve_source'). The staging buffers are free: `visibilityUpdate' only starts a new

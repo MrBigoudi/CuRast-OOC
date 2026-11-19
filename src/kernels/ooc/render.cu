@@ -1656,7 +1656,10 @@ void kernel_get_renderable_nodes_part_3_large_nodes(
             if(globalVariables.getFlag(node_index, CFlagWasVisibleHost)){
                 priority *= VISIBILITY_HYSTERESIS_BONUS;
             }
-            globalVariables.exchangedAABBIndicesVisPointsScreenSpaceSize[buffer_id] = priority;
+            // Negative (<= -1): the points of a large node have their own budget on the host
+            // (`MAX_NB_RENDERED_LARGE_POINTS'), the points of the cut nodes keep a priority >= 0.
+            // (sorted after every cut node)
+            globalVariables.exchangedAABBIndicesVisPointsScreenSpaceSize[buffer_id] = -(1.0f + priority);
             __nv_atomic_add(&globalVariables.curNbVisNode, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
         }
 

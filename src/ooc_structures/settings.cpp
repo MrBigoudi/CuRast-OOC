@@ -121,14 +121,18 @@ void OocSimLodSettings::init_gpu_version_buffers(){
     MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE = init_field<uint32_t>("MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE", 256);
     MAX_NB_RENDERED_POINTS = init_field<uint32_t>("MAX_NB_RENDERED_POINTS", 1'000'000);
     MAX_NB_RENDERED_VOXELS = init_field<uint32_t>("MAX_NB_RENDERED_VOXELS", 1'000'000);
+    MAX_NB_RENDERED_LARGE_POINTS = init_field<uint32_t>("MAX_NB_RENDERED_LARGE_POINTS", 250'000);
+    MAX_NB_RENDERED_SIDE_VOXELS = init_field<uint32_t>("MAX_NB_RENDERED_SIDE_VOXELS", 250'000);
     MAX_NB_COUNT_SPLIT_ITERATION = init_field<uint32_t>("MAX_NB_COUNT_SPLIT_ITERATION", 8);
 }
 
 void OocSimLodSettings::init_default(){
     // 1Gb fixed
     MAX_NB_NODES = 1'048'576;
-    MAX_NB_RENDERED_POINTS = 25'165'824;
-    MAX_NB_RENDERED_VOXELS = 25'165'824;
+    MAX_NB_RENDERED_POINTS = 25'165'824;        // points of the cut nodes
+    MAX_NB_RENDERED_LARGE_POINTS = 8'388'608;   // points of the large nodes (above the cut)
+    MAX_NB_RENDERED_VOXELS = 25'165'824;        // voxels of the cut nodes
+    MAX_NB_RENDERED_SIDE_VOXELS = 8'388'608;    // side voxels (out-of-view fallback)
     MAX_NB_SPILLING_POINTS = 8'388'608;
     MAX_NB_BACKLOG_VOXELS = 8'388'608;
     MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE = 128;
@@ -256,6 +260,8 @@ void OocSimLodSettings::display(){
     println("    - MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE: {}", MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE);
     println("    - MAX_NB_RENDERED_POINTS: {}", MAX_NB_RENDERED_POINTS);
     println("    - MAX_NB_RENDERED_VOXELS: {}", MAX_NB_RENDERED_VOXELS);
+    println("    - MAX_NB_RENDERED_LARGE_POINTS: {}", MAX_NB_RENDERED_LARGE_POINTS);
+    println("    - MAX_NB_RENDERED_SIDE_VOXELS: {}", MAX_NB_RENDERED_SIDE_VOXELS);
     println("    - MAX_NB_COUNT_SPLIT_ITERATION: {}", MAX_NB_COUNT_SPLIT_ITERATION);
 
     println("");

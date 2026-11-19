@@ -141,10 +141,15 @@ struct OocSimLodSettings {
     static inline uint32_t MAX_NB_BACKLOG_VOXELS;
     /// The maximum number of voxels chunk that can be exchanged at once
     static inline uint32_t MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE;
-    /// The points rendering budget for the visibility cache
+    /// The points rendering budget for the visibility cache: points of the cut nodes
     static inline uint32_t MAX_NB_RENDERED_POINTS;
-    /// The voxels rendering budget for the visibility cache
+    /// The voxels rendering budget for the visibility cache: voxels of the cut nodes
     static inline uint32_t MAX_NB_RENDERED_VOXELS;
+    /// The points rendering budget for the visibility cache: points of the large nodes (above the cut)
+    static inline uint32_t MAX_NB_RENDERED_LARGE_POINTS;
+    /// The voxels rendering budget for the visibility cache: "side" voxels of the out-of-view fallback
+    /// (voxels of the large nodes in the octants of their children outside the frustum)
+    static inline uint32_t MAX_NB_RENDERED_SIDE_VOXELS;
     /// The maximum number of Count/Split operations per update
     static inline uint32_t MAX_NB_COUNT_SPLIT_ITERATION;
 
