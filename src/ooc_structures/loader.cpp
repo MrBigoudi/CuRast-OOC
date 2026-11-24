@@ -1,5 +1,11 @@
 #include "loader.h"
 
+#if defined(__linux__) || defined(__unix__)
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
 
 /////////////////////////////////////////////////////////////////
 ////////////////////////// GPU VERSION //////////////////////////
@@ -129,10 +135,14 @@ void LoaderGpuVersion::init(){
 		((uint32_t*)(batchesOnGpuStatus))[i] = BatchHandled;
 	}
 
-	isDeviceSlotConfirmed = std::vector<uint8_t>(OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE, 0);
 	statusReadbackEligible = std::vector<uint8_t>(OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE, 0);
+	deviceSlotIsOutOfView = std::vector<uint8_t>(OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE, 0);
+	CURuntime::assertCudaSuccess(cuStreamCreate(&statusStream, CU_STREAM_NON_BLOCKING));
+	CURuntime::assertCudaSuccess(cuEventCreate(&eventBatchesReset, CU_EVENT_DISABLE_TIMING));
 	CURuntime::assertCudaSuccess(cuEventCreate(&eventStatusReadback, CU_EVENT_DISABLE_TIMING));
 	isStatusReadbackInFlight = false;
+	isStatusReadbackRequested = false;
+	lastStatusReadback = std::chrono::steady_clock::now();
 }
 
 void LoaderGpuVersion::destroy(){
@@ -151,6 +161,8 @@ void LoaderGpuVersion::destroy(){
     for(CUevent event : freeSendEvents){ CURuntime::assertCudaSuccess(cuEventDestroy(event)); }
     freeSendEvents.clear();
     CURuntime::assertCudaSuccess(cuEventDestroy(eventStatusReadback));
+    CURuntime::assertCudaSuccess(cuEventDestroy(eventBatchesReset));
+    CURuntime::assertCudaSuccess(cuStreamDestroy(statusStream));
 
     CURuntime::assertCudaSuccess(cuEventDestroy(eventLoadComplete));
     CURuntime::assertCudaSuccess(cuMemFreeHost(batchesOnGpuStatus));
@@ -166,23 +178,58 @@ bool LoaderGpuVersion::isUploadInFlight(const PointBatch* batch){
 	return false;
 }
 
+void LoaderGpuVersion::onBatchesReset(){
+	// After `kernel_reset_batches' in the default stream: the only kernel that marks slots
+	// `BatchHandled'
+	CURuntime::assertCudaSuccess(cuEventRecord(eventBatchesReset, 0));
+	isStatusReadbackRequested = true;
+	queueStatusReadback();   // now, unless a readback is still in flight (then by `fetchFromDevice')
+}
+
+void LoaderGpuVersion::queueStatusReadback(){
+	if(isStatusReadbackInFlight || !isStatusReadbackRequested){return;}
+	isStatusReadbackRequested = false;
+
+	// Every occupied slot: its upload was queued before this copy, which waits for it
+	bool has_eligible = false;
+	for(uint32_t i = 0; i < OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE; i++){
+		statusReadbackEligible[i] = (batchesOnGpu[i] != uint32_t(-1)) ? 1 : 0;
+		has_eligible = has_eligible || statusReadbackEligible[i];
+	}
+	if(!has_eligible){return;}
+
+	// On its own stream: after the last `kernel_reset_batches' (latest record of the event) and after
+	// the uploads queued so far (the last one: same stream as the others), nothing else
+	CURuntime::assertCudaSuccess(cuStreamWaitEvent(statusStream, eventBatchesReset, 0));
+	if(!sendsInFlight.empty()){
+		CURuntime::assertCudaSuccess(cuStreamWaitEvent(statusStream, sendsInFlight.back().event, 0));
+	}
+	CURuntime::assertCudaSuccess(cuMemcpyDtoHAsync(
+		batchesOnGpuStatus,
+		(CUdeviceptr)GpuVersion::hostStaging.batchesAddedMask,
+		OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE * sizeof(uint32_t),
+		statusStream
+	));
+	CURuntime::assertCudaSuccess(cuEventRecord(eventStatusReadback, statusStream));
+	isStatusReadbackInFlight = true;
+	lastStatusReadback = std::chrono::steady_clock::now();
+}
+
 /// Hand the device batch slots whose batch was inserted back to `sendToDevice', without blocking:
 /// it used to synchronise the loading stream (the uploads of the previous frames) and read the mask
 /// with a synchronous copy, i.e. wait for every octree update kernel queued on the default stream
-///  1. completed uploads confirm their device slots
-///  2. a completed readback of the mask frees the slots that were confirmed when it was queued and
-///     that the device marked `BatchHandled'
-///  3. a new readback is queued (it sees the device state after everything queued so far on the
-///     default stream); its result is used by a later frame
+///  1. completed uploads are released (the preview draws their device slot from now on)
+///  2. a completed readback of the mask (queued by `onBatchesReset' right after the update marked
+///     its batches `BatchHandled') frees their slots
+///  3. a readback requested while the previous one was in flight is queued
 void LoaderGpuVersion::fetchFromDevice(){
+	const auto now = std::chrono::steady_clock::now();
+
 	// 1. Uploads complete, in order (same stream)
 	while(!sendsInFlight.empty()){
 		const CUresult res = cuEventQuery(sendsInFlight.front().event);
 		if(res == CUDA_ERROR_NOT_READY){break;}
 		CURuntime::assertCudaSuccess(res);
-		for(uint32_t device_slot : sendsInFlight.front().device_slots){
-			isDeviceSlotConfirmed[device_slot] = 1;
-		}
 		freeSendEvents.push_back(sendsInFlight.front().event);
 		sendsInFlight.pop_front();   // releases the batches it kept alive
 	}
@@ -199,7 +246,7 @@ void LoaderGpuVersion::fetchFromDevice(){
 			if(!statusReadbackEligible[i] || status[i] != BatchHandled){continue;}
 			const uint32_t real_index = batchesOnGpu[i];
 			batchesOnGpu[i] = -1;
-			isDeviceSlotConfirmed[i] = 0;
+			deviceSlotIsOutOfView[i] = 0;
 			if(real_index == uint32_t(-1)){continue;}
 
 			std::lock_guard<std::mutex> lock(batchesQueueMutexes[real_index]);
@@ -213,22 +260,18 @@ void LoaderGpuVersion::fetchFromDevice(){
 		}
 	}
 
-	// 3. New readback, for the slots whose upload is complete (their mask holds at least
-	//    `BatchToHandle', any later state comes from the octree update on the default stream)
-	bool has_eligible = false;
+	// 3. A readback requested meanwhile, or the fallback
+	bool has_occupied_slot = false;
 	for(uint32_t i = 0; i < OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE; i++){
-		statusReadbackEligible[i] = (batchesOnGpu[i] != uint32_t(-1) && isDeviceSlotConfirmed[i]) ? 1 : 0;
-		has_eligible = has_eligible || statusReadbackEligible[i];
+		has_occupied_slot = has_occupied_slot || (batchesOnGpu[i] != uint32_t(-1));
 	}
-	if(!has_eligible){return;}
-	CURuntime::assertCudaSuccess(cuMemcpyDtoHAsync(
-		batchesOnGpuStatus,
-		(CUdeviceptr)GpuVersion::hostStaging.batchesAddedMask,
-		OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE * sizeof(uint32_t),
-		0   // default stream: after the octree update kernels queued so far
-	));
-	CURuntime::assertCudaSuccess(cuEventRecord(eventStatusReadback, 0));
-	isStatusReadbackInFlight = true;
+	if(!isStatusReadbackRequested && has_occupied_slot
+		&& std::chrono::duration<double>(now - lastStatusReadback).count() > STATUS_READBACK_FALLBACK_SECONDS
+	){
+		CURuntime::assertCudaSuccess(cuEventRecord(eventBatchesReset, 0));
+		isStatusReadbackRequested = true;
+	}
+	queueStatusReadback();
 }
 
 bool LoaderGpuVersion::sendToDevice(){
@@ -293,10 +336,16 @@ bool LoaderGpuVersion::sendToDevice(){
 	uint32_t nb_used_device_slots = 0;
 	std::vector<uint32_t> sent_device_slots = {};
 	std::vector<std::shared_ptr<PointBatch>> sent_batches = {};
-	auto send = [&](uint32_t slot, const std::shared_ptr<PointBatch>& batch){
+	// Out-of-view batches already on the device (see `MAX_OUT_OF_VIEW_DEVICE_SLOTS')
+	uint32_t nb_out_of_view_slots = 0;
+	for(uint32_t i = 0; i < OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE; i++){
+		if(batchesOnGpu[i] != uint32_t(-1) && deviceSlotIsOutOfView[i]){ nb_out_of_view_slots++; }
+	}
+	auto send = [&](uint32_t slot, const std::shared_ptr<PointBatch>& batch, bool is_out_of_view){
+		if(is_out_of_view){ nb_out_of_view_slots++; }
 		const uint32_t i = free_device_slots[nb_used_device_slots++];
         batchesOnGpu[i] = slot;
-        isDeviceSlotConfirmed[i] = 0;   // until the upload below is complete
+        deviceSlotIsOutOfView[i] = is_out_of_view ? 1 : 0;
         sent_device_slots.push_back(i);
         sent_batches.push_back(batch);
         {
@@ -330,14 +379,16 @@ bool LoaderGpuVersion::sendToDevice(){
 	std::vector<std::pair<uint32_t, std::shared_ptr<PointBatch>>> kept_overview = {};
 	std::vector<std::pair<uint32_t, std::shared_ptr<PointBatch>>> kept_ready = {};
 	for(auto& entry : overview){
-		if(nb_used_device_slots < free_device_slots.size()){ send(entry.first, entry.second); }
+		if(nb_used_device_slots < free_device_slots.size()){ send(entry.first, entry.second, false); }
 		else { kept_overview.push_back(std::move(entry)); }
 	}
 	for(uint32_t k = 0; k < ready.size(); k++){
 		// A previewed batch is never held back: its preview is only released once it is sent
-		const bool is_held_back = hold_back_out_of_view && ready_priorities[k].tier != 0
+		const bool is_out_of_view = ready_priorities[k].tier != 0;
+		const bool is_capped = MAX_OUT_OF_VIEW_DEVICE_SLOTS > 0 && nb_out_of_view_slots >= MAX_OUT_OF_VIEW_DEVICE_SLOTS;
+		const bool is_held_back = is_out_of_view && (hold_back_out_of_view || is_capped)
 			&& !ready[k].second->is_previewed;
-		if(!is_held_back && nb_used_device_slots < free_device_slots.size()){ send(ready[k].first, ready[k].second); }
+		if(!is_held_back && nb_used_device_slots < free_device_slots.size()){ send(ready[k].first, ready[k].second, is_out_of_view); }
 		else { kept_ready.push_back(std::move(ready[k])); }
 	}
 
@@ -520,6 +571,7 @@ void LoaderGpuVersion::updatePreview(){
         CURuntime::assertCudaSuccess(res);
         region.is_uploading = false;
         region.is_visible = (region.batch != nullptr);
+        region.drawn_points = region.is_visible ? region.nb_points : 0;
     }
 
     // What has been drawn once is never lost: a region keeps its batch, whatever the camera does,
@@ -540,6 +592,10 @@ void LoaderGpuVersion::updatePreview(){
         // demoted before it is previewed, or previewed and never demoted.
         // `batch->points' of a published batch is only written under it; so is `slotsBounds' read here
         std::lock_guard<std::mutex> lock(loadedBatchesMtx);
+        // The progressive previews (lock order: loaded -> partial; the workers never take
+        // `loadedBatchesMtx' while holding `partialPreviewMtx'): a worker can't cancel a batch while
+        // it is given a region, and `partial_points' / `partial_version' are read under it
+        std::lock_guard<std::mutex> lock_partial(partialPreviewMtx);
 
         std::unordered_set<const PointBatch*> loaded = {};
         for(const auto& [slot, batch] : loadedOverviewBatches){ loaded.insert(batch.get()); }
@@ -547,14 +603,36 @@ void LoaderGpuVersion::updatePreview(){
 
         // 2. Regions of the batches that left the loaded lists: sent (a previewed batch is never
         //    demoted), and whose upload is complete (`fetchFromDevice' checked the uploads just
-        //    before): their device slot is complete and drawn from this frame on
+        //    before): their device slot is complete and drawn from this frame on. A batch still being
+        //    decoded (progressive preview) keeps its region
+        //    (a batch whose decoding failed is released too: its preview disappears, a rare exception)
         for(LoaderPreviewRegion& region : previewRegions){
             if(!region.batch || loaded.contains(region.batch.get())){continue;}
+            if(region.batch->is_decoding){continue;}
             if(isUploadInFlight(region.batch.get())){continue;}
             region.batch->is_previewed = false;
             region.batch.reset();
             region.is_visible = false;
             region.nb_points = 0;
+            region.drawn_points = 0;
+            region.is_partial = false;
+        }
+
+        // 2b. Progressive previews: once the batch is loaded, its region shows the whole batch; while
+        //     it is decoded, every new version of its partial points (a region is refreshed once its
+        //     previous copy is complete; it keeps drawing its previous content meanwhile)
+        for(uint32_t r = 0; r < previewRegions.size(); r++){
+            LoaderPreviewRegion& region = previewRegions[r];
+            if(!region.batch || !region.is_partial || region.is_uploading){continue;}
+            if(loaded.contains(region.batch.get())){
+                if(region.batch->points && !region.batch->points->empty()){
+                    region.is_partial = false;
+                    uploads.push_back({r, region.batch, region.batch->points});
+                }
+            } else if(region.batch->partial_points && region.batch->partial_version != region.partial_version){
+                region.partial_version = region.batch->partial_version;
+                uploads.push_back({r, region.batch, region.batch->partial_points});
+            }
         }
 
         // 3. New previews: the best loaded batches in view without a region, as many as free regions
@@ -567,6 +645,7 @@ void LoaderGpuVersion::updatePreview(){
             struct Candidate {
                 LoadPriority priority = {};
                 std::shared_ptr<PointBatch> batch = nullptr;
+                bool is_partial = false;   // being decoded: its partial points are drawn
             };
             std::vector<Candidate> candidates = {};
             const CameraState camera = getCameraState();
@@ -580,6 +659,16 @@ void LoaderGpuVersion::updatePreview(){
             };
             add(loadedOverviewBatches);
             add(loadedBatches);
+            if(PREVIEW_PROGRESSIVE){
+                for(const LoaderPartialPreview& entry : partialPreviews){
+                    const std::shared_ptr<PointBatch>& batch = entry.batch;
+                    if(!batch || batch->is_previewed || !batch->partial_points || batch->partial_points->empty()){continue;}
+                    if(loaded.contains(batch.get())){continue;}   // just loaded: listed above
+                    const LoadPriority priority = loadPriority(entry.bounds, camera);
+                    if(priority.tier != 0){continue;}
+                    candidates.push_back({priority, batch, true});
+                }
+            }
             std::stable_sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b){
                 return a.priority < b.priority;
             });
@@ -591,13 +680,20 @@ void LoaderGpuVersion::updatePreview(){
                 ){ next_region++; }
                 if(next_region == previewRegions.size()){break;}
 
-                // Previewed from now on: not demoted anymore, not held back at send time
+                // Previewed from now on: not cancelled, not demoted anymore, not held back at send time
                 candidate.batch->is_previewed = true;
                 LoaderPreviewRegion& region = previewRegions[next_region];
                 region.batch = candidate.batch;
                 region.nb_points = 0;
+                region.drawn_points = 0;
                 region.is_visible = false;
-                uploads.push_back({next_region, candidate.batch, candidate.batch->points});
+                region.is_partial = candidate.is_partial;
+                if(candidate.is_partial){
+                    region.partial_version = candidate.batch->partial_version;
+                    uploads.push_back({next_region, candidate.batch, candidate.batch->partial_points});
+                } else {
+                    uploads.push_back({next_region, candidate.batch, candidate.batch->points});
+                }
                 next_region++;
             }
         }
@@ -628,8 +724,8 @@ bool LoaderGpuVersion::previewDrawCounts(LoaderPreviewCounts& counts){
     for(uint32_t r = 0; r < previewRegions.size() && r < LOADER_PREVIEW_MAX_REGIONS; r++){
         const LoaderPreviewRegion& region = previewRegions[r];
         if(!region.is_visible){continue;}
-        counts.counts[r] = region.nb_points;
-        has_visible = has_visible || (region.nb_points > 0);
+        counts.counts[r] = region.drawn_points;
+        has_visible = has_visible || (region.drawn_points > 0);
     }
     return has_visible;
 }
@@ -1261,6 +1357,43 @@ bool loaderDemoteWorstLoaded(
 
 } // namespace
 
+namespace {
+/// Ask the OS to read the part of `file' holding points [first, first + count) ahead (estimated in
+/// proportion of the point data, with one default LAZ chunk of margin), plus the header and the
+/// end of the file (the LAZ chunk table, read when the reader is opened)
+void loaderReadAhead(const std::string& file, const laszip_header& header, uint64_t first, uint64_t count){
+#if defined(__linux__) || defined(__unix__)
+    const int fd = ::open(file.c_str(), O_RDONLY | O_CLOEXEC);
+    if(fd < 0){return;}
+    struct stat info = {};
+    if(::fstat(fd, &info) == 0 && info.st_size > 0){
+        const uint64_t size = static_cast<uint64_t>(info.st_size);
+        const uint64_t data_start = std::min<uint64_t>(header.offset_to_point_data, size);
+        const uint64_t nb_points = header.number_of_point_records
+            ? header.number_of_point_records
+            : header.extended_number_of_point_records;
+        if(nb_points > 0 && size > data_start){
+            const double bytes_per_point = double(size - data_start) / double(nb_points);
+            const uint64_t margin = static_cast<uint64_t>(bytes_per_point * 50000.0) + (uint64_t(1) << 20);
+            const uint64_t begin_estimate = data_start + static_cast<uint64_t>(bytes_per_point * double(first));
+            const uint64_t begin = (begin_estimate > data_start + margin) ? begin_estimate - margin : data_start;
+            const uint64_t end = std::min<uint64_t>(size,
+                data_start + static_cast<uint64_t>(bytes_per_point * double(first + count)) + margin);
+            if(end > begin){
+                ::posix_fadvise(fd, static_cast<off_t>(begin), static_cast<off_t>(end - begin), POSIX_FADV_WILLNEED);
+            }
+            const uint64_t tail = std::min<uint64_t>(size - data_start, uint64_t(1) << 20);
+            ::posix_fadvise(fd, static_cast<off_t>(size - tail), static_cast<off_t>(tail), POSIX_FADV_WILLNEED);
+        }
+        ::posix_fadvise(fd, 0, static_cast<off_t>(data_start + 8), POSIX_FADV_WILLNEED);
+    }
+    ::close(fd);
+#else
+    (void)file; (void)header; (void)first; (void)count;
+#endif
+}
+}
+
 bool LoaderGpuVersion::loadOneBatch(){
     const CameraState camera = getCameraState();
     const uint32_t max_ahead = std::max<uint32_t>(1u,
@@ -1316,6 +1449,15 @@ bool LoaderGpuVersion::loadOneBatch(){
     // Undo the bookkeeping of step 1, and put the batch back into the pending batches if asked
     // (in the same critical section: another worker may pick it right away)
     auto finish = [&](bool back_to_pending){
+        // No progressive preview anymore: loaded (its preview region shows the whole batch from now
+        // on), or not loaded (its region, if any, is released)
+        {
+            std::lock_guard<std::mutex> lock(partialPreviewMtx);
+            std::erase_if(partialPreviews, [&](const LoaderPartialPreview& entry){ return entry.batch == picked.batch; });
+            picked.batch->partial_points.reset();
+        }
+        picked.batch->is_decoding = false;
+
         std::lock_guard<std::mutex> lock(pendingBatchesMtx);
         filesBeingRead[*picked.batch->file]--;
         loadsInFlightBounds.erase(picked.batch.get());
@@ -1355,6 +1497,7 @@ bool LoaderGpuVersion::loadOneBatch(){
         return false;
     }
     const std::shared_ptr<PointBatch>& batch = picked.batch;
+    batch->is_decoding = true;
 
     // 3. Load it into a local buffer: nothing is published unless the whole batch was read
     //    (after a LAZ decoding error, the points decoded just before it can't be trusted)
@@ -1391,7 +1534,55 @@ bool LoaderGpuVersion::loadOneBatch(){
         if(stopLoadingWorkers){ return true; }
         const LoadPriority mine = loadPriority(picked.bounds, getCameraState());
         const PendingSummary summary = getPendingSummary();
-        return summary.has_any && isClearlyBetter(summary.best, mine);
+        if(!(summary.has_any && isClearlyBetter(summary.best, mine))){ return false; }
+        // A batch whose progressive preview is drawn in view is not cancelled (what is drawn is not
+        // lost); out of view, it is (its region is released: nothing visible disappears, and the
+        // worker moves on to the new view). Decided under the preview lock, so that the preview can't
+        // pick it meanwhile
+        std::lock_guard<std::mutex> lock(partialPreviewMtx);
+        if(batch->is_previewed && mine.tier == 0){ return false; }
+        std::erase_if(partialPreviews, [&](const LoaderPartialPreview& entry){ return entry.batch == batch; });
+        batch->partial_points.reset();
+        return true;
+    };
+
+    // Progressive preview of a batch in view: an even subsample of the points decoded so far (the
+    // ones within the file's extent, as kept below), published for `updatePreview'
+    const bool is_progressive = PREVIEW_PROGRESSIVE && previewDevicePoints && previewPointsPerRegion > 0
+        && picked_priority.tier == 0;
+    glm::vec3 extent_lo = glm::vec3(0.0f);
+    glm::vec3 extent_hi = glm::vec3(0.0f);
+    {
+        const laszip_header& h = *batch->header;
+        const double tolerance_x = 2.0 * h.x_scale_factor + 1e-3 * (h.max_x - h.min_x);
+        const double tolerance_y = 2.0 * h.y_scale_factor + 1e-3 * (h.max_y - h.min_y);
+        const double tolerance_z = 2.0 * h.z_scale_factor + 1e-3 * (h.max_z - h.min_z);
+        extent_lo = glm::vec3(float(h.min_x - tolerance_x), float(h.min_y - tolerance_y), float(h.min_z - tolerance_z));
+        extent_hi = glm::vec3(float(h.max_x + tolerance_x), float(h.max_y + tolerance_y), float(h.max_z + tolerance_z));
+    }
+    auto publish_partial = [&](const std::vector<CPoint>& decoded){
+        const uint64_t nb_decoded = decoded.size();
+        const uint32_t nb_wanted = static_cast<uint32_t>(std::min<uint64_t>(nb_decoded, previewPointsPerRegion));
+        if(nb_wanted == 0){return;}
+        auto subsample = std::make_shared<std::vector<CPoint>>();
+        subsample->reserve(nb_wanted);
+        const uint64_t step = (nb_decoded << 32) / nb_wanted;   // 32.32 fixed point
+        uint64_t position = 0;
+        for(uint32_t j = 0; j < nb_wanted; j++){
+            const CPoint& point = decoded[position >> 32];
+            position += step;
+            const glm::vec3& p = point.position;
+            if(p.x >= extent_lo.x && p.x <= extent_hi.x && p.y >= extent_lo.y && p.y <= extent_hi.y
+                && p.z >= extent_lo.z && p.z <= extent_hi.z
+            ){ subsample->push_back(point); }
+        }
+        if(subsample->empty()){return;}
+        std::lock_guard<std::mutex> lock(partialPreviewMtx);
+        batch->partial_points = std::move(subsample);
+        batch->partial_version++;
+        const bool is_registered = std::any_of(partialPreviews.begin(), partialPreviews.end(),
+            [&](const LoaderPartialPreview& entry){ return entry.batch == batch; });
+        if(!is_registered){ partialPreviews.push_back({batch, picked.bounds}); }
     };
 
     std::vector<CPoint> points = {};
@@ -1413,6 +1604,7 @@ bool LoaderGpuVersion::loadOneBatch(){
             }
         } guard;
         laszip_point* laz_point = nullptr;
+        if(READ_AHEAD){ loaderReadAhead(*batch->file, *batch->header, batch->first, batch->count); }
         {
             // LASzip's logging (lasmessage.cpp) is global and not thread-safe: opening a file and the
             // first decoding (which reads the chunk table) may log, so they are serialised
@@ -1441,6 +1633,7 @@ bool LoaderGpuVersion::loadOneBatch(){
             const LoaderPointConverter convert(*batch->header);
             try {
                 points.reserve(nb_points_to_read);
+                uint64_t next_partial = std::max<uint64_t>(1, PREVIEW_PROGRESSIVE_FIRST_POINTS);
                 for(uint64_t i = 0; i < nb_points_to_read; i++){
                     // Still worth it with the current camera? (not once half of it is decoded)
                     if(i > 0 && (i % check_interval) == 0 && 2 * i < nb_points_to_read && should_cancel()){
@@ -1452,6 +1645,10 @@ bool LoaderGpuVersion::loadOneBatch(){
                         break;
                     }
                     convert(laz_point, points.emplace_back());   // written in place (capacity reserved)
+                    if(is_progressive && i + 1 == next_partial && i + 1 < nb_points_to_read){
+                        publish_partial(points);
+                        next_partial += std::max<uint64_t>(1, PREVIEW_PROGRESSIVE_INTERVAL);
+                    }
                 }
             } catch(const std::bad_alloc&){
                 failure = "out of host memory";

@@ -4,6 +4,7 @@
 #include "laszip/laszip_api.h"
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <thread>
@@ -30,6 +31,13 @@ struct PointBatch {
 	/// Drawn by the preview of the loaded batches (`LoaderGpuVersion::updatePreview'): never demoted,
 	/// never held back, until it is sent. Written by the main thread under `loadedBatchesMtx'
 	std::atomic<bool> is_previewed{false};
+	/// Progressive preview (see `LoaderGpuVersion::PREVIEW_PROGRESSIVE'): while the batch is decoded,
+	/// an even subsample of the points decoded so far, replaced as the decoding goes on (a new
+	/// version each time). Guarded by `LoaderGpuVersion::partialPreviewMtx'
+	std::shared_ptr<std::vector<CPoint>> partial_points = nullptr;
+	uint32_t partial_version = 0;
+	/// Being decoded by a worker: its preview region is kept meanwhile
+	std::atomic<bool> is_decoding{false};
 };
 
 // Helper types of `LoaderGpuVersion', at namespace scope: a static member of a nested type can't use
@@ -85,7 +93,16 @@ struct LoaderPreviewRegion {
     uint32_t nb_points = 0;                        // points of the batch in the region (subsample)
     bool is_uploading = false;                     // copy to the device in flight (`upload_event')
     bool is_visible = false;                       // drawn (its copy is complete, it is still previewed)
+    uint32_t drawn_points = 0;                     // points drawn (`nb_points' once its copy is complete)
+    bool is_partial = false;                       // shows the progressive preview of a batch being decoded
+    uint32_t partial_version = 0;                  // version of that progressive preview
     CUevent upload_event = nullptr;
+};
+
+/// A batch being decoded with a progressive preview (see `LoaderGpuVersion::PREVIEW_PROGRESSIVE')
+struct LoaderPartialPreview {
+    std::shared_ptr<PointBatch> batch = nullptr;
+    LoaderBatchBounds bounds = {};                 // estimated bounds (ranks it like the loaded batches)
 };
 
 /// Number of points to draw in each preview region (kernel parameter: same layout as
@@ -133,20 +150,38 @@ struct LoaderGpuVersion {
     static inline CUevent eventLoadComplete;
 
     /// The device batch slots are handed back without blocking the main thread (`fetchFromDevice'):
-    ///  - each `sendToDevice' upload records an event on the loading stream; once it is complete, the
-    ///    device slots it filled are "confirmed" (points, count and mask `BatchToHandle' written)
-    ///  - the mask is read back with an asynchronous copy on the default stream (after the octree
-    ///    update kernels queued so far); only the slots confirmed when that copy was queued are
-    ///    interpreted (a slot sent after it may still show the `BatchHandled' of its previous batch)
+    ///  - each `sendToDevice' upload records an event on the loading stream (`sendsInFlight')
+    ///  - a slot only becomes `BatchHandled' in `kernel_reset_batches': right after it, the octree
+    ///    update calls `onBatchesReset', which reads the mask back with an asynchronous copy on
+    ///    `statusStream', waiting for that kernel and for the last upload only (not for the rendering
+    ///    or the next update). Every slot occupied when it is queued is interpreted: its upload is
+    ///    complete when the copy runs, so it can't show the `BatchHandled' of its previous batch
+    ///  - the next `fetchFromDevice' (start of the next frame) frees the handled slots
     /// Main thread only
     static inline std::deque<LoaderSendRecord> sendsInFlight = {};
     static inline std::vector<CUevent> freeSendEvents = {};
-    static inline std::vector<uint8_t> isDeviceSlotConfirmed = {};
-    static inline CUevent eventStatusReadback = nullptr;
+    static inline CUstream statusStream = nullptr;
+    static inline CUevent eventBatchesReset = nullptr;      // recorded on the default stream
+    static inline CUevent eventStatusReadback = nullptr;    // recorded on `statusStream'
     static inline bool isStatusReadbackInFlight = false;
+    static inline bool isStatusReadbackRequested = false;
+    static inline std::chrono::steady_clock::time_point lastStatusReadback = {};
     static inline std::vector<uint8_t> statusReadbackEligible = {};
+    /// Fallback: a readback every this many seconds while slots are occupied (the requests of
+    /// `onBatchesReset' cover every `BatchHandled'; this only guards against a missed one)
+    static inline double STATUS_READBACK_FALLBACK_SECONDS = 0.25;
+    /// Called by the octree update right after `kernel_reset_batches' (main thread)
+    static void onBatchesReset();
+    static void queueStatusReadback();
     /// True if `batch' is part of an upload not complete yet (its device slot is not drawn yet)
     static bool isUploadInFlight(const PointBatch* batch);
+
+    /// At most this many device slots hold out-of-view batches (they are only sent when nothing in
+    /// view is left to load): an update started just before the camera moves then holds few batches
+    /// the camera left, and the batches of the new view get the next update quickly. 0 = no limit
+    static inline uint32_t MAX_OUT_OF_VIEW_DEVICE_SLOTS = 8;
+    static inline std::vector<uint8_t> deviceSlotIsOutOfView = {};
+
 
     static inline std::vector<CUmemcpyAttributes> loadingAttributes = {
         CUmemcpyAttributes {
@@ -330,6 +365,22 @@ struct LoaderGpuVersion {
     static inline std::unique_ptr<std::atomic<bool>[]> previewRegionSubmitted = nullptr;
     static inline CUcontext previewContext = nullptr;
     static void previewUploadRoutine();
+
+    /// Progressive preview: a batch in view is drawn while it is decoded, from its first
+    /// `PREVIEW_PROGRESSIVE_FIRST_POINTS' points on, then every `PREVIEW_PROGRESSIVE_INTERVAL' points
+    /// (its region is refreshed with an even subsample of the points decoded so far), then with
+    /// the whole batch once it is loaded. A batch whose preview is drawn is not cancelled while
+    /// it is in view (what is drawn is not lost); out of view it can be, and its region is released
+    static inline bool PREVIEW_PROGRESSIVE = true;
+    static inline uint32_t PREVIEW_PROGRESSIVE_FIRST_POINTS = 16384;
+    static inline uint32_t PREVIEW_PROGRESSIVE_INTERVAL = 131072;
+    /// Batches being decoded with a progressive preview (registered by their worker)
+    static inline std::mutex partialPreviewMtx;
+    static inline std::vector<LoaderPartialPreview> partialPreviews = {};
+
+    /// Before decoding a batch, ask the OS to read its part of the file ahead (`posix_fadvise'
+    /// `WILLNEED'): large asynchronous reads instead of the small synchronous ones of LASzip
+    static inline bool READ_AHEAD = true;
     /// Main thread, every frame before `sendToDevice' (a sent batch stays previewed until
     /// `fetchFromDevice' sees its upload complete: its device slot is drawn from then on)
     static void updatePreview();

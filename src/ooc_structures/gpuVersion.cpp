@@ -2578,6 +2578,9 @@ void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
                     .blocksize = 1
                 };
                 prog->launch("kernel_reset_batches", {}, launch_settings);
+                // The inserted batches are `BatchHandled' now: read the mask back right after this
+                // kernel (asynchronously), their device slots are free from the next frame on
+                LoaderGpuVersion::onBatchesReset();
             }
 
             GpuVersionUI::update();
