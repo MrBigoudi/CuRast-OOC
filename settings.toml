@@ -11,6 +11,13 @@
 MEASURE_TIMINGS = false
 
 ### Tells if need to find automatic properties
+### When true, `init_default' (settings.cpp) derives the buffer sizes from the available memory:
+###  - reduced to fit: MAX_NB_RENDERED_*, MAX_BATCHES_PER_OCTREE_UPDATE, MAX_NB_NODES_TO_EXCHANGE, VIS_RAM_CACHE_MAX_MB,
+###    PREVIEW_POINTS_PER_REGION
+###  - used as a floor: MAX_NB_NODES
+###  - ignored (derived): LRU_UPDATES_CACHE_SIZE, NB_ALLOCABLE_*, MAX_NB_SPILLING_POINTS, MAX_NB_BACKLOG_VOXELS,
+###    LRU_CPU_CACHE_SIZE
+### See the AUTOMATIC SIZING section for its parameters; the resulting memory plan is printed with the settings
 DERIVE_AUTOMATIC_PROPERTIES = true
 # DERIVE_AUTOMATIC_PROPERTIES = false
 
@@ -29,7 +36,8 @@ BATCHES_LIST_SIZE = 1_024
 ### The maximum number of points per batches
 # MAX_POINTS_PER_BATCHES = 10_000
 # MAX_POINTS_PER_BATCHES = 100_000
-MAX_POINTS_PER_BATCHES = 1_000_000
+# MAX_POINTS_PER_BATCHES = 1_000_000
+MAX_POINTS_PER_BATCHES = 1_048_576 # value the automatic properties used to force
 # MAX_POINTS_PER_BATCHES = 4_000_000
 # MAX_POINTS_PER_BATCHES = 10_000_000
 
@@ -163,23 +171,183 @@ MAX_NB_SPILLING_POINTS = 20_000_000
 MAX_NB_BACKLOG_VOXELS = 20_000_000
 
 ### The maximum number of voxels chunk that can be exchanged at once
-MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE = 256
+### (capped to MAX_POINTS_PER_LEAF / 1024: the host keeps at most MAX_POINTS_PER_LEAF voxels per node)
+MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE = 128
 
-### The points rendering budget for the visibility cache
+### The rendering budgets (36 bytes of device memory per element: double buffering + retained evicted copies)
+### With DERIVE_AUTOMATIC_PROPERTIES they are scaled down together if they take more than RENDERING_MEMORY_FRACTION
+### The values below are the ones the automatic properties used to force
+### The points rendering budget for the visibility cache: points of the cut nodes
 # MAX_NB_RENDERED_POINTS = 5_000_000
 # MAX_NB_RENDERED_POINTS = 10_000_000
-MAX_NB_RENDERED_POINTS = 20_000_000
+# MAX_NB_RENDERED_POINTS = 20_000_000
+MAX_NB_RENDERED_POINTS = 25_165_824
 # MAX_NB_RENDERED_POINTS = 50_000_000
 
-### The voxels rendering budget for the visibility cache
+### The voxels rendering budget for the visibility cache: voxels of the cut nodes
 # MAX_NB_RENDERED_VOXELS = 5_000_000
-MAX_NB_RENDERED_VOXELS = 20_000_000
+# MAX_NB_RENDERED_VOXELS = 20_000_000
+MAX_NB_RENDERED_VOXELS = 25_165_824
 # MAX_NB_RENDERED_VOXELS = 50_000_000
+
+### The points rendering budget of the large nodes (above the cut)
+MAX_NB_RENDERED_LARGE_POINTS = 8_388_608
+
+### The voxels rendering budget of the out-of-view fallback ("side" voxels of the large nodes)
+MAX_NB_RENDERED_SIDE_VOXELS = 8_388_608
 
 ### The maximum number of Count/Split operations per update
 # MAX_NB_COUNT_SPLIT_ITERATION = 1
 # MAX_NB_COUNT_SPLIT_ITERATION = 4
 MAX_NB_COUNT_SPLIT_ITERATION = 8
+
+
+
+#########################################################################
+########################### AUTOMATIC SIZING ############################
+#########################################################################
+### Only used when DERIVE_AUTOMATIC_PROPERTIES = true; the justification of every value is in the
+### comments of `OocSimLodSettings::init_default' (settings.cpp)
+
+### Device memory left to what can't be accounted for at startup (kernels compiled later, local memory,
+### CUB temporary storage, framebuffers resized with the window, ...): RESERVE_MB + RESERVE_FRACTION x total
+### Raise them if the application runs out of memory outside of the octree pools
+DEVICE_MEMORY_RESERVE_MB = 512.0
+DEVICE_MEMORY_RESERVE_FRACTION = 0.12
+### Extra reserve when IS_USING_NN = true
+NN_MEMORY_RESERVE_MB = 3072.0
+
+### Largest share of the usable device memory of each family of buffers (the rest goes to the octree pools)
+### Rendering buffers (the budgets are scaled down above it)
+RENDERING_MEMORY_FRACTION = 0.25
+### Node ids (MAX_NB_NODES): bounds the number of nodes of the whole octree (~ the dataset size)
+NODE_IDS_MEMORY_FRACTION = 0.04
+### Octree update: batches + spilling + backlog buffers (MAX_BATCHES_PER_OCTREE_UPDATE is reduced above it)
+UPDATE_MEMORY_FRACTION = 0.25
+### Exchange buffers (MAX_NB_NODES_TO_EXCHANGE is reduced above it)
+EXCHANGE_MEMORY_FRACTION = 0.06
+
+### Spilling points / backlog voxels per point of an octree update
+### Raise them if "reached the maximum of spilling points" / "Max nb backlog buffer reached" shows up
+SPILLING_POINTS_PER_UPDATE_POINT = 1.5
+BACKLOG_VOXELS_PER_UPDATE_POINT = 1.0
+
+### Composition of the pools, per resident node (updates cache + nodes brought in by the update in progress)
+### Raise the one whose pool runs out ("can't allocate more `Chunk' / `OccupancyGrid' / `OctreeNode' elements")
+### Average fill of a node's chunk list, relative to MAX_POINTS_PER_LEAF
+CHUNKS_FILL_RATIO = 0.75
+### Occupancy grids (one per inner node) per resident node
+GRIDS_PER_RESIDENT_NODE = 0.6
+### Node slots per resident node (cheap: never the first pool to run out)
+NODES_PER_RESIDENT_NODE = 4.0
+### Nodes an update brings in (loaded or created), per MAX_POINTS_PER_LEAF points of the update
+TRANSIENT_NODES_PER_UPDATE_LEAF = 6.0
+### Smallest updates cache accepted before MAX_BATCHES_PER_OCTREE_UPDATE is reduced
+MIN_LRU_UPDATES_CACHE_SIZE = 128
+
+### Share of the host physical memory pinned for the host cache (LRU_CPU_CACHE_SIZE); at most half of the
+### memory available at startup
+HOST_CACHE_MEMORY_FRACTION = 0.25
+
+### Testing: size every buffer as on a card with this much memory, in GB (e.g. 4.0 for a 4 GB card); 0.0 = the real card
+### The simulated card has the same memory already in use as the real one (desktop, Vulkan, CuRast, kernels)
+### Only the sizes are simulated: the rest of the real card stays free (a later allocation beyond the simulated
+### memory would not fail as it would on the small card). Ignored if not smaller than the real card
+SIMULATED_DEVICE_MEMORY_GB = 0.0
+# SIMULATED_DEVICE_MEMORY_GB = 4.0
+# SIMULATED_DEVICE_MEMORY_GB = 8.0
+
+
+
+#########################################################################
+############################### RENDERING ###############################
+#########################################################################
+
+### Voxel splats: every voxel is drawn as a camera-facing square of side VOXEL_SPLAT_SCALE voxel cells,
+### at most VOXEL_SPLAT_MAX_PIXELS pixels wide. A scale <= 0 draws one point per voxel
+VOXEL_SPLAT_SCALE = 1.0
+VOXEL_SPLAT_MAX_PIXELS = 32
+
+### Draw the batches already on the device but not inserted in the octree yet
+DRAW_PENDING_BATCHES = true
+### At most about this many pending points drawn per frame (strided over every pending batch); 0 = all of them
+PENDING_BATCHES_MAX_POINTS = 0
+# PENDING_BATCHES_MAX_POINTS = 4_000_000
+
+### Device copies of the evicted nodes, kept drawable until the host rendering buffers show them:
+### a fraction of the rendering budgets, and this many eviction passes of MAX_NB_NODES_TO_EXCHANGE nodes
+EVICTION_RETAIN_BUDGET_FRACTION = 0.25
+EVICTION_RETAIN_NB_PASSES = 16
+### Longest wait for the host rendering buffers to cover an eviction before evicting anyway
+MAX_EVICTION_COVERAGE_WAIT_SECONDS = 5.0
+
+
+
+#########################################################################
+############################### VISIBILITY ##############################
+#########################################################################
+
+### Fraction of the rendering budget shared equally between every visible node (guaranteed minimum per node)
+VIS_MIN_SHARE_FRACTION = 0.0
+# VIS_MIN_SHARE_FRACTION = 0.1
+### Distance weighting of the budget: weight = (d_closest / d_node)^VIS_DISTANCE_EXPONENT
+### 1 = a node twice as far gets half the points, 2 = a quarter, ...
+VIS_DISTANCE_EXPONENT = 3.0
+# VIS_DISTANCE_EXPONENT = 2.0
+### The node distance is floored to this fraction of the node diagonal (the camera can be at the center)
+VIS_DISTANCE_FLOOR_FRACTION = 0.01
+
+### Host RAM cache of the node files read by the visibility updates, in MB
+### (with DERIVE_AUTOMATIC_PROPERTIES, at most 10% of the physical memory)
+VIS_RAM_CACHE_MAX_MB = 1024.0
+### Smallest prefix of a node file kept in the RAM cache (points / voxels)
+VIS_RAM_CACHE_MIN_KEEP = 1024
+
+### Longest pause of the visibility updates while the octree update reads / writes node files
+VIS_MAX_PAUSE_SECONDS = 0.5
+### Threads reading / writing the node files of the octree update; 0 = automatic (a quarter of the cores, 1 to 8)
+DISK_IO_THREADS = 0
+
+
+
+#########################################################################
+################################# LOADER ################################
+#########################################################################
+
+### Fallback period of the readback of the device slots status
+STATUS_READBACK_FALLBACK_SECONDS = 0.25
+### At most this many device slots hold out-of-view batches; 0 = no limit
+MAX_OUT_OF_VIEW_DEVICE_SLOTS = 8
+### The loader stays at most this many device updates ahead
+LOAD_AHEAD_FACTOR = 1
+### A pending batch replaces a loaded (not yet sent) one if it is this many times better
+PREEMPTION_FACTOR = 2.0
+### Centre bias of the loading priority: score *= 1 - weight * (distance to the screen centre / half diagonal)
+LOAD_CENTER_WEIGHT = 0.5
+### At most this many workers decode batches of the same file at once; 0 = no limit
+MAX_READERS_PER_FILE = 0
+### A load in progress is re-ranked with the current camera (and possibly cancelled) every this many points
+CANCEL_CHECK_INTERVAL = 65_536
+### Age after which the summary of the pending batches is computed again
+PENDING_SUMMARY_REFRESH_SECONDS = 0.05
+### A batch whose loading fails this many times is skipped
+MAX_LOAD_ATTEMPTS = 3
+### Stride of the overview sample when the LAZ chunk points can't be used (50000 = LASzip default chunk size)
+OVERVIEW_FALLBACK_STRIDE = 50_000
+
+### Preview of the loaded batches not sent yet: PREVIEW_NB_REGIONS (at most 32) regions of
+### PREVIEW_POINTS_PER_REGION points (16 bytes per point of device memory, as much pinned host memory)
+### With DERIVE_AUTOMATIC_PROPERTIES, PREVIEW_POINTS_PER_REGION is reduced to take at most 5% of the usable memory
+PREVIEW_ENABLED = true
+PREVIEW_NB_REGIONS = 16
+PREVIEW_POINTS_PER_REGION = 262_144
+### Progressive preview of the batches being decoded: first refresh after PREVIEW_PROGRESSIVE_FIRST_POINTS
+### points, then every PREVIEW_PROGRESSIVE_INTERVAL points
+PREVIEW_PROGRESSIVE = true
+PREVIEW_PROGRESSIVE_FIRST_POINTS = 16_384
+PREVIEW_PROGRESSIVE_INTERVAL = 131_072
+### Ask the OS to read a batch's part of its file ahead before decoding it (posix_fadvise WILLNEED)
+READ_AHEAD = true
 
 
 

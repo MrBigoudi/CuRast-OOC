@@ -289,11 +289,10 @@ struct GpuVersion {
     };
     static inline std::unordered_map<CIdAABB, std::unique_ptr<VisRamCacheEntry>> visRamCache = {};
     static inline uint64_t visRamCacheGeneration = 0;
-    /// Memory of the cache (points and voxels); beyond it, the least recently used entries are freed
-    static inline uint64_t VIS_RAM_CACHE_MAX_BYTES = 1ull * 1024 * 1024 * 1024;
-    /// Prefix kept for a quota q: max(VIS_RAM_CACHE_MIN_KEEP, bit_ceil(2 q)), the whole file at most;
-    /// shrunk back when it is more than 4 times what the quota needs
-    static constexpr uint32_t VIS_RAM_CACHE_MIN_KEEP = 1024;
+    /// Memory of the cache (points and voxels): `OocSimLodSettings::VIS_RAM_CACHE_MAX_BYTES'; beyond
+    /// it, the least recently used entries are freed
+    /// Prefix kept for a quota q: max(`OocSimLodSettings::VIS_RAM_CACHE_MIN_KEEP', bit_ceil(2 q)), the
+    /// whole file at most; shrunk back when it is more than 4 times what the quota needs
 
     /// Host RAM nodes (`updateNodes') the visibility workers still have to copy into the staging
     /// buffers (they copy them first). The host cache update (which frees the buffers of the nodes it
@@ -301,14 +300,14 @@ struct GpuVersion {
     static inline std::atomic<uint32_t> visPendingUpdateNodeCopies{0};
 
     /// Threads reading / writing the node files of the octree update (deserialisation for loading and
-    /// storing, serialisation of the host cache); 0 = automatic (a quarter of the cores, 1 to 8)
-    static inline uint32_t DISK_IO_THREADS = 0;
+    /// storing, serialisation of the host cache): `OocSimLodSettings::DISK_IO_THREADS', 0 = automatic
+    /// (a quarter of the cores, 1 to 8)
     static uint32_t nbDiskIoThreads();
     /// True while the octree update reads or writes node files: no visibility update is started
     /// meanwhile (their disk reads would slow it down), unless the last one started more than
-    /// `VIS_MAX_PAUSE_SECONDS' ago (the rendering must keep up while the update loads a lot)
+    /// `OocSimLodSettings::VIS_MAX_PAUSE_SECONDS' ago (the rendering must keep up while the update
+    /// loads a lot)
     static bool isOctreeDoingDiskWork();
-    static constexpr double VIS_MAX_PAUSE_SECONDS = 0.5;
     static inline std::chrono::steady_clock::time_point lastVisibilityUpdateStart = {};
 
     /// One visible node streamed from disk into the rendering staging buffers
@@ -350,10 +349,8 @@ struct GpuVersion {
     static inline std::vector<VisibilityTask> visibilityTasks = {};
 
     /// Voxel splats (see `drawSplat' in render.cu): every voxel is drawn as a camera-facing square of
-    /// side `VOXEL_SPLAT_SCALE' voxel cells (cell = root size / (GRID_SIZE_PER_DIMENSION * 2^level of
-    /// its node)), at most `VOXEL_SPLAT_MAX_PIXELS' pixels wide. A scale <= 0 draws one point per voxel
-    static inline float VOXEL_SPLAT_SCALE = 1.0f;
-    static inline uint32_t VOXEL_SPLAT_MAX_PIXELS = 32;
+    /// side `OocSimLodSettings::VOXEL_SPLAT_SCALE' voxel cells (cell = root size /
+    /// (GRID_SIZE_PER_DIMENSION * 2^level of its node)), at most `VOXEL_SPLAT_MAX_PIXELS' pixels wide
     /// The host rendering buffers hold no node id: the size of their voxels is encoded in the alpha
     /// byte of their color, as the level of their node relative to the initial root (node 0) plus this
     /// bias (code 0: unknown). Same constant as `VOXEL_SIZE_CODE_BIAS' in render.cu
@@ -364,11 +361,7 @@ struct GpuVersion {
     /// Draw the batches already on the device but not inserted in the octree yet (see
     /// `kernel_draw_pending_batches' in render.cu): the points near the camera show up as soon as
     /// they are sent, instead of when the device update inserting them completes
-    static inline bool DRAW_PENDING_BATCHES = true;
-    /// At most about this many pending points drawn per frame (strided over every pending batch);
-    /// 0 = all of them
-    // static inline uint32_t PENDING_BATCHES_MAX_POINTS = 4'000'000;
-    static inline uint32_t PENDING_BATCHES_MAX_POINTS = 0;
+    /// (`OocSimLodSettings::DRAW_PENDING_BATCHES', at most `PENDING_BATCHES_MAX_POINTS' per frame)
 
     /// Pinned staging buffers, as large as the device rendering buffers
     /// Written by the visibility workers, read by a single batched copy to the device
@@ -401,10 +394,9 @@ struct GpuVersion {
     /// The last eviction pass did not fit entirely in the retained copies (device
     /// `retainOverflowGeneration'): the next pass must wait for its coverage
     static inline bool hasLastPassOverflowedRetain = false;
-    /// Capacity of the retained copies of evicted nodes, as a fraction of the rendering budgets
-    /// (points and voxels); entries: this many eviction passes of `maxNbNodesExchanged' nodes
-    static constexpr double EVICTION_RETAIN_BUDGET_FRACTION = 0.25;
-    static constexpr uint32_t EVICTION_RETAIN_NB_PASSES = 16;
+    /// Capacity of the retained copies of evicted nodes: `OocSimLodSettings::EVICTION_RETAIN_BUDGET_FRACTION'
+    /// of the rendering budgets (points and voxels); entries: `EVICTION_RETAIN_NB_PASSES' eviction
+    /// passes of `maxNbNodesExchanged' nodes
     /// Latest eviction generation shown by the visibility update in progress (computed in
     /// `visibilityUpdateSort', published with its buffers in `updateVisCache')
     static inline uint32_t visCoveredEvictionGeneration = 0;
@@ -419,8 +411,7 @@ struct GpuVersion {
     static inline bool isCacheUpdateDeferred = false;
     static inline std::chrono::time_point<std::chrono::steady_clock> cacheUpdateDeferredSince;
     /// Longest wait for the coverage before evicting anyway (the device then stops drawing the
-    /// previous batch: holes until the next publication)
-    static constexpr double MAX_EVICTION_COVERAGE_WAIT_SECONDS = 5.0;
+    /// previous batch: holes until the next publication): `OocSimLodSettings::MAX_EVICTION_COVERAGE_WAIT_SECONDS'
     /// True if a new eviction pass would overwrite a batch the device still has to draw
     static bool isWaitingForEvictionCoverage();
 

@@ -31,7 +31,7 @@ struct PointBatch {
 	/// Drawn by the preview of the loaded batches (`LoaderGpuVersion::updatePreview'): never demoted,
 	/// never held back, until it is sent. Written by the main thread under `loadedBatchesMtx'
 	std::atomic<bool> is_previewed{false};
-	/// Progressive preview (see `LoaderGpuVersion::PREVIEW_PROGRESSIVE'): while the batch is decoded,
+	/// Progressive preview (see `OocSimLodSettings::PREVIEW_PROGRESSIVE'): while the batch is decoded,
 	/// an even subsample of the points decoded so far, replaced as the decoding goes on (a new
 	/// version each time). Guarded by `LoaderGpuVersion::partialPreviewMtx'
 	std::shared_ptr<std::vector<CPoint>> partial_points = nullptr;
@@ -99,7 +99,7 @@ struct LoaderPreviewRegion {
     CUevent upload_event = nullptr;
 };
 
-/// A batch being decoded with a progressive preview (see `LoaderGpuVersion::PREVIEW_PROGRESSIVE')
+/// A batch being decoded with a progressive preview (see `OocSimLodSettings::PREVIEW_PROGRESSIVE')
 struct LoaderPartialPreview {
     std::shared_ptr<PointBatch> batch = nullptr;
     LoaderBatchBounds bounds = {};                 // estimated bounds (ranks it like the loaded batches)
@@ -169,7 +169,7 @@ struct LoaderGpuVersion {
     static inline std::vector<uint8_t> statusReadbackEligible = {};
     /// Fallback: a readback every this many seconds while slots are occupied (the requests of
     /// `onBatchesReset' cover every `BatchHandled'; this only guards against a missed one)
-    static inline double STATUS_READBACK_FALLBACK_SECONDS = 0.25;
+    /// -> `OocSimLodSettings::STATUS_READBACK_FALLBACK_SECONDS'
     /// Called by the octree update right after `kernel_reset_batches' (main thread)
     static void onBatchesReset();
     static void queueStatusReadback();
@@ -179,7 +179,7 @@ struct LoaderGpuVersion {
     /// At most this many device slots hold out-of-view batches (they are only sent when nothing in
     /// view is left to load): an update started just before the camera moves then holds few batches
     /// the camera left, and the batches of the new view get the next update quickly. 0 = no limit
-    static inline uint32_t MAX_OUT_OF_VIEW_DEVICE_SLOTS = 8;
+    /// -> `OocSimLodSettings::MAX_OUT_OF_VIEW_DEVICE_SLOTS'
     static inline std::vector<uint8_t> deviceSlotIsOutOfView = {};
 
 
@@ -203,15 +203,15 @@ struct LoaderGpuVersion {
     /// The loader stays at most this many device updates ahead (loaded but not yet sent batches, plus
     /// one being loaded per worker): loading decisions are taken late, with the current camera
     /// (1: fewer stale batches to work through after a camera move)
-    static inline uint32_t LOAD_AHEAD_FACTOR = 1;
+    /// -> `OocSimLodSettings::LOAD_AHEAD_FACTOR'
     /// When the loader is that far ahead, a pending batch replaces the worst loaded (not yet sent) one
     /// if it is this many times better (screen-space size, or distance): the loaded batches of a
     /// region the camera left don't hold back the region it flies to
-    static inline float PREEMPTION_FACTOR = 2.0f;
+    /// -> `OocSimLodSettings::PREEMPTION_FACTOR'
     /// Centre bias of the loading priority, same formula as `VISIBILITY_CENTER_WEIGHT' in render.cu:
     /// score *= 1 - weight * (distance of the box's on-screen centre to the screen centre / half
     /// diagonal). 0 = no bias: boxes at the same distance score the same wherever they are on screen
-    static inline float LOAD_CENTER_WEIGHT = 0.5f;
+    /// -> `OocSimLodSettings::LOAD_CENTER_WEIGHT'
 
     static inline std::mutex cameraStateMtx;
     static inline CameraState cameraState = {};
@@ -223,13 +223,13 @@ struct LoaderGpuVersion {
     /// At most this many workers decode batches of the same file at once (each one has its own
     /// LASzip reader); 0 = no limit: the region in front of the camera, often one or two tiles, is
     /// loaded by every worker instead of one
-    static inline uint32_t MAX_READERS_PER_FILE = 0;
+    /// -> `OocSimLodSettings::MAX_READERS_PER_FILE'
     /// A load in progress re-ranks its batch with the current camera every this many points, and is
     /// cancelled when a pending batch is clearly better (`isClearlyBetter'); it goes
     /// back to the pending batches, nothing of it was published. Not after half of the batch
-    static inline uint32_t CANCEL_CHECK_INTERVAL = 65536;
+    /// -> `OocSimLodSettings::CANCEL_CHECK_INTERVAL'
     /// Age after which `getPendingSummary' scans the pending batches again
-    static inline double PENDING_SUMMARY_REFRESH_SECONDS = 0.05;
+    /// -> `OocSimLodSettings::PENDING_SUMMARY_REFRESH_SECONDS'
 
     /// Index of the best pending batch a worker may pick (its file has fewer than
     /// `MAX_READERS_PER_FILE' readers), -1 if none. `pendingBatchesMtx' must be held
@@ -261,7 +261,7 @@ struct LoaderGpuVersion {
     static void stopLoading();
     /// A batch whose loading fails this many times is skipped (its points are never sent: after a
     /// LAZ decoding error, the points decoded just before it can't be trusted)
-    static inline uint32_t MAX_LOAD_ATTEMPTS = 3;
+    /// -> `OocSimLodSettings::MAX_LOAD_ATTEMPTS'
 
     /// Persistent loading workers (parallel mode)
     static inline std::mutex loadingWorkersMtx;
@@ -287,7 +287,7 @@ struct LoaderGpuVersion {
     /// Stride of the overview sample when the chunk points of a file can't be used: uncompressed LAS
     /// files (any point can be read directly) or LAZ files with variable-size chunks
     /// (50000 is the LASzip default chunk size)
-    static inline uint32_t OVERVIEW_FALLBACK_STRIDE = 50000;
+    /// -> `OocSimLodSettings::OVERVIEW_FALLBACK_STRIDE'
 
     struct FileInfo {
         std::shared_ptr<laszip_header> header = nullptr;
@@ -340,9 +340,9 @@ struct LoaderGpuVersion {
     /// What is drawn once is never lost: a batch keeps its region until it is sent (then its device
     /// slot, then the octree draw it), whatever the camera does; a previewed batch is neither demoted
     /// nor held back, so its region is always freed
-    static inline bool PREVIEW_ENABLED = true;
-    static inline uint32_t PREVIEW_NB_REGIONS = 16;                // at most LOADER_PREVIEW_MAX_REGIONS
-    static inline uint32_t PREVIEW_POINTS_PER_REGION = 262'144;
+    /// -> `OocSimLodSettings::PREVIEW_ENABLED'
+    /// -> `OocSimLodSettings::PREVIEW_NB_REGIONS'
+    /// -> `OocSimLodSettings::PREVIEW_POINTS_PER_REGION'
     static inline std::vector<LoaderPreviewRegion> previewRegions = {};
     static inline uint32_t previewPointsPerRegion = 0;            // as allocated
     static inline CPoint* previewDevicePoints = nullptr;           // nb regions x points per region
@@ -371,16 +371,16 @@ struct LoaderGpuVersion {
     /// (its region is refreshed with an even subsample of the points decoded so far), then with
     /// the whole batch once it is loaded. A batch whose preview is drawn is not cancelled while
     /// it is in view (what is drawn is not lost); out of view it can be, and its region is released
-    static inline bool PREVIEW_PROGRESSIVE = true;
-    static inline uint32_t PREVIEW_PROGRESSIVE_FIRST_POINTS = 16384;
-    static inline uint32_t PREVIEW_PROGRESSIVE_INTERVAL = 131072;
+    /// -> `OocSimLodSettings::PREVIEW_PROGRESSIVE'
+    /// -> `OocSimLodSettings::PREVIEW_PROGRESSIVE_FIRST_POINTS'
+    /// -> `OocSimLodSettings::PREVIEW_PROGRESSIVE_INTERVAL'
     /// Batches being decoded with a progressive preview (registered by their worker)
     static inline std::mutex partialPreviewMtx;
     static inline std::vector<LoaderPartialPreview> partialPreviews = {};
 
     /// Before decoding a batch, ask the OS to read its part of the file ahead (`posix_fadvise'
     /// `WILLNEED'): large asynchronous reads instead of the small synchronous ones of LASzip
-    static inline bool READ_AHEAD = true;
+    /// -> `OocSimLodSettings::READ_AHEAD'
     /// Main thread, every frame before `sendToDevice' (a sent batch stays previewed until
     /// `fetchFromDevice' sees its upload complete: its device slot is drawn from then on)
     static void updatePreview();

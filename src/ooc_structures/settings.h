@@ -55,6 +55,10 @@ struct OocSimLodSettings {
     static inline double DEVICE_TOTAL_MEMORY;
     static inline double DEVICE_AVAILABLE_MEMORY;
 
+    /// The host physical memory, and the part of it available at startup (Linux: `MemAvailable')
+    static inline double HOST_TOTAL_MEMORY;
+    static inline double HOST_AVAILABLE_MEMORY;
+
 
 
     /////////////////////////////////////////////////////////////////////////
@@ -155,6 +159,123 @@ struct OocSimLodSettings {
 
 
 
+    /////////////////////////////////////////////////////////////////////////
+    //////////////////////////// AUTOMATIC SIZING ///////////////////////////
+    /////////////////////////////////////////////////////////////////////////
+    // Inputs of `init_default' (only used when `DERIVE_AUTOMATIC_PROPERTIES' is set); see the
+    // comments of `init_default' for the meaning and the justification of each of them
+
+    /// Device memory left to everything `init_default' can't account for: allocations made after it
+    /// (kernels compiled later, local memory of the kernels, CUB temporary storage, framebuffers
+    /// resized with the window, ...): RESERVE_MB + RESERVE_FRACTION x total device memory
+    static inline double DEVICE_MEMORY_RESERVE_MB;
+    static inline double DEVICE_MEMORY_RESERVE_FRACTION;
+    /// Extra reserve when the point cloud filling network is used (`IS_USING_NN')
+    static inline double NN_MEMORY_RESERVE_MB;
+    /// Largest share of the usable device memory given to each family of buffers
+    static inline double RENDERING_MEMORY_FRACTION;
+    static inline double NODE_IDS_MEMORY_FRACTION;
+    static inline double UPDATE_MEMORY_FRACTION;
+    static inline double EXCHANGE_MEMORY_FRACTION;
+    /// Size of the spilling / backlog buffers, per point of an octree update
+    static inline double SPILLING_POINTS_PER_UPDATE_POINT;
+    static inline double BACKLOG_VOXELS_PER_UPDATE_POINT;
+    /// Composition of the pools, per resident node: average fill of a node's chunk list (relative to
+    /// MAX_POINTS_PER_LEAF), occupancy grids per resident node, node slots per resident node
+    static inline double CHUNKS_FILL_RATIO;
+    static inline double GRIDS_PER_RESIDENT_NODE;
+    static inline double NODES_PER_RESIDENT_NODE;
+    /// Nodes an update brings in (loaded or created), per MAX_POINTS_PER_LEAF points of the update
+    static inline double TRANSIENT_NODES_PER_UPDATE_LEAF;
+    /// Smallest updates cache accepted before the update size is reduced
+    static inline uint32_t MIN_LRU_UPDATES_CACHE_SIZE;
+    /// Share of the host physical memory given to the pinned host cache (`LRU_CPU_CACHE_SIZE')
+    static inline double HOST_CACHE_MEMORY_FRACTION;
+    /// Testing: > 0 sizes the buffers as on a card with this much memory (GB); 0 = the real card
+    static inline double SIMULATED_DEVICE_MEMORY_GB;
+
+
+
+    /////////////////////////////////////////////////////////////////////////
+    //////////////////////////////// RENDERING //////////////////////////////
+    /////////////////////////////////////////////////////////////////////////
+
+    /// Voxel splats: every voxel is drawn as a camera-facing square of side VOXEL_SPLAT_SCALE voxel
+    /// cells, at most VOXEL_SPLAT_MAX_PIXELS pixels wide. A scale <= 0 draws one point per voxel
+    static inline float VOXEL_SPLAT_SCALE;
+    static inline uint32_t VOXEL_SPLAT_MAX_PIXELS;
+    /// Draw the batches already on the device but not inserted in the octree yet
+    static inline bool DRAW_PENDING_BATCHES;
+    /// At most about this many pending points drawn per frame (strided); 0 = all of them
+    static inline uint32_t PENDING_BATCHES_MAX_POINTS;
+    /// Capacity of the device copies of the evicted nodes kept drawable until the host rendering
+    /// buffers show them: a fraction of the rendering budgets, and this many eviction passes
+    static inline double EVICTION_RETAIN_BUDGET_FRACTION;
+    static inline uint32_t EVICTION_RETAIN_NB_PASSES;
+    /// Longest wait for the host rendering buffers to cover an eviction before evicting anyway
+    static inline double MAX_EVICTION_COVERAGE_WAIT_SECONDS;
+
+
+
+    /////////////////////////////////////////////////////////////////////////
+    /////////////////////////////// VISIBILITY //////////////////////////////
+    /////////////////////////////////////////////////////////////////////////
+
+    /// Fraction of the rendering budget shared equally between every visible node
+    static inline double VIS_MIN_SHARE_FRACTION;
+    /// Distance weighting of the budget: weight = (d_closest / d_node)^VIS_DISTANCE_EXPONENT
+    static inline double VIS_DISTANCE_EXPONENT;
+    /// The node distance is floored to this fraction of the node diagonal
+    static inline double VIS_DISTANCE_FLOOR_FRACTION;
+    /// Host RAM cache of the node files read by the visibility updates (bytes; MB in the toml file)
+    static inline uint64_t VIS_RAM_CACHE_MAX_BYTES;
+    /// Smallest prefix of a node file kept in the RAM cache
+    static inline uint32_t VIS_RAM_CACHE_MIN_KEEP;
+    /// Longest pause of the visibility updates while the octree update does disk work
+    static inline double VIS_MAX_PAUSE_SECONDS;
+    /// Threads reading / writing the node files of the octree update; 0 = automatic
+    static inline uint32_t DISK_IO_THREADS;
+
+
+
+    /////////////////////////////////////////////////////////////////////////
+    ///////////////////////////////// LOADER ////////////////////////////////
+    /////////////////////////////////////////////////////////////////////////
+
+    /// Fallback period of the device slots status readback
+    static inline double STATUS_READBACK_FALLBACK_SECONDS;
+    /// At most this many device slots hold out-of-view batches; 0 = no limit
+    static inline uint32_t MAX_OUT_OF_VIEW_DEVICE_SLOTS;
+    /// The loader stays at most this many device updates ahead
+    static inline uint32_t LOAD_AHEAD_FACTOR;
+    /// A pending batch replaces a loaded (not yet sent) one if it is this many times better
+    static inline float PREEMPTION_FACTOR;
+    /// Centre bias of the loading priority (0 = none)
+    static inline float LOAD_CENTER_WEIGHT;
+    /// At most this many workers decode the same file at once; 0 = no limit
+    static inline uint32_t MAX_READERS_PER_FILE;
+    /// A load in progress is re-ranked (and possibly cancelled) every this many points
+    static inline uint32_t CANCEL_CHECK_INTERVAL;
+    /// Age after which the summary of the pending batches is computed again
+    static inline double PENDING_SUMMARY_REFRESH_SECONDS;
+    /// A batch whose loading fails this many times is skipped
+    static inline uint32_t MAX_LOAD_ATTEMPTS;
+    /// Stride of the overview sample when the LAZ chunk points can't be used
+    static inline uint32_t OVERVIEW_FALLBACK_STRIDE;
+    /// Preview of the loaded batches not sent yet: regions (at most 32) of points each
+    static inline bool PREVIEW_ENABLED;
+    static inline uint32_t PREVIEW_NB_REGIONS;
+    static inline uint32_t PREVIEW_POINTS_PER_REGION;
+    /// Progressive preview of the batches being decoded: first refresh after this many points, then
+    /// every PREVIEW_PROGRESSIVE_INTERVAL points
+    static inline bool PREVIEW_PROGRESSIVE;
+    static inline uint32_t PREVIEW_PROGRESSIVE_FIRST_POINTS;
+    static inline uint32_t PREVIEW_PROGRESSIVE_INTERVAL;
+    /// Ask the OS to read a batch's part of its file ahead before decoding it
+    static inline bool READ_AHEAD;
+
+
+
 
     /////////////////////////////////////////////////////////////////////////
     ///////////////////////// UI INITIAL PARAMETERS /////////////////////////
@@ -188,11 +309,19 @@ struct OocSimLodSettings {
     
     /// Constructor from the toml `SETTINGS_TOML_FILE' file
     static void init_device_properties();
+    /// Measure the device / host memory (also called again once the kernels are loaded)
+    static void init_memory_properties();
     static void init_miscellaneous();
     static void init_ui_params();
     static void init_batch_sizes();
     static void init_octree_properties();
     static void init_gpu_version_buffers();
+    static void init_automatic_sizing();
+    static void init_rendering();
+    static void init_visibility();
+    static void init_loader();
+    /// Derive the buffer sizes from the available memory (see the comments in settings.cpp)
+    /// Can be called several times: it always starts from the values of the toml file
     static void init_default();
 
     static void init();

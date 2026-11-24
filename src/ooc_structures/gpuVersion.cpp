@@ -267,9 +267,9 @@ void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
     CURuntime::assertCudaSuccess(cuMemsetD32((CUdeviceptr)hostStaging.evictedNodesNbPoints, 0, hostStaging.maxNbNodesExchanged));
     CURuntime::assertCudaSuccess(cuMemsetD32((CUdeviceptr)hostStaging.evictedNodesNbVoxels, 0, hostStaging.maxNbNodesExchanged));
     // Retained copies of the older evicted batches (see `CGlobalVariables::retainedEvictedNodes')
-    hostStaging.maxNbRetainedEvictedNodes = EVICTION_RETAIN_NB_PASSES * hostStaging.maxNbNodesExchanged;
-    hostStaging.maxNbRetainedEvictedPoints = std::max(1u, static_cast<uint32_t>(double(hostStaging.maxNbRenderedPoints) * EVICTION_RETAIN_BUDGET_FRACTION));
-    hostStaging.maxNbRetainedEvictedVoxels = std::max(1u, static_cast<uint32_t>(double(hostStaging.maxNbRenderedVoxels) * EVICTION_RETAIN_BUDGET_FRACTION));
+    hostStaging.maxNbRetainedEvictedNodes = OocSimLodSettings::EVICTION_RETAIN_NB_PASSES * hostStaging.maxNbNodesExchanged;
+    hostStaging.maxNbRetainedEvictedPoints = std::max(1u, static_cast<uint32_t>(double(hostStaging.maxNbRenderedPoints) * OocSimLodSettings::EVICTION_RETAIN_BUDGET_FRACTION));
+    hostStaging.maxNbRetainedEvictedVoxels = std::max(1u, static_cast<uint32_t>(double(hostStaging.maxNbRenderedVoxels) * OocSimLodSettings::EVICTION_RETAIN_BUDGET_FRACTION));
     hostStaging.nbRetainedEvictedNodes = 0;
     hostStaging.nbRetainedEvictedPoints = 0;
     hostStaging.nbRetainedEvictedVoxels = 0;
@@ -421,6 +421,13 @@ void GpuVersion::init(CuRast* editor, CUcontext* context) {
         "./src/kernels/ooc/caches.cu",
         "./src/kernels/ooc/render.cu"
     });
+
+    // The modules are loaded now (code, static device data): measure the memory left again and derive
+    // the buffer sizes from it (`init_default' always starts from the values of the toml file)
+    if(OocSimLodSettings::DERIVE_AUTOMATIC_PROPERTIES){
+        OocSimLodSettings::init_memory_properties();
+        OocSimLodSettings::init_default();
+    }
 
     CURuntime::assertCudaSuccess(cuStreamCreate(&stream, CU_STREAM_NON_BLOCKING));
     CURuntime::assertCudaSuccess(cuStreamCreate(&visStream, CU_STREAM_NON_BLOCKING));
@@ -690,7 +697,7 @@ void ioParallelFor(uint32_t n, uint32_t nb_threads, Func&& func){
 } // namespace
 
 uint32_t GpuVersion::nbDiskIoThreads(){
-    if(DISK_IO_THREADS > 0){ return DISK_IO_THREADS; }
+    if(OocSimLodSettings::DISK_IO_THREADS > 0){ return OocSimLodSettings::DISK_IO_THREADS; }
     return std::clamp(std::thread::hardware_concurrency() / 4, 1u, 8u);
 }
 
@@ -1377,22 +1384,20 @@ std::vector<uint32_t> visWaterFillQuotas(const std::vector<uint32_t>& counts, ui
     return quota;
 }
 
-/// Fraction of the budget shared equally between every visible node (guaranteed minimum per node)
-/// The rest goes to the nodes according to their distance to the camera (see `VIS_DISTANCE_EXPONENT')
-// constexpr double VIS_MIN_SHARE_FRACTION = 0.1;
-constexpr double VIS_MIN_SHARE_FRACTION = 0.0;
-
-/// Distance weighting of the water filling: weight = (d_closest / d_node)^VIS_DISTANCE_EXPONENT
+/// `OocSimLodSettings::VIS_MIN_SHARE_FRACTION': fraction of the budget shared equally between every
+/// visible node (guaranteed minimum per node). The rest goes to the nodes according to their distance
+/// to the camera (see `VIS_DISTANCE_EXPONENT')
+///
+/// `OocSimLodSettings::VIS_DISTANCE_EXPONENT': distance weighting of the water filling:
+/// weight = (d_closest / d_node)^VIS_DISTANCE_EXPONENT
 /// d_node is the distance from the camera to the CENTER of the node, d_closest the smallest one
 /// among the selected nodes (so the weights are in (0, 1] whatever the scene units)
 /// The weight strictly decreases with the distance: among the nodes that do not get all their
 /// points, a closer node always gets more points than a farther one
 /// 1 = a node twice as far gets half the points, 2 = a quarter, ...
-// constexpr double VIS_DISTANCE_EXPONENT = 2.0;
-constexpr double VIS_DISTANCE_EXPONENT = 3.0;
-
-/// The distance is floored to this fraction of the node diagonal (the camera can be at the center)
-constexpr double VIS_DISTANCE_FLOOR_FRACTION = 0.01;
+///
+/// `OocSimLodSettings::VIS_DISTANCE_FLOOR_FRACTION': the distance is floored to this fraction of the
+/// node diagonal (the camera can be at the center)
 
 /// Device priorities <= this mark the entries of the secondary budgets (see part 3 in render.cu):
 /// points of a large node (-(1 + screen area)) and side voxels of the out-of-view fallback
@@ -1439,7 +1444,7 @@ double visNodeCenterDistance(const glm::vec3& position, const CAABB& aabb){
     const double sz = double(aabb.maxs.z) - double(aabb.mins.z);
     const double distance = std::sqrt(dx * dx + dy * dy + dz * dz);
     const double diagonal = std::sqrt(sx * sx + sy * sy + sz * sz);
-    const double floored = std::max(distance, VIS_DISTANCE_FLOOR_FRACTION * diagonal);
+    const double floored = std::max(distance, OocSimLodSettings::VIS_DISTANCE_FLOOR_FRACTION * diagonal);
     return (std::isfinite(floored) && floored > 0.0) ? floored : -1.0;
 }
 
@@ -1462,7 +1467,7 @@ std::vector<float> visDistanceWeights(const std::vector<CAABB>& aabbs, const glm
     if(!std::isfinite(closest)){ return weights; }   // no distance known: equal weights
     for(uint32_t i = 0; i < n; i++){
         const double d = (distances[i] > 0.0) ? distances[i] : farthest;
-        weights[i] = static_cast<float>(std::pow(closest / d, VIS_DISTANCE_EXPONENT));
+        weights[i] = static_cast<float>(std::pow(closest / d, OocSimLodSettings::VIS_DISTANCE_EXPONENT));
     }
     return weights;
 }
@@ -1483,7 +1488,7 @@ std::vector<uint32_t> visPriorityQuotas(const std::vector<uint32_t>& counts,
     if(n == 0 || budget == 0){ return std::vector<uint32_t>(n, 0); }
 
     // 1. Guaranteed minimum
-    const uint32_t min_budget = static_cast<uint32_t>(double(budget) * VIS_MIN_SHARE_FRACTION);
+    const uint32_t min_budget = static_cast<uint32_t>(double(budget) * OocSimLodSettings::VIS_MIN_SHARE_FRACTION);
     std::vector<uint32_t> quota = visWaterFillQuotas(counts, min_budget);
     uint64_t used = 0;
     for(uint32_t q : quota){ used += q; }
@@ -1552,7 +1557,7 @@ uint32_t visSyncCachedFile(const std::string& filepath, uint32_t nb_elements, ui
 ){
     // Prefix to keep: about twice what is wanted (hysteresis: kept while it is at most 4 times)
     nb_wanted = std::min(nb_wanted, nb_elements);
-    const uint32_t target = std::min(nb_elements, std::max(GpuVersion::VIS_RAM_CACHE_MIN_KEEP,
+    const uint32_t target = std::min(nb_elements, std::max(OocSimLodSettings::VIS_RAM_CACHE_MIN_KEEP,
         std::bit_ceil(std::max(1u, nb_wanted) * 2u)));
     // The files only grow: more elements seen than on disk can't happen; start over if it does
     if(cached.seen > nb_elements){ cached = {}; }
@@ -2163,10 +2168,10 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
             total_bytes += entry_bytes(*entry);
             if(entry->last_used != visRamCacheGeneration){ evictable.push_back({entry->last_used, id}); }
         }
-        if(total_bytes > VIS_RAM_CACHE_MAX_BYTES){
+        if(total_bytes > OocSimLodSettings::VIS_RAM_CACHE_MAX_BYTES){
             std::sort(evictable.begin(), evictable.end());
             for(const auto& [last_used, id] : evictable){
-                if(total_bytes <= VIS_RAM_CACHE_MAX_BYTES){break;}
+                if(total_bytes <= OocSimLodSettings::VIS_RAM_CACHE_MAX_BYTES){break;}
                 auto it = visRamCache.find(id);
                 total_bytes -= entry_bytes(*it->second);
                 visRamCache.erase(it);
@@ -2201,7 +2206,7 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
         // it down), unless the rendering has not been updated for `VIS_MAX_PAUSE_SECONDS'
         const auto now = std::chrono::steady_clock::now();
         if(isOctreeDoingDiskWork()
-            && std::chrono::duration<double>(now - lastVisibilityUpdateStart).count() < VIS_MAX_PAUSE_SECONDS
+            && std::chrono::duration<double>(now - lastVisibilityUpdateStart).count() < OocSimLodSettings::VIS_MAX_PAUSE_SECONDS
         ){return;}
         lastVisibilityUpdateStart = now;
 
@@ -2482,7 +2487,7 @@ bool GpuVersion::isWaitingForEvictionCoverage(){
         return true;
     }
     const double waited = std::chrono::duration<double>(now - cacheUpdateDeferredSince).count();
-    if(waited < MAX_EVICTION_COVERAGE_WAIT_SECONDS){ return true; }
+    if(waited < OocSimLodSettings::MAX_EVICTION_COVERAGE_WAIT_SECONDS){ return true; }
 
     static bool has_warned = false;
     if(!has_warned){
@@ -2683,16 +2688,16 @@ void GpuVersion::renderOctree(RenderTarget& target){
         prog->launch("kernel_visibility_pass", {&renderingTarget, &renderingSettings}, launch_settings);
         // prog->launch("kernel_replace_unloaded_nodes", {&renderingTarget, &renderingSettings}, launch_settings);
         // Voxels drawn as camera-facing squares (see `drawSplat' in render.cu)
-        float voxel_splat_scale = VOXEL_SPLAT_SCALE;
-        uint32_t voxel_splat_max_pixels = VOXEL_SPLAT_MAX_PIXELS;
+        float voxel_splat_scale = OocSimLodSettings::VOXEL_SPLAT_SCALE;
+        uint32_t voxel_splat_max_pixels = OocSimLodSettings::VOXEL_SPLAT_MAX_PIXELS;
         prog->launch("kernel_draw_visibility_cache", {&renderingTarget, &renderingSettings, &voxel_splat_scale, &voxel_splat_max_pixels}, launch_settings);
         prog->launch("kernel_draw_evicted_nodes", {&renderingTarget, &renderingSettings, &voxel_splat_scale, &voxel_splat_max_pixels}, launch_settings);
         prog->launch("kernel_draw_octree_large", {&renderingTarget, &renderingSettings, &voxel_splat_scale, &voxel_splat_max_pixels}, launch_settings);
         prog->launch("kernel_draw_octree_small", {&renderingTarget, &renderingSettings, &voxel_splat_scale, &voxel_splat_max_pixels}, launch_settings);
 
         // Batches sent to the device but not inserted yet (drawn until the update inserting them ends)
-        if(DRAW_PENDING_BATCHES){
-            uint32_t pending_max_points = PENDING_BATCHES_MAX_POINTS;
+        if(OocSimLodSettings::DRAW_PENDING_BATCHES){
+            uint32_t pending_max_points = OocSimLodSettings::PENDING_BATCHES_MAX_POINTS;
             prog->launch("kernel_draw_pending_batches", {&renderingTarget, &renderingSettings, &pending_max_points}, launch_settings);
         }
 

@@ -103,7 +103,7 @@ LoaderGpuVersion::LoadPriority LoaderGpuVersion::loadPriority(const BatchBounds&
         0.5f * (y0 + y1) * 0.5f * camera.height
     );
     const float r_norm = std::clamp(glm::length(centre) / (0.5f * glm::length(glm::vec2(camera.width, camera.height))), 0.0f, 1.0f);
-    const float score = size * (1.0f - LOAD_CENTER_WEIGHT * r_norm);
+    const float score = size * (1.0f - OocSimLodSettings::LOAD_CENTER_WEIGHT * r_norm);
 
     priority.tier = 0;
     priority.key = std::isfinite(score) ? -score : 0.0f;
@@ -266,7 +266,7 @@ void LoaderGpuVersion::fetchFromDevice(){
 		has_occupied_slot = has_occupied_slot || (batchesOnGpu[i] != uint32_t(-1));
 	}
 	if(!isStatusReadbackRequested && has_occupied_slot
-		&& std::chrono::duration<double>(now - lastStatusReadback).count() > STATUS_READBACK_FALLBACK_SECONDS
+		&& std::chrono::duration<double>(now - lastStatusReadback).count() > OocSimLodSettings::STATUS_READBACK_FALLBACK_SECONDS
 	){
 		CURuntime::assertCudaSuccess(cuEventRecord(eventBatchesReset, 0));
 		isStatusReadbackRequested = true;
@@ -385,7 +385,7 @@ bool LoaderGpuVersion::sendToDevice(){
 	for(uint32_t k = 0; k < ready.size(); k++){
 		// A previewed batch is never held back: its preview is only released once it is sent
 		const bool is_out_of_view = ready_priorities[k].tier != 0;
-		const bool is_capped = MAX_OUT_OF_VIEW_DEVICE_SLOTS > 0 && nb_out_of_view_slots >= MAX_OUT_OF_VIEW_DEVICE_SLOTS;
+		const bool is_capped = OocSimLodSettings::MAX_OUT_OF_VIEW_DEVICE_SLOTS > 0 && nb_out_of_view_slots >= OocSimLodSettings::MAX_OUT_OF_VIEW_DEVICE_SLOTS;
 		const bool is_held_back = is_out_of_view && (hold_back_out_of_view || is_capped)
 			&& !ready[k].second->is_previewed;
 		if(!is_held_back && nb_used_device_slots < free_device_slots.size()){ send(ready[k].first, ready[k].second, is_out_of_view); }
@@ -460,9 +460,9 @@ void loaderStopPreviewThread(){
 }
 
 void LoaderGpuVersion::initPreview(){
-    const uint32_t nb_regions = std::min(PREVIEW_NB_REGIONS, LOADER_PREVIEW_MAX_REGIONS);
-    previewPointsPerRegion = PREVIEW_POINTS_PER_REGION;
-    if(!PREVIEW_ENABLED || nb_regions == 0 || previewPointsPerRegion == 0){ return; }
+    const uint32_t nb_regions = std::min(OocSimLodSettings::PREVIEW_NB_REGIONS, LOADER_PREVIEW_MAX_REGIONS);
+    previewPointsPerRegion = OocSimLodSettings::PREVIEW_POINTS_PER_REGION;
+    if(!OocSimLodSettings::PREVIEW_ENABLED || nb_regions == 0 || previewPointsPerRegion == 0){ return; }
 
     const uint64_t nb_points = uint64_t(nb_regions) * previewPointsPerRegion;
     CUdeviceptr device_points = 0;
@@ -641,7 +641,7 @@ void LoaderGpuVersion::updatePreview(){
         for(const LoaderPreviewRegion& region : previewRegions){
             if(!region.batch && !region.is_uploading){ nb_free++; }
         }
-        if(PREVIEW_ENABLED && nb_free > 0){
+        if(OocSimLodSettings::PREVIEW_ENABLED && nb_free > 0){
             struct Candidate {
                 LoadPriority priority = {};
                 std::shared_ptr<PointBatch> batch = nullptr;
@@ -659,7 +659,7 @@ void LoaderGpuVersion::updatePreview(){
             };
             add(loadedOverviewBatches);
             add(loadedBatches);
-            if(PREVIEW_PROGRESSIVE){
+            if(OocSimLodSettings::PREVIEW_PROGRESSIVE){
                 for(const LoaderPartialPreview& entry : partialPreviews){
                     const std::shared_ptr<PointBatch>& batch = entry.batch;
                     if(!batch || batch->is_previewed || !batch->partial_points || batch->partial_points->empty()){continue;}
@@ -986,7 +986,7 @@ std::vector<CPoint> loaderReadChunkPoints(const LoaderFileEntry& entry, uint64_t
 		return points;
 	}
 
-	uint64_t stride = LoaderGpuVersion::OVERVIEW_FALLBACK_STRIDE;
+	uint64_t stride = OocSimLodSettings::OVERVIEW_FALLBACK_STRIDE;
 	if(is_compressed){
 		const uint32_t chunk_size = loaderReadLazChunkSize(*entry.file);
 		if(chunk_size != 0 && chunk_size != std::numeric_limits<uint32_t>::max()){
@@ -1265,8 +1265,8 @@ void LoaderGpuVersion::createNewBatches(std::string file){
 
 bool LoaderGpuVersion::isClearlyBetter(const LoadPriority& a, const LoadPriority& b){
     if(a.tier != b.tier){ return a.tier < b.tier; }
-    if(a.tier == 0){ return a.key < PREEMPTION_FACTOR * b.key; }          // keys are -scores: a's score > factor x b's
-    if(a.tier == 1){ return a.key * PREEMPTION_FACTOR < b.key; }          // keys are distances
+    if(a.tier == 0){ return a.key < OocSimLodSettings::PREEMPTION_FACTOR * b.key; }          // keys are -scores: a's score > factor x b's
+    if(a.tier == 1){ return a.key * OocSimLodSettings::PREEMPTION_FACTOR < b.key; }          // keys are distances
     return false;
 }
 
@@ -1274,9 +1274,9 @@ int64_t LoaderGpuVersion::selectBestPending(const CameraState& camera, LoadPrior
     int64_t best = -1;
     best_priority = {};
     for(uint32_t i = 0; i < pendingBatches.size(); i++){
-        if(MAX_READERS_PER_FILE > 0){
+        if(OocSimLodSettings::MAX_READERS_PER_FILE > 0){
             auto busy = filesBeingRead.find(*pendingBatches[i].batch->file);
-            if(busy != filesBeingRead.end() && busy->second >= MAX_READERS_PER_FILE){continue;}
+            if(busy != filesBeingRead.end() && busy->second >= OocSimLodSettings::MAX_READERS_PER_FILE){continue;}
         }
         const LoadPriority priority = loadPriority(pendingBatches[i].bounds, camera);
         if(best < 0 || priority < best_priority){ best = i; best_priority = priority; }
@@ -1286,7 +1286,7 @@ int64_t LoaderGpuVersion::selectBestPending(const CameraState& camera, LoadPrior
 
 LoaderGpuVersion::PendingSummary LoaderGpuVersion::getPendingSummary(){
     const auto now = std::chrono::steady_clock::now();
-    const auto max_age = std::chrono::duration<double>(PENDING_SUMMARY_REFRESH_SECONDS);
+    const auto max_age = std::chrono::duration<double>(OocSimLodSettings::PENDING_SUMMARY_REFRESH_SECONDS);
     {
         std::lock_guard<std::mutex> lock(pendingSummaryMtx);
         if(pendingSummaryIsValid && (now - pendingSummaryTime) < max_age){ return pendingSummary; }
@@ -1397,7 +1397,7 @@ void loaderReadAhead(const std::string& file, const laszip_header& header, uint6
 bool LoaderGpuVersion::loadOneBatch(){
     const CameraState camera = getCameraState();
     const uint32_t max_ahead = std::max<uint32_t>(1u,
-        LOAD_AHEAD_FACTOR * OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE + nbLoadingWorkers
+        OocSimLodSettings::LOAD_AHEAD_FACTOR * OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE + nbLoadingWorkers
     );
 
     // Demoted batches are back in `pendingBatches' (under its lock); their file records after
@@ -1508,10 +1508,10 @@ bool LoaderGpuVersion::loadOneBatch(){
     auto fail = [&](const char* reason){
         release_slot();
         picked.nb_failures++;
-        const bool will_retry = picked.nb_failures < MAX_LOAD_ATTEMPTS;
+        const bool will_retry = picked.nb_failures < OocSimLodSettings::MAX_LOAD_ATTEMPTS;
         if(will_retry){
             println("WARNING: {} for '{}' (points {} to {}), attempt {}/{}; the batch will be loaded again",
-                reason, *batch->file, batch->first, batch->first + batch->count, picked.nb_failures, MAX_LOAD_ATTEMPTS
+                reason, *batch->file, batch->first, batch->first + batch->count, picked.nb_failures, OocSimLodSettings::MAX_LOAD_ATTEMPTS
             );
             batch->points.reset();
             batch->state = BatchState::ToLoad;
@@ -1548,7 +1548,7 @@ bool LoaderGpuVersion::loadOneBatch(){
 
     // Progressive preview of a batch in view: an even subsample of the points decoded so far (the
     // ones within the file's extent, as kept below), published for `updatePreview'
-    const bool is_progressive = PREVIEW_PROGRESSIVE && previewDevicePoints && previewPointsPerRegion > 0
+    const bool is_progressive = OocSimLodSettings::PREVIEW_PROGRESSIVE && previewDevicePoints && previewPointsPerRegion > 0
         && picked_priority.tier == 0;
     glm::vec3 extent_lo = glm::vec3(0.0f);
     glm::vec3 extent_hi = glm::vec3(0.0f);
@@ -1604,7 +1604,7 @@ bool LoaderGpuVersion::loadOneBatch(){
             }
         } guard;
         laszip_point* laz_point = nullptr;
-        if(READ_AHEAD){ loaderReadAhead(*batch->file, *batch->header, batch->first, batch->count); }
+        if(OocSimLodSettings::READ_AHEAD){ loaderReadAhead(*batch->file, *batch->header, batch->first, batch->count); }
         {
             // LASzip's logging (lasmessage.cpp) is global and not thread-safe: opening a file and the
             // first decoding (which reads the chunk table) may log, so they are serialised
@@ -1629,11 +1629,11 @@ bool LoaderGpuVersion::loadOneBatch(){
         if(!failure){
             // The batch size is read once: nothing may change it while it is being loaded
             const uint64_t nb_points_to_read = batch->count;
-            const uint64_t check_interval = std::max<uint64_t>(1, CANCEL_CHECK_INTERVAL);
+            const uint64_t check_interval = std::max<uint64_t>(1, OocSimLodSettings::CANCEL_CHECK_INTERVAL);
             const LoaderPointConverter convert(*batch->header);
             try {
                 points.reserve(nb_points_to_read);
-                uint64_t next_partial = std::max<uint64_t>(1, PREVIEW_PROGRESSIVE_FIRST_POINTS);
+                uint64_t next_partial = std::max<uint64_t>(1, OocSimLodSettings::PREVIEW_PROGRESSIVE_FIRST_POINTS);
                 for(uint64_t i = 0; i < nb_points_to_read; i++){
                     // Still worth it with the current camera? (not once half of it is decoded)
                     if(i > 0 && (i % check_interval) == 0 && 2 * i < nb_points_to_read && should_cancel()){
@@ -1647,7 +1647,7 @@ bool LoaderGpuVersion::loadOneBatch(){
                     convert(laz_point, points.emplace_back());   // written in place (capacity reserved)
                     if(is_progressive && i + 1 == next_partial && i + 1 < nb_points_to_read){
                         publish_partial(points);
-                        next_partial += std::max<uint64_t>(1, PREVIEW_PROGRESSIVE_INTERVAL);
+                        next_partial += std::max<uint64_t>(1, OocSimLodSettings::PREVIEW_PROGRESSIVE_INTERVAL);
                     }
                 }
             } catch(const std::bad_alloc&){
