@@ -394,6 +394,20 @@ void LoaderGpuVersion::clearUnusedBatches(){
 	}
 }
 
+namespace {
+/// Stop and join the preview thread (`destroyPreview', and at exit: a joinable `std::thread' left at
+/// the destruction of the static data would terminate the program)
+void loaderStopPreviewThread(){
+    {
+        std::lock_guard<std::mutex> lock(LoaderGpuVersion::previewJobsMtx);
+        LoaderGpuVersion::stopPreviewThread = true;
+        LoaderGpuVersion::previewJobs.clear();
+    }
+    LoaderGpuVersion::previewJobsCv.notify_all();
+    if(LoaderGpuVersion::previewThread.joinable()){ LoaderGpuVersion::previewThread.join(); }
+}
+}
+
 void LoaderGpuVersion::initPreview(){
     const uint32_t nb_regions = std::min(PREVIEW_NB_REGIONS, LOADER_PREVIEW_MAX_REGIONS);
     previewPointsPerRegion = PREVIEW_POINTS_PER_REGION;
@@ -413,10 +427,72 @@ void LoaderGpuVersion::initPreview(){
     for(LoaderPreviewRegion& region : previewRegions){
         CURuntime::assertCudaSuccess(cuEventCreate(&region.upload_event, CU_EVENT_DISABLE_TIMING));
     }
+    previewRegionSubmitted = std::make_unique<std::atomic<bool>[]>(nb_regions);
+    for(uint32_t r = 0; r < nb_regions; r++){ previewRegionSubmitted[r] = false; }
+
+    // Uploads on a background thread, in the same context
+    CURuntime::assertCudaSuccess(cuCtxGetCurrent(&previewContext));
+    stopPreviewThread = false;
+    previewThread = std::thread(previewUploadRoutine);
+    static bool is_registered = false;
+    if(!is_registered){
+        std::atexit(loaderStopPreviewThread);
+        is_registered = true;
+    }
+}
+
+namespace {
+/// Even subsample of `source' into `destination' (`nb_points' <= source size): point
+/// floor(j * size / nb_points) for every j, with a 32.32 fixed-point step instead of a 64-bit
+/// division per point; a plain copy when every point fits
+void loaderPreviewSubsample(const std::vector<CPoint>& source, CPoint* destination, uint32_t nb_points){
+    const uint64_t nb_source = source.size();
+    if(nb_points == 0 || nb_source == 0){return;}
+    if(nb_points >= nb_source){
+        std::memcpy(static_cast<void*>(destination), static_cast<const void*>(source.data()), nb_source * sizeof(CPoint));
+        return;
+    }
+    const CPoint* src = source.data();
+    const uint64_t step = (nb_source << 32) / nb_points;   // nb_source < 2^32 (a batch)
+    uint64_t position = 0;
+    for(uint32_t j = 0; j < nb_points; j++){
+        destination[j] = src[position >> 32];
+        position += step;
+    }
+}
+}
+
+void LoaderGpuVersion::previewUploadRoutine(){
+    CURuntime::assertCudaSuccess(cuCtxSetCurrent(previewContext));
+    while(true){
+        LoaderPreviewUploadJob job = {};
+        {
+            std::unique_lock<std::mutex> lock(previewJobsMtx);
+            previewJobsCv.wait(lock, []{ return stopPreviewThread || !previewJobs.empty(); });
+            if(stopPreviewThread){return;}
+            job = std::move(previewJobs.front());
+            previewJobs.pop_front();
+        }
+
+        // The region's staging is free: the region is only assigned again once its previous copy is
+        // complete (`updatePreview')
+        CPoint* pinned = previewPinnedPoints + uint64_t(job.region) * previewPointsPerRegion;
+        loaderPreviewSubsample(*job.points, pinned, job.nb_points);
+        job.points.reset();
+
+        // The draws launched before may still read this region (drawn for another batch by the frames
+        // in flight): the copy waits for them (a later record of the event only waits for more draws)
+        CURuntime::assertCudaSuccess(cuStreamWaitEvent(previewStream, previewDrawnEvent, 0));
+        const CUdeviceptr destination = reinterpret_cast<CUdeviceptr>(previewDevicePoints + uint64_t(job.region) * previewPointsPerRegion);
+        CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync(destination, pinned, uint64_t(job.nb_points) * sizeof(CPoint), previewStream));
+        CURuntime::assertCudaSuccess(cuEventRecord(job.upload_event, previewStream));
+        previewRegionSubmitted[job.region].store(true, std::memory_order_release);
+    }
 }
 
 void LoaderGpuVersion::destroyPreview(){
     if(!previewDevicePoints){ return; }
+    loaderStopPreviewThread();
     CURuntime::assertCudaSuccess(cuStreamSynchronize(previewStream));
     for(LoaderPreviewRegion& region : previewRegions){
         CURuntime::assertCudaSuccess(cuEventDestroy(region.upload_event));
@@ -433,9 +509,12 @@ void LoaderGpuVersion::destroyPreview(){
 void LoaderGpuVersion::updatePreview(){
     if(!previewDevicePoints){ return; }
 
-    // 1. Completed uploads become visible (if their batch is still previewed)
-    for(LoaderPreviewRegion& region : previewRegions){
+    // 1. Completed uploads become visible (if their batch is still previewed); an upload is only
+    //    complete once the preview thread has recorded it and its event is reached
+    for(uint32_t r = 0; r < previewRegions.size(); r++){
+        LoaderPreviewRegion& region = previewRegions[r];
         if(!region.is_uploading){continue;}
+        if(!previewRegionSubmitted[r].load(std::memory_order_acquire)){continue;}
         const CUresult res = cuEventQuery(region.upload_event);
         if(res == CUDA_ERROR_NOT_READY){continue;}
         CURuntime::assertCudaSuccess(res);
@@ -524,29 +603,23 @@ void LoaderGpuVersion::updatePreview(){
         }
     }
 
-    // 4. Copies: an even subsample of the batch into its region; the region is drawn once the copy
-    //    is complete (step 1 of a next frame). If the batch is sent meanwhile, its region is released
-    //    before it was ever drawn: nothing disappears
-    for(const Upload& upload : uploads){
-        LoaderPreviewRegion& region = previewRegions[upload.region];
-        const std::vector<CPoint>& source = *upload.points;
-        const uint64_t nb_source = source.size();
-        const uint32_t nb_points = static_cast<uint32_t>(std::min<uint64_t>(nb_source, previewPointsPerRegion));
-
-        CPoint* pinned = previewPinnedPoints + uint64_t(upload.region) * previewPointsPerRegion;
-        for(uint32_t j = 0; j < nb_points; j++){
-            pinned[j] = source[(uint64_t(j) * nb_source) / nb_points];
+    // 4. Copies: an even subsample of the batch into its region, done by the preview thread (it used to
+    //    be done here, on the main thread); the region is drawn once the copy is complete (step 1 of a
+    //    next frame). If the batch is sent meanwhile, its region is released before it was ever drawn:
+    //    nothing disappears
+    if(uploads.empty()){return;}
+    {
+        std::lock_guard<std::mutex> lock(previewJobsMtx);
+        for(Upload& upload : uploads){
+            LoaderPreviewRegion& region = previewRegions[upload.region];
+            const uint32_t nb_points = static_cast<uint32_t>(std::min<uint64_t>(upload.points->size(), previewPointsPerRegion));
+            region.nb_points = nb_points;
+            region.is_uploading = true;
+            previewRegionSubmitted[upload.region].store(false, std::memory_order_relaxed);
+            previewJobs.push_back({upload.region, nb_points, std::move(upload.points), region.upload_event});
         }
-
-        // The draws launched before may still read this region (drawn for another batch by the frames
-        // in flight): the copy waits for them
-        CURuntime::assertCudaSuccess(cuStreamWaitEvent(previewStream, previewDrawnEvent, 0));
-        const CUdeviceptr destination = reinterpret_cast<CUdeviceptr>(previewDevicePoints + uint64_t(upload.region) * previewPointsPerRegion);
-        CURuntime::assertCudaSuccess(cuMemcpyHtoDAsync(destination, pinned, uint64_t(nb_points) * sizeof(CPoint), previewStream));
-        CURuntime::assertCudaSuccess(cuEventRecord(region.upload_event, previewStream));
-        region.nb_points = nb_points;
-        region.is_uploading = true;
     }
+    previewJobsCv.notify_one();
 }
 
 bool LoaderGpuVersion::previewDrawCounts(LoaderPreviewCounts& counts){

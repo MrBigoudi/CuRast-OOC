@@ -3,6 +3,11 @@
 #include "gpuVersion.h"
 #include "laszip/laszip_api.h"
 
+#include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <thread>
+
 /// The state of a batch
 enum BatchState {
 	Empty,
@@ -88,6 +93,14 @@ struct LoaderPreviewRegion {
 constexpr uint32_t LOADER_PREVIEW_MAX_REGIONS = 32;
 struct LoaderPreviewCounts {
     uint32_t counts[LOADER_PREVIEW_MAX_REGIONS] = {};
+};
+
+/// A preview upload done by the preview thread (see `LoaderGpuVersion::previewUploadRoutine')
+struct LoaderPreviewUploadJob {
+    uint32_t region = 0;
+    uint32_t nb_points = 0;                                   // subsample size (<= points per region)
+    std::shared_ptr<std::vector<CPoint>> points = nullptr;    // source, kept alive while it is read
+    CUevent upload_event = nullptr;                           // event of the region
 };
 
 /// One `sendToDevice' upload in flight on the loading stream (see `LoaderGpuVersion::fetchFromDevice')
@@ -305,6 +318,18 @@ struct LoaderGpuVersion {
     static inline CUevent previewDrawnEvent;
     static void initPreview();
     static void destroyPreview();
+    /// The preview uploads (subsample of the batch into the pinned staging, copy to the device) are
+    /// done by a background thread: the main thread only assigns the regions (`updatePreview')
+    /// A region is drawn once `previewRegionSubmitted' is set (the copy and its event are recorded)
+    /// and its event is complete
+    static inline std::thread previewThread;
+    static inline std::mutex previewJobsMtx;
+    static inline std::condition_variable previewJobsCv;
+    static inline std::deque<LoaderPreviewUploadJob> previewJobs = {};
+    static inline bool stopPreviewThread = false;
+    static inline std::unique_ptr<std::atomic<bool>[]> previewRegionSubmitted = nullptr;
+    static inline CUcontext previewContext = nullptr;
+    static void previewUploadRoutine();
     /// Main thread, every frame before `sendToDevice' (a sent batch stays previewed until
     /// `fetchFromDevice' sees its upload complete: its device slot is drawn from then on)
     static void updatePreview();
