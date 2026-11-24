@@ -1,4 +1,5 @@
 #include "gpuVersion.h"
+#include <bit>
 
 #include "loader.h"
 #include "outOfCore.h"
@@ -1530,35 +1531,72 @@ std::vector<uint32_t> visPriorityQuotas(const std::vector<uint32_t>& counts,
     return quota;
 }
 
-/// Bring `data' up to date with the first `nb_elements' elements of an append-only points / voxels
-/// file: `data' (a node's entry of the visibility RAM cache) holds a uniform random permutation of
-/// the first `data.size()' elements of the file; only the missing tail is read, then shuffled in
-/// (inside-out Fisher-Yates: the whole stays a uniform random permutation)
-/// Returns the number of elements available (<= nb_elements if the file is shorter)
-uint32_t visSyncCachedFile(const std::string& filepath, uint32_t nb_elements, std::vector<CPoint>& data, uint32_t seed){
-    // The files only grow: more elements cached than on disk can't happen; start over if it does
-    if(data.size() > nb_elements){ data.clear(); }
-    const uint64_t old_size = data.size();
-    if(old_size == nb_elements){ return static_cast<uint32_t>(old_size); }
+/// Random draw of the inside-out shuffle for element `index' of a node's file: only depends on
+/// the seed (node, file) and the index (splitmix64), so that a prefix rebuilt from the file is
+/// identical to the one built incrementally
+inline uint64_t visShuffleDraw(uint64_t seed, uint64_t index){
+    uint64_t z = seed * 0x9E3779B97F4A7C15ull + index + 0x632BE59BD9B4E5Full;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    return z ^ (z >> 31);
+}
+
+/// Bring `cached' up to date with the first `nb_elements' elements of an append-only points / voxels
+/// file, keeping (at least) the first `nb_wanted' elements of the permutation: `cached.data' holds
+/// the first min(seen, keep) elements of a uniform random permutation of the first `seen' elements
+/// of the file (inside-out Fisher-Yates: for element i, j = draw(i) % (i + 1), a[i] = a[j],
+/// a[j] = element i; the positions below `keep' only ever receive new elements, so the ones beyond
+/// it are dropped). Only the missing tail is read, unless the kept prefix must grow beyond what was
+/// kept (then the file is read again from the start: same draws, same prefix, extended)
+/// Returns the number of elements of the file processed (<= nb_elements if the file is shorter)
+uint32_t visSyncCachedFile(const std::string& filepath, uint32_t nb_elements, uint32_t nb_wanted,
+    GpuVersion::VisRamCachedFile& cached, uint64_t seed
+){
+    // Prefix to keep: about twice what is wanted (hysteresis: kept while it is at most 4 times)
+    nb_wanted = std::min(nb_wanted, nb_elements);
+    const uint32_t target = std::min(nb_elements, std::max(GpuVersion::VIS_RAM_CACHE_MIN_KEEP,
+        std::bit_ceil(std::max(1u, nb_wanted) * 2u)));
+    // The files only grow: more elements seen than on disk can't happen; start over if it does
+    if(cached.seen > nb_elements){ cached = {}; }
+    if(target > cached.keep && cached.seen > cached.keep){
+        // A longer prefix than kept: the dropped elements are needed, read again from the start
+        cached = {};
+    }
+    if(target > cached.keep || cached.keep > 4u * target){
+        cached.keep = target;
+        if(cached.data.size() > cached.keep){
+            cached.data.resize(cached.keep);   // a prefix of the prefix: still valid
+            cached.data.shrink_to_fit();
+        }
+    }
+    if(cached.seen == nb_elements){ return cached.seen; }
 
     std::ifstream file(filepath, std::ios::binary);
-    if(!file.is_open()){ return static_cast<uint32_t>(old_size); }
-    file.seekg(static_cast<std::streamoff>(old_size * sizeof(CPoint)));
-    data.resize(nb_elements);
-    file.read(
-        reinterpret_cast<char*>(data.data() + old_size),
-        static_cast<std::streamsize>((uint64_t(nb_elements) - old_size) * sizeof(CPoint))
-    );
-    const uint64_t nb_read = uint64_t(std::max<std::streamsize>(file.gcount(), 0)) / sizeof(CPoint);
-    data.resize(old_size + nb_read);
+    if(!file.is_open()){ return cached.seen; }
+    file.seekg(static_cast<std::streamoff>(uint64_t(cached.seen) * sizeof(CPoint)));
+    cached.data.reserve(std::min(nb_elements, cached.keep));
 
-    std::minstd_rand rng(seed ^ static_cast<uint32_t>(old_size * 2654435761ull));
-    for(uint64_t i = old_size; i < data.size(); i++){
-        std::uniform_int_distribution<uint64_t> dist(0, i);
-        const uint64_t j = dist(rng);
-        if(j != i){ std::swap(data[i], data[j]); }
+    // Read in blocks (most elements of a large file are dropped: never all of it in memory)
+    constexpr uint32_t BLOCK = 65536;
+    std::vector<CPoint> block(std::min<uint32_t>(BLOCK, nb_elements - cached.seen));
+    while(cached.seen < nb_elements){
+        const uint32_t nb_to_read = std::min<uint32_t>(static_cast<uint32_t>(block.size()), nb_elements - cached.seen);
+        file.read(reinterpret_cast<char*>(block.data()), static_cast<std::streamsize>(uint64_t(nb_to_read) * sizeof(CPoint)));
+        const uint32_t nb_read = static_cast<uint32_t>(uint64_t(std::max<std::streamsize>(file.gcount(), 0)) / sizeof(CPoint));
+        for(uint32_t k = 0; k < nb_read; k++){
+            const uint64_t i = cached.seen;
+            const uint64_t j = visShuffleDraw(seed, i) % (i + 1);
+            if(i < cached.keep){
+                cached.data.push_back(block[k]);
+                if(j != i){ std::swap(cached.data[i], cached.data[j]); }
+            } else if(j < cached.keep){
+                cached.data[j] = block[k];
+            }
+            cached.seen++;
+        }
+        if(nb_read < nb_to_read){break;}   // shorter than expected
     }
-    return static_cast<uint32_t>(data.size());
+    return cached.seen;
 }
 
 std::atomic<bool> visHasWarnedShortRead{false};
@@ -1668,17 +1706,22 @@ void visLoadTask(GpuVersion::VisibilityTask& task, std::vector<CPoint>& scratch)
     GpuVersion::VisRamCacheEntry local_entry = {};
     GpuVersion::VisRamCacheEntry& entry = task.ram_cache_entry ? *task.ram_cache_entry : local_entry;
 
-    const uint32_t seed = static_cast<uint32_t>(task.id) * 2654435761u;
+    const uint64_t seed = uint64_t(task.id) * 2654435761ull;
     uint32_t nb_points_read = 0;
     uint32_t nb_voxels_read = 0;
     {
         // The serialization thread writes these files under the same lock
         std::lock_guard<std::mutex> lock(GpuVersion::storedNodesMtx[task.id]);
         if(wants_points){
-            nb_points_read = visSyncCachedFile(getChunkFilePath(task.id, false), task.nb_points_on_disk, entry.points, seed + 1u);
+            nb_points_read = visSyncCachedFile(getChunkFilePath(task.id, false), task.nb_points_on_disk,
+                task.points_quota, entry.points, seed + 1u);
         }
         if(wants_voxels){
-            nb_voxels_read = visSyncCachedFile(getChunkFilePath(task.id, true), task.nb_voxels_on_disk, entry.voxels, seed + 2u);
+            // Out-of-view fallback: the voxels of some octants only, picked along the permutation:
+            // every voxel may be needed
+            const uint32_t nb_voxels_wanted = (task.voxels_child_mask == 0) ? task.voxels_quota : task.nb_voxels_on_disk;
+            nb_voxels_read = visSyncCachedFile(getChunkFilePath(task.id, true), task.nb_voxels_on_disk,
+                nb_voxels_wanted, entry.voxels, seed + 2u);
         }
     }
 
@@ -1695,22 +1738,23 @@ void visLoadTask(GpuVersion::VisibilityTask& task, std::vector<CPoint>& scratch)
     // The cached elements are a uniform random permutation: their first `quota' elements are a
     // uniform random subset (stable from one update to the next while the node does not change)
     if(wants_points){
-        const uint32_t nb = std::min(task.points_quota, nb_points_read);
-        std::copy_n(entry.points.data(), nb, GpuVersion::visStagingPoints + task.points_offset);
+        const uint32_t nb = static_cast<uint32_t>(std::min<uint64_t>(task.points_quota, entry.points.data.size()));
+        std::copy_n(entry.points.data.data(), nb, GpuVersion::visStagingPoints + task.points_offset);
         task.points_written = nb;
     }
     if(wants_voxels){
         CPoint* dst = GpuVersion::visStagingVoxels + task.voxels_offset;
+        const uint32_t nb_kept = static_cast<uint32_t>(entry.voxels.data.size());
         if(task.voxels_child_mask == 0){
-            const uint32_t nb = std::min(task.voxels_quota, nb_voxels_read);
-            std::copy_n(entry.voxels.data(), nb, dst);
+            const uint32_t nb = std::min(task.voxels_quota, nb_kept);
+            std::copy_n(entry.voxels.data.data(), nb, dst);
             task.voxels_written = nb;
         } else {
             // Out-of-view fallback: only the octants of the children outside the view (the first
             // ones of the permutation lying in them: a uniform random subset of them)
             uint32_t nb = 0;
-            for(uint32_t i = 0; i < nb_voxels_read && nb < task.voxels_quota; i++){
-                const CPoint& voxel = entry.voxels[i];
+            for(uint32_t i = 0; i < nb_kept && nb < task.voxels_quota; i++){
+                const CPoint& voxel = entry.voxels.data[i];
                 const uint32_t octant = static_cast<uint32_t>(task.voxels_aabb.getNextChildIndex(voxel.position));
                 if(task.voxels_child_mask & (1u << octant)){ dst[nb++] = voxel; }
             }
@@ -2113,7 +2157,7 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
     // update; they may still grow while the workers fill them: the budget is checked again next time)
     {
         auto entry_bytes = [](const VisRamCacheEntry& entry){
-            return uint64_t(entry.points.capacity() + entry.voxels.capacity()) * sizeof(CPoint);
+            return uint64_t(entry.points.data.capacity() + entry.voxels.data.capacity()) * sizeof(CPoint);
         };
         uint64_t total_bytes = 0;
         std::vector<std::pair<uint64_t, CIdAABB>> evictable = {};

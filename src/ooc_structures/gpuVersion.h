@@ -265,23 +265,35 @@ struct GpuVersion {
     };
     static inline std::unordered_map<CIdAABB, StoredNodeCounters> storedNodesVisibilityCounters = {};
 
-    /// RAM cache of the visible nodes read from disk by the visibility updates: the content of their
-    /// append-only points / voxels files, kept from one visibility update to the next, so that an
-    /// update only reads what a node gained since (usually nothing) instead of every visible node
-    /// The elements are kept as a uniform random permutation of the file's elements (extended with
-    /// an inside-out shuffle when the file grows): the first `quota' elements are a uniform random
-    /// subset, the same from one update to the next while the node does not change
-    /// Owned by the main thread, except the vectors of the entries of the current tasks, filled by the
-    /// visibility workers (one task per node: one worker per entry)
+    /// RAM cache of the visible nodes read from disk by the visibility updates, kept from one
+    /// visibility update to the next, so that an update only reads what a node gained since (usually
+    /// nothing) instead of every visible node
+    /// For each file (points, voxels), an entry keeps the first `keep' elements of a uniform random
+    /// permutation of the `seen' first elements of the file (inside-out Fisher-Yates, extended when
+    /// the file grows): the first `quota' elements are a uniform random subset, the same from one
+    /// update to the next while the node does not change. Only that prefix is stored (about twice the
+    /// quota of the node), not the whole file: the elements beyond it are never needed. The random
+    /// draws only depend on the node and the element index, so a larger prefix (quota increased) is
+    /// rebuilt from the file identically, extended
+    /// Owned by the main thread, except the entries of the current tasks, filled by the visibility
+    /// workers (one task per node: one worker per entry)
+    struct VisRamCachedFile {
+        std::vector<CPoint> data = {};   // first min(seen, keep) elements of the permutation
+        uint32_t seen = 0;               // elements of the file processed
+        uint32_t keep = 0;               // length of the prefix kept
+    };
     struct VisRamCacheEntry {
-        std::vector<CPoint> points = {};
-        std::vector<CPoint> voxels = {};
+        VisRamCachedFile points = {};
+        VisRamCachedFile voxels = {};
         uint64_t last_used = 0;   // visibility update that used it last (`visRamCacheGeneration')
     };
     static inline std::unordered_map<CIdAABB, std::unique_ptr<VisRamCacheEntry>> visRamCache = {};
     static inline uint64_t visRamCacheGeneration = 0;
     /// Memory of the cache (points and voxels); beyond it, the least recently used entries are freed
-    static inline uint64_t VIS_RAM_CACHE_MAX_BYTES = 4ull * 1024 * 1024 * 1024;
+    static inline uint64_t VIS_RAM_CACHE_MAX_BYTES = 1ull * 1024 * 1024 * 1024;
+    /// Prefix kept for a quota q: max(VIS_RAM_CACHE_MIN_KEEP, bit_ceil(2 q)), the whole file at most;
+    /// shrunk back when it is more than 4 times what the quota needs
+    static constexpr uint32_t VIS_RAM_CACHE_MIN_KEEP = 1024;
 
     /// Host RAM nodes (`updateNodes') the visibility workers still have to copy into the staging
     /// buffers (they copy them first). The host cache update (which frees the buffers of the nodes it
