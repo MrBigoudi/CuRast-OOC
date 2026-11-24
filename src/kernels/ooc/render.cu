@@ -791,8 +791,6 @@ void kernel_draw_visibility_cache(
         ? globalVariables.renderedVoxels2 : globalVariables.renderedVoxels;
     uint32_t nb_voxels = globalVariables.isUsingSecondRenderingBuffer
         ? globalVariables.nbRenderedVoxels2 : globalVariables.nbRenderedVoxels;
-    // CIdAABB* rendered_voxels_nodes = globalVariables.isUsingSecondRenderingBuffer
-    //     ? globalVariables.renderedVoxelsNodes2 : globalVariables.renderedVoxelsNodes;
 
     // Render points
     for(uint32_t point_id = thread_id; point_id < nb_points; point_id += nb_threads){

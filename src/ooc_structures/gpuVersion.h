@@ -483,15 +483,11 @@ struct GpuVersion {
     static inline CRenderTarget renderingTarget = {};
     static inline CRenderingSettings renderingSettings = {};
 
-    static inline void* voxelsNodesToSend = nullptr;
     static inline void* nbRenderedPoints = nullptr;
     static inline void* nbRenderedVoxels = nullptr;
-    static inline void* nbRenderedNodes = nullptr;
 
-    static inline void* voxelsNodesToSend2 = nullptr;
     static inline void* nbRenderedPoints2 = nullptr;
     static inline void* nbRenderedVoxels2 = nullptr;
-    static inline void* nbRenderedNodes2 = nullptr;
     static inline bool isUsingSecondRenderingBuffer = false;
 
     static inline uint32_t randomOffset = 0;

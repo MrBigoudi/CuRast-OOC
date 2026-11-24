@@ -13,7 +13,6 @@
 #include "./scene/SNTriangles.h"
 #include "./scene/SNPoints.h"
 #include "./scene/SNCPoints.h"
-#include "./scene/SNCOctree.h"
 
 #include "cuda.h"
 #include "cuda_runtime.h"

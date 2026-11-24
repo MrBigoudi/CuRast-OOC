@@ -142,7 +142,7 @@ void kernel_bottom_up_update_part_2_instancing(){
         globalVariables.curNbNodes++;
 
 #ifdef ASSERT_ENABLED
-        if(node_index >= globalVariables.maxNbConcurrentNodes){
+        if(node_index >= globalVariables.maxNbResidentNodes){
             printf("ERROR: Can't create more nodes in the bottom up update\n");
             customAssert();
         }
@@ -160,6 +160,8 @@ void kernel_bottom_up_update_part_2_instancing(){
         uint32_t grid_index = globalVariables.nbGridsToInit;
         globalVariables.nbGridsToInit++;
         globalVariables.gridsToInit[grid_index] = new_parent;
+        // A new grid: cleared, nothing to refill (the slot may hold the exchanged index of a former load)
+        globalVariables.gridsToInitExchangedIndex[grid_index] = -1;
 
         new_parent->flagAsUpdated();
         cur_child->flagAsUpdated();

@@ -144,7 +144,7 @@ void kernel_simlod_load_part_2_rebuilding_nodes(){
         uint32_t node_index = __nv_atomic_fetch_add(&globalVariables.curNbNodes, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
 
 #ifdef ASSERT_ENABLED
-        if(node_index >= globalVariables.maxNbConcurrentNodes){
+        if(node_index >= globalVariables.maxNbResidentNodes){
             printf("ERROR: failed to rebuild a new node for `%d'; can't add more nodes to the octree\n", aabb_index);
             customAssert();
         }
@@ -164,7 +164,7 @@ void kernel_simlod_load_part_2_rebuilding_nodes(){
             uint32_t grid_index = __nv_atomic_fetch_add(&globalVariables.nbGridsToInit, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
             
 #ifdef ASSERT_ENABLED
-            if(grid_index >= globalVariables.maxNbConcurrentNodes){
+            if(grid_index >= globalVariables.maxNbGridsToInit){
                 printf("ERROR: failed to rebuild a new node for `%d'; can't recreate more grids\n", aabb_index);
                 customAssert();
             }
@@ -316,7 +316,7 @@ void updateLeafCounter(
     bool force_count, 
     CPoint& point, 
     COctreeNode* root, 
-    COctreeNode** memoisation_buffer, 
+    uint32_t* memoisation_buffer,      // resident node index (`packedNodes') of the leaf reached
     uint32_t memoisation_index,
     bool from_spilled
 ){
@@ -326,19 +326,19 @@ void updateLeafCounter(
 
     if(point.position == vec3(0,0,0)){
         // printf("WARN: weird point in count\n");
-        memoisation_buffer[memoisation_index] = root;
+        memoisation_buffer[memoisation_index] = root->cur_id;
         return;
     }
 
     uint32_t max_points_per_leaf = globalVariables.maxPointsPerLeaf;
-    uint32_t max_spilling_nodes = globalVariables.maxNbSpilledPoints;
+    uint32_t max_spilling_nodes = globalVariables.maxNbSpillingNodes;
 
     while(true){
         CIdAABB leaf_id = leaf->aabb_index;
         CAABB aabb = globalVariables.relationshipMap[leaf_id].aabb;
         
         if(!aabb.contains(point.position)){
-            memoisation_buffer[memoisation_index] = root;
+            memoisation_buffer[memoisation_index] = root->cur_id;
             point.position = vec3(0,0,0); // Flag the point as being weird
             return;
         }
@@ -410,7 +410,7 @@ void updateLeafCounter(
                 }
 			}
 
-            memoisation_buffer[memoisation_index] = leaf;
+            memoisation_buffer[memoisation_index] = leaf->cur_id;
             return;
         }
     }
@@ -424,9 +424,10 @@ void simlodCount(uint32_t first_point, uint32_t step, uint32_t iteration, bool i
     uint32_t max_nb_batches = globalVariables.maxNbBatches;
     uint32_t max_batch_size = globalVariables.maxBatchSize;
     uint32_t nb_spilled_points = globalVariables.nbSpilledPoints;
-    COctreeNode** memoized_batch_points_nodes = globalVariables.memoizedBatchPointsNodes;
-    COctreeNode** memoized_spilled_points_nodes = globalVariables.memoizedSpilledPointsNodes;
+    uint32_t* memoized_batch_points_nodes = globalVariables.memoizedBatchPointsNodes;
+    uint32_t* memoized_spilled_points_nodes = globalVariables.memoizedSpilledPointsNodes;
     COctreeNode* main_octree = globalVariables.mainOctree;
+    COctreeNode** packed_nodes = globalVariables.packedNodes;
 
     // Count new points
     for(uint32_t batch = 0; batch < max_nb_batches; batch++){
@@ -448,7 +449,7 @@ void simlodCount(uint32_t first_point, uint32_t step, uint32_t iteration, bool i
             bool is_first = (iteration == 0 && is_first_count_split);
             COctreeNode* root = is_first
                 ? main_octree
-                : memoized_batch_points_nodes[start_index + i]
+                : packed_nodes[memoized_batch_points_nodes[start_index + i]]
             ;
             updateLeafCounter(
                 is_first,
@@ -464,7 +465,7 @@ void simlodCount(uint32_t first_point, uint32_t step, uint32_t iteration, bool i
     
     // Count spilled points
     for(uint32_t i = first_point; i < nb_spilled_points; i += step){
-        COctreeNode* root = memoized_spilled_points_nodes[i];
+        COctreeNode* root = packed_nodes[memoized_spilled_points_nodes[i]];
         updateLeafCounter(
             false,
             globalVariables.spilledPoints[i], 
@@ -563,6 +564,10 @@ void kernel_simlod_count_split_part_1_5_prefix_sum_2(){
                 printf("ERROR: reached the maximum of spilling points\n");
                 customAssert();
             }
+            if(nb_chunks >= globalVariables.maxNbSpillingChunks){
+                printf("ERROR: reached the maximum of spilling chunks\n");
+                customAssert();
+            }
             globalVariables.spilledChunksCounter[nb_chunks] = last;
             globalVariables.spillingChunks[nb_chunks] = cur_chunk;
             last += cur_chunk->size;
@@ -619,7 +624,9 @@ void kernel_simlod_count_split_part_2_split(){
         for(uint32_t j = thread_id; j < size; j += nb_threads_per_block){
             uint32_t real_index = spilled_index + j;
             spilled_points[real_index] = current_chunk_points[j];
-            globalVariables.memoizedSpilledPointsNodes[real_index] = cur_spilling_node;
+            globalVariables.memoizedSpilledPointsNodes[real_index] = cur_spilling_node
+                ? cur_spilling_node->cur_id
+                : globalVariables.mainOctree->cur_id;
         }
     }
 }
@@ -737,7 +744,7 @@ void sampleVoxel(const CPoint& point){
                 uint32_t backlog_index = backlog_base + group.thread_rank();
 
                 globalVariables.backlogVoxels[backlog_index] = new_voxel;
-                globalVariables.backlogVoxelsNodes[backlog_index] = cur_node;
+                globalVariables.backlogVoxelsNodes[backlog_index] = cur_node->cur_id;
             }
         }
 
@@ -1086,8 +1093,9 @@ void kernel_simlod_insertion_part_2_filling(){
     uint32_t thread_id = grid.thread_rank();
     uint32_t nb_threads = grid.num_threads();
 
-    COctreeNode** memoized_batch_points_nodes = globalVariables.memoizedBatchPointsNodes;
-    COctreeNode** memoized_spilled_points_nodes = globalVariables.memoizedSpilledPointsNodes;
+    uint32_t* memoized_batch_points_nodes = globalVariables.memoizedBatchPointsNodes;
+    uint32_t* memoized_spilled_points_nodes = globalVariables.memoizedSpilledPointsNodes;
+    COctreeNode** packed_nodes = globalVariables.packedNodes;
 
     // if(thread_id == 0){
     //     printf("kernel_simlod_insertion_part_2_filling\n");
@@ -1111,7 +1119,7 @@ void kernel_simlod_insertion_part_2_filling(){
         uint32_t start_index = batch * globalVariables.maxBatchSize;
         for(uint32_t i=thread_id; i<nb_new_points; i+=nb_threads){
             const CPoint point = new_points[i];
-            COctreeNode* cur_node = memoized_batch_points_nodes[start_index + i];
+            COctreeNode* cur_node = packed_nodes[memoized_batch_points_nodes[start_index + i]];
             insertPoint(point, cur_node);
 
             // UI values
@@ -1124,14 +1132,14 @@ void kernel_simlod_insertion_part_2_filling(){
     // Insert spilled points
     for(uint32_t i=thread_id; i<globalVariables.nbSpilledPoints; i+=nb_threads){
         const CPoint point = globalVariables.spilledPoints[i];
-        COctreeNode* cur_node = memoized_spilled_points_nodes[i];
+        COctreeNode* cur_node = packed_nodes[memoized_spilled_points_nodes[i]];
         insertPoint(point, cur_node);
     }
 
     // Insert new voxels
     for(uint32_t i=thread_id; i<globalVariables.nbBacklogVoxels; i+=nb_threads){
         const CPoint voxel = globalVariables.backlogVoxels[i];
-        COctreeNode* node = globalVariables.backlogVoxelsNodes[i];
+        COctreeNode* node = packed_nodes[globalVariables.backlogVoxelsNodes[i]];
         insertVoxel(voxel, node);
 
         // UI values

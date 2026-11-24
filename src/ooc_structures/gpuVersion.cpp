@@ -136,16 +136,20 @@ HostStorageNode::HostStorageNode(const HostStorageNodeOwner& owner): owner(owner
 
 
 void GpuVersion::initConstraints(CuRast* editor, CUcontext* context) {
+    // Every node id ever created (relationship map, flags, visibility lists)
     hostStaging.maxNbConcurrentNodes = OocSimLodSettings::MAX_NB_NODES;
-    hostStaging.maxAllocatedChunks = OocSimLodSettings::NB_ALLOCABLE_CHUNKS;
-    hostStaging.maxCountSplitIterations = OocSimLodSettings::MAX_NB_COUNT_SPLIT_ITERATION;
+    // The resident nodes and their grids come from the pools: the buffers indexed by resident node
+    // (`packedNodes', allocation plans, ...) or by grid to initialise only need their capacity
+    hostStaging.maxNbResidentNodes = OocSimLodSettings::NB_ALLOCABLE_NODES;
+    hostStaging.maxNbGridsToInit = OocSimLodSettings::NB_ALLOCABLE_GRIDS;
 
     hostStaging.maxNbNodesExchanged = OocSimLodSettings::MAX_NB_NODES_TO_EXCHANGE;
-    hostStaging.maxNbPointsChunksPerExchangedNode =
-        (OocSimLodSettings::MAX_POINTS_PER_LEAF + OocSimLodSettings::NB_POINTS_PER_CHUNK - 1)
-        / OocSimLodSettings::NB_POINTS_PER_CHUNK
-    ;
-    hostStaging.maxNbVoxelsChunksPerExchangedNode = OocSimLodSettings::MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE;
+    // The host keeps at most MAX_POINTS_PER_LEAF voxels per node (`storeNodes', `deserialize'): more
+    // can never be exchanged usefully, whatever `MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE' says
+    hostStaging.maxNbVoxelsChunksPerExchangedNode = std::min(
+        OocSimLodSettings::MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE,
+        (OocSimLodSettings::MAX_POINTS_PER_LEAF + OocSimLodSettings::NB_POINTS_PER_CHUNK - 1) / OocSimLodSettings::NB_POINTS_PER_CHUNK
+    );
 
     // The host rendering buffers hold every budget: points of the cut nodes + points of the large nodes,
     // voxels of the cut nodes + side voxels (each budget is enforced separately, see `assign_quotas')
@@ -156,9 +160,13 @@ void GpuVersion::initConstraints(CuRast* editor, CUcontext* context) {
     hostStaging.maxBatchSize = OocSimLodSettings::MAX_POINTS_PER_BATCHES;
 
     hostStaging.updatesCacheSize = OocSimLodSettings::LRU_UPDATES_CACHE_SIZE;
-    hostStaging.visibilityCacheSize = OocSimLodSettings::LRU_VISIBILITY_CACHE_SIZE;
 
     hostStaging.maxNbSpilledPoints = OocSimLodSettings::MAX_NB_SPILLING_POINTS;
+    // A spilling node is resident; its point chunks are full except its last one
+    hostStaging.maxNbSpillingNodes = std::min(hostStaging.maxNbSpilledPoints, hostStaging.maxNbResidentNodes);
+    hostStaging.maxNbSpillingChunks =
+        (hostStaging.maxNbSpilledPoints + OocSimLodSettings::NB_POINTS_PER_CHUNK - 1) / OocSimLodSettings::NB_POINTS_PER_CHUNK
+        + hostStaging.maxNbSpillingNodes;
     hostStaging.maxNbBacklogVoxels = OocSimLodSettings::MAX_NB_BACKLOG_VOXELS;
     hostStaging.maxPointsPerLeaf = OocSimLodSettings::MAX_POINTS_PER_LEAF;
 }
@@ -203,17 +211,11 @@ void GpuVersion::initHostSide(CuRast* editor, CUcontext* context) {
     exchangedPointsCounters = allocHost<uint32_t>(hostStaging.maxNbNodesExchanged);
     exchangedVoxelsCounters = allocHost<uint32_t>(hostStaging.maxNbNodesExchanged);
 
-    // visibilityCache = allocHost<CIdAABB>(hostStaging.visibilityCacheSize);
-    voxelsNodesToSend = allocHost<CIdAABB>(hostStaging.maxNbRenderedVoxels);
     nbRenderedPoints = allocHost<uint32_t>(1);
     nbRenderedVoxels = allocHost<uint32_t>(1);
-    nbRenderedNodes = allocHost<uint32_t>(1);
 
-    // visibilityCache2 = allocHost<CIdAABB>(hostStaging.visibilityCacheSize);
-    voxelsNodesToSend2 = allocHost<CIdAABB>(hostStaging.maxNbRenderedVoxels);
     nbRenderedPoints2 = allocHost<uint32_t>(1);
     nbRenderedVoxels2 = allocHost<uint32_t>(1);
-    nbRenderedNodes2 = allocHost<uint32_t>(1);
 
     // The visible lists are not truncated anymore: they can hold every node (same size as on device)
     exchangedAABBIndicesVisPoints = allocHost<CIdAABB>(hostStaging.maxNbConcurrentNodes);
@@ -242,7 +244,7 @@ void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
 
     // Unbounded data
     hostStaging.relationshipMap = alloc<CGlobalVariables::Relationship>(hostStaging.maxNbConcurrentNodes);
-    hostStaging.packedNodes = alloc<COctreeNode*>(hostStaging.maxNbConcurrentNodes);
+    hostStaging.packedNodes = alloc<COctreeNode*>(hostStaging.maxNbResidentNodes);
     hostStaging.nodesFlags = alloc<uint32_t>(hostStaging.maxNbConcurrentNodes);
 
 
@@ -279,7 +281,10 @@ void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
         uint64_t real_size = 0;
 
         CUdeviceptr new_ptr = 0;
-        real_size = OocSimLodSettings::NB_POINTS_PER_CHUNK * hostStaging.maxNbPointsChunksPerExchangedNode * sizeof(CPoint);
+        // MAX_POINTS_PER_LEAF points (whole chunks)
+        const uint64_t nb_points_chunks = (OocSimLodSettings::MAX_POINTS_PER_LEAF + OocSimLodSettings::NB_POINTS_PER_CHUNK - 1)
+            / OocSimLodSettings::NB_POINTS_PER_CHUNK;
+        real_size = OocSimLodSettings::NB_POINTS_PER_CHUNK * nb_points_chunks * sizeof(CPoint);
         totalAllocatedMemory += real_size;
         CURuntime::assertCudaSuccess(cuMemAlloc(&new_ptr, real_size));
         exchangedPointsPointers[i] = new_ptr;
@@ -314,8 +319,8 @@ void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
         ));
     }
 
-    hostStaging.gridsToInit = alloc<COctreeNode*>(hostStaging.maxNbConcurrentNodes);
-    hostStaging.gridsToInitExchangedIndex = alloc<uint32_t>(hostStaging.maxNbConcurrentNodes);
+    hostStaging.gridsToInit = alloc<COctreeNode*>(hostStaging.maxNbGridsToInit);
+    hostStaging.gridsToInitExchangedIndex = alloc<uint32_t>(hostStaging.maxNbGridsToInit);
 
     hostStaging.batchesAddedMask = alloc<uint32_t>(hostStaging.maxNbBatches);
     hostStaging.batchesToAddCounts = alloc<uint32_t>(hostStaging.maxNbBatches);
@@ -348,31 +353,29 @@ void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
 
     hostStaging.renderedPoints = alloc<CPoint>(hostStaging.maxNbRenderedPoints);
     hostStaging.renderedVoxels = alloc<CPoint>(hostStaging.maxNbRenderedVoxels);
-    // hostStaging.renderedVoxelsNodes = alloc<CIdAABB>(hostStaging.maxNbRenderedVoxels);
     hostStaging.renderedPoints2 = alloc<CPoint>(hostStaging.maxNbRenderedPoints);
     hostStaging.renderedVoxels2 = alloc<CPoint>(hostStaging.maxNbRenderedVoxels);
-    // hostStaging.renderedVoxelsNodes2 = alloc<CIdAABB>(hostStaging.maxNbRenderedVoxels);
 
 
     // Temporary buffers
     hostStaging.spilledPoints = alloc<CPoint>(hostStaging.maxNbSpilledPoints);
-    hostStaging.spillingNodes = alloc<COctreeNode*>(hostStaging.maxNbSpilledPoints);
-    hostStaging.spilledChunksCounter = alloc<uint32_t>(hostStaging.maxNbSpilledPoints);
-    hostStaging.spillingChunks = alloc<CChunk*>(hostStaging.maxNbSpilledPoints);
-    hostStaging.allocatedChunks = alloc<CChunk*>(hostStaging.maxAllocatedChunks);
+    hostStaging.spillingNodes = alloc<COctreeNode*>(hostStaging.maxNbSpillingNodes);
+    hostStaging.spilledChunksCounter = alloc<uint32_t>(hostStaging.maxNbSpillingChunks);
+    hostStaging.spillingChunks = alloc<CChunk*>(hostStaging.maxNbSpillingChunks);
+    hostStaging.allocatedChunks = alloc<CChunk*>(OocSimLodSettings::NB_ALLOCABLE_CHUNKS);
 
-    hostStaging.allocationPlans = alloc<CAllocationPlan>(hostStaging.maxNbConcurrentNodes);
+    hostStaging.allocationPlans = alloc<CAllocationPlan>(hostStaging.maxNbResidentNodes);
 
     hostStaging.backlogVoxels = alloc<CPoint>(hostStaging.maxNbBacklogVoxels);
-    hostStaging.backlogVoxelsNodes = alloc<COctreeNode*>(hostStaging.maxNbBacklogVoxels);
+    // Resident node indices (4 bytes) instead of node pointers (8 bytes)
+    hostStaging.backlogVoxelsNodes = alloc<uint32_t>(hostStaging.maxNbBacklogVoxels);
 
-    hostStaging.memoizedBatchPointsNodes = alloc<COctreeNode*>(hostStaging.maxNbBatches * hostStaging.maxBatchSize);
-    hostStaging.memoizedSpilledPointsNodes = alloc<COctreeNode*>(hostStaging.maxNbSpilledPoints);
+    hostStaging.memoizedBatchPointsNodes = alloc<uint32_t>(hostStaging.maxNbBatches * hostStaging.maxBatchSize);
+    hostStaging.memoizedSpilledPointsNodes = alloc<uint32_t>(hostStaging.maxNbSpilledPoints);
 
-    hostStaging.temporaryBufferSize = hostStaging.maxNbConcurrentNodes;
-    hostStaging.temporaryIdBuffer = alloc<CIdAABB>(hostStaging.temporaryBufferSize);
-    hostStaging.temporaryIdBuffer2 = alloc<CIdAABB>(hostStaging.temporaryBufferSize);
-    hostStaging.temporaryNodeBuffer = alloc<COctreeNode*>(hostStaging.temporaryBufferSize);
+    hostStaging.temporaryIdBuffer = alloc<CIdAABB>(hostStaging.maxNbConcurrentNodes);    // by node id
+    hostStaging.temporaryIdBuffer2 = alloc<CIdAABB>(hostStaging.maxNbResidentNodes);     // by resident node
+    hostStaging.temporaryNodeBuffer = alloc<COctreeNode*>(hostStaging.maxNbNodesExchanged); // by exchanged node
 
 
 
@@ -492,15 +495,11 @@ void GpuVersion::destroy(CuRast *editor, CUcontext *context){
     CURuntime::assertCudaSuccess(cuMemFreeHost(visStagingPoints));
     CURuntime::assertCudaSuccess(cuMemFreeHost(visStagingVoxels));
 
-    CURuntime::assertCudaSuccess(cuMemFreeHost(voxelsNodesToSend));
     CURuntime::assertCudaSuccess(cuMemFreeHost(nbRenderedPoints));
     CURuntime::assertCudaSuccess(cuMemFreeHost(nbRenderedVoxels));
-    CURuntime::assertCudaSuccess(cuMemFreeHost(nbRenderedNodes));
 
-    CURuntime::assertCudaSuccess(cuMemFreeHost(voxelsNodesToSend2));
     CURuntime::assertCudaSuccess(cuMemFreeHost(nbRenderedPoints2));
     CURuntime::assertCudaSuccess(cuMemFreeHost(nbRenderedVoxels2));
-    CURuntime::assertCudaSuccess(cuMemFreeHost(nbRenderedNodes2));
 
 
     CURuntime::assertCudaSuccess(cuEventDestroy(eventVisPreprocess));
@@ -850,7 +849,6 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
 
 void GpuVersion::octreeUpdateSimLODCountSplit(CuRast* editor, CUcontext* context){
     bool is_first_iteration = (*(bool*)isDoneIterating == true);
-    COPY_TO_GPU(isFirstCountSplitIteration, isDoneIterating, bool);
     *(bool*)isDoneIterating = false;
     COPY_TO_GPU(isDoneIterating, isDoneIterating, bool);
 

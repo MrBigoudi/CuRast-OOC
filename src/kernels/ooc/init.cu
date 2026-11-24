@@ -14,8 +14,12 @@ void kernel_init_global_buffers(){
 
     for(uint32_t i = thread_id; i < globalVariables.maxNbConcurrentNodes; i += nb_threads){
         globalVariables.relationshipMap[i] = CGlobalVariables::Relationship();
-        globalVariables.packedNodes[i] = nullptr;
         globalVariables.nodesFlags[i] = 0;
+    }
+    for(uint32_t i = thread_id; i < globalVariables.maxNbResidentNodes; i += nb_threads){
+        globalVariables.packedNodes[i] = nullptr;
+    }
+    for(uint32_t i = thread_id; i < globalVariables.maxNbGridsToInit; i += nb_threads){
         globalVariables.gridsToInitExchangedIndex[i] = -1;
     }
 

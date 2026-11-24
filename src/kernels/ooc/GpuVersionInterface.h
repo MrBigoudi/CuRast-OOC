@@ -533,79 +533,6 @@ struct COctreeNode {
 	}
 };
 
-struct CFullOctree {
-	glm::mat4 world;
-	COctreeNode** nodes;
-	CAABB* aabbs;
-	uint32_t num_nodes;
-	uint32_t max_lod_level;
-
-	// TODO: put inside uniforms structure
-	int32_t debug_lod_to_render = -1;
-	uint32_t voxels_nb_points_per_axis = 1;
-	float min_pixel_span = 0.;
-	bool use_voxels_debug_color = false;
-	bool use_aabb_debug_color = false;
-	uint32_t nb_blocks_per_node = 0;
-};
-
-
-
-
-/// TODO: refactor
-/// Tests unified memory
-
-
-struct CAABBUnified;
-struct CPointUnified;
-struct COccupancyGridUnified;
-struct CChunkUnified;
-struct COctreeNodeUnified;
-
-struct CFullOctreeUnified {
-	glm::mat4 world;
-	COctreeNodeUnified** nodes;
-	uint32_t num_nodes;
-	uint32_t max_lod_level;
-	
-	int32_t debug_lod_to_render;
-	uint32_t voxels_nb_points_per_axis;
-	float min_pixel_span;
-	bool use_voxels_debug_color;
-};
-struct CAABBUnified {
-	glm::vec3 mins = {INFINITY, INFINITY, INFINITY};
-	glm::vec3 maxs = {-INFINITY, -INFINITY, -INFINITY};
-};
-struct CPointUnified {
-	glm::vec3 position = glm::vec3();
-	uint8_t color[4] = {0,0,0,0};
-};
-struct COccupancyGridUnified {
-	uint32_t values[OocSimLodSettings::GRID_SIZE / 32u] = {0};
-};
-struct CChunkUnified {
-	CPointUnified points[OocSimLodSettings::NB_POINTS_PER_CHUNK] = {CPointUnified()};
-	uint32_t size = 0;
-	CChunkUnified* next = nullptr;
-};
-struct COctreeNodeUnified {
-	COctreeNodeUnified* children[8] = {nullptr};
-	uint16_t counter = 0;
-	uint8_t children_ids = 0b00000000;
-	CChunkUnified* points = nullptr;
-	CChunkUnified* voxels = nullptr;
-	COccupancyGridUnified* occupancy = nullptr;
-	bool updated = false;
-	CAABBUnified* aabb = nullptr;
-	uint8_t level = 0;
-	bool is_large = false;
-	bool is_visible = false;
-	bool is_cut = false;
-};
-
-
-
 
 
 
@@ -627,38 +554,6 @@ struct CAllocationPlan {
 
 
 
-struct CSemaphore {
-#ifdef __CUDACC__
-	enum State {
-		IN_USE = 0,
-		FREE = 1,
-	};
-	uint32_t flag = State::FREE;
-	
-	__device__ __forceinline__ CSemaphore(const State& state = State::FREE){
-		flag = state;
-	}
-
-	// Try to acquire the semaphore but do not block
-	// Return true is the semaphore was successfully acquired
-	__device__ __forceinline__ bool tryAcquire(){
-		uint32_t old_flag = __nv_atomic_fetch_and(&flag, 0, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-		// If old semaphore was free
-		return (old_flag == State::FREE);
-	}
-
-	// Block until the semaphore can be acquired
-	__device__ __forceinline__ void acquire(){
-		while(!tryAcquire()){}
-	}
-
-	// Release the semaphore
-	// It's the user responsability to only free a semaphore it already has acquired
-	__device__ __forceinline__ void release(){
-		__nv_atomic_or(&flag, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
-	}
-#endif // __CUDACC__
-};
 
 /// A node evicted from the device and kept drawable from a device copy of its in-memory data until
 /// the published host rendering buffers show it (see `CGlobalVariables::retainedEvictedNodes')
@@ -696,30 +591,32 @@ struct CGlobalVariables {
 	/// The main octree
 	bool isInitialised = false;
 	bool isUpdating = false;
-	bool isTemporarySwitching = false;
 	COctreeNode* mainOctree = nullptr;
 
-	/// The buffer of nodes for updates
+	/// The resident nodes (packed): indexed by `COctreeNode::cur_id', at most `maxNbResidentNodes' (the
+	/// nodes come from the node pool: `NB_ALLOCABLE_NODES')
+	uint32_t maxNbResidentNodes = 0;
 	COctreeNode** packedNodes = nullptr;
 
 	/// The buffer of nodes for rendering
 	uint32_t octreeDepth = 0;
 
-	uint32_t maxCountSplitIterations = 0;
-
-	uint32_t temporaryBufferSize = 0;
+	/// Scratch buffers: `temporaryIdBuffer' is indexed by node id (`maxNbConcurrentNodes'),
+	/// `temporaryIdBuffer2' by resident node (`maxNbResidentNodes'), `temporaryNodeBuffer' by
+	/// exchanged node (`maxNbNodesExchanged')
 	CIdAABB* temporaryIdBuffer = nullptr;
 	CIdAABB* temporaryIdBuffer2 = nullptr;
     COctreeNode** temporaryNodeBuffer = nullptr;
 	uint32_t nbNodesExchangedBeforeLoadComplete = 0;
 
 	uint32_t chunksAllocatorCounter = 0;
-	uint32_t maxAllocatedChunks = 0;
-	CChunk** allocatedChunks = nullptr;
-	CAllocationPlan* allocationPlans = nullptr;
+	CChunk** allocatedChunks = nullptr;                // `NB_ALLOCABLE_CHUNKS'
+	CAllocationPlan* allocationPlans = nullptr;        // per resident node
 	
-	COctreeNode** memoizedBatchPointsNodes = nullptr; 
-	COctreeNode** memoizedSpilledPointsNodes = nullptr; 
+	/// Leaf reached by every batch point / spilled point in the count, as a resident node index
+	/// (`packedNodes'; stable within an update, the nodes are only repacked by the cache update)
+	uint32_t* memoizedBatchPointsNodes = nullptr; 
+	uint32_t* memoizedSpilledPointsNodes = nullptr; 
 
 
 	uint32_t nbOrderedNodes = 0;
@@ -733,7 +630,6 @@ struct CGlobalVariables {
 	/// Data exchanged from the host
 	uint32_t nbNodesExchanged = 0;
 	uint32_t maxNbNodesExchanged = 0;
-	uint32_t maxNbPointsChunksPerExchangedNode = 0;
 	uint32_t maxNbVoxelsChunksPerExchangedNode = 0;
 	CIdAABB* exchangedAABBIndices = nullptr;
 	CIdAABB* exchangedAABBParentsIndices = nullptr;
@@ -748,8 +644,9 @@ struct CGlobalVariables {
 	bool isDoneLoading = true;
 	bool isDoneStoring = true;
 	bool isDoneIterating = true;
-	bool isFirstCountSplitIteration = true;
 
+	/// Occupancy grids to clear / refill (at most `maxNbGridsToInit': the grid pool, `NB_ALLOCABLE_GRIDS')
+	uint32_t maxNbGridsToInit = 0;
 	uint32_t nbGridsToInit = 0;
 	COctreeNode** gridsToInit = nullptr;
 	uint32_t* gridsToInitExchangedIndex = nullptr;
@@ -778,11 +675,8 @@ struct CGlobalVariables {
 	uint32_t nbRenderedVoxels2 = 0;
 	CPoint* renderedVoxels = nullptr;
 	CPoint* renderedVoxels2 = nullptr;
-	CIdAABB* renderedVoxelsNodes = nullptr;
-	CIdAABB* renderedVoxelsNodes2 = nullptr;
 
 	uint32_t totalNbNodesForVisibility = 0;
-	uint32_t visibilityCacheSize = 0;
 	uint32_t nbNodesExchangedVisPoints = 0;
 	uint32_t nbNodesExchangedVisVoxels = 0;
 	bool isUsingSecondRenderingBuffer = false;
@@ -851,12 +745,16 @@ struct CGlobalVariables {
     ////////////////////////// TEMPORARY BUFFERS //////////////////////////
     ///////////////////////////////////////////////////////////////////////
     /// The list of spilled points
-    bool hasSpillingNodes = false;
     uint32_t nbSpilledPoints = 0;
     uint32_t maxNbSpilledPoints = 0;
     CPoint* spilledPoints = nullptr;
+    /// Nodes spilling in a count iteration (at most `maxNbSpillingNodes': resident nodes), and their
+    /// point chunks (at most `maxNbSpillingChunks': every chunk is full except the last one of each
+    /// node, so maxNbSpilledPoints / NB_POINTS_PER_CHUNK + maxNbSpillingNodes)
     uint32_t nbSpillingNodes = 0;
+    uint32_t maxNbSpillingNodes = 0;
 	uint32_t nbSpillingChunks = 0;
+	uint32_t maxNbSpillingChunks = 0;
     COctreeNode** spillingNodes = nullptr;
 	uint32_t* spilledChunksCounter = nullptr;
 	CChunk** spillingChunks = nullptr;
@@ -865,7 +763,7 @@ struct CGlobalVariables {
     uint32_t nbBacklogVoxels = 0;
     uint32_t maxNbBacklogVoxels = 0;
     CPoint* backlogVoxels = nullptr;
-    COctreeNode** backlogVoxelsNodes = nullptr;
+    uint32_t* backlogVoxelsNodes = nullptr;   // resident node index (`packedNodes') of each voxel
 
 	uint32_t maxPointsPerLeaf = 0;
 
@@ -974,16 +872,6 @@ struct CGlobalVariables {
 
 
 
-enum PipelineLevel {
-	LevelInit,
-	LevelBottomUp,
-	LevelSimlodLoad,
-	LevelSimlodSplitCount,
-	LevelSimlodVoxelSampling,
-	LevelSimlodInsertion,
-	LevelSimlod,
-	LevelCacheUpdate
-};
 
 
 enum SentBatchState {
