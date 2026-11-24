@@ -128,6 +128,11 @@ void LoaderGpuVersion::init(){
 	for(uint32_t i = 0; i < OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE; i++){
 		((uint32_t*)(batchesOnGpuStatus))[i] = BatchHandled;
 	}
+
+	isDeviceSlotConfirmed = std::vector<uint8_t>(OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE, 0);
+	statusReadbackEligible = std::vector<uint8_t>(OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE, 0);
+	CURuntime::assertCudaSuccess(cuEventCreate(&eventStatusReadback, CU_EVENT_DISABLE_TIMING));
+	isStatusReadbackInFlight = false;
 }
 
 void LoaderGpuVersion::destroy(){
@@ -135,36 +140,95 @@ void LoaderGpuVersion::destroy(){
     stopLoading();
     destroyPreview();
 
+    // The uploads and the readback in flight use the batches and the pinned status buffer
+    CURuntime::assertCudaSuccess(cuStreamSynchronize(stream));
+    if(isStatusReadbackInFlight){
+        CURuntime::assertCudaSuccess(cuEventSynchronize(eventStatusReadback));
+        isStatusReadbackInFlight = false;
+    }
+    for(LoaderSendRecord& record : sendsInFlight){ freeSendEvents.push_back(record.event); }
+    sendsInFlight.clear();
+    for(CUevent event : freeSendEvents){ CURuntime::assertCudaSuccess(cuEventDestroy(event)); }
+    freeSendEvents.clear();
+    CURuntime::assertCudaSuccess(cuEventDestroy(eventStatusReadback));
+
     CURuntime::assertCudaSuccess(cuEventDestroy(eventLoadComplete));
     CURuntime::assertCudaSuccess(cuMemFreeHost(batchesOnGpuStatus));
     CURuntime::assertCudaSuccess(cuStreamDestroy(stream));
 }
 
+bool LoaderGpuVersion::isUploadInFlight(const PointBatch* batch){
+	for(const LoaderSendRecord& record : sendsInFlight){
+		for(const std::shared_ptr<PointBatch>& sent : record.batches){
+			if(sent.get() == batch){ return true; }
+		}
+	}
+	return false;
+}
+
+/// Hand the device batch slots whose batch was inserted back to `sendToDevice', without blocking:
+/// it used to synchronise the loading stream (the uploads of the previous frames) and read the mask
+/// with a synchronous copy, i.e. wait for every octree update kernel queued on the default stream
+///  1. completed uploads confirm their device slots
+///  2. a completed readback of the mask frees the slots that were confirmed when it was queued and
+///     that the device marked `BatchHandled'
+///  3. a new readback is queued (it sees the device state after everything queued so far on the
+///     default stream); its result is used by a later frame
 void LoaderGpuVersion::fetchFromDevice(){
-	cudaStreamSynchronize(stream);
+	// 1. Uploads complete, in order (same stream)
+	while(!sendsInFlight.empty()){
+		const CUresult res = cuEventQuery(sendsInFlight.front().event);
+		if(res == CUDA_ERROR_NOT_READY){break;}
+		CURuntime::assertCudaSuccess(res);
+		for(uint32_t device_slot : sendsInFlight.front().device_slots){
+			isDeviceSlotConfirmed[device_slot] = 1;
+		}
+		freeSendEvents.push_back(sendsInFlight.front().event);
+		sendsInFlight.pop_front();   // releases the batches it kept alive
+	}
 
-	CURuntime::assertCudaSuccess(cuMemcpyDtoH(
-		batchesOnGpuStatus, 
-		(CUdeviceptr)GpuVersion::hostStaging.batchesAddedMask,
-		OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE * sizeof(uint32_t)
-	));
+	// 2. Readback of the mask
+	if(isStatusReadbackInFlight){
+		const CUresult res = cuEventQuery(eventStatusReadback);
+		if(res == CUDA_ERROR_NOT_READY){return;}   // one readback at a time
+		CURuntime::assertCudaSuccess(res);
+		isStatusReadbackInFlight = false;
 
-	for(uint32_t i=0; i<OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE; i++){
-		if(((uint32_t*)(batchesOnGpuStatus))[i] == BatchHandled){ 
-			uint32_t real_index = batchesOnGpu[i];
+		const uint32_t* status = reinterpret_cast<const uint32_t*>(batchesOnGpuStatus);
+		for(uint32_t i = 0; i < OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE; i++){
+			if(!statusReadbackEligible[i] || status[i] != BatchHandled){continue;}
+			const uint32_t real_index = batchesOnGpu[i];
 			batchesOnGpu[i] = -1;
-			if(real_index != -1){
-				std::lock_guard<std::mutex> lock(batchesQueueMutexes[real_index]);
-				std::shared_ptr<PointBatch>& batch = batchesQueue[real_index];
-				batch->state = BatchState::ToRemove;
+			isDeviceSlotConfirmed[i] = 0;
+			if(real_index == uint32_t(-1)){continue;}
 
-				{
-					std::lock_guard<std::mutex> lock(filesRecordMtx);
-					filesRecord[*batch->file].nb_batches_inserted.fetch_add(1);
-				}
+			std::lock_guard<std::mutex> lock(batchesQueueMutexes[real_index]);
+			std::shared_ptr<PointBatch>& batch = batchesQueue[real_index];
+			if(!batch){continue;}
+			batch->state = BatchState::ToRemove;
+			{
+				std::lock_guard<std::mutex> lock_record(filesRecordMtx);
+				filesRecord[*batch->file].nb_batches_inserted.fetch_add(1);
 			}
 		}
 	}
+
+	// 3. New readback, for the slots whose upload is complete (their mask holds at least
+	//    `BatchToHandle', any later state comes from the octree update on the default stream)
+	bool has_eligible = false;
+	for(uint32_t i = 0; i < OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE; i++){
+		statusReadbackEligible[i] = (batchesOnGpu[i] != uint32_t(-1) && isDeviceSlotConfirmed[i]) ? 1 : 0;
+		has_eligible = has_eligible || statusReadbackEligible[i];
+	}
+	if(!has_eligible){return;}
+	CURuntime::assertCudaSuccess(cuMemcpyDtoHAsync(
+		batchesOnGpuStatus,
+		(CUdeviceptr)GpuVersion::hostStaging.batchesAddedMask,
+		OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE * sizeof(uint32_t),
+		0   // default stream: after the octree update kernels queued so far
+	));
+	CURuntime::assertCudaSuccess(cuEventRecord(eventStatusReadback, 0));
+	isStatusReadbackInFlight = true;
 }
 
 bool LoaderGpuVersion::sendToDevice(){
@@ -227,9 +291,14 @@ bool LoaderGpuVersion::sendToDevice(){
 	}
 
 	uint32_t nb_used_device_slots = 0;
+	std::vector<uint32_t> sent_device_slots = {};
+	std::vector<std::shared_ptr<PointBatch>> sent_batches = {};
 	auto send = [&](uint32_t slot, const std::shared_ptr<PointBatch>& batch){
 		const uint32_t i = free_device_slots[nb_used_device_slots++];
         batchesOnGpu[i] = slot;
+        isDeviceSlotConfirmed[i] = 0;   // until the upload below is complete
+        sent_device_slots.push_back(i);
+        sent_batches.push_back(batch);
         {
             // Under the slot's mutex, like every other access to the state of a queued batch
             std::lock_guard<std::mutex> lock(batchesQueueMutexes[slot]);
@@ -297,6 +366,20 @@ bool LoaderGpuVersion::sendToDevice(){
         ));
         // CURuntime::assertCudaSuccess(cuEventRecord(eventLoadComplete, stream));
         // cudaStreamWaitEvent(0, eventLoadComplete);
+
+        // Completion of this upload, checked without blocking by `fetchFromDevice' (the batches stay
+        // alive until then: their host points are the source of the copies)
+        LoaderSendRecord record = {};
+        if(!freeSendEvents.empty()){
+            record.event = freeSendEvents.back();
+            freeSendEvents.pop_back();
+        } else {
+            CURuntime::assertCudaSuccess(cuEventCreate(&record.event, CU_EVENT_DISABLE_TIMING));
+        }
+        CURuntime::assertCudaSuccess(cuEventRecord(record.event, stream));
+        record.device_slots = std::move(sent_device_slots);
+        record.batches = std::move(sent_batches);
+        sendsInFlight.push_back(std::move(record));
     }
 
     return has_send_new_points;
@@ -384,10 +467,11 @@ void LoaderGpuVersion::updatePreview(){
         for(const auto& [slot, batch] : loadedBatches){ loaded.insert(batch.get()); }
 
         // 2. Regions of the batches that left the loaded lists: sent (a previewed batch is never
-        //    demoted). `run' calls this before `sendToDevice', after `fetchFromDevice' synchronised the
-        //    copies of the loading stream: their device slot is complete and drawn from this frame on
+        //    demoted), and whose upload is complete (`fetchFromDevice' checked the uploads just
+        //    before): their device slot is complete and drawn from this frame on
         for(LoaderPreviewRegion& region : previewRegions){
             if(!region.batch || loaded.contains(region.batch.get())){continue;}
+            if(isUploadInFlight(region.batch.get())){continue;}
             region.batch->is_previewed = false;
             region.batch.reset();
             region.is_visible = false;

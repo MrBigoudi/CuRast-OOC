@@ -30,8 +30,9 @@
 - [ ] Slider to change the points budget
 - [ ] Coloring per node
 - [ ] Coloring per level
-- [ ] Change how voxels are rendered (quad )
-- [ ] Load immediately when zooming in a region 
+- [x] Change how voxels are rendered (quad)
+- [x] Load immediately when zooming in a region
+- [ ] Avoid stalling after many points loaded
 
 
 

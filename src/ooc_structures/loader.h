@@ -90,6 +90,13 @@ struct LoaderPreviewCounts {
     uint32_t counts[LOADER_PREVIEW_MAX_REGIONS] = {};
 };
 
+/// One `sendToDevice' upload in flight on the loading stream (see `LoaderGpuVersion::fetchFromDevice')
+struct LoaderSendRecord {
+    CUevent event = nullptr;                                  // recorded after its copies
+    std::vector<uint32_t> device_slots = {};                  // device batch slots it fills
+    std::vector<std::shared_ptr<PointBatch>> batches = {};    // kept alive while they are copied
+};
+
 
 struct LoaderGpuVersion {
     using BatchBounds = LoaderBatchBounds;
@@ -106,10 +113,27 @@ struct LoaderGpuVersion {
     static inline std::mutex perFileMutexesMtx;
 
     static inline std::vector<uint32_t> batchesOnGpu = {};
+    /// Pinned copy of the device `batchesAddedMask', read back asynchronously (`fetchFromDevice')
     static inline void* batchesOnGpuStatus = nullptr;
 
     static inline CUstream stream;
     static inline CUevent eventLoadComplete;
+
+    /// The device batch slots are handed back without blocking the main thread (`fetchFromDevice'):
+    ///  - each `sendToDevice' upload records an event on the loading stream; once it is complete, the
+    ///    device slots it filled are "confirmed" (points, count and mask `BatchToHandle' written)
+    ///  - the mask is read back with an asynchronous copy on the default stream (after the octree
+    ///    update kernels queued so far); only the slots confirmed when that copy was queued are
+    ///    interpreted (a slot sent after it may still show the `BatchHandled' of its previous batch)
+    /// Main thread only
+    static inline std::deque<LoaderSendRecord> sendsInFlight = {};
+    static inline std::vector<CUevent> freeSendEvents = {};
+    static inline std::vector<uint8_t> isDeviceSlotConfirmed = {};
+    static inline CUevent eventStatusReadback = nullptr;
+    static inline bool isStatusReadbackInFlight = false;
+    static inline std::vector<uint8_t> statusReadbackEligible = {};
+    /// True if `batch' is part of an upload not complete yet (its device slot is not drawn yet)
+    static bool isUploadInFlight(const PointBatch* batch);
 
     static inline std::vector<CUmemcpyAttributes> loadingAttributes = {
         CUmemcpyAttributes {
@@ -281,9 +305,8 @@ struct LoaderGpuVersion {
     static inline CUevent previewDrawnEvent;
     static void initPreview();
     static void destroyPreview();
-    /// Main thread, every frame before `sendToDevice' (a batch sent this frame stays previewed one more
-    /// frame: its device slot is drawn from the next frame on, once `fetchFromDevice' synchronised
-    /// the copies of the loading stream)
+    /// Main thread, every frame before `sendToDevice' (a sent batch stays previewed until
+    /// `fetchFromDevice' sees its upload complete: its device slot is drawn from then on)
     static void updatePreview();
     /// Points to draw per region; returns false if nothing is visible (main thread)
     static bool previewDrawCounts(LoaderPreviewCounts& counts);
