@@ -1510,6 +1510,29 @@ void LoaderGpuVersion::stopLoading(){
 
 
 
+namespace {
+/// Folder tree of `LoaderGpuVersion::filesRecordUi' (main thread only): rebuilt when the number of
+/// files changes. The `FileInfo' pointers stay valid: `filesRecord' never erases an entry, and an
+/// `unordered_map' keeps its elements in place when it grows
+struct LoaderFilesTreeCache {
+    struct File {
+        std::string name = "";
+        std::string full_path = "";
+        const LoaderGpuVersion::FileInfo* info = nullptr;
+    };
+    struct Dir {
+        std::string path = "";
+        std::vector<File> files = {};
+    };
+    std::vector<Dir> dirs = {};
+    size_t nb_files = 0;
+};
+LoaderFilesTreeCache& loaderFilesTreeCache(){
+    static LoaderFilesTreeCache cache = {};
+    return cache;
+}
+}
+
 void LoaderGpuVersion::filesRecordUi(){
 	ImGui::SetNextWindowSize(ImVec2(500, 400), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("File Explorer")) {
@@ -1538,106 +1561,103 @@ void LoaderGpuVersion::filesRecordUi(){
         ImGui::Separator();
     }
 
-    // Build directory tree from filesRecord
-    // Map: directory path -> list of (filename, full path)
-    std::map<std::string, std::vector<std::pair<std::string, std::string>>> dirTree;
-
+    // Folder tree of the files, cached (see `LoaderFilesTreeCache'): rebuilt only when files were
+    // added (`filesRecord' entries are never erased), instead of every frame
+    LoaderFilesTreeCache& tree = loaderFilesTreeCache();
     {
         std::lock_guard<std::mutex> lock(filesRecordMtx);
-        for (const auto& [fullPath, info] : filesRecord) {
-            fs::path p(fullPath);
-            std::string dir  = p.parent_path().string();
-            std::string file = p.filename().string();
-            dirTree[dir].emplace_back(file, fullPath);
+        if(filesRecord.size() != tree.nb_files){
+            std::map<std::string, std::vector<LoaderFilesTreeCache::File>> dirs = {};
+            for(auto& [full_path, info] : filesRecord){
+                const fs::path path(full_path);
+                dirs[path.parent_path().string()].push_back({path.filename().string(), full_path, &info});
+            }
+            tree.dirs.clear();
+            tree.dirs.reserve(dirs.size());
+            for(auto& [dir, files] : dirs){
+                std::sort(files.begin(), files.end(), [](const auto& a, const auto& b){ return a.name < b.name; });
+                tree.dirs.push_back({dir, std::move(files)});
+            }
+            tree.nb_files = filesRecord.size();
         }
     }
 
     // Render tree
-    for (auto& [dir, files] : dirTree) {
+    for(const LoaderFilesTreeCache::Dir& dir : tree.dirs){
         // Use the directory path as the tree node label
         // Collapsed when it first appears (no `ImGuiTreeNodeFlags_DefaultOpen'): ImGui then keeps
         // the open / closed state chosen by the user (the label is the node id)
-        bool dirOpen = ImGui::TreeNodeEx(dir.c_str(),
-                                         ImGuiTreeNodeFlags_SpanAvailWidth);
+        if(!ImGui::TreeNodeEx(dir.path.c_str(), ImGuiTreeNodeFlags_SpanAvailWidth)){continue;}
 
-        if (dirOpen) {
-            for (auto& [filename, fullPath] : files) {
-                // Snapshot atomics once (avoid multiple reads diverging)
-                laszip_header* header = nullptr;
-                uint32_t  nb_batches          = 0;
-                uint32_t  nb_batches_loaded    = 0;
-                uint32_t  nb_batches_on_device = 0;
-                uint32_t  nb_batches_inserted  = 0;
+        // Only the files in the visible part of the window are drawn (every file has the same
+        // height: the clipper measures the first one)
+        ImGuiListClipper clipper;
+        clipper.Begin(static_cast<int>(dir.files.size()));
+        while(clipper.Step()){
+            const int first = clipper.DisplayStart;
+            const int last = clipper.DisplayEnd;
 
-                {
-                    std::lock_guard<std::mutex> lock(filesRecordMtx);
-                    auto it = filesRecord.find(fullPath);
-                    if (it != filesRecord.end()) {
-						header  			 = it->second.header.get();
-                        nb_batches           = it->second.nb_batches;
-                        nb_batches_loaded    = it->second.nb_batches_loaded.load();
-                        nb_batches_on_device = it->second.nb_batches_on_device.load();
-                        nb_batches_inserted  = it->second.nb_batches_inserted.load();
+            // Snapshot of the visible files, under a single lock (the header and `nb_batches' are
+            // written under it when a file is registered again; the other counters are atomics)
+            struct Row {
+                bool has_header = false;
+                glm::vec3 mins = glm::vec3(0.0f);
+                glm::vec3 maxs = glm::vec3(0.0f);
+                uint32_t nb_batches = 0;
+            };
+            std::vector<Row> rows(static_cast<size_t>(std::max(0, last - first)));
+            {
+                std::lock_guard<std::mutex> lock(filesRecordMtx);
+                for(int k = first; k < last; k++){
+                    const FileInfo& info = *dir.files[k].info;
+                    Row& row = rows[k - first];
+                    row.nb_batches = info.nb_batches;
+                    if(info.header){
+                        row.has_header = true;
+                        row.mins = glm::vec3(float(info.header->min_x), float(info.header->min_y), float(info.header->min_z));
+                        row.maxs = glm::vec3(float(info.header->max_x), float(info.header->max_y), float(info.header->max_z));
                     }
                 }
+            }
+
+            for(int k = first; k < last; k++){
+                const LoaderFilesTreeCache::File& file = dir.files[k];
+                const Row& row = rows[k - first];
+                const uint32_t nb_batches           = row.nb_batches;
+                const uint32_t nb_batches_loaded    = file.info->nb_batches_loaded.load(std::memory_order_relaxed);
+                const uint32_t nb_batches_on_device = file.info->nb_batches_on_device.load(std::memory_order_relaxed);
+                const uint32_t nb_batches_inserted  = file.info->nb_batches_inserted.load(std::memory_order_relaxed);
 
                 // --- Clickable file label ---
-                ImGui::PushID(fullPath.c_str());
+                ImGui::PushID(file.full_path.c_str());
 
-                bool clicked = ImGui::Selectable(filename.c_str(), false,
-                                                  ImGuiSelectableFlags_None,
-                                                  ImVec2(0, 0));
-                if (clicked && header) {
-                    printf("Zooming in on: %s\n", fullPath.c_str());
-					glm::vec3 mins = {header->min_x, header->min_y, header->min_z};
-					glm::vec3 maxs = {header->max_x, header->max_y, header->max_z};
-					Runtime::controls->focus(mins, maxs, 1.f);
+                if(ImGui::Selectable(file.name.c_str(), false, ImGuiSelectableFlags_None, ImVec2(0, 0)) && row.has_header){
+                    printf("Zooming in on: %s\n", file.full_path.c_str());
+                    Runtime::controls->focus(row.mins, row.maxs, 1.f);
                 }
 
                 // --- Progress bars ---
-				ImVec4 bar_color = ImVec4(0.2f, 0.8f, 0.3f, 1.0f);
-				float fraction_loaded   = (nb_batches > 0)
-                    ? static_cast<float>(nb_batches_loaded) / static_cast<float>(nb_batches)
-                    : 0.0f;
-                float fraction_device   = (nb_batches > 0)
-                    ? static_cast<float>(nb_batches_on_device) / static_cast<float>(nb_batches)
-                    : 0.0f;
-                float fraction_inserted = (nb_batches > 0)
-                    ? static_cast<float>(nb_batches_inserted) / static_cast<float>(nb_batches)
-                    : 0.0f;
-
-				// On-device bar
-                char overlayLoaded[64];
-                snprintf(overlayLoaded, sizeof(overlayLoaded),
-                         "Loaded: %u / %u", nb_batches_loaded, nb_batches);
-                ImGui::PushStyleColor(ImGuiCol_PlotHistogram, bar_color);
-                ImGui::ProgressBar(fraction_loaded, ImVec2(-1.0f, 0.0f), overlayLoaded);
-                ImGui::PopStyleColor();
-
-
-                // On-device bar
-                char overlayDevice[64];
-                snprintf(overlayDevice, sizeof(overlayDevice),
-                         "On device: %u / %u", nb_batches_on_device, nb_batches);
-                ImGui::PushStyleColor(ImGuiCol_PlotHistogram, bar_color);
-                ImGui::ProgressBar(fraction_device, ImVec2(-1.0f, 0.0f), overlayDevice);
-                ImGui::PopStyleColor();
-
-                // Inserted bar
-                char overlayInserted[64];
-                snprintf(overlayInserted, sizeof(overlayInserted),
-                         "Inserted:  %u / %u", nb_batches_inserted, nb_batches);
-                ImGui::PushStyleColor(ImGuiCol_PlotHistogram, bar_color);
-                ImGui::ProgressBar(fraction_inserted, ImVec2(-1.0f, 0.0f), overlayInserted);
-                ImGui::PopStyleColor();
-
+                const ImVec4 bar_color = ImVec4(0.2f, 0.8f, 0.3f, 1.0f);
+                auto bar = [&](const char* label, uint32_t value){
+                    const float fraction = (nb_batches > 0)
+                        ? static_cast<float>(value) / static_cast<float>(nb_batches)
+                        : 0.0f;
+                    char overlay[64];
+                    snprintf(overlay, sizeof(overlay), "%s %u / %u", label, value, nb_batches);
+                    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, bar_color);
+                    ImGui::ProgressBar(fraction, ImVec2(-1.0f, 0.0f), overlay);
+                    ImGui::PopStyleColor();
+                };
+                bar("Loaded:", nb_batches_loaded);
+                bar("On device:", nb_batches_on_device);
+                bar("Inserted: ", nb_batches_inserted);
 
                 ImGui::Separator();
                 ImGui::PopID();
             }
-
-            ImGui::TreePop();
         }
+
+        ImGui::TreePop();
     }
 
     ImGui::End();
