@@ -229,6 +229,14 @@ struct GpuVersion {
     static inline std::unordered_map<CIdAABB, std::shared_ptr<HostStorageNode>> visibilityNodes = {};
     // static inline std::unordered_map<CIdAABB, std::shared_ptr<HostStorageNode>> persistentStoredNodes = {};
     static void updateHostCache();
+    /// `hostCache->add', recording the id it evicts (see `hostCacheEvictedIds')
+    static void hostCacheAdd(CIdAABB id);
+    /// What `updateHostCache' has to look at (main thread only), instead of every host RAM node:
+    /// the ids evicted from `hostCache' since its last pass (written one last time and freed if they
+    /// are not back in it), and the nodes created or written by `storeNodes' since (written if they
+    /// are not on disk yet or hold newer data)
+    static inline std::vector<CIdAABB> hostCacheEvictedIds = {};
+    static inline std::unordered_set<CIdAABB> hostCacheDirtyIds = {};
     /// Serialise `hostCacheToSerialise', publish the on-disk counters, free `hostCacheToDelete'
     static void serialiseHostCacheNodes();
     static void updateVisCache();

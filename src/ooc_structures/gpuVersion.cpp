@@ -742,7 +742,7 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
         loadingToDeserialise = {};
         for(uint32_t i=0; i < nbNodesToLoad; i++){
             const CIdAABB& id = ids[i];
-            hostCache->add(id);
+            hostCacheAdd(id);
             currentlyInUpdatesCache.insert(id);
 
             // TODO: to remove
@@ -1121,8 +1121,10 @@ void GpuVersion::storeNodes(uint32_t nb_nodes_to_store){
         storingToDeserialise = {};
         for(uint32_t i=0; i < nb_nodes_to_store; i++){
             const CIdAABB& id = ids[i];
-            hostCache->add(id);
+            hostCacheAdd(id);
             currentlyInUpdatesCache.erase(id);
+            // New, or about to receive the data of the device: checked by the next `updateHostCache'
+            hostCacheDirtyIds.insert(id);
 
             if(!updateNodes.contains(id)){
                 updateNodes[id] = std::make_shared<HostStorageNode>(HostStorageNodeOwner::Update);
@@ -1177,7 +1179,8 @@ void GpuVersion::storeNodes(uint32_t nb_nodes_to_store){
         parentsMap[id] = parents_ids[i];
         aabbsMap[id] = aabbs[i];
         currentlyInUpdatesCache.erase(id);
-        hostCache->add(id);
+        hostCacheAdd(id);
+        hostCacheDirtyIds.insert(id);   // its counters change below
 
         // Prepare to load points
         if(nbs_points[i] > 0){
@@ -2296,6 +2299,14 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
 }
 
 
+void GpuVersion::hostCacheAdd(CIdAABB id){
+    const CIdAABB evicted = hostCache->add(id);
+    if(evicted != CINVALID_ID){
+        hostCacheEvictedIds.push_back(evicted);
+    }
+}
+
+
 void GpuVersion::updateHostCache(){
     if(!isDoneUpdatingHostCache){return;}
     // The visibility workers are still copying host RAM nodes: the nodes this update drops would
@@ -2307,30 +2318,53 @@ void GpuVersion::updateHostCache(){
     ){return;}
 
     if(!hasStartedSynchronisingStoringCompleteEvent){
+        // Nothing changed since the last pass: nothing to write or free
+        if(hostCacheEvictedIds.empty() && hostCacheDirtyIds.empty()){return;}
+
         hostCacheToSerialise = {};
         hostCacheToDelete = {};
-        for(auto it = updateNodes.begin(); it != updateNodes.end();){
-            const CIdAABB& id = it->first;
-            std::shared_ptr<HostStorageNode>& node = it->second;
-            if(!hostCache->contains(id)){
-                hostCacheToSerialise.push_back(node);
-                hostCacheToDelete.push_back(node);
-                it = updateNodes.erase(it);
-            } else {
-                // if(!storedNodes.contains(id)){
-                //     hostCacheToSerialise.push_back(node);
-                // }
-                // it++;
 
-                const COctreeNode& n = node->node;
-                bool is_dirty = n.points_counter != n.points_last_stored
-                    || n.voxels_counter != n.voxels_last_stored;
-                if(!storedNodes.contains(id) || is_dirty){
-                    hostCacheToSerialise.push_back(node);
-                }
-                it++;
+        // Only the nodes whose state may have changed since the last pass (it used to scan every host
+        // RAM node, every frame): a node only leaves `hostCache' through an eviction of
+        // `hostCacheAdd', and only becomes dirty or unstored through `storeNodes'
+        auto drop = [&](std::unordered_map<CIdAABB, std::shared_ptr<HostStorageNode>>::iterator it){
+            // Left the host cache: written one last time, then freed
+            hostCacheToSerialise.push_back(it->second);
+            hostCacheToDelete.push_back(it->second);
+            updateNodes.erase(it);
+        };
+
+        // 1. Evicted from the host cache
+        for(const CIdAABB id : hostCacheEvictedIds){
+            if(hostCache->contains(id)){
+                // Added back since: still cached, checked like a dirty node
+                hostCacheDirtyIds.insert(id);
+                continue;
+            }
+            auto it = updateNodes.find(id);
+            if(it == updateNodes.end()){continue;}   // already dropped (evicted twice)
+            hostCacheDirtyIds.erase(id);
+            drop(it);
+        }
+        hostCacheEvictedIds.clear();
+
+        // 2. Created or written by `storeNodes': not on disk yet, or with data newer than on disk
+        for(const CIdAABB id : hostCacheDirtyIds){
+            auto it = updateNodes.find(id);
+            if(it == updateNodes.end()){continue;}
+            if(!hostCache->contains(id)){
+                // Not expected (evictions are handled above), same outcome as the former scan
+                drop(it);
+                continue;
+            }
+            const COctreeNode& n = it->second->node;
+            const bool is_dirty = n.points_counter != n.points_last_stored
+                || n.voxels_counter != n.voxels_last_stored;
+            if(!storedNodes.contains(id) || is_dirty){
+                hostCacheToSerialise.push_back(it->second);
             }
         }
+        hostCacheDirtyIds.clear();
 
         hasStartedSynchronisingStoringCompleteEvent = true;
     }
