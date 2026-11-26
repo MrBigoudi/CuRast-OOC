@@ -36,8 +36,8 @@ BATCHES_LIST_SIZE = 1_024
 ### The maximum number of points per batches
 # MAX_POINTS_PER_BATCHES = 10_000
 # MAX_POINTS_PER_BATCHES = 100_000
-# MAX_POINTS_PER_BATCHES = 1_000_000
-MAX_POINTS_PER_BATCHES = 1_048_576 # value the automatic properties used to force
+MAX_POINTS_PER_BATCHES = 1_000_000
+# MAX_POINTS_PER_BATCHES = 1_048_576 # value the automatic properties used to force
 # MAX_POINTS_PER_BATCHES = 4_000_000
 # MAX_POINTS_PER_BATCHES = 10_000_000
 

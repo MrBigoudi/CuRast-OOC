@@ -223,6 +223,10 @@ struct GpuVersion {
 
     
     // CPU cache
+    /// The host cache is write-back: a node is written to disk only when it leaves `hostCache' (and
+    /// only what it gained since it was last written). While it is in the cache, its host RAM copy
+    /// (`updateNodes') is the reference: the octree update and the visibility update read it there
+    /// (see `finishHostCacheWrite' and `refreshHostNodesReadableCounts' below)
     static inline CLRUCache* hostCache = nullptr;
     static inline CLRUCache* hostVisCache = nullptr;
     static inline std::unordered_map<CIdAABB, std::shared_ptr<HostStorageNode>> updateNodes = {};
@@ -232,12 +236,14 @@ struct GpuVersion {
     /// `hostCache->add', recording the id it evicts (see `hostCacheEvictedIds')
     static void hostCacheAdd(CIdAABB id);
     /// What `updateHostCache' has to look at (main thread only), instead of every host RAM node:
-    /// the ids evicted from `hostCache' since its last pass (written one last time and freed if they
-    /// are not back in it), and the nodes created or written by `storeNodes' since (written if they
-    /// are not on disk yet or hold newer data)
+    /// the ids evicted from `hostCache' since its last pass (written and freed if they are not back
+    /// in it), and the nodes created or written by `storeNodes' since (only checked to still be in
+    /// the cache: write-back, a node is not written while it is cached)
     static inline std::vector<CIdAABB> hostCacheEvictedIds = {};
     static inline std::unordered_set<CIdAABB> hostCacheDirtyIds = {};
-    /// Serialise `hostCacheToSerialise', publish the on-disk counters, free `hostCacheToDelete'
+    /// Write `hostCacheToSerialise' (the nodes leaving the host cache) and record what was written in
+    /// `hostCacheWrittenCounters'. Runs on its own thread; it publishes nothing and frees nothing:
+    /// the main thread does it afterwards (`finishHostCacheWrite')
     static void serialiseHostCacheNodes();
     static void updateVisCache();
     static inline std::atomic<bool> isDoneUpdatingHostCache = true;
@@ -264,6 +270,27 @@ struct GpuVersion {
         uint32_t nb_voxels = 0;
     };
     static inline std::unordered_map<CIdAABB, StoredNodeCounters> storedNodesVisibilityCounters = {};
+
+    /// Counters written by the last `serialiseHostCacheNodes', in the order of `hostCacheToSerialise'
+    static inline std::vector<StoredNodeCounters> hostCacheWrittenCounters = {};
+    /// A write of `hostCacheToSerialise' was started and not finished on the main thread yet
+    static inline bool isHostCacheWritePending = false;
+    /// Nodes that left the host cache and were written: their buffers are given back to the pinned
+    /// allocators once no visibility worker copies a host RAM node anymore (`visPendingUpdateNodeCopies')
+    static inline std::vector<std::shared_ptr<HostStorageNode>> hostCacheToFree = {};
+    /// Main thread. Once the write thread is done: publish the written nodes for the visibility
+    /// update (on-disk counters, `storedNodes'), take them out of `updateNodes' (in that order: a
+    /// node is always readable from RAM or from disk), and free their buffers as soon as no
+    /// visibility worker can be reading them
+    /// Returns true when nothing is left to do (the octree update may create host nodes again)
+    static bool finishHostCacheWrite();
+
+    /// Host RAM nodes whose counters may be ahead of their `readable_*' counts (main thread only):
+    /// created for a deserialisation, or receiving device data (`storeNodes')
+    static inline std::unordered_set<CIdAABB> hostNodesNotReadable = {};
+    /// Main thread: when no deserialisation and no device->host copy is in progress
+    /// (`visCanReadUpdateNodes'), every host RAM node is complete: its `readable_*' counts catch up
+    static void refreshHostNodesReadableCounts();
 
     /// RAM cache of the visible nodes read from disk by the visibility updates, kept from one
     /// visibility update to the next, so that an update only reads what a node gained since (usually
@@ -296,8 +323,8 @@ struct GpuVersion {
     /// whole file at most; shrunk back when it is more than 4 times what the quota needs
 
     /// Host RAM nodes (`updateNodes') the visibility workers still have to copy into the staging
-    /// buffers (they copy them first). The host cache update (which frees the buffers of the nodes it
-    /// drops) waits for it to reach 0
+    /// buffers (they copy them first). The buffers of the nodes that left the host cache are only
+    /// freed once it is 0 (`finishHostCacheWrite')
     static inline std::atomic<uint32_t> visPendingUpdateNodeCopies{0};
 
     /// Threads reading / writing the node files of the octree update (deserialisation for loading and
@@ -311,17 +338,29 @@ struct GpuVersion {
     static bool isOctreeDoingDiskWork();
     static inline std::chrono::steady_clock::time_point lastVisibilityUpdateStart = {};
 
-    /// One visible node streamed from disk into the rendering staging buffers
-    /// Built on the main thread, filled by exactly one worker (`*_written'), read back on the main thread
+    /// One visible node streamed into the rendering staging buffers
+    /// Built on the main thread, filled by the workers (`*_written'), read back on the main thread
+    /// A node's elements come from two places: the first `nb_*_on_disk' from its files, the next
+    /// `nb_*_in_ram' from its host RAM window (`update_node', elements written to disk later, when the
+    /// node leaves the host cache). Its quota is shared between both parts: the RAM part is written
+    /// first, at `*_offset' (first pass of the workers), the disk part right after it (second pass)
     struct VisibilityTask {
         CIdAABB id = CINVALID_ID;
         uint32_t nb_points_on_disk = 0;
-        uint32_t points_quota = 0;      // number of points this node may write
-        uint64_t points_offset = 0;     // reserved slot in `visStagingPoints'
-        uint32_t points_written = 0;    // number of points really written (<= quota)
+        uint32_t nb_points_in_ram = 0;
+        uint32_t nb_points_total = 0;       // nb_points_on_disk + nb_points_in_ram (shares the budget)
+        uint32_t points_quota = 0;          // number of points this node may write
+        uint32_t points_quota_ram = 0;      // part of it taken from the RAM window (<= nb_points_in_ram)
+        uint64_t points_offset = 0;         // reserved slot in `visStagingPoints'
+        uint32_t points_written_ram = 0;    // written by the RAM part (first pass)
+        uint32_t points_written = 0;        // number of points really written (<= quota)
         uint32_t nb_voxels_on_disk = 0;
+        uint32_t nb_voxels_in_ram = 0;
+        uint32_t nb_voxels_total = 0;
         uint32_t voxels_quota = 0;
+        uint32_t voxels_quota_ram = 0;
         uint64_t voxels_offset = 0;
+        uint32_t voxels_written_ram = 0;
         uint32_t voxels_written = 0;
         float points_priority = 0.0f;   // device visibility priority (~ screen area covered, in pixels)
         float voxels_priority = 0.0f;   // negative: outside the view (out-of-view fallback, see below)
@@ -331,15 +370,12 @@ struct GpuVersion {
         /// `CVoxel::getOctant'); 0 = every voxel (cut node)
         uint8_t voxels_child_mask = 0;
 
-        /// Source of the node: its on-disk files (default) or its host RAM copy in `updateNodes'
-        /// (node evicted from the device but not written to disk yet, or with newer data than on
-        /// disk). Host RAM nodes are copied on the main thread in `visibilityUpdateSort' (the
-        /// workers skip them); `nb_*_on_disk' then hold the counts available in host RAM.
+        /// The node has a RAM part (`nb_*_in_ram' > 0): its host RAM copy in `updateNodes', kept alive
+        /// until the first pass copied it; its buffers are not given back to the pinned allocators
+        /// meanwhile, see `visPendingUpdateNodeCopies'
         bool is_from_update_node = false;
-        /// The host RAM node to copy (kept alive until the worker of the task copied it; its buffers
-        /// are not given back to the pinned allocators meanwhile, see `visPendingUpdateNodeCopies')
         std::shared_ptr<const HostStorageNode> update_node = nullptr;
-        /// RAM cache entry of the node (nodes read from disk), filled by the worker of the task
+        /// RAM cache entry of the node (disk part), filled by the worker of the second pass
         VisRamCacheEntry* ram_cache_entry = nullptr;
     };
     static inline std::vector<VisibilityTask> visibilityTasks = {};
@@ -441,8 +477,9 @@ struct GpuVersion {
     static inline std::vector<CIdAABB> storingToDeserialise = {};
     static inline bool isDoneSynchronisingStoringCompleteEvent = true;
     static inline bool hasStartedSynchronisingStoringCompleteEvent = false;
+    /// Nodes leaving the host cache, written by `serialiseHostCacheNodes' (they stay in `updateNodes'
+    /// until `finishHostCacheWrite')
     static inline std::vector<std::shared_ptr<HostStorageNode>> hostCacheToSerialise = {};
-    static inline std::vector<std::shared_ptr<HostStorageNode>> hostCacheToDelete = {};
     static inline bool isDoneSynchronisingEventInStoreNodes = true;
     static inline bool hasStartedSynchronisingEventInStoreNodes = false;
 
@@ -671,6 +708,23 @@ struct HostStorageNode {
 	CPoint* points = nullptr;
 	/// Voxels: their cells are also the occupancy grid of the node (no separate indices)
 	CVoxel* voxels = nullptr;
+
+    /// The buffers are indexed like the node's elements (element i at `points[i]'), but only hold the
+    /// window [`*_valid_from', `node.*_counter'): the elements before it are on disk only. A node
+    /// enters host RAM with empty windows starting at its counts on disk (`attach': nothing is read),
+    /// the device data is appended to them (`storeNodes'), and the whole window is written when the
+    /// node leaves the host cache. The points are never read back: only the visibility update needs
+    /// them, and it reads the disk part from the files. The voxels are read back (into
+    /// [0, voxels_valid_from), then `voxels_valid_from' = 0) when the node is loaded to the device
+    uint32_t points_valid_from = 0;
+    uint32_t voxels_valid_from = 0;
+
+    /// End of the part of the windows known to be complete (main thread only, see
+    /// `GpuVersion::refreshHostNodesReadableCounts'): the visibility update may copy the elements
+    /// from the counts on disk to these at any time. They are never written again: the device->host
+    /// copies of `storeNodes' append after them, the voxels read back go before them
+    uint32_t readable_points = 0;
+    uint32_t readable_voxels = 0;
 
     static inline PinnedMemoryAllocator<CPoint> points_allocator_update = {};
     static inline PinnedMemoryAllocator<CVoxel> voxels_allocator_update = {};

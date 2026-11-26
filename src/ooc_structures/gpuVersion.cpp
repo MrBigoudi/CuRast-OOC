@@ -136,7 +136,7 @@ void GpuVersion::initConstraints(CuRast* editor, CUcontext* context) {
     hostStaging.maxNbGridsToInit = OocSimLodSettings::NB_ALLOCABLE_GRIDS;
 
     hostStaging.maxNbNodesExchanged = OocSimLodSettings::MAX_NB_NODES_TO_EXCHANGE;
-    // The host keeps at most MAX_POINTS_PER_LEAF voxels per node (`storeNodes', `deserialize'): more
+    // The host keeps at most MAX_POINTS_PER_LEAF voxels per node (`storeNodes', `attach'): more
     // can never be exchanged usefully, whatever `MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE' says
     hostStaging.maxNbVoxelsChunksPerExchangedNode = std::min(
         OocSimLodSettings::MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE,
@@ -177,6 +177,8 @@ void GpuVersion::initHostSide(CuRast* editor, CUcontext* context) {
     *(uint32_t*)nbExchangedNodes = 0;
 
     storedNodesMtx = std::vector<std::mutex>(hostStaging.maxNbConcurrentNodes);
+    // Properties of the stored nodes (formerly one `.node' file per node), guarded by `storedNodesMtx'
+    OctreeNodeSerializable::init(hostStaging.maxNbConcurrentNodes);
 
     CURuntime::assertCudaSuccess(cuEventCreate(&eventVisPreprocess, CU_EVENT_DISABLE_TIMING));
     CURuntime::assertCudaSuccess(cuEventCreate(&eventLoadingComplete, CU_EVENT_DISABLE_TIMING));
@@ -528,7 +530,11 @@ void GpuVersion::destroy(CuRast *editor, CUcontext *context){
     CURuntime::assertCudaSuccess(cuEventDestroy(eventVisibilityUpdateComplete));
 
     LoaderGpuVersion::destroy();
+    // The host nodes waiting to be freed (`hostCacheToFree') are freed with their pools
+    hostCacheToFree.clear();
+    hostCacheToSerialise.clear();
     HostStorageNode::destroy();
+    OctreeNodeSerializable::destroy();
     GpuVersionUI::destroy();
 
     cudaDeviceSynchronize();
@@ -766,10 +772,19 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
             currentlyInUpdatesCache.insert(id);
 
             // TODO: to remove
-            if(!storedNodes.contains(id)){println("node {} is not yet stored; why is it here ??", id);}
+            // (write-back host cache: a node may only be in host RAM, never written to disk yet)
+            if(!storedNodes.contains(id) && !updateNodes.contains(id)){println("node {} is neither stored nor in host RAM; why is it here ??", id);}
 
             if(!updateNodes.contains(id)){
-                updateNodes[id] = std::make_shared<HostStorageNode>(HostStorageNodeOwner::Update);
+                // Set up from its metadata, nothing read: the device needs neither its stored points
+                // (it only receives new points) nor anything else but its voxels
+                std::shared_ptr<HostStorageNode> new_node = std::make_shared<HostStorageNode>(HostStorageNodeOwner::Update);
+                OctreeNodeSerializable::attach(new_node.get(), id);
+                updateNodes[id] = new_node;
+            }
+            // Its voxels rebuild its occupancy grid on the device: the ones only on disk are read
+            // back (once: they stay in host RAM while the node is cached)
+            if(updateNodes[id]->voxels_valid_from > 0){
                 loadingToDeserialise.push_back(id);
             }
         }
@@ -786,7 +801,7 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
             const uint32_t nb_threads = nbDiskIoThreads();
             std::thread deserialize_thread([jobs = std::move(jobs), nb_threads]() {
                 ioParallelFor(static_cast<uint32_t>(jobs.size()), nb_threads, [&](uint32_t k){
-                    OctreeNodeSerializable::deserialize(jobs[k].second, jobs[k].first, "From simlod load");
+                    OctreeNodeSerializable::readMissingVoxels(jobs[k].second, "From simlod load");
                 });
                 isDoneDeserializingForLoading = true;
             });
@@ -796,6 +811,12 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
         }
     }
     hasStartedLoading = false;
+
+    // The voxels read back are complete (the deserialisation thread is done): the voxel windows of
+    // these nodes now start at 0 (main thread: the visibility update reads `*_valid_from' here too)
+    for(const CIdAABB& id : loadingToDeserialise){
+        updateNodes[id]->voxels_valid_from = 0;
+    }
 
     // Send the nodes back to the device
     std::vector<CUdeviceptr> srcs_host = {
@@ -822,6 +843,11 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
         static_cast<uint32_t*>(exchangedVoxelsCounters)[i] = cur_node->node.voxels_counter;
 
         // Send the voxels: their cells rebuild the occupancy grid of the node (`kernel_fill_new_grids')
+        // (all of them are in host RAM: read back above if needed)
+        if(cur_node->voxels_valid_from != 0){
+            println("FATAL: simlodLoad, node {} lacks its first {} voxels in host RAM", ids[i], cur_node->voxels_valid_from);
+            std::abort();
+        }
         if(cur_node->node.voxels_counter > 0){
             srcs_host.push_back((CUdeviceptr)cur_node->voxels);
             dsts_device.push_back(exchangedLoadedVoxelsPointers[i]);
@@ -1136,7 +1162,9 @@ void GpuVersion::storeNodes(uint32_t nb_nodes_to_store){
 
         CIdAABB* ids = static_cast<CIdAABB*>(exchangedIds);
 
-        // Deserialise in parallel
+        // Nothing is read: a node not in host RAM is set up from its metadata (`attach'), with an
+        // empty RAM window the device data is appended to below. Its stored points and voxels stay
+        // on disk: the octree update never needs them back, the visibility update reads them there
         storingToDeserialise = {};
         for(uint32_t i=0; i < nb_nodes_to_store; i++){
             const CIdAABB& id = ids[i];
@@ -1146,34 +1174,18 @@ void GpuVersion::storeNodes(uint32_t nb_nodes_to_store){
             hostCacheDirtyIds.insert(id);
 
             if(!updateNodes.contains(id)){
-                updateNodes[id] = std::make_shared<HostStorageNode>(HostStorageNodeOwner::Update);
-                updateNodes[id]->node.aabb_index = id;
-                if(storedNodes.contains(id)){
-                    storingToDeserialise.push_back(id);
-                }
+                // Not in host RAM: either never stored, or entirely on disk (a node that left the
+                // host cache is only taken out of `updateNodes' once written, see
+                // `finishHostCacheWrite')
+                std::shared_ptr<HostStorageNode> new_node = std::make_shared<HostStorageNode>(HostStorageNodeOwner::Update);
+                OctreeNodeSerializable::attach(new_node.get(), id);
+                updateNodes[id] = new_node;
             }
+            // Receives the device->host copies below
+            hostNodesNotReadable.insert(id);
         }
 
         hasStartedStoring = true;
-
-        if(!storingToDeserialise.empty()){
-            isDoneDeserializingForStoring = false;
-
-            // In parallel, as for the loading (see `octreeUpdateSimLODLoad')
-            std::vector<std::pair<CIdAABB, HostStorageNode*>> jobs = {};
-            jobs.reserve(storingToDeserialise.size());
-            for(const CIdAABB& id : storingToDeserialise){ jobs.push_back({id, updateNodes[id].get()}); }
-            const uint32_t nb_threads = nbDiskIoThreads();
-            std::thread deserialize_thread([jobs = std::move(jobs), nb_threads]() {
-                ioParallelFor(static_cast<uint32_t>(jobs.size()), nb_threads, [&](uint32_t k){
-                    OctreeNodeSerializable::deserialize(jobs[k].second, jobs[k].first, "From update cache");
-                });
-                isDoneDeserializingForStoring = true;
-            });
-            deserialize_thread.detach();
-            // Skip sending to device this frame; the next frame will pick it up
-            return;
-        }
     }
     hasStartedStoring = false;
 
@@ -1200,6 +1212,9 @@ void GpuVersion::storeNodes(uint32_t nb_nodes_to_store){
         currentlyInUpdatesCache.erase(id);
         hostCacheAdd(id);
         hostCacheDirtyIds.insert(id);   // its counters change below
+        // Its counters run ahead of the device->host copies below: the visibility update keeps
+        // reading its former prefix (`readable_*') until they are complete
+        hostNodesNotReadable.insert(id);
 
         // Prepare to load points
         if(nbs_points[i] > 0){
@@ -1614,13 +1629,14 @@ uint32_t visSyncCachedFile(const std::string& filepath, uint32_t nb_elements, ui
 
 std::atomic<bool> visHasWarnedShortRead{false};
 
-/// True if the host RAM nodes (`updateNodes') can be read on the main thread right now
-/// Their buffers are written by:
+/// True if every host RAM node (`updateNodes') is complete right now: their counters can be trusted
+/// (see `GpuVersion::refreshHostNodesReadableCounts'). Their buffers are written by:
 ///  - the load / store deserialization threads (they only fill freshly created nodes),
 ///  - the device->host copies of `storeNodes' (tracked by `eventStoringComplete'); their counters
 ///    are increased on the main thread BEFORE the copies complete.
 /// The serialization thread of `updateHostCache' only reads them (and writes the `*_last_stored'
-/// fields, not read here); it deallocates nodes, but only nodes already erased from `updateNodes'.
+/// fields, not read by the visibility update); the buffers are only freed on the main thread, once
+/// no visibility worker copies a host RAM node (`finishHostCacheWrite').
 bool visCanReadUpdateNodes(){
     if(!GpuVersion::isDoneDeserializingForLoading || !GpuVersion::isDoneDeserializingForStoring){ return false; }
     if(GpuVersion::hasStartedSynchronisingEventInStoreNodes){ return false; }
@@ -1647,49 +1663,47 @@ uint32_t visCopyStridedSubset(const TElement* src, uint32_t nb_elements, uint32_
     return nb_to_copy;
 }
 
-/// Copy the quota of a host RAM node (`updateNodes') into the staging buffers, without modifying it
-/// (it is append-only and may be read by the serialisation thread meanwhile)
+/// First pass: copy the RAM part of a task (elements [nb_*_on_disk, nb_*_on_disk + nb_*_in_ram) of
+/// its host RAM node) at the start of its slots, WITHOUT modifying the node (it is append-only and
+/// may be read by the serialisation thread meanwhile)
 /// `scratch' is a per-worker buffer for the out-of-view fallback
-void visCopyUpdateNodeTask(GpuVersion::VisibilityTask& task, std::vector<CVoxel>& scratch){
+void visCopyRamPart(GpuVersion::VisibilityTask& task, std::vector<CVoxel>& scratch){
     const HostStorageNode* src = task.update_node.get();
-    task.points_written = 0;
-    task.voxels_written = 0;
+    task.points_written_ram = 0;
+    task.voxels_written_ram = 0;
     if(!src){ return; }
 
-    task.points_written = visCopyStridedSubset(src->points, task.nb_points_on_disk, task.points_quota,
-        GpuVersion::visStagingPoints + task.points_offset
+    // Absolute indexing: element i of the node is at `points[i]' (the RAM window starts at or before
+    // `nb_points_on_disk', see `resolve_source')
+    task.points_written_ram = visCopyStridedSubset(src->points + task.nb_points_on_disk, task.nb_points_in_ram,
+        task.points_quota_ram, GpuVersion::visStagingPoints + task.points_offset
     );
+    const CVoxel* ram_voxels = src->voxels + task.nb_voxels_on_disk;
     if(task.voxels_child_mask == 0){
-        task.voxels_written = visCopyStridedSubset(src->voxels, task.nb_voxels_on_disk, task.voxels_quota,
+        task.voxels_written_ram = visCopyStridedSubset(ram_voxels, task.nb_voxels_in_ram, task.voxels_quota_ram,
             GpuVersion::visStagingVoxels + task.voxels_offset
         );
-    } else if(task.voxels_quota > 0){
+    } else if(task.voxels_quota_ram > 0){
         // Out-of-view fallback: only the octants of the children outside the view (filtered into the
         // scratch buffer: the host RAM node is not modified)
-        scratch.assign(src->voxels, src->voxels + task.nb_voxels_on_disk);
-        const uint32_t nb_kept = visKeepOctants(scratch.data(), task.nb_voxels_on_disk, task.voxels_child_mask);
-        task.voxels_written = visCopyStridedSubset(scratch.data(), nb_kept, task.voxels_quota,
+        scratch.assign(ram_voxels, ram_voxels + task.nb_voxels_in_ram);
+        const uint32_t nb_kept = visKeepOctants(scratch.data(), task.nb_voxels_in_ram, task.voxels_child_mask);
+        task.voxels_written_ram = visCopyStridedSubset(scratch.data(), nb_kept, task.voxels_quota_ram,
             GpuVersion::visStagingVoxels + task.voxels_offset
         );
     }
 }
 
-/// Stream one node: a host RAM node is copied (`visCopyUpdateNodeTask'); a node on disk gets its RAM
-/// cache entry up to date with its files (only what it gained since the last visibility update is
-/// read), then its quota is copied into the staging buffers
-void visLoadTask(GpuVersion::VisibilityTask& task, std::vector<CVoxel>& scratch){
-    if(task.is_from_update_node){
-        visCopyUpdateNodeTask(task, scratch);
-        task.update_node.reset();
-        GpuVersion::visPendingUpdateNodeCopies.fetch_sub(1);
-        return;
-    }
-
-    task.points_written = 0;
-    task.voxels_written = 0;
-
-    const bool wants_points = task.points_quota > 0;
-    const bool wants_voxels = task.voxels_quota > 0;
+/// Second pass: the disk part of a task (its first `nb_*_on_disk' elements): its RAM cache entry is
+/// brought up to date with its files (only what they gained since the last visibility update is
+/// read), then the rest of its quota is copied right after its RAM part
+void visCopyDiskPart(GpuVersion::VisibilityTask& task){
+    const uint32_t points_quota_disk = task.points_quota - task.points_quota_ram;
+    const uint32_t voxels_quota_disk = task.voxels_quota - task.voxels_quota_ram;
+    const bool wants_points = points_quota_disk > 0 && task.nb_points_on_disk > 0;
+    const bool wants_voxels = voxels_quota_disk > 0 && task.nb_voxels_on_disk > 0;
+    task.points_written = task.points_written_ram;
+    task.voxels_written = task.voxels_written_ram;
     if(!wants_points && !wants_voxels){ return; }
 
     // The cache entry of the node (always set for these tasks; a local copy otherwise)
@@ -1704,12 +1718,12 @@ void visLoadTask(GpuVersion::VisibilityTask& task, std::vector<CVoxel>& scratch)
         std::lock_guard<std::mutex> lock(GpuVersion::storedNodesMtx[task.id]);
         if(wants_points){
             nb_points_read = visSyncCachedFile(getChunkFilePath(task.id, false), task.nb_points_on_disk,
-                task.points_quota, entry.points, seed + 1u);
+                points_quota_disk, entry.points, seed + 1u);
         }
         if(wants_voxels){
             // Out-of-view fallback: the voxels of some octants only, picked along the permutation:
             // every voxel may be needed
-            const uint32_t nb_voxels_wanted = (task.voxels_child_mask == 0) ? task.voxels_quota : task.nb_voxels_on_disk;
+            const uint32_t nb_voxels_wanted = (task.voxels_child_mask == 0) ? voxels_quota_disk : task.nb_voxels_on_disk;
             nb_voxels_read = visSyncCachedFile(getChunkFilePath(task.id, true), task.nb_voxels_on_disk,
                 nb_voxels_wanted, entry.voxels, seed + 2u);
         }
@@ -1727,66 +1741,94 @@ void visLoadTask(GpuVersion::VisibilityTask& task, std::vector<CVoxel>& scratch)
 
     // The cached elements are a uniform random permutation: their first `quota' elements are a
     // uniform random subset (stable from one update to the next while the node does not change)
+    // Written right after the RAM part: the elements of a task stay contiguous
     if(wants_points){
-        const uint32_t nb = static_cast<uint32_t>(std::min<uint64_t>(task.points_quota, entry.points.data.size()));
-        std::copy_n(entry.points.data.data(), nb, GpuVersion::visStagingPoints + task.points_offset);
-        task.points_written = nb;
+        const uint32_t nb = static_cast<uint32_t>(std::min<uint64_t>(points_quota_disk, entry.points.data.size()));
+        std::copy_n(entry.points.data.data(), nb, GpuVersion::visStagingPoints + task.points_offset + task.points_written_ram);
+        task.points_written += nb;
     }
     if(wants_voxels){
-        CVoxel* dst = GpuVersion::visStagingVoxels + task.voxels_offset;
+        CVoxel* dst = GpuVersion::visStagingVoxels + task.voxels_offset + task.voxels_written_ram;
         const uint32_t nb_kept = static_cast<uint32_t>(entry.voxels.data.size());
         if(task.voxels_child_mask == 0){
-            const uint32_t nb = std::min(task.voxels_quota, nb_kept);
+            const uint32_t nb = std::min(voxels_quota_disk, nb_kept);
             std::copy_n(entry.voxels.data.data(), nb, dst);
-            task.voxels_written = nb;
+            task.voxels_written += nb;
         } else {
             // Out-of-view fallback: only the octants of the children outside the view (the first
             // ones of the permutation lying in them: a uniform random subset of them)
             uint32_t nb = 0;
-            for(uint32_t i = 0; i < nb_kept && nb < task.voxels_quota; i++){
+            for(uint32_t i = 0; i < nb_kept && nb < voxels_quota_disk; i++){
                 const CVoxel& voxel = entry.voxels.data[i];
                 const uint32_t octant = static_cast<uint32_t>(voxel.getOctant());
                 if(task.voxels_child_mask & (1u << octant)){ dst[nb++] = voxel; }
             }
-            task.voxels_written = nb;
+            task.voxels_written += nb;
         }
     }
 }
 
-/// Process every task of `GpuVersion::visibilityTasks' with a pool of workers
+/// Process every task of `GpuVersion::visibilityTasks' with a pool of workers, in two passes:
+///  1. the RAM parts (memory copies only: the host cache can free the nodes it dropped as soon as
+///     they are done, `visPendingUpdateNodeCopies'),
+///  2. the disk parts, written after the RAM part of their task (known once pass 1 is complete)
 void visRunTasks(uint32_t max_nb_workers){
     std::vector<GpuVersion::VisibilityTask>& tasks = GpuVersion::visibilityTasks;
     const uint32_t nb_tasks = static_cast<uint32_t>(tasks.size());
-    const uint32_t nb_workers = std::min(nb_tasks, std::max(1u, max_nb_workers));
     if(nb_tasks == 0){ return; }
 
-    // The host RAM nodes first: the host cache update waits for their copies
-    std::vector<uint32_t> order = {};
-    order.reserve(nb_tasks);
-    for(uint32_t i = 0; i < nb_tasks; i++){ if(tasks[i].is_from_update_node){ order.push_back(i); } }
-    for(uint32_t i = 0; i < nb_tasks; i++){ if(!tasks[i].is_from_update_node){ order.push_back(i); } }
+    std::vector<uint32_t> ram_tasks = {};
+    for(uint32_t i = 0; i < nb_tasks; i++){ if(tasks[i].is_from_update_node){ ram_tasks.push_back(i); } }
 
-    std::atomic<uint32_t> next = 0;
-    auto work = [&](){
-        std::vector<CVoxel> scratch = {};
-        for(uint32_t k = next.fetch_add(1); k < nb_tasks; k = next.fetch_add(1)){
-            visLoadTask(tasks[order[k]], scratch);
-        }
+    auto run_pass = [&](uint32_t nb_items, auto&& process){
+        if(nb_items == 0){ return; }
+        const uint32_t nb_workers = std::min(nb_items, std::max(1u, max_nb_workers));
+        std::atomic<uint32_t> next = 0;
+        auto work = [&](){
+            std::vector<CVoxel> scratch = {};
+            for(uint32_t k = next.fetch_add(1); k < nb_items; k = next.fetch_add(1)){
+                process(k, scratch);
+            }
+        };
+        if(nb_workers == 1){ work(); return; }
+        std::vector<std::thread> workers;
+        workers.reserve(nb_workers);
+        for(uint32_t w = 0; w < nb_workers; w++){ workers.emplace_back(work); }
+        for(std::thread& t : workers){ t.join(); }
     };
 
-    if(nb_workers == 1){
-        work();
-        return;
-    }
-    std::vector<std::thread> workers;
-    workers.reserve(nb_workers);
-    for(uint32_t w = 0; w < nb_workers; w++){
-        workers.emplace_back(work);
-    }
-    for(std::thread& t : workers){ t.join(); }
+    // 1. RAM parts
+    run_pass(static_cast<uint32_t>(ram_tasks.size()), [&](uint32_t k, std::vector<CVoxel>& scratch){
+        GpuVersion::VisibilityTask& task = tasks[ram_tasks[k]];
+        visCopyRamPart(task, scratch);
+        task.update_node.reset();
+        GpuVersion::visPendingUpdateNodeCopies.fetch_sub(1);
+    });
+
+    // 2. Disk parts (every task: it also sets the totals written)
+    run_pass(nb_tasks, [&](uint32_t k, std::vector<CVoxel>&){
+        visCopyDiskPart(tasks[k]);
+    });
 }
 
 } // namespace
+
+
+
+void GpuVersion::refreshHostNodesReadableCounts(){
+    if(hostNodesNotReadable.empty()){return;}
+    // Some node may be filled right now (deserialisation, device->host copy): its counters can't be
+    // trusted yet. The readable counts stay where they are (a complete prefix) until the next call
+    if(!visCanReadUpdateNodes()){return;}
+    for(const CIdAABB id : hostNodesNotReadable){
+        auto it = updateNodes.find(id);
+        if(it == updateNodes.end() || !it->second){continue;}   // left host RAM since
+        HostStorageNode& node = *it->second;
+        node.readable_points = node.node.points_counter;
+        node.readable_voxels = node.node.voxels_counter;
+    }
+    hostNodesNotReadable.clear();
+}
 
 
 
@@ -1870,62 +1912,63 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
     }
 
     // One task per distinct node; a node can be in both lists (points and voxels)
-    // Each node is read either from its files on disk, or from its host RAM copy (`updateNodes')
-    // when it is not written to disk yet or when the host RAM copy is newer (node just evicted from
-    // the device): this closes the gap between the eviction (the device deletes the node) and the
-    // moment its files are written, during which the node was drawn by nobody.
-    // No memory is needed for this: the host RAM copies already exist, they are copied straight
-    // into the staging buffers below.
+    // The elements of a node come from two places (the host cache is write-back, and the host RAM
+    // copies only hold what is not on disk yet, see `HostStorageNode::*_valid_from'):
+    //  - its first elements from its files (the counts published once they are written),
+    //  - the following ones from its host RAM window (`updateNodes'): data received from the device
+    //    since it entered host RAM, not written to disk yet
+    // Every element of a node is always in one of both (a node only leaves host RAM once its window
+    // is written and published, see `finishHostCacheWrite'), so what was drawn once stays drawable.
+    // No memory is needed for the RAM part: it is copied straight into the staging buffers.
     struct VisSource {
         bool valid = false;                         // some data is available
-        bool from_update_node = false;
-        std::shared_ptr<const HostStorageNode> update_node = nullptr;
-        uint32_t nb_points = 0;
-        uint32_t nb_voxels = 0;
-    };
-    const bool can_read_update_nodes = visCanReadUpdateNodes();
-    // Deterministic within this call (nothing modifies `updateNodes' or the counters meanwhile: the
-    // counters are only written under `storedNodesVisibilityMtx', held below), so a node in both
-    // lists gets the same source for its points and its voxels
-    auto resolve_source = [&](const CIdAABB& id) -> VisSource {
-        VisSource source = {};
+        std::shared_ptr<const HostStorageNode> update_node = nullptr;   // set if a RAM part exists
         uint32_t disk_points = 0;
         uint32_t disk_voxels = 0;
-        bool is_on_disk = false;
+        uint32_t ram_points = 0;                    // elements [disk_points, disk_points + ram_points)
+        uint32_t ram_voxels = 0;
+        uint32_t nb_points = 0;                     // disk + RAM
+        uint32_t nb_voxels = 0;
+    };
+    // The host RAM windows are read up to their `readable_*' counts: complete and never written
+    // again, whatever the device->host copies / voxel reads in progress do (they write after / before
+    // them). A node may only exist in host RAM for a long time: it must stay readable while the
+    // octree update does IO
+    refreshHostNodesReadableCounts();
+    // Deterministic within this call (nothing modifies `updateNodes', the readable counts or the
+    // on-disk counters meanwhile: all of them are only written on the main thread), so a node in
+    // both lists gets the same source for its points and its voxels
+    auto resolve_source = [&](const CIdAABB& id) -> VisSource {
+        VisSource source = {};
         auto disk_it = storedNodesVisibilityCounters.find(id);
         if(disk_it != storedNodesVisibilityCounters.end()){
-            is_on_disk = true;
-            disk_points = disk_it->second.nb_points;
-            disk_voxels = disk_it->second.nb_voxels;
+            source.disk_points = std::min(disk_it->second.nb_points, OocSimLodSettings::MAX_POINTS_PER_LEAF);
+            source.disk_voxels = std::min(disk_it->second.nb_voxels, OocSimLodSettings::MAX_POINTS_PER_LEAF);
         }
 
-        if(can_read_update_nodes){
-            auto ram_it = updateNodes.find(id);
-            if(ram_it != updateNodes.end() && ram_it->second
-                && ram_it->second->points && ram_it->second->voxels
-            ){
-                const std::shared_ptr<const HostStorageNode> node = ram_it->second;
-                const uint32_t ram_points = std::min(node->node.points_counter, OocSimLodSettings::MAX_POINTS_PER_LEAF);
-                const uint32_t ram_voxels = std::min(node->node.voxels_counter, OocSimLodSettings::MAX_POINTS_PER_LEAF);
-                // A host RAM copy holds the on-disk data plus the newer one (append-only)
-                const bool is_complete = ram_points >= disk_points && ram_voxels >= disk_voxels;
-                const bool is_newer = !is_on_disk || ram_points > disk_points || ram_voxels > disk_voxels;
-                if(is_complete && is_newer && (ram_points > 0 || ram_voxels > 0)){
-                    source.valid = true;
-                    source.from_update_node = true;
-                    source.update_node = node;
-                    source.nb_points = ram_points;
-                    source.nb_voxels = ram_voxels;
-                    return source;
-                }
+        auto ram_it = updateNodes.find(id);
+        if(ram_it != updateNodes.end() && ram_it->second
+            && ram_it->second->points && ram_it->second->voxels
+        ){
+            const std::shared_ptr<const HostStorageNode>& node = ram_it->second;
+            const uint32_t readable_points = std::min(node->readable_points, OocSimLodSettings::MAX_POINTS_PER_LEAF);
+            const uint32_t readable_voxels = std::min(node->readable_voxels, OocSimLodSettings::MAX_POINTS_PER_LEAF);
+            // The RAM window continues the files: it starts at (or, voxels read back, before) the
+            // published counts on disk. Anything else would leave a gap: RAM part not used
+            if(node->points_valid_from <= source.disk_points && readable_points > source.disk_points){
+                source.ram_points = readable_points - source.disk_points;
+            }
+            if(node->voxels_valid_from <= source.disk_voxels && readable_voxels > source.disk_voxels){
+                source.ram_voxels = readable_voxels - source.disk_voxels;
+            }
+            if(source.ram_points > 0 || source.ram_voxels > 0){
+                source.update_node = node;
             }
         }
 
-        if(is_on_disk){
-            source.valid = true;
-            source.nb_points = disk_points;
-            source.nb_voxels = disk_voxels;
-        }
+        source.nb_points = source.disk_points + source.ram_points;
+        source.nb_voxels = source.disk_voxels + source.ram_voxels;
+        source.valid = (source.nb_points > 0 || source.nb_voxels > 0);
         return source;
     };
 
@@ -1936,7 +1979,6 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
         if(inserted){
             VisibilityTask task = {};
             task.id = id;
-            task.is_from_update_node = source.from_update_node;
             task.update_node = source.update_node;
             visibilityTasks.push_back(task);
         }
@@ -1950,7 +1992,9 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
             const VisSource source = resolve_source(id);
             if(!source.valid || source.nb_voxels == 0){continue;}
             VisibilityTask& task = get_task(id, source);
-            task.nb_voxels_on_disk = source.nb_voxels;
+            task.nb_voxels_on_disk = source.disk_voxels;
+            task.nb_voxels_in_ram = source.ram_voxels;
+            task.nb_voxels_total = source.nb_voxels;
             task.voxels_priority = ((float*)(exchangedPrioritiesVisVoxels))[i];
             task.voxels_child_mask = ((uint8_t*)(exchangedVisVoxelsChildMasks))[i];
         }
@@ -1959,8 +2003,15 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
             const VisSource source = resolve_source(id);
             if(!source.valid || source.nb_points == 0){continue;}
             VisibilityTask& task = get_task(id, source);
-            task.nb_points_on_disk = source.nb_points;
+            task.nb_points_on_disk = source.disk_points;
+            task.nb_points_in_ram = source.ram_points;
+            task.nb_points_total = source.nb_points;
             task.points_priority = ((float*)(exchangedPrioritiesVisPoints))[i];
+        }
+        // The host RAM node is only kept by the tasks really copying a RAM part
+        for(VisibilityTask& task : visibilityTasks){
+            task.is_from_update_node = task.update_node && (task.nb_points_in_ram > 0 || task.nb_voxels_in_ram > 0);
+            if(!task.is_from_update_node){ task.update_node.reset(); }
         }
 
         // Eviction hand-over: this update shows an evicted batch if every node of it can be read (from
@@ -2090,20 +2141,40 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
     // };
 
 
-    assign_quotas(&VisibilityTask::nb_points_on_disk, &VisibilityTask::points_priority,
+    assign_quotas(&VisibilityTask::nb_points_total, &VisibilityTask::points_priority,
         &VisibilityTask::points_quota, &VisibilityTask::points_offset, false,
         OocSimLodSettings::MAX_NB_RENDERED_POINTS, OocSimLodSettings::MAX_NB_RENDERED_LARGE_POINTS);
-    assign_quotas(&VisibilityTask::nb_voxels_on_disk, &VisibilityTask::voxels_priority,
+    assign_quotas(&VisibilityTask::nb_voxels_total, &VisibilityTask::voxels_priority,
         &VisibilityTask::voxels_quota, &VisibilityTask::voxels_offset, true,
         OocSimLodSettings::MAX_NB_RENDERED_VOXELS, OocSimLodSettings::MAX_NB_RENDERED_SIDE_VOXELS);
 
-    // Host RAM nodes: copied by the visibility workers, before the disk nodes (see `visRunTasks').
-    // Their copy reads the first `nb_*_on_disk' elements, complete and never modified afterwards:
-    //  - `visCanReadUpdateNodes' made sure no device->host copy or deserialisation was writing them,
-    //  - the copies that start later only append after these elements (`storeNodes'),
-    //  - the deserialisations that start later only fill newly created nodes,
-    //  - the host cache update, which frees the buffers of the nodes it drops, waits for these copies
-    //    (`visPendingUpdateNodeCopies'), and `task.update_node' keeps the nodes themselves alive.
+    // Share the quota of every task between its RAM part and its disk part, in proportion of their
+    // sizes (the RAM part never gets more than it holds, the disk part gets the rest)
+    auto split_quota = [](uint32_t quota, uint32_t nb_on_disk, uint32_t nb_in_ram) -> uint32_t {
+        const uint64_t total = uint64_t(nb_on_disk) + nb_in_ram;
+        if(quota == 0 || nb_in_ram == 0 || total == 0){ return 0; }
+        uint64_t quota_ram = (uint64_t(quota) * nb_in_ram + total / 2) / total;
+        quota_ram = std::min<uint64_t>(quota_ram, nb_in_ram);
+        // What the disk part can't take goes to the RAM part (if it has room)
+        const uint64_t quota_disk = std::min<uint64_t>(uint64_t(quota) - quota_ram, nb_on_disk);
+        quota_ram = std::min<uint64_t>(uint64_t(quota) - quota_disk, nb_in_ram);
+        return static_cast<uint32_t>(quota_ram);
+    };
+    for(VisibilityTask& task : visibilityTasks){
+        task.points_quota_ram = split_quota(task.points_quota, task.nb_points_on_disk, task.nb_points_in_ram);
+        task.voxels_quota_ram = split_quota(task.voxels_quota, task.nb_voxels_on_disk, task.nb_voxels_in_ram);
+    }
+
+    // RAM parts: copied by the visibility workers, before the disk parts (see `visRunTasks').
+    // Their copy reads elements [nb_*_on_disk, nb_*_on_disk + nb_*_in_ram) of the host RAM windows
+    // (up to their `readable_*' counts), complete and never modified afterwards:
+    //  - the readable counts only catch up when no device->host copy or deserialisation is in
+    //    progress (`refreshHostNodesReadableCounts'),
+    //  - the copies only append after these elements (`storeNodes'),
+    //  - the voxels read back for a load go before them ([0, voxels_valid_from)),
+    //  - the buffers of the nodes that left the host cache are only freed once these copies are
+    //    done (`finishHostCacheWrite' waits for `visPendingUpdateNodeCopies'), and `task.update_node'
+    //    keeps the nodes themselves alive.
     {
         uint32_t nb_update_node_tasks = 0;
         for(const VisibilityTask& task : visibilityTasks){
@@ -2117,8 +2188,10 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
     visRamCacheGeneration++;
     for(VisibilityTask& task : visibilityTasks){
         task.ram_cache_entry = nullptr;
-        if(task.is_from_update_node){continue;}
-        if(task.points_quota == 0 && task.voxels_quota == 0){continue;}
+        // Only the tasks with a disk part to read
+        const bool has_points_disk_part = task.nb_points_on_disk > 0 && task.points_quota > task.points_quota_ram;
+        const bool has_voxels_disk_part = task.nb_voxels_on_disk > 0 && task.voxels_quota > task.voxels_quota_ram;
+        if(!has_points_disk_part && !has_voxels_disk_part){continue;}
         std::unique_ptr<VisRamCacheEntry>& entry = visRamCache[task.id];
         if(!entry){ entry = std::make_unique<VisRamCacheEntry>(); }
         entry->last_used = visRamCacheGeneration;
@@ -2149,6 +2222,7 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
     }
 }
 
+/// (unused; would also have to be restricted to the RAM windows of the node, `*_valid_from')
 void GpuVersion::shuffleForRendering(HostStorageNode* node, CIdAABB id){
     std::minstd_rand rng(static_cast<uint32_t>(id) * 2654435761u + 1u);
     std::shuffle(node->points, node->points + node->node.points_counter, rng);
@@ -2372,10 +2446,11 @@ void GpuVersion::hostCacheAdd(CIdAABB id){
 
 void GpuVersion::updateHostCache(){
     if(!isDoneUpdatingHostCache){return;}
-    // The visibility workers are still copying host RAM nodes: the nodes this update drops would
-    // give their buffers back to the pinned allocators under them (they copy those nodes first)
-    if(visPendingUpdateNodeCopies.load() > 0){return;}
-    if(!isDoneDeserializingForLoading 
+    // The last write must be published (and its nodes freed) before the next one is prepared
+    if(!finishHostCacheWrite()){return;}
+    // (The visibility workers may still be copying host RAM nodes: no buffer is freed here anymore,
+    // only in `finishHostCacheWrite', which waits for them)
+    if(!isDoneDeserializingForLoading
         || !isDoneDeserializingForStoring
         || !isDoneSynchronisingEventInStoreNodes
     ){return;}
@@ -2385,46 +2460,39 @@ void GpuVersion::updateHostCache(){
         if(hostCacheEvictedIds.empty() && hostCacheDirtyIds.empty()){return;}
 
         hostCacheToSerialise = {};
-        hostCacheToDelete = {};
 
         // Only the nodes whose state may have changed since the last pass (it used to scan every host
         // RAM node, every frame): a node only leaves `hostCache' through an eviction of
-        // `hostCacheAdd', and only becomes dirty or unstored through `storeNodes'
+        // `hostCacheAdd', and only gains data through `storeNodes'
+        // Write-back: only the nodes leaving the host cache are written (what they gained since they
+        // were last written). They stay in `updateNodes' meanwhile, readable by the visibility update
+        // (the octree update, which could modify them, waits for the write: `isDoneUpdatingHostCache')
+        std::unordered_set<CIdAABB> dropped = {};
         auto drop = [&](std::unordered_map<CIdAABB, std::shared_ptr<HostStorageNode>>::iterator it){
-            // Left the host cache: written one last time, then freed
+            if(!dropped.insert(it->first).second){return;}   // listed twice (evicted twice)
             hostCacheToSerialise.push_back(it->second);
-            hostCacheToDelete.push_back(it->second);
-            updateNodes.erase(it);
         };
 
         // 1. Evicted from the host cache
         for(const CIdAABB id : hostCacheEvictedIds){
             if(hostCache->contains(id)){
-                // Added back since: still cached, checked like a dirty node
-                hostCacheDirtyIds.insert(id);
+                // Added back since: still cached, nothing to do
                 continue;
             }
             auto it = updateNodes.find(id);
-            if(it == updateNodes.end()){continue;}   // already dropped (evicted twice)
+            if(it == updateNodes.end()){continue;}   // not in host RAM anymore
             hostCacheDirtyIds.erase(id);
             drop(it);
         }
         hostCacheEvictedIds.clear();
 
-        // 2. Created or written by `storeNodes': not on disk yet, or with data newer than on disk
+        // 2. Created or written by `storeNodes': written later, when they leave the host cache
         for(const CIdAABB id : hostCacheDirtyIds){
             auto it = updateNodes.find(id);
             if(it == updateNodes.end()){continue;}
             if(!hostCache->contains(id)){
                 // Not expected (evictions are handled above), same outcome as the former scan
                 drop(it);
-                continue;
-            }
-            const COctreeNode& n = it->second->node;
-            const bool is_dirty = n.points_counter != n.points_last_stored
-                || n.voxels_counter != n.voxels_last_stored;
-            if(!storedNodes.contains(id) || is_dirty){
-                hostCacheToSerialise.push_back(it->second);
             }
         }
         hostCacheDirtyIds.clear();
@@ -2447,6 +2515,8 @@ void GpuVersion::updateHostCache(){
 
     if(hostCacheToSerialise.empty()){return;}
     isDoneUpdatingHostCache = false;
+    // Published and freed by `finishHostCacheWrite' (main thread) once the thread is done
+    isHostCacheWritePending = true;
 
     std::thread update_host_cache_thread([]()  {
             serialiseHostCacheNodes();
@@ -2461,31 +2531,68 @@ void GpuVersion::updateHostCache(){
 void GpuVersion::serialiseHostCacheNodes(){
     // Write the files, keeping the counters each node was written with
     // In parallel: every node has its own files and its own lock (`hostCacheToSerialise' holds each
-    // node once)
-    std::vector<std::pair<CIdAABB, StoredNodeCounters>> written_counters(hostCacheToSerialise.size());
+    // node once). Only reads the host nodes (and writes their `*_last_stored' fields): the visibility
+    // workers may copy them meanwhile, the octree update waits for this write
+    hostCacheWrittenCounters.assign(hostCacheToSerialise.size(), StoredNodeCounters{});
     ioParallelFor(static_cast<uint32_t>(hostCacheToSerialise.size()), nbDiskIoThreads(), [&](uint32_t k){
         const std::shared_ptr<HostStorageNode>& node = hostCacheToSerialise[k];
         const CIdAABB id = node->node.aabb_index;
         std::lock_guard<std::mutex> lock(storedNodesMtx[id]);
         OctreeNodeSerializable::serialize(node);
-        written_counters[k] = {id, StoredNodeCounters{node->node.points_counter, node->node.voxels_counter}};
+        hostCacheWrittenCounters[k] = StoredNodeCounters{node->node.points_counter, node->node.voxels_counter};
     });
+    // Nothing is published nor freed here: `finishHostCacheWrite' does it on the main thread
+}
 
-    // Publish them for the visibility update only now that the data is on disk
-    for(const auto& [id, counters] : written_counters){
-        if(!storedNodes.contains(id)){
-            storedNodes.insert(id);
-            nbStoredNodesInVisibility.fetch_add(1);
+
+bool GpuVersion::finishHostCacheWrite(){
+    if(isHostCacheWritePending){
+        if(!isDoneUpdatingHostCache){return false;}
+
+        // 1. Publish the written nodes for the visibility update (their data is on disk now)
+        {
+            std::lock_guard<std::mutex> lock(storedNodesVisibilityMtx);
+            for(uint32_t k = 0; k < hostCacheToSerialise.size(); k++){
+                const CIdAABB id = hostCacheToSerialise[k]->node.aabb_index;
+                storedNodesVisibilityCopy.insert(id);
+                storedNodesVisibilityCounters[id] = hostCacheWrittenCounters[k];
+            }
         }
-        std::lock_guard<std::mutex> lock(storedNodesVisibilityMtx);
-        storedNodesVisibilityCopy.insert(id);
-        storedNodesVisibilityCounters[id] = counters;
+        for(const std::shared_ptr<HostStorageNode>& node : hostCacheToSerialise){
+            if(storedNodes.insert(node->node.aabb_index).second){
+                nbStoredNodesInVisibility.fetch_add(1);
+            }
+        }
+
+        // 2. Only then take them out of host RAM: from now on they are read from disk (visibility)
+        //    or deserialised again (octree update)
+        for(std::shared_ptr<HostStorageNode>& node : hostCacheToSerialise){
+            const CIdAABB id = node->node.aabb_index;
+            auto it = updateNodes.find(id);
+            const bool is_this_node = (it != updateNodes.end()) && (it->second == node);
+            // Back in the host cache meanwhile (not expected: the octree update waits for the write):
+            // still the host RAM copy of the node, kept
+            if(is_this_node && hostCache->contains(id)){continue;}
+            if(is_this_node){ updateNodes.erase(it); }
+            hostCacheToFree.push_back(node);
+        }
+
+        hostCacheToSerialise.clear();
+        hostCacheWrittenCounters.clear();
+        isHostCacheWritePending = false;
     }
 
-    // Deallocate the nodes that left the host cache
-    for(std::shared_ptr<HostStorageNode>& node : hostCacheToDelete){
-        node->deallocate();
+    // 3. Give their buffers back to the pinned allocators once no visibility worker can be copying
+    //    them: a visibility update that started before step 2 may still hold them in its tasks; the
+    //    ones started after can't see them anymore (not in `updateNodes')
+    if(!hostCacheToFree.empty()){
+        if(visPendingUpdateNodeCopies.load() > 0){return false;}
+        for(std::shared_ptr<HostStorageNode>& node : hostCacheToFree){
+            node->deallocate();
+        }
+        hostCacheToFree.clear();
     }
+    return true;
 }
 
 
@@ -2579,7 +2686,12 @@ void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
     }
     LoaderGpuVersion::run(editor, context);
 
-    if(isDoneUpdatingVisCache 
+    // Publish / free the nodes of the last host cache write before anything reads `updateNodes'
+    // (visibility) or modifies it (octree update). Until it is done, no host node is created or
+    // modified: the written nodes are still in `updateNodes' and their buffers in the pinned pools
+    const bool is_host_cache_write_finished = finishHostCacheWrite();
+
+    if(isDoneUpdatingVisCache
         && isDoneDeserializingForVisibility 
         && isDoneSortingVisibleNodes
         && *(bool*)isInitialised
@@ -2593,6 +2705,7 @@ void GpuVersion::updateOctree(CuRast* editor, CUcontext* context){
     // if(!isDoneDeserializingForStoring){println("stall deserializing for store");}
 
     if(!isDoneUpdatingHostCache
+        || !is_host_cache_write_finished
         || !isDoneSynchronisingStoringCompleteEvent
         || !isDoneDeserializingForLoading
         || !isDoneDeserializingForStoring
@@ -3030,7 +3143,8 @@ void GpuVersion::takeRandomScreenShots(){
         // mainAABB = main_relationship.aabb;
 
         for(auto& [id, node] : GpuVersion::updateNodes){
-            for(uint32_t i = 0; i < node->node.points_counter; i++){
+            // Only the RAM window of the node (its first points are on disk only)
+            for(uint32_t i = node->points_valid_from; i < node->node.points_counter; i++){
                 const CPoint& point = node->points[i];
                 mainAABB.mins.x = min(mainAABB.mins.x, point.position.x);
                 mainAABB.mins.y = min(mainAABB.mins.y, point.position.y);
