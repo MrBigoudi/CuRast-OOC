@@ -188,13 +188,6 @@ struct CVoxelSplatSettings {
     uint32_t max_pixels = 32;
 };
 
-/// Size of a voxel of the host rendering buffers, encoded by the host in the alpha byte of its color
-/// (they hold no node id): the level of its node relative to the initial root (node 0, never resized:
-/// the root only grows by doubling around it, see the bottom-up update), biased.
-/// Cell size = size(node 0) * 2^-(code - VOXEL_SIZE_CODE_BIAS) / GRID_SIZE_PER_DIMENSION; 0 = unknown
-/// Same constant as `GpuVersion::VOXEL_SIZE_CODE_BIAS' on the host
-__device__ constexpr int32_t VOXEL_SIZE_CODE_BIAS = 128;
-
 /// Largest side of a box
 __device__ __forceinline__
 float maxSide(const CAABB& aabb){
@@ -209,18 +202,23 @@ float voxelCellSize(const CAABB& node_aabb){
     return maxSide(node_aabb) / float(OocSimLodSettings::GRID_SIZE_PER_DIMENSION);
 }
 
-/// Side of a voxel cell from the size code of a host rendering buffer voxel (0 if unknown)
+/// Node of the rendered voxel `voxel_id' (see `CGlobalVariables::renderedVoxelSegments'): the last
+/// segment starting at or before it. `tiles[t]' is the segment holding voxel t * RENDERED_VOXELS_TILE_SIZE,
+/// so it is searched between the segments of its tile and of the next one (usually a few)
 __device__ __forceinline__
-float voxelCellSizeFromCode(uint32_t code, float reference_size){
-    if(code == 0){return 0.0f;}
-    const float exponent = float(int32_t(code) - VOXEL_SIZE_CODE_BIAS);
-    return reference_size * exp2f(-exponent) / float(OocSimLodSettings::GRID_SIZE_PER_DIMENSION);
-}
-
-/// Size of the initial root (node 0), reference of the size codes
-__device__ __forceinline__
-float voxelReferenceSize(){
-    return maxSide(globalVariables.relationshipMap[0].aabb);
+CIdAABB findRenderedVoxelNode(
+    uint32_t voxel_id,
+    const CVoxelSegment* segments, uint32_t nb_segments,
+    const uint32_t* tiles, uint32_t nb_tiles
+){
+    const uint32_t tile = voxel_id / RENDERED_VOXELS_TILE_SIZE;
+    uint32_t lo = min(tiles[tile], nb_segments - 1);
+    uint32_t hi = (tile + 1 < nb_tiles) ? min(tiles[tile + 1], nb_segments - 1) : nb_segments - 1;
+    while(lo < hi){
+        const uint32_t mid = (lo + hi + 1) / 2;
+        if(segments[mid].first <= voxel_id){ lo = mid; } else { hi = mid - 1; }
+    }
+    return segments[lo].id;
 }
 
 /// Draw a voxel as a camera-facing square of side `cell_size * splat.scale' (world units), in every
@@ -356,7 +354,7 @@ void drawAllPoints(
     uint32_t thread_id = block.thread_rank();
     uint32_t nb_threads_per_block = block.num_threads();
 
-    CChunk* cur_points = node->points;
+    CPointChunk* cur_points = node->points;
 
     while(cur_points){
         for(uint32_t i = thread_id; i < cur_points->size; i += nb_threads_per_block){
@@ -706,7 +704,7 @@ void kernel_replace_unloaded_nodes(
     for(uint32_t node_index = block_id; node_index < nb_nodes; node_index += nb_blocks){
         COctreeNode* node = globalVariables.packedNodes[node_index];
 
-        CChunk* cur_voxels = node->voxels;
+        CVoxelChunk* cur_voxels = node->voxels;
         const CAABB& aabb = globalVariables.relationshipMap[node->aabb_index].aabb;
         vec3 voxel_size = (aabb.maxs - aabb.mins) / float(OocSimLodSettings::GRID_SIZE_PER_DIMENSION);
 
@@ -719,10 +717,11 @@ void kernel_replace_unloaded_nodes(
 
         while(cur_voxels){
             for(uint32_t i = thread_id; i < cur_voxels->size; i += nb_threads_per_block){
-                const CPoint& voxel = cur_voxels->points[i];
+                const CVoxel& voxel = cur_voxels->voxels[i];
+                const vec3 voxel_position = voxel.getPosition(aabb);
 
                 // Check if a subchild containing the voxel is already drawn
-                CNodePosition index = aabb.getNextChildIndex(voxel.position);
+                CNodePosition index = voxel.getOctant();
                 CIdAABB child_id = globalVariables.relationshipMap[node->aabb_index].children[index];
                 COctreeNode* child = node->children[index];
                 bool can_render = true;
@@ -734,7 +733,7 @@ void kernel_replace_unloaded_nodes(
                     // }
 
 
-                    index = globalVariables.relationshipMap[child_id].aabb.getNextChildIndex(voxel.position);
+                    index = globalVariables.relationshipMap[child_id].aabb.getNextChildIndex(voxel_position);
                     child_id = globalVariables.relationshipMap[child_id].children[index];
 
                     if(child){
@@ -753,7 +752,7 @@ void kernel_replace_unloaded_nodes(
                 uint32_t voxel_color = settings.use_voxels_debug_color ? color : voxel.color;
                 uint32_t nb_points_per_axis = min(8, depth + 1 - node->level);
 
-                drawPoint(target, settings, voxel.position, voxel_color, node->level);
+                drawPoint(target, settings, voxel_position, voxel_color, node->level);
             }
             
             cur_voxels = cur_voxels->next;
@@ -787,10 +786,17 @@ void kernel_draw_visibility_cache(
         ? globalVariables.renderedPoints2 : globalVariables.renderedPoints;
     uint32_t nb_points = globalVariables.isUsingSecondRenderingBuffer
         ? globalVariables.nbRenderedPoints2 : globalVariables.nbRenderedPoints;
-    CPoint* rendered_voxels = globalVariables.isUsingSecondRenderingBuffer
-        ? globalVariables.renderedVoxels2 : globalVariables.renderedVoxels;
-    uint32_t nb_voxels = globalVariables.isUsingSecondRenderingBuffer
-        ? globalVariables.nbRenderedVoxels2 : globalVariables.nbRenderedVoxels;
+    const bool is_second = globalVariables.isUsingSecondRenderingBuffer;
+    const CVoxel* rendered_voxels = is_second ? globalVariables.renderedVoxels2 : globalVariables.renderedVoxels;
+    uint32_t nb_voxels = is_second ? globalVariables.nbRenderedVoxels2 : globalVariables.nbRenderedVoxels;
+    const CVoxelSegment* segments = is_second ? globalVariables.renderedVoxelSegments2 : globalVariables.renderedVoxelSegments;
+    const uint32_t nb_segments = min(
+        is_second ? globalVariables.nbRenderedVoxelSegments2 : globalVariables.nbRenderedVoxelSegments,
+        globalVariables.maxNbRenderedVoxelSegments
+    );
+    const uint32_t* tiles = is_second ? globalVariables.renderedVoxelTiles2 : globalVariables.renderedVoxelTiles;
+    if(nb_segments == 0){ nb_voxels = 0; }
+    const uint32_t nb_tiles = (nb_voxels + RENDERED_VOXELS_TILE_SIZE - 1) / RENDERED_VOXELS_TILE_SIZE;
 
     // Render points
     for(uint32_t point_id = thread_id; point_id < nb_points; point_id += nb_threads){
@@ -803,28 +809,18 @@ void kernel_draw_visibility_cache(
         );
     }
 
-    // Render voxels (their size code is in the alpha byte of their color, see `VOXEL_SIZE_CODE_BIAS')
-    const float reference_size = voxelReferenceSize();
+    // Render voxels: their node (segments) gives their position and their size
     for(uint32_t voxel_id = thread_id; voxel_id < nb_voxels; voxel_id += nb_threads){
         // For dataset creation
         if(voxel_id % settings.draw_every_x_points != 0){continue;}
 
-        const CPoint& voxel = rendered_voxels[voxel_id];
-        // const CIdAABB& node_id = rendered_voxels_nodes[voxel_id];
+        const CVoxel voxel = rendered_voxels[voxel_id];
+        const CIdAABB node_id = findRenderedVoxelNode(voxel_id, segments, nb_segments, tiles, nb_tiles);
+        const CAABB& node_aabb = globalVariables.relationshipMap[node_id].aabb;
 
-        // const CAABB& node_aabb = globalVariables.relationshipMap[node_id].aabb;
-        // const CNodePosition next_child_pos = node_aabb.getNextChildIndex(voxel.position);
-        // const CIdAABB& child_index = globalVariables.relationshipMap[node_id].children[next_child_pos];
-        // if(child_index == CINVALID_ID){continue;}
-
-        // // Only render the voxel if the corresponding child is not present
-        // if((child_index != CINVALID_ID) && globalVariables.isInVisibilityCache(child_index)){
-        //     continue;
-        // }
-
-        const float cell_size = voxelCellSizeFromCode(voxel.color >> 24, reference_size);
+        const float cell_size = voxelCellSize(node_aabb);
         const uint32_t voxel_color = voxel.color & 0x00FFFFFFu;
-        drawSplat(target, settings, splat, voxel.position,
+        drawSplat(target, settings, splat, voxel.getPosition(node_aabb),
             settings.use_voxels_debug_color ? 0xffff00ff : voxel_color, cell_size
         );
     }
@@ -962,7 +958,7 @@ void drawEvictedNode(
     const CVoxelSplatSettings& splat,
     CIdAABB node_id,
     const CPoint* points, uint32_t nb_points,
-    const CPoint* voxels, uint32_t nb_voxels
+    const CVoxel* voxels, uint32_t nb_voxels
 ){
     auto block = cg::this_thread_block();
     uint32_t thread_id = block.thread_rank();
@@ -980,12 +976,13 @@ void drawEvictedNode(
     }
 
     if(is_cut){
-        const float cell_size = voxelCellSize(globalVariables.relationshipMap[node_id].aabb);
+        const CAABB& aabb = globalVariables.relationshipMap[node_id].aabb;
+        const float cell_size = voxelCellSize(aabb);
         for(uint32_t i = thread_id; i < nb_voxels; i += nb_threads_per_block){
             // For dataset creation
             if(i % settings.draw_every_x_points != 0){continue;}
-            const CPoint& voxel = voxels[i];
-            drawSplat(target, settings, splat, voxel.position,
+            const CVoxel voxel = voxels[i];
+            drawSplat(target, settings, splat, voxel.getPosition(aabb),
                 settings.use_voxels_debug_color ? 0xffff00ff : (voxel.color & 0x00FFFFFFu), cell_size
             );
         }
@@ -1053,7 +1050,7 @@ void drawVoxelsInOctants(
 
     const CAABB& aabb = globalVariables.relationshipMap[node->aabb_index].aabb;
     const float cell_size = voxelCellSize(aabb);
-    CChunk* cur_voxels = node->voxels;
+    CVoxelChunk* cur_voxels = node->voxels;
 
     uint32_t depth = globalVariables.octreeDepth;
     float color_factor = float(node->level) / float(max(depth, 1));
@@ -1067,12 +1064,12 @@ void drawVoxelsInOctants(
             // For dataset creation
             if(i % settings.draw_every_x_points != 0){continue;}
 
-            const CPoint& voxel = cur_voxels->points[i];
-            const uint32_t octant = uint32_t(aabb.getNextChildIndex(voxel.position));
+            const CVoxel voxel = cur_voxels->voxels[i];
+            const uint32_t octant = uint32_t(voxel.getOctant());
             if(!(child_mask & (1u << octant))){continue;}
 
             uint32_t voxel_color = settings.use_voxels_debug_color ? color : (voxel.color & 0x00FFFFFFu);
-            drawSplat(target, settings, splat, voxel.position, voxel_color, cell_size, node->level + 1);
+            drawSplat(target, settings, splat, voxel.getPosition(aabb), voxel_color, cell_size, node->level + 1);
         }
         cur_voxels = cur_voxels->next;
     }
@@ -1162,8 +1159,9 @@ void drawAllVoxels(
     uint32_t thread_id = block.thread_rank();
     uint32_t nb_threads_per_block = block.num_threads();
 
-    CChunk* cur_voxels = node->voxels;
-    const float cell_size = voxelCellSize(globalVariables.relationshipMap[node->aabb_index].aabb);
+    CVoxelChunk* cur_voxels = node->voxels;
+    const CAABB& aabb = globalVariables.relationshipMap[node->aabb_index].aabb;
+    const float cell_size = voxelCellSize(aabb);
 
     uint32_t depth = globalVariables.octreeDepth;
     float color_factor = float(node->level) / float(max(depth, 1));
@@ -1177,9 +1175,9 @@ void drawAllVoxels(
             // For dataset creation
             if(i % settings.draw_every_x_points != 0){continue;}
 
-            const CPoint& voxel = cur_voxels->points[i];
+            const CVoxel voxel = cur_voxels->voxels[i];
             uint32_t voxel_color = settings.use_voxels_debug_color ? color : (voxel.color & 0x00FFFFFFu);
-            drawSplat(target, settings, splat, voxel.position, voxel_color, cell_size,
+            drawSplat(target, settings, splat, voxel.getPosition(aabb), voxel_color, cell_size,
                 node->level + 1
             );
         }

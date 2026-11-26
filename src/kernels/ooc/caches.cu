@@ -140,7 +140,7 @@ void kernel_prepare_store_part_1_filling_buffers(){
     //     printf("kernel_prepare_store_part_1_filling_buffers\n");
     // }
 
-    const uint32_t MAX_NB_VOXELS = globalVariables.maxNbVoxelsChunksPerExchangedNode * OocSimLodSettings::NB_POINTS_PER_CHUNK;
+    const uint32_t MAX_NB_VOXELS = globalVariables.maxNbVoxelsChunksPerExchangedNode * OocSimLodSettings::NB_VOXELS_PER_CHUNK;
     __shared__ uint32_t shExchangedIndex;
     // Copy of the node kept drawable after this pass (see `CGlobalVariables::retainedEvictedNodes')
     __shared__ bool shIsRetained;
@@ -211,9 +211,10 @@ void kernel_prepare_store_part_1_filling_buffers(){
                 relationship.points_stored += (node->points_counter - node->points_last_stored);
                 relationship.voxels_stored += min(MAX_NB_VOXELS, node->voxels_counter);
 
-                // The host keeps min(maxPointsPerLeaf, sum of the voxels sent) voxels per node (and
-                // their occupancy cells), and only MAX_NB_VOXELS can be sent at once: beyond that, the
-                // voxels (and their cells) are lost for good, the node must be refined instead
+                // The host keeps min(maxPointsPerLeaf, sum of the voxels sent) voxels per node (their
+                // cells are the occupancy of the node), and only MAX_NB_VOXELS can be sent at once:
+                // beyond that, the voxels (and their cells) are lost for good, the node must be refined
+                // instead
                 if(node->voxels_counter > MAX_NB_VOXELS
                     || relationship.voxels_stored > globalVariables.maxPointsPerLeaf
                 ){
@@ -222,11 +223,10 @@ void kernel_prepare_store_part_1_filling_buffers(){
             }
 
             CPoint* exchanged_points = globalVariables.exchangedPoints[shExchangedIndex];
-            CPoint* exchanged_voxels = globalVariables.exchangedVoxels[shExchangedIndex];
-            uint64_t* exchanged_grids = globalVariables.exchangedGrids[shExchangedIndex];
+            CVoxel* exchanged_voxels = globalVariables.exchangedVoxels[shExchangedIndex];
 
             // Storing node points
-            CChunk* cur_chunk = node->points;
+            CPointChunk* cur_chunk = node->points;
             uint32_t cur_point_index = thread_id;
             while(cur_chunk){
                 for(uint32_t i = thread_id; i < cur_chunk->size; i += nb_threads_per_block){
@@ -237,16 +237,12 @@ void kernel_prepare_store_part_1_filling_buffers(){
                 cur_chunk = cur_chunk->next;
             }
 
-            // Storing node voxels
+            // Storing node voxels (their cells are also the occupancy of the node: no grid indices)
             uint32_t base = 0;
-            for(CChunk* c = node->voxels; c && base < MAX_NB_VOXELS; base += c->size, c = c->next){
+            for(CVoxelChunk* c = node->voxels; c && base < MAX_NB_VOXELS; base += c->size, c = c->next){
                 uint32_t n = min(c->size, MAX_NB_VOXELS - base);
                 for(uint32_t i = thread_id; i < n; i += nb_threads_per_block){
-                    uint32_t idx = base + i;
-                    const CPoint& v = c->points[i];
-                    auto gi = COccupancyGrid::getCellIndices(aabb, v);
-                    exchanged_voxels[idx] = v;
-                    exchanged_grids[idx]  = (uint64_t(gi.word) << 32) | gi.bit;
+                    exchanged_voxels[base + i] = c->voxels[i];
                 }
             }
 
@@ -300,7 +296,7 @@ void kernel_prepare_store_part_1_filling_buffers(){
                 for(uint32_t i = thread_id; i < shRetainNbPoints; i += nb_threads_per_block){
                     retained_points[i] = exchanged_points[i];
                 }
-                CPoint* retained_voxels = globalVariables.retainedEvictedVoxels + shRetainVoxelsOffset;
+                CVoxel* retained_voxels = globalVariables.retainedEvictedVoxels + shRetainVoxelsOffset;
                 for(uint32_t i = thread_id; i < shRetainNbVoxels; i += nb_threads_per_block){
                     retained_voxels[i] = exchanged_voxels[i];
                 }

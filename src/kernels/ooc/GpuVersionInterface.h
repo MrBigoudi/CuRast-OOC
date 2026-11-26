@@ -172,26 +172,12 @@ struct CAABB {
 		bool is_front = normalized_coordinates.z >= 0.5f;
 		bool is_top = normalized_coordinates.y >= 0.5f;
 		bool is_right = normalized_coordinates.x >= 0.5f;
+		return getChildIndex(is_right, is_top, is_front);
+	}
 
-		// if(normalized_coordinates.x < 0.f || normalized_coordinates.x > 1.f){
-		// 	printf("WTF x\n");
-		// 	#ifdef __CUDACC__
-		// 		customAssert();
-		// 	#endif
-		// }
-		// if(normalized_coordinates.y < 0.f || normalized_coordinates.y > 1.f){
-		// 	printf("WTF x\n");
-		// 	#ifdef __CUDACC__
-		// 		customAssert();
-		// 	#endif
-		// }
-		// if(normalized_coordinates.z < 0.f || normalized_coordinates.z > 1.f){
-		// 	printf("WTF x\n");
-		// 	#ifdef __CUDACC__
-		// 		customAssert();
-		// 	#endif
-		// }
-
+	/// Octant from the half of the box along each axis (shared by `getNextChildIndex' and
+	/// `CVoxel::getOctant', so that a point and the voxel of its cell always agree)
+	__device__ __forceinline__ static CNodePosition getChildIndex(bool is_right, bool is_top, bool is_front) {
 		if(is_right){
 			if(is_top){
 				if(is_front){
@@ -312,27 +298,97 @@ struct COccupancyGrid {
 #endif // __CUDACC__
 
 	__device__ __forceinline__ static glm::vec3 getCellCentroid(const CAABB& aabb, const GridIndex& index){
+		return getCellCentroid(aabb, index.grid);
+	}
+	__device__ __forceinline__ static glm::vec3 getCellCentroid(const CAABB& aabb, const glm::uvec3& cell){
 		glm::vec3 world_grid_size = aabb.getSize() / float(OocSimLodSettings::GRID_SIZE_PER_DIMENSION);
-		return aabb.mins + world_grid_size * glm::vec3(index.grid.x, index.grid.y, index.grid.z) + 0.5f * world_grid_size;
+		return aabb.mins + world_grid_size * glm::vec3(cell.x, cell.y, cell.z) + 0.5f * world_grid_size;
+	}
+
+	/// Word / bit of a cell from its coordinates (same layout as `getCellIndices')
+	__device__ __forceinline__ static GridIndex getCellIndices(const glm::uvec3& cell){
+		uint32_t index = cell.x + OocSimLodSettings::GRID_SIZE_PER_DIMENSION * (cell.y + OocSimLodSettings::GRID_SIZE_PER_DIMENSION * cell.z);
+		return GridIndex(index >> 5u, index & 31u, cell);
 	}
 };
 
-struct CChunk{
-	CPoint points[OocSimLodSettings::NB_POINTS_PER_CHUNK] = {CPoint()};
-	uint32_t size = 0;
-	CChunk* next = nullptr;
+/// A voxel: an occupied cell of the occupancy grid of an inner node, with the color of the first point
+/// that fell into it. Its position is the centre of its cell, so it only stores the cell coordinates
+/// within the grid of its node (8 bits per axis, GRID_SIZE_PER_DIMENSION <= 256): the position is
+/// rebuilt from the bounding box of the node (`getPosition'), which is always known where a voxel is
+/// used (a node's chunks, an exchange slot, a retained entry, a segment of the rendering buffers).
+/// Lossless: the position of a voxel always was the centre of its cell
+/// 8 bytes instead of 16 (`CPoint'): voxel chunks, exchange / backlog / rendering buffers, host
+/// memory and node files are halved, and the separate occupancy indices (8 bytes per voxel) are gone:
+/// the occupancy grid of a loaded node is rebuilt from the cells of its voxels
+struct CVoxel {
+	/// x | y << 8 | z << 16; bits 24-31 are reserved (0)
+	uint32_t cell = 0;
+	/// Same encoding as `CPoint::color'
+	uint32_t color = 0;
 
-	__device__ __forceinline__ CChunk(): size(0), next(nullptr) {
-		// for(uint32_t i=0; i<OocSimLodSettings::NB_POINTS_PER_CHUNK; i++){
-		// 	points[i] = CPoint();
-		// }
+	__device__ __forceinline__ CVoxel(): cell(0), color(0) {}
+	__device__ __forceinline__ CVoxel(const glm::uvec3& grid_cell, uint32_t color):
+		cell(pack(grid_cell)), color(color) {}
+
+	__device__ __forceinline__ static uint32_t pack(const glm::uvec3& grid_cell){
+		return (grid_cell.x & 0xFFu) | ((grid_cell.y & 0xFFu) << 8) | ((grid_cell.z & 0xFFu) << 16);
+	}
+	__device__ __forceinline__ glm::uvec3 getCell() const {
+		return glm::uvec3(cell & 0xFFu, (cell >> 8) & 0xFFu, (cell >> 16) & 0xFFu);
 	}
 
-	~CChunk(){
-		size = 0;
-		next = nullptr;
+	/// Centre of the cell in the node with this bounding box (as `COccupancyGrid::getCellCentroid')
+	__device__ __forceinline__ glm::vec3 getPosition(const CAABB& node_aabb) const {
+		return COccupancyGrid::getCellCentroid(node_aabb, getCell());
+	}
+
+	/// Word / bit of the cell in the occupancy grid of its node
+	__device__ __forceinline__ COccupancyGrid::GridIndex getGridIndex() const {
+		return COccupancyGrid::getCellIndices(getCell());
+	}
+
+	/// Octant of the node holding the cell (same as `CAABB::getNextChildIndex' of the cell centre: the
+	/// centre of cell c is in the upper half of an axis iff c >= GRID_SIZE_PER_DIMENSION / 2)
+	__device__ __forceinline__ CNodePosition getOctant() const {
+		constexpr uint32_t HALF = OocSimLodSettings::GRID_SIZE_PER_DIMENSION / 2;
+		const glm::uvec3 c = getCell();
+		return CAABB::getChildIndex(c.x >= HALF, c.y >= HALF, c.z >= HALF);
 	}
 };
+static_assert(sizeof(CVoxel) == 8, "CVoxel is meant to be 8 bytes");
+static_assert(OocSimLodSettings::GRID_SIZE_PER_DIMENSION <= 256, "CVoxel stores its cell on 8 bits per axis");
+
+/// A chunk of points of a node (linked list)
+struct CPointChunk {
+	CPoint points[OocSimLodSettings::NB_POINTS_PER_CHUNK];
+	uint32_t size;
+	CPointChunk* next;
+};
+
+/// A chunk of voxels of a node (linked list): twice as many elements as a point chunk, same size
+struct CVoxelChunk {
+	CVoxel voxels[OocSimLodSettings::NB_VOXELS_PER_CHUNK];
+	uint32_t size;
+	CVoxelChunk* next;
+};
+
+static_assert(sizeof(CPointChunk) == sizeof(CVoxelChunk), "Point and voxel chunks share the chunk pool");
+static_assert(alignof(CPointChunk) == alignof(CVoxelChunk), "Point and voxel chunks share the chunk pool");
+
+/// An element of the chunk pool: the memory of either a point chunk or a voxel chunk. A chunk is
+/// allocated as one kind (`CMemoryAllocator::newPointChunk' / `newVoxelChunk'), only used as that
+/// kind, and given back to the pool (`delChunk'); the pool is shared, so the memory goes to whichever
+/// kind needs it (no separate sizing of points and voxels)
+struct alignas(alignof(CPointChunk)) CChunk {
+	unsigned char storage[sizeof(CPointChunk)];
+};
+static_assert(sizeof(CChunk) == sizeof(CPointChunk), "A pool element holds exactly one chunk");
+
+__device__ __forceinline__ CPointChunk* asPointChunk(CChunk* chunk){ return reinterpret_cast<CPointChunk*>(chunk); }
+__device__ __forceinline__ CVoxelChunk* asVoxelChunk(CChunk* chunk){ return reinterpret_cast<CVoxelChunk*>(chunk); }
+__device__ __forceinline__ CChunk* asPoolChunk(CPointChunk* chunk){ return reinterpret_cast<CChunk*>(chunk); }
+__device__ __forceinline__ CChunk* asPoolChunk(CVoxelChunk* chunk){ return reinterpret_cast<CChunk*>(chunk); }
 
 enum CNodeFlagType {
 	// Counter for a node
@@ -425,8 +481,8 @@ enum CGlobalNodeFlagType {
 
 struct COctreeNode {
 	COctreeNode* children[8] = {nullptr};
-	CChunk* points = nullptr;
-	CChunk* voxels = nullptr;
+	CPointChunk* points = nullptr;
+	CVoxelChunk* voxels = nullptr;
 	COccupancyGrid* occupancy = nullptr;
 	CIdAABB aabb_index = CINVALID_ID;
 
@@ -538,13 +594,13 @@ struct COctreeNode {
 
 
 struct CAllocationPlan {
-	CChunk* points_attach;   // chunk to append new points chunks to (nullptr if none needed)
+	CPointChunk* points_attach;   // chunk to append new points chunks to (nullptr if none needed)
     uint32_t points_first_new;
     uint32_t points_nb_new;
     uint32_t points_last_size;
 	uint32_t points_existing_count;
 
-    CChunk* voxels_attach;   // chunk to append new voxels chunks to (nullptr if none needed)
+    CVoxelChunk* voxels_attach;   // chunk to append new voxels chunks to (nullptr if none needed)
     uint32_t voxels_first_new;
     uint32_t voxels_nb_new;
     uint32_t voxels_last_size;
@@ -565,6 +621,14 @@ struct CEvictedRetainEntry {
 	uint32_t voxels_offset = 0;   // in `retainedEvictedVoxels'
 	uint32_t nb_voxels = 0;
 };
+
+/// A run of the rendered voxels belonging to one node (see `CGlobalVariables::renderedVoxelSegments')
+struct CVoxelSegment {
+	uint32_t first = 0;          // index of its first voxel in the rendered voxels
+	CIdAABB id = CINVALID_ID;    // its node
+};
+/// Voxels per entry of `CGlobalVariables::renderedVoxelTiles*'
+constexpr uint32_t RENDERED_VOXELS_TILE_SIZE = 1024;
 
 struct CGlobalVariables {
     ///////////////////////////////////////////////////////////////////////
@@ -610,6 +674,7 @@ struct CGlobalVariables {
 	uint32_t nbNodesExchangedBeforeLoadComplete = 0;
 
 	uint32_t chunksAllocatorCounter = 0;
+	/// Point and voxel chunks of the allocation plans (pool elements: see `asPointChunk' / `asVoxelChunk')
 	CChunk** allocatedChunks = nullptr;                // `NB_ALLOCABLE_CHUNKS'
 	CAllocationPlan* allocationPlans = nullptr;        // per resident node
 	
@@ -638,8 +703,12 @@ struct CGlobalVariables {
 	uint32_t* exchangedPointsCounters = nullptr;
 	uint32_t* exchangedVoxelsCounters = nullptr;
 	CPoint** exchangedPoints = nullptr;
-	CPoint** exchangedVoxels = nullptr;
-	uint64_t** exchangedGrids = nullptr;
+	/// Voxels of the evicted nodes (device -> host)
+	CVoxel** exchangedVoxels = nullptr;
+	/// Voxels of the loaded nodes (host -> device): only their cells are used, to rebuild the
+	/// occupancy grids (`kernel_fill_new_grids'); the voxels themselves stay on the host. Separate from
+	/// `exchangedVoxels', which keeps the last evicted pass drawable (see `kernel_draw_evicted_nodes')
+	CVoxel** exchangedLoadedVoxels = nullptr;
 
 	bool isDoneLoading = true;
 	bool isDoneStoring = true;
@@ -673,8 +742,21 @@ struct CGlobalVariables {
 	CPoint* renderedPoints2 = nullptr;
 	uint32_t nbRenderedVoxels = 0;
 	uint32_t nbRenderedVoxels2 = 0;
-	CPoint* renderedVoxels = nullptr;
-	CPoint* renderedVoxels2 = nullptr;
+	CVoxel* renderedVoxels = nullptr;
+	CVoxel* renderedVoxels2 = nullptr;
+	/// Node of every rendered voxel: a voxel only holds its cell, its position needs the bounding box
+	/// of its node. The host packs the voxels of a node contiguously, so the map is a list of segments
+	/// (first voxel, node), sorted by first voxel, one per node drawn: `renderedVoxelSegments*'.
+	/// To find the segment of voxel i without searching the whole list, `renderedVoxelTiles*[t]' is
+	/// the segment holding voxel t * RENDERED_VOXELS_TILE_SIZE (see `findRenderedVoxelNode')
+	/// Same double buffering as the voxels (`isUsingSecondRenderingBuffer')
+	uint32_t maxNbRenderedVoxelSegments = 0;     // min(maxNbConcurrentNodes, maxNbRenderedVoxels)
+	uint32_t nbRenderedVoxelSegments = 0;
+	uint32_t nbRenderedVoxelSegments2 = 0;
+	CVoxelSegment* renderedVoxelSegments = nullptr;
+	CVoxelSegment* renderedVoxelSegments2 = nullptr;
+	uint32_t* renderedVoxelTiles = nullptr;      // ceil(maxNbRenderedVoxels / RENDERED_VOXELS_TILE_SIZE)
+	uint32_t* renderedVoxelTiles2 = nullptr;
 
 	uint32_t totalNbNodesForVisibility = 0;
 	uint32_t nbNodesExchangedVisPoints = 0;
@@ -709,7 +791,7 @@ struct CGlobalVariables {
 	uint32_t retainOverflowGeneration = 0;   // latest generation that did not fit entirely, 0 if none
 	CEvictedRetainEntry* retainedEvictedNodes = nullptr;
 	CPoint* retainedEvictedPoints = nullptr;
-	CPoint* retainedEvictedVoxels = nullptr;
+	CVoxel* retainedEvictedVoxels = nullptr;
 
 	/// Number of nodes covered by the published cut (`CFlagIsLargePublished' / `CFlagIsCutPublished'):
 	/// the nodes created after it are only on the device and keep the live cut (current camera)
@@ -757,12 +839,12 @@ struct CGlobalVariables {
 	uint32_t maxNbSpillingChunks = 0;
     COctreeNode** spillingNodes = nullptr;
 	uint32_t* spilledChunksCounter = nullptr;
-	CChunk** spillingChunks = nullptr;
+	CPointChunk** spillingChunks = nullptr;
 
     /// The backlog buffer for new voxels
     uint32_t nbBacklogVoxels = 0;
     uint32_t maxNbBacklogVoxels = 0;
-    CPoint* backlogVoxels = nullptr;
+    CVoxel* backlogVoxels = nullptr;
     uint32_t* backlogVoxelsNodes = nullptr;   // resident node index (`packedNodes') of each voxel
 
 	uint32_t maxPointsPerLeaf = 0;

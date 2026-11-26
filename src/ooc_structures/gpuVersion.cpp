@@ -13,7 +13,6 @@ void HostStorageNode::init(){
 
     points_allocator_update.init(node_count, data_count);
     voxels_allocator_update.init(node_count, data_count);
-    indices_allocator_update.init(node_count, data_count);
 
     // The visibility nodes are no longer kept in pinned memory: they are streamed from disk
     // into regular RAM and only their rendered points / voxels are copied into the pinned
@@ -24,11 +23,9 @@ void HostStorageNode::init(){
 void HostStorageNode::destroy(){
     points_allocator_update.destroy();
     voxels_allocator_update.destroy();
-    indices_allocator_update.destroy();
 
     points_allocator_visibility.destroy();
     voxels_allocator_visibility.destroy();
-    indices_allocator_visibility.destroy();
 }
 
 void HostStorageNode::deallocate(){
@@ -36,18 +33,15 @@ void HostStorageNode::deallocate(){
         case Update:
             points_allocator_update.deallocate(points);
             voxels_allocator_update.deallocate(voxels);
-            indices_allocator_update.deallocate(occupancy_indices);
             break;
         case Visibility:
             points_allocator_visibility.deallocate(points);
             voxels_allocator_visibility.deallocate(voxels);
-            indices_allocator_visibility.deallocate(occupancy_indices);
             break;
     }
 
     points = nullptr;
     voxels = nullptr;
-    occupancy_indices = nullptr;
 }
 
 
@@ -56,12 +50,10 @@ HostStorageNode::HostStorageNode(const HostStorageNodeOwner& owner): owner(owner
         case Update:
             points = points_allocator_update.allocate(owner);
             voxels = voxels_allocator_update.allocate(owner);
-            occupancy_indices = indices_allocator_update.allocate(owner);
             break;
         case Visibility:
             points = points_allocator_visibility.allocate(owner);
             voxels = voxels_allocator_visibility.allocate(owner);
-            occupancy_indices = indices_allocator_visibility.allocate(owner);
             break;
     }
 }
@@ -148,13 +140,16 @@ void GpuVersion::initConstraints(CuRast* editor, CUcontext* context) {
     // can never be exchanged usefully, whatever `MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE' says
     hostStaging.maxNbVoxelsChunksPerExchangedNode = std::min(
         OocSimLodSettings::MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE,
-        (OocSimLodSettings::MAX_POINTS_PER_LEAF + OocSimLodSettings::NB_POINTS_PER_CHUNK - 1) / OocSimLodSettings::NB_POINTS_PER_CHUNK
+        (OocSimLodSettings::MAX_POINTS_PER_LEAF + OocSimLodSettings::NB_VOXELS_PER_CHUNK - 1) / OocSimLodSettings::NB_VOXELS_PER_CHUNK
     );
 
     // The host rendering buffers hold every budget: points of the cut nodes + points of the large nodes,
     // voxels of the cut nodes + side voxels (each budget is enforced separately, see `assign_quotas')
     hostStaging.maxNbRenderedPoints = OocSimLodSettings::MAX_NB_RENDERED_POINTS + OocSimLodSettings::MAX_NB_RENDERED_LARGE_POINTS;
     hostStaging.maxNbRenderedVoxels = OocSimLodSettings::MAX_NB_RENDERED_VOXELS + OocSimLodSettings::MAX_NB_RENDERED_SIDE_VOXELS;
+    // One segment per node drawn from the host voxel buffers: at most one per node id, and a segment
+    // holds at least one voxel
+    hostStaging.maxNbRenderedVoxelSegments = std::max(1u, std::min(hostStaging.maxNbConcurrentNodes, hostStaging.maxNbRenderedVoxels));
 
     hostStaging.maxNbBatches = OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE;
     hostStaging.maxBatchSize = OocSimLodSettings::MAX_POINTS_PER_BATCHES;
@@ -176,7 +171,7 @@ void GpuVersion::initHostSide(CuRast* editor, CUcontext* context) {
     // Host side data
     exchangedPointsPointers = std::vector<CUdeviceptr>(hostStaging.maxNbNodesExchanged);
     exchangedVoxelsPointers = std::vector<CUdeviceptr>(hostStaging.maxNbNodesExchanged);
-    exchangedGridsPointers = std::vector<CUdeviceptr>(hostStaging.maxNbNodesExchanged);
+    exchangedLoadedVoxelsPointers = std::vector<CUdeviceptr>(hostStaging.maxNbNodesExchanged);
     batchesToAddPointsPointers = malloc(OocSimLodSettings::MAX_BATCHES_PER_OCTREE_UPDATE * sizeof(CUdeviceptr));
     CURuntime::assertCudaSuccess(cuMemAllocHost(&nbExchangedNodes, sizeof(uint32_t)));
     *(uint32_t*)nbExchangedNodes = 0;
@@ -226,13 +221,18 @@ void GpuVersion::initHostSide(CuRast* editor, CUcontext* context) {
 
     // Staging buffers for the rendered points / voxels (same capacity as the device buffers)
     visStagingPoints = static_cast<CPoint*>(allocHost<CPoint>(hostStaging.maxNbRenderedPoints));
-    visStagingVoxels = static_cast<CPoint*>(allocHost<CPoint>(hostStaging.maxNbRenderedVoxels));
+    visStagingVoxels = static_cast<CVoxel*>(allocHost<CVoxel>(hostStaging.maxNbRenderedVoxels));
+    visStagingVoxelSegments = static_cast<CVoxelSegment*>(allocHost<CVoxelSegment>(hostStaging.maxNbRenderedVoxelSegments));
+    visStagingVoxelTiles = static_cast<uint32_t*>(allocHost<uint32_t>(
+        (hostStaging.maxNbRenderedVoxels + RENDERED_VOXELS_TILE_SIZE - 1) / RENDERED_VOXELS_TILE_SIZE + 1));
+    visStagingNbVoxelSegments = static_cast<uint32_t*>(allocHost<uint32_t>(1));
+    *visStagingNbVoxelSegments = 0;
     nbNodesExchangedVisPoints = allocHost<uint32_t>(1);
     nbNodesExchangedVisVoxels = allocHost<uint32_t>(1);
     curNbVisNode = allocHost<uint32_t>(1);
 
 
-    MAX_NB_VOXELS = hostStaging.maxNbVoxelsChunksPerExchangedNode * OocSimLodSettings::NB_POINTS_PER_CHUNK;
+    MAX_NB_VOXELS = hostStaging.maxNbVoxelsChunksPerExchangedNode * OocSimLodSettings::NB_VOXELS_PER_CHUNK;
     HostStorageNode::init();
     GpuVersionUI::init();
 
@@ -256,8 +256,8 @@ void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
     hostStaging.exchangedPointsCounters = alloc<uint32_t>(hostStaging.maxNbNodesExchanged);
     hostStaging.exchangedVoxelsCounters = alloc<uint32_t>(hostStaging.maxNbNodesExchanged);
     hostStaging.exchangedPoints = alloc<CPoint*>(hostStaging.maxNbNodesExchanged);
-    hostStaging.exchangedVoxels = alloc<CPoint*>(hostStaging.maxNbNodesExchanged);
-    hostStaging.exchangedGrids = alloc<uint64_t*>(hostStaging.maxNbNodesExchanged);
+    hostStaging.exchangedVoxels = alloc<CVoxel*>(hostStaging.maxNbNodesExchanged);
+    hostStaging.exchangedLoadedVoxels = alloc<CVoxel*>(hostStaging.maxNbNodesExchanged);
     // Snapshot of the last eviction pass (a few KB), see `kernel_draw_evicted_nodes'
     hostStaging.evictedNodesIds = alloc<CIdAABB>(hostStaging.maxNbNodesExchanged);
     hostStaging.evictedNodesNbPoints = alloc<uint32_t>(hostStaging.maxNbNodesExchanged);
@@ -276,7 +276,7 @@ void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
     hostStaging.retainOverflowGeneration = 0;
     hostStaging.retainedEvictedNodes = alloc<CEvictedRetainEntry>(hostStaging.maxNbRetainedEvictedNodes);
     hostStaging.retainedEvictedPoints = alloc<CPoint>(hostStaging.maxNbRetainedEvictedPoints);
-    hostStaging.retainedEvictedVoxels = alloc<CPoint>(hostStaging.maxNbRetainedEvictedVoxels);
+    hostStaging.retainedEvictedVoxels = alloc<CVoxel>(hostStaging.maxNbRetainedEvictedVoxels);
     for(uint32_t i=0; i<hostStaging.maxNbNodesExchanged; i++){
         uint64_t real_size = 0;
 
@@ -290,16 +290,18 @@ void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
         exchangedPointsPointers[i] = new_ptr;
         pointers.push_back(new_ptr);
 
-        real_size = OocSimLodSettings::NB_POINTS_PER_CHUNK * hostStaging.maxNbVoxelsChunksPerExchangedNode * sizeof(CPoint);
+        // Voxels of an evicted node (device -> host)
+        real_size = uint64_t(OocSimLodSettings::NB_VOXELS_PER_CHUNK) * hostStaging.maxNbVoxelsChunksPerExchangedNode * sizeof(CVoxel);
         totalAllocatedMemory += real_size;
         CURuntime::assertCudaSuccess(cuMemAlloc(&new_ptr, real_size));
         exchangedVoxelsPointers[i] = new_ptr;
         pointers.push_back(new_ptr);
 
-        real_size = OocSimLodSettings::NB_POINTS_PER_CHUNK * hostStaging.maxNbVoxelsChunksPerExchangedNode * sizeof(uint64_t);
+        // Voxels of a loaded node (host -> device), for the occupancy grid
+        real_size = uint64_t(OocSimLodSettings::NB_VOXELS_PER_CHUNK) * hostStaging.maxNbVoxelsChunksPerExchangedNode * sizeof(CVoxel);
         totalAllocatedMemory += real_size;
         CURuntime::assertCudaSuccess(cuMemAlloc(&new_ptr, real_size));
-        exchangedGridsPointers[i] = new_ptr;
+        exchangedLoadedVoxelsPointers[i] = new_ptr;
         pointers.push_back(new_ptr);
 
         CURuntime::assertCudaSuccess(cuMemcpyHtoD(
@@ -313,8 +315,8 @@ void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
             hostStaging.maxNbNodesExchanged * sizeof(CUdeviceptr)
         ));
         CURuntime::assertCudaSuccess(cuMemcpyHtoD(
-            (CUdeviceptr)hostStaging.exchangedGrids,
-            exchangedGridsPointers.data(),
+            (CUdeviceptr)hostStaging.exchangedLoadedVoxels,
+            exchangedLoadedVoxelsPointers.data(),
             hostStaging.maxNbNodesExchanged * sizeof(CUdeviceptr)
         ));
     }
@@ -352,21 +354,29 @@ void GpuVersion::initBuffers(CuRast* editor, CUcontext* context) {
     hostStaging.exchangedVisVoxelsChildMasks = alloc<uint8_t>(hostStaging.maxNbConcurrentNodes);
 
     hostStaging.renderedPoints = alloc<CPoint>(hostStaging.maxNbRenderedPoints);
-    hostStaging.renderedVoxels = alloc<CPoint>(hostStaging.maxNbRenderedVoxels);
+    hostStaging.renderedVoxels = alloc<CVoxel>(hostStaging.maxNbRenderedVoxels);
     hostStaging.renderedPoints2 = alloc<CPoint>(hostStaging.maxNbRenderedPoints);
-    hostStaging.renderedVoxels2 = alloc<CPoint>(hostStaging.maxNbRenderedVoxels);
+    hostStaging.renderedVoxels2 = alloc<CVoxel>(hostStaging.maxNbRenderedVoxels);
+    // Node of every rendered voxel (see `CGlobalVariables::renderedVoxelSegments')
+    const uint32_t nb_rendered_voxel_tiles = (hostStaging.maxNbRenderedVoxels + RENDERED_VOXELS_TILE_SIZE - 1) / RENDERED_VOXELS_TILE_SIZE + 1;
+    hostStaging.renderedVoxelSegments = alloc<CVoxelSegment>(hostStaging.maxNbRenderedVoxelSegments);
+    hostStaging.renderedVoxelSegments2 = alloc<CVoxelSegment>(hostStaging.maxNbRenderedVoxelSegments);
+    hostStaging.renderedVoxelTiles = alloc<uint32_t>(nb_rendered_voxel_tiles);
+    hostStaging.renderedVoxelTiles2 = alloc<uint32_t>(nb_rendered_voxel_tiles);
+    hostStaging.nbRenderedVoxelSegments = 0;
+    hostStaging.nbRenderedVoxelSegments2 = 0;
 
 
     // Temporary buffers
     hostStaging.spilledPoints = alloc<CPoint>(hostStaging.maxNbSpilledPoints);
     hostStaging.spillingNodes = alloc<COctreeNode*>(hostStaging.maxNbSpillingNodes);
     hostStaging.spilledChunksCounter = alloc<uint32_t>(hostStaging.maxNbSpillingChunks);
-    hostStaging.spillingChunks = alloc<CChunk*>(hostStaging.maxNbSpillingChunks);
+    hostStaging.spillingChunks = alloc<CPointChunk*>(hostStaging.maxNbSpillingChunks);
     hostStaging.allocatedChunks = alloc<CChunk*>(OocSimLodSettings::NB_ALLOCABLE_CHUNKS);
 
     hostStaging.allocationPlans = alloc<CAllocationPlan>(hostStaging.maxNbResidentNodes);
 
-    hostStaging.backlogVoxels = alloc<CPoint>(hostStaging.maxNbBacklogVoxels);
+    hostStaging.backlogVoxels = alloc<CVoxel>(hostStaging.maxNbBacklogVoxels);
     // Resident node indices (4 bytes) instead of node pointers (8 bytes)
     hostStaging.backlogVoxelsNodes = alloc<uint32_t>(hostStaging.maxNbBacklogVoxels);
 
@@ -501,6 +511,9 @@ void GpuVersion::destroy(CuRast *editor, CUcontext *context){
     CURuntime::assertCudaSuccess(cuMemFreeHost(exchangedVisVoxelsChildMasks));
     CURuntime::assertCudaSuccess(cuMemFreeHost(visStagingPoints));
     CURuntime::assertCudaSuccess(cuMemFreeHost(visStagingVoxels));
+    CURuntime::assertCudaSuccess(cuMemFreeHost(visStagingVoxelSegments));
+    CURuntime::assertCudaSuccess(cuMemFreeHost(visStagingVoxelTiles));
+    CURuntime::assertCudaSuccess(cuMemFreeHost(visStagingNbVoxelSegments));
 
     CURuntime::assertCudaSuccess(cuMemFreeHost(nbRenderedPoints));
     CURuntime::assertCudaSuccess(cuMemFreeHost(nbRenderedVoxels));
@@ -808,15 +821,15 @@ void GpuVersion::octreeUpdateSimLODLoad(CuRast* editor, CUcontext* context){
         static_cast<uint32_t*>(exchangedPointsCounters)[i] = cur_node->node.points_counter;
         static_cast<uint32_t*>(exchangedVoxelsCounters)[i] = cur_node->node.voxels_counter;
 
-        // Send grids info
+        // Send the voxels: their cells rebuild the occupancy grid of the node (`kernel_fill_new_grids')
         if(cur_node->node.voxels_counter > 0){
-            srcs_host.push_back((CUdeviceptr)cur_node->occupancy_indices);
-            dsts_device.push_back(exchangedGridsPointers[i]);
+            srcs_host.push_back((CUdeviceptr)cur_node->voxels);
+            dsts_device.push_back(exchangedLoadedVoxelsPointers[i]);
             uint32_t nb_voxels = min(cur_node->node.voxels_counter, MAX_NB_VOXELS);
             if(nb_voxels != cur_node->node.voxels_counter){
                 println("WARN: Host side, simlodLoad too many voxels to send; some will be skipped\n");
             }
-            sizes.push_back(min(cur_node->node.voxels_counter, MAX_NB_VOXELS) * sizeof(uint64_t));
+            sizes.push_back(uint64_t(nb_voxels) * sizeof(CVoxel));
         }
     }
 
@@ -1204,13 +1217,13 @@ void GpuVersion::storeNodes(uint32_t nb_nodes_to_store){
             sizes.push_back(nbs_points[i] * sizeof(CPoint));
         }
 
-        // Prepare to load voxels and grids
+        // Prepare to load voxels (their cells are the occupancy grid of the node)
         if(nbs_voxels[i] > 0){
             uint32_t old_counter = cur_node->node.voxels_counter;
             uint32_t new_counter = old_counter + nbs_voxels[i];
             cur_node->node.voxels_counter = min(OocSimLodSettings::MAX_POINTS_PER_LEAF, new_counter);
             if(new_counter > OocSimLodSettings::MAX_POINTS_PER_LEAF){
-                // These voxels (and their occupancy cells) are dropped: the device has flagged the
+                // These voxels (and so their occupancy cells) are dropped: the device has flagged the
                 // node (`CFlagHasIncompleteVoxels') and draws its children instead. Printed once.
                 static bool has_warned = false;
                 if(!has_warned){
@@ -1225,11 +1238,7 @@ void GpuVersion::storeNodes(uint32_t nb_nodes_to_store){
             if(nb_voxels_to_load > 0){
                 srcs_device.push_back(exchangedVoxelsPointers[i]);
                 dsts_host.push_back((CUdeviceptr)(cur_node->voxels + old_counter));
-                sizes.push_back(nb_voxels_to_load * sizeof(CPoint));
-
-                srcs_device.push_back(exchangedGridsPointers[i]);
-                dsts_host.push_back((CUdeviceptr)(cur_node->occupancy_indices + old_counter));
-                sizes.push_back(nb_voxels_to_load * sizeof(uint64_t));
+                sizes.push_back(uint64_t(nb_voxels_to_load) * sizeof(CVoxel));
             }
         }
     }
@@ -1413,13 +1422,13 @@ uint32_t visMaskedCountEstimate(uint32_t nb_elements, uint8_t child_mask){
     return static_cast<uint32_t>((uint64_t(nb_elements) * nb_octants + 7u) / 8u);
 }
 
-/// Keep, in place, the first `nb_elements' elements of `data' lying in the octants of `child_mask'
-/// (same octant rule as the device, `CAABB::getNextChildIndex'); returns how many are kept
-uint32_t visKeepOctants(CPoint* data, uint32_t nb_elements, const CAABB& aabb, uint8_t child_mask){
+/// Keep, in place, the first `nb_elements' voxels of `data' lying in the octants of `child_mask'
+/// (same octant rule as the device, `CVoxel::getOctant'); returns how many are kept
+uint32_t visKeepOctants(CVoxel* data, uint32_t nb_elements, uint8_t child_mask){
     if(child_mask == 0){ return nb_elements; }
     uint32_t kept = 0;
     for(uint32_t i = 0; i < nb_elements; i++){
-        const uint32_t octant = static_cast<uint32_t>(aabb.getNextChildIndex(data[i].position));
+        const uint32_t octant = static_cast<uint32_t>(data[i].getOctant());
         if(child_mask & (1u << octant)){
             if(kept != i){ data[kept] = data[i]; }
             kept++;
@@ -1552,8 +1561,9 @@ inline uint64_t visShuffleDraw(uint64_t seed, uint64_t index){
 /// it are dropped). Only the missing tail is read, unless the kept prefix must grow beyond what was
 /// kept (then the file is read again from the start: same draws, same prefix, extended)
 /// Returns the number of elements of the file processed (<= nb_elements if the file is shorter)
+template <typename TElement>
 uint32_t visSyncCachedFile(const std::string& filepath, uint32_t nb_elements, uint32_t nb_wanted,
-    GpuVersion::VisRamCachedFile& cached, uint64_t seed
+    GpuVersion::VisRamCachedFile<TElement>& cached, uint64_t seed
 ){
     // Prefix to keep: about twice what is wanted (hysteresis: kept while it is at most 4 times)
     nb_wanted = std::min(nb_wanted, nb_elements);
@@ -1576,16 +1586,16 @@ uint32_t visSyncCachedFile(const std::string& filepath, uint32_t nb_elements, ui
 
     std::ifstream file(filepath, std::ios::binary);
     if(!file.is_open()){ return cached.seen; }
-    file.seekg(static_cast<std::streamoff>(uint64_t(cached.seen) * sizeof(CPoint)));
+    file.seekg(static_cast<std::streamoff>(uint64_t(cached.seen) * sizeof(TElement)));
     cached.data.reserve(std::min(nb_elements, cached.keep));
 
     // Read in blocks (most elements of a large file are dropped: never all of it in memory)
     constexpr uint32_t BLOCK = 65536;
-    std::vector<CPoint> block(std::min<uint32_t>(BLOCK, nb_elements - cached.seen));
+    std::vector<TElement> block(std::min<uint32_t>(BLOCK, nb_elements - cached.seen));
     while(cached.seen < nb_elements){
         const uint32_t nb_to_read = std::min<uint32_t>(static_cast<uint32_t>(block.size()), nb_elements - cached.seen);
-        file.read(reinterpret_cast<char*>(block.data()), static_cast<std::streamsize>(uint64_t(nb_to_read) * sizeof(CPoint)));
-        const uint32_t nb_read = static_cast<uint32_t>(uint64_t(std::max<std::streamsize>(file.gcount(), 0)) / sizeof(CPoint));
+        file.read(reinterpret_cast<char*>(block.data()), static_cast<std::streamsize>(uint64_t(nb_to_read) * sizeof(TElement)));
+        const uint32_t nb_read = static_cast<uint32_t>(uint64_t(std::max<std::streamsize>(file.gcount(), 0)) / sizeof(TElement));
         for(uint32_t k = 0; k < nb_read; k++){
             const uint64_t i = cached.seen;
             const uint64_t j = visShuffleDraw(seed, i) % (i + 1);
@@ -1623,7 +1633,8 @@ bool visCanReadUpdateNodes(){
 /// Copy `quota' elements out of the first `nb_elements' of `src' into `dst' WITHOUT modifying `src'
 /// (a host RAM node is append-only and may be read by the serialization thread): evenly strided
 /// over the insertion order, deterministic, a smaller quota is close to a subset of a larger one
-uint32_t visCopyStridedSubset(const CPoint* src, uint32_t nb_elements, uint32_t quota, CPoint* dst){
+template <typename TElement>
+uint32_t visCopyStridedSubset(const TElement* src, uint32_t nb_elements, uint32_t quota, TElement* dst){
     const uint32_t nb_to_copy = std::min(quota, nb_elements);
     if(nb_to_copy == 0){ return 0; }
     if(nb_to_copy == nb_elements){
@@ -1636,32 +1647,10 @@ uint32_t visCopyStridedSubset(const CPoint* src, uint32_t nb_elements, uint32_t 
     return nb_to_copy;
 }
 
-/// Size code of the voxels of a node (see `GpuVersion::VOXEL_SIZE_CODE_BIAS'): its level relative to
-/// the initial root, log2(size of node 0 / size of the node), biased; 0 if it can't be computed
-uint8_t visVoxelSizeCode(const CAABB& node_aabb, float reference_size){
-    const glm::vec3 size = node_aabb.maxs - node_aabb.mins;
-    const float node_size = std::max(size.x, std::max(size.y, size.z));
-    if(!(node_size > 0.0f) || !std::isfinite(node_size) || !(reference_size > 0.0f) || !std::isfinite(reference_size)){
-        return 0;
-    }
-    const double level = std::round(std::log2(double(reference_size) / double(node_size)));
-    const double code = level + double(GpuVersion::VOXEL_SIZE_CODE_BIAS);
-    if(!(code >= 1.0 && code <= 255.0)){ return 0; }
-    return static_cast<uint8_t>(code);
-}
-
-/// Write the size code into the alpha byte of `nb' voxels (copies in the staging buffers only)
-void visWriteVoxelSizeCode(CPoint* voxels, uint32_t nb, uint8_t code){
-    const uint32_t alpha = uint32_t(code) << 24;
-    for(uint32_t i = 0; i < nb; i++){
-        voxels[i].color = (voxels[i].color & 0x00FFFFFFu) | alpha;
-    }
-}
-
 /// Copy the quota of a host RAM node (`updateNodes') into the staging buffers, without modifying it
 /// (it is append-only and may be read by the serialisation thread meanwhile)
 /// `scratch' is a per-worker buffer for the out-of-view fallback
-void visCopyUpdateNodeTask(GpuVersion::VisibilityTask& task, std::vector<CPoint>& scratch){
+void visCopyUpdateNodeTask(GpuVersion::VisibilityTask& task, std::vector<CVoxel>& scratch){
     const HostStorageNode* src = task.update_node.get();
     task.points_written = 0;
     task.voxels_written = 0;
@@ -1678,19 +1667,17 @@ void visCopyUpdateNodeTask(GpuVersion::VisibilityTask& task, std::vector<CPoint>
         // Out-of-view fallback: only the octants of the children outside the view (filtered into the
         // scratch buffer: the host RAM node is not modified)
         scratch.assign(src->voxels, src->voxels + task.nb_voxels_on_disk);
-        const uint32_t nb_kept = visKeepOctants(scratch.data(), task.nb_voxels_on_disk,
-            task.voxels_aabb, task.voxels_child_mask);
+        const uint32_t nb_kept = visKeepOctants(scratch.data(), task.nb_voxels_on_disk, task.voxels_child_mask);
         task.voxels_written = visCopyStridedSubset(scratch.data(), nb_kept, task.voxels_quota,
             GpuVersion::visStagingVoxels + task.voxels_offset
         );
     }
-    visWriteVoxelSizeCode(GpuVersion::visStagingVoxels + task.voxels_offset, task.voxels_written, task.voxels_size_code);
 }
 
 /// Stream one node: a host RAM node is copied (`visCopyUpdateNodeTask'); a node on disk gets its RAM
 /// cache entry up to date with its files (only what it gained since the last visibility update is
 /// read), then its quota is copied into the staging buffers
-void visLoadTask(GpuVersion::VisibilityTask& task, std::vector<CPoint>& scratch){
+void visLoadTask(GpuVersion::VisibilityTask& task, std::vector<CVoxel>& scratch){
     if(task.is_from_update_node){
         visCopyUpdateNodeTask(task, scratch);
         task.update_node.reset();
@@ -1746,7 +1733,7 @@ void visLoadTask(GpuVersion::VisibilityTask& task, std::vector<CPoint>& scratch)
         task.points_written = nb;
     }
     if(wants_voxels){
-        CPoint* dst = GpuVersion::visStagingVoxels + task.voxels_offset;
+        CVoxel* dst = GpuVersion::visStagingVoxels + task.voxels_offset;
         const uint32_t nb_kept = static_cast<uint32_t>(entry.voxels.data.size());
         if(task.voxels_child_mask == 0){
             const uint32_t nb = std::min(task.voxels_quota, nb_kept);
@@ -1757,13 +1744,12 @@ void visLoadTask(GpuVersion::VisibilityTask& task, std::vector<CPoint>& scratch)
             // ones of the permutation lying in them: a uniform random subset of them)
             uint32_t nb = 0;
             for(uint32_t i = 0; i < nb_kept && nb < task.voxels_quota; i++){
-                const CPoint& voxel = entry.voxels.data[i];
-                const uint32_t octant = static_cast<uint32_t>(task.voxels_aabb.getNextChildIndex(voxel.position));
+                const CVoxel& voxel = entry.voxels.data[i];
+                const uint32_t octant = static_cast<uint32_t>(voxel.getOctant());
                 if(task.voxels_child_mask & (1u << octant)){ dst[nb++] = voxel; }
             }
             task.voxels_written = nb;
         }
-        visWriteVoxelSizeCode(dst, task.voxels_written, task.voxels_size_code);
     }
 }
 
@@ -1782,7 +1768,7 @@ void visRunTasks(uint32_t max_nb_workers){
 
     std::atomic<uint32_t> next = 0;
     auto work = [&](){
-        std::vector<CPoint> scratch = {};
+        std::vector<CVoxel> scratch = {};
         for(uint32_t k = next.fetch_add(1); k < nb_tasks; k = next.fetch_add(1)){
             visLoadTask(tasks[order[k]], scratch);
         }
@@ -1834,18 +1820,6 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
 
     COPY_FROM_GPU(nbNodesExchangedVisPoints, nbNodesExchangedVisPoints, uint32_t);
     COPY_FROM_GPU(nbNodesExchangedVisVoxels, nbNodesExchangedVisVoxels, uint32_t);
-
-    // Size of the initial root (node 0: its box never changes after the initialisation, the root only
-    // grows by doubling around it), reference of the voxel size codes (see `VOXEL_SIZE_CODE_BIAS')
-    {
-        CAABB root_aabb;
-        CURuntime::assertCudaSuccess(cuMemcpyDtoH(&root_aabb,
-            (CUdeviceptr)hostStaging.relationshipMap + offsetof(CGlobalVariables::Relationship, aabb),
-            sizeof(CAABB)
-        ));
-        const glm::vec3 size = root_aabb.maxs - root_aabb.mins;
-        voxelReferenceSize = std::max(size.x, std::max(size.y, size.z));
-    }
 
     // The device lists (and the host copies) hold at most `maxNbConcurrentNodes' entries
     const uint32_t nb_vis_points = min(*(uint32_t*)nbNodesExchangedVisPoints, hostStaging.maxNbConcurrentNodes);
@@ -1979,12 +1953,6 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
             task.nb_voxels_on_disk = source.nb_voxels;
             task.voxels_priority = ((float*)(exchangedPrioritiesVisVoxels))[i];
             task.voxels_child_mask = ((uint8_t*)(exchangedVisVoxelsChildMasks))[i];
-            if(task.voxels_child_mask != 0){
-                // Filled by `storeNodes' for every node sent to the host (a Vox entry has voxels on disk)
-                task.voxels_aabb = aabbsMap[id];
-            }
-            // Voxel size of the node, for the splats (the rendering buffers hold no node id)
-            task.voxels_size_code = (id < aabbsMap.size()) ? visVoxelSizeCode(aabbsMap[id], voxelReferenceSize) : 0;
         }
         for(uint32_t i = 0; i < nb_vis_points; i++){
             const CIdAABB id = ((CIdAABB*)(exchangedAABBIndicesVisPoints))[i];
@@ -2160,7 +2128,8 @@ void GpuVersion::visibilityUpdateSort(CuRast* editor, CUcontext* context){
     // update; they may still grow while the workers fill them: the budget is checked again next time)
     {
         auto entry_bytes = [](const VisRamCacheEntry& entry){
-            return uint64_t(entry.points.data.capacity() + entry.voxels.data.capacity()) * sizeof(CPoint);
+            return uint64_t(entry.points.data.capacity()) * sizeof(CPoint)
+                + uint64_t(entry.voxels.data.capacity()) * sizeof(CVoxel);
         };
         uint64_t total_bytes = 0;
         std::vector<std::pair<uint64_t, CIdAABB>> evictable = {};
@@ -2291,7 +2260,7 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
 
     // The written elements are packed contiguously on the device. A node that wrote less than its
     // quota leaves a gap in the staging buffer: consecutive full slots are merged into one copy
-    auto append_segments = [&](const CPoint* staging, CUdeviceptr dst_base,
+    auto append_segments = [&]<typename TElement>(const TElement* staging, CUdeviceptr dst_base,
         uint64_t VisibilityTask::* offset_member, uint32_t VisibilityTask::* written_member
     ){
         uint64_t run_src = 0;
@@ -2301,8 +2270,8 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
         auto flush = [&](){
             if(run_len == 0){return;}
             srcs_host.push_back((CUdeviceptr)(staging + run_src));
-            dsts_device.push_back(dst_base + (CUdeviceptr)(run_dst * sizeof(CPoint)));
-            sizes.push_back(run_len * sizeof(CPoint));
+            dsts_device.push_back(dst_base + (CUdeviceptr)(run_dst * sizeof(TElement)));
+            sizes.push_back(run_len * sizeof(TElement));
             run_len = 0;
         };
         for(const VisibilityTask& task : visibilityTasks){
@@ -2323,6 +2292,53 @@ void GpuVersion::visibilityUpdate(CuRast* editor, CUcontext* context){
     };
     append_segments(visStagingVoxels, dst_rendered_voxels, &VisibilityTask::voxels_offset, &VisibilityTask::voxels_written);
     append_segments(visStagingPoints, dst_rendered_points, &VisibilityTask::points_offset, &VisibilityTask::points_written);
+
+    // Node of every packed voxel (`CGlobalVariables::renderedVoxelSegments'): the voxels of a task are
+    // packed in the task order, as above, so its segment starts where the previous ones end
+    {
+        uint32_t nb_segments = 0;
+        uint64_t first = 0;
+        for(const VisibilityTask& task : visibilityTasks){
+            if(task.voxels_written == 0){continue;}
+            if(nb_segments >= hostStaging.maxNbRenderedVoxelSegments){break;}   // can't happen (one per node)
+            visStagingVoxelSegments[nb_segments] = CVoxelSegment{static_cast<uint32_t>(first), task.id};
+            nb_segments++;
+            first += task.voxels_written;
+        }
+        // The voxels of the tasks beyond the segments (if that ever happened) are not drawn
+        const uint32_t nb_voxels = (nb_segments == 0) ? 0u : static_cast<uint32_t>(first);
+        *(uint32_t*)nb_rendered_voxels_host = nb_voxels;
+        *visStagingNbVoxelSegments = nb_segments;
+
+        // Segment holding voxel t * RENDERED_VOXELS_TILE_SIZE, for every tile t
+        const uint32_t nb_tiles = (nb_voxels + RENDERED_VOXELS_TILE_SIZE - 1) / RENDERED_VOXELS_TILE_SIZE;
+        uint32_t segment = 0;
+        for(uint32_t t = 0; t < nb_tiles; t++){
+            const uint64_t tile_first = uint64_t(t) * RENDERED_VOXELS_TILE_SIZE;
+            while(segment + 1 < nb_segments && visStagingVoxelSegments[segment + 1].first <= tile_first){ segment++; }
+            visStagingVoxelTiles[t] = segment;
+        }
+
+        auto device_address = [&](const void* member){
+            return deviceStaging + (reinterpret_cast<uintptr_t>(member) - reinterpret_cast<uintptr_t>(&hostStaging));
+        };
+        srcs_host.push_back((CUdeviceptr)visStagingNbVoxelSegments);
+        dsts_device.push_back(device_address(isUsingSecondRenderingBuffer
+            ? &hostStaging.nbRenderedVoxelSegments2 : &hostStaging.nbRenderedVoxelSegments));
+        sizes.push_back(sizeof(uint32_t));
+        if(nb_segments > 0){
+            srcs_host.push_back((CUdeviceptr)visStagingVoxelSegments);
+            dsts_device.push_back((CUdeviceptr)(isUsingSecondRenderingBuffer
+                ? hostStaging.renderedVoxelSegments2 : hostStaging.renderedVoxelSegments));
+            sizes.push_back(uint64_t(nb_segments) * sizeof(CVoxelSegment));
+        }
+        if(nb_tiles > 0){
+            srcs_host.push_back((CUdeviceptr)visStagingVoxelTiles);
+            dsts_device.push_back((CUdeviceptr)(isUsingSecondRenderingBuffer
+                ? hostStaging.renderedVoxelTiles2 : hostStaging.renderedVoxelTiles));
+            sizes.push_back(uint64_t(nb_tiles) * sizeof(uint32_t));
+        }
+    }
 
     // // TODO: to remove
     // if(total_voxels < total_voxels_on_disk || total_points < total_points_on_disk){

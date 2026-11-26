@@ -9,7 +9,8 @@
 ///////////////////////////////////////////////////////////////////////////////
 
 std::string getNodeFilePath(const CIdAABB& aabb_index);
-std::string getOccupancyFilePath(const CIdAABB& aabb_index);
+/// `.points' (`CPoint', 16 bytes each) or `.voxels' (`CVoxel', 8 bytes each: cell + color; the cells
+/// are also the occupancy grid of the node, there is no separate `.grid' file anymore)
 std::string getChunkFilePath(const CIdAABB& aabb_index, bool is_voxel);
 
 
@@ -18,31 +19,17 @@ std::string getChunkFilePath(const CIdAABB& aabb_index, bool is_voxel);
 //////////////////////////////// CHUNK HANDLER ////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
 
+/// Append-only file of points (`CPoint') or voxels (`CVoxel')
 struct ChunkSerializable {
-	static void serialize(
-        const std::string& filepath, const CPoint* points, 
-        uint32_t nb_old_points, uint32_t nb_new_points
-    );
-    static void deserialize(
-        const std::string& filepath, CPoint* points, 
-        uint32_t nb_points, const std::string& msg
-    );
-};
-
-
-
-///////////////////////////////////////////////////////////////////////////////
-//////////////////////////////// GRID HANDLER /////////////////////////////////
-///////////////////////////////////////////////////////////////////////////////
-
-struct OccupancyGridSerializable {
+    template <typename TElement>
     static void serialize(
-        const std::string& filepath, const uint64_t* indices, 
-        uint32_t nb_old_voxels, uint32_t nb_new_voxels
+        const std::string& filepath, const TElement* elements,
+        uint32_t nb_old_elements, uint32_t nb_new_elements
     );
+    template <typename TElement>
     static void deserialize(
-        const std::string& filepath, uint64_t* indices, 
-        uint32_t nb_voxels, const std::string& msg
+        const std::string& filepath, TElement* elements,
+        uint32_t nb_elements, const std::string& msg
     );
 };
 

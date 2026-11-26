@@ -64,7 +64,7 @@ struct CAllocatorPool {
 
 
 struct CMemoryAllocator {
-    /// The CChunk allocator
+    /// The chunk allocator: point chunks and voxel chunks share it (see `CChunk')
     CAllocatorPool<CChunk>* chunksAllocator = nullptr;
     /// The Occupancy grid allocator
     CAllocatorPool<COccupancyGrid>* gridsAllocator = nullptr;
@@ -77,8 +77,9 @@ struct CMemoryAllocator {
 
 #ifdef __CUDACC__
 
-    /// Allocate a new chunk
-    __device__ CChunk* newChunk(bool will_update_metrics = true){
+    /// Allocate a new chunk of points / voxels (an empty chunk, the last of its list)
+    template <typename TChunk>
+    __device__ TChunk* newChunk(bool will_update_metrics = true){
         // UI values
         if(will_update_metrics){
             __nv_atomic_add(&globalVariables.nbNewChunksThisUpdate, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
@@ -86,23 +87,30 @@ struct CMemoryAllocator {
             __nv_atomic_add(&globalVariables.currentNbChunks, 1, __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_DEVICE);
         }
 
-        CChunk* new_chunk = chunksAllocator->allocate();
+        TChunk* new_chunk = reinterpret_cast<TChunk*>(chunksAllocator->allocate());
         new_chunk->size = 0;
         new_chunk->next = nullptr;
         return new_chunk;
     }
+    __device__ CPointChunk* newPointChunk(bool will_update_metrics = true){
+        return newChunk<CPointChunk>(will_update_metrics);
+    }
+    __device__ CVoxelChunk* newVoxelChunk(bool will_update_metrics = true){
+        return newChunk<CVoxelChunk>(will_update_metrics);
+    }
 
-    /// Deallocate a chunk and all it's children
-    __device__ void delChunk(CChunk* chunk, bool will_update_metrics = true){
+    /// Deallocate a chunk and all the chunks after it
+    template <typename TChunk>
+    __device__ void delChunk(TChunk* chunk, bool will_update_metrics = true){
         if(!chunk){return;}
 
         // Get the chunks to deallocate
-        CChunk* cur_chunk = chunk;
+        TChunk* cur_chunk = chunk;
         while(cur_chunk){
-            CChunk* next = cur_chunk->next;
+            TChunk* next = cur_chunk->next;
             cur_chunk->next = nullptr;
             cur_chunk->size = 0;
-            chunksAllocator->deallocate(cur_chunk);
+            chunksAllocator->deallocate(asPoolChunk(cur_chunk));
             cur_chunk = next;
 
             // UI values
@@ -113,14 +121,14 @@ struct CMemoryAllocator {
             }
         }
     }
-    __device__ void delChunkSingle(CChunk* chunk, bool will_update_metrics = true){
+    /// Deallocate a single chunk (not the ones after it)
+    template <typename TChunk>
+    __device__ void delChunkSingle(TChunk* chunk, bool will_update_metrics = true){
         if(!chunk){return;}
 
-        // Get the chunks to deallocate
-        CChunk* cur_chunk = chunk;
-        cur_chunk->next = nullptr;
-        cur_chunk->size = 0;
-        chunksAllocator->deallocate(cur_chunk);
+        chunk->next = nullptr;
+        chunk->size = 0;
+        chunksAllocator->deallocate(asPoolChunk(chunk));
 
         // UI values
         if(will_update_metrics){

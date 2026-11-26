@@ -19,8 +19,13 @@ struct OocSimLodSettings {
     /// The number of points in a chunk
     /// This setting is set as a constant to be used in static arrays
     static constexpr uint32_t NB_POINTS_PER_CHUNK = 1024;
+    /// The number of voxels in a chunk: a voxel (`CVoxel', 8 bytes) is half a point (`CPoint', 16
+    /// bytes), so a voxel chunk holds twice as many elements in the same memory. Both kinds of chunks
+    /// come from the same pool (`CChunk'), so the memory is shared between points and voxels as needed
+    static constexpr uint32_t NB_VOXELS_PER_CHUNK = 2 * NB_POINTS_PER_CHUNK;
     /// The occupancy grid size per dimension
     /// This setting is set as a constant to be used in static arrays
+    /// At most 256: a voxel stores its cell coordinates on 8 bits per axis (`CVoxel')
     static constexpr uint32_t GRID_SIZE_PER_DIMENSION = 128;
     /// The occupancy grid complete size
     static constexpr uint32_t GRID_SIZE = GRID_SIZE_PER_DIMENSION 
@@ -143,7 +148,7 @@ struct OocSimLodSettings {
     static inline uint32_t MAX_NB_SPILLING_POINTS;
     /// The maximum number of backlog voxels
     static inline uint32_t MAX_NB_BACKLOG_VOXELS;
-    /// The maximum number of voxels chunk that can be exchanged at once
+    /// The maximum number of voxels chunk that can be exchanged at once (NB_VOXELS_PER_CHUNK voxels each)
     static inline uint32_t MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE;
     /// The points rendering budget for the visibility cache: points of the cut nodes
     static inline uint32_t MAX_NB_RENDERED_POINTS;
@@ -184,6 +189,8 @@ struct OocSimLodSettings {
     /// MAX_POINTS_PER_LEAF), occupancy grids per resident node, node slots per resident node
     static inline double CHUNKS_FILL_RATIO;
     static inline double GRIDS_PER_RESIDENT_NODE;
+    /// Share of the resident nodes counted as inner nodes (holding voxels, half the chunks of a leaf)
+    static inline double INNER_NODES_FRACTION;
     static inline double NODES_PER_RESIDENT_NODE;
     /// Nodes an update brings in (loaded or created), per MAX_POINTS_PER_LEAF points of the update
     static inline double TRANSIENT_NODES_PER_UPDATE_LEAF;

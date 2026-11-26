@@ -32,21 +32,21 @@
 - [ ] Coloring per level
 - [x] Change how voxels are rendered (quad)
 - [x] Load immediately when zooming in a region
-- [ ] Avoid stalling after many points loaded
+- [~] Avoid stalling after many points loaded
 
 
 
 ## This month
 
 <!-- Quality of life -->
-- [ ] Rewrite everything more cleanly (delete unnecessary parts + better comments + refactor settings)
-- [ ] Check all globalVariables and their initial values (rename some, destroy some, ...)
+- [~] Rewrite everything more cleanly (delete unnecessary parts + better comments + refactor settings)
+- [~] Check all globalVariables and their initial values (rename some, destroy some, ...)
 - [ ] Store all remaining nodes on quit (or on button pressed) + load them to init the octree / scene
 - [ ] Properly put down the entire method
 - [ ] Update the latex algorithms
   
 <!-- Bug fixing -->
-- [ ] Rethink point distribution
+- [ ] Rethink point distribution to never have holes in the rendering and have more points in front
 - [ ] Fix memory limitations (do not crash if too much RAM is used)
 - [ ] What about storage limitations (do not crash if too much Disk Space is used)
 

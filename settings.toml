@@ -170,8 +170,8 @@ MAX_NB_SPILLING_POINTS = 20_000_000
 # MAX_NB_BACKLOG_VOXELS = 10_000_000
 MAX_NB_BACKLOG_VOXELS = 20_000_000
 
-### The maximum number of voxels chunk that can be exchanged at once
-### (capped to MAX_POINTS_PER_LEAF / 1024: the host keeps at most MAX_POINTS_PER_LEAF voxels per node)
+### The maximum number of voxels chunk that can be exchanged at once (a voxel chunk holds 2048 voxels)
+### (capped to MAX_POINTS_PER_LEAF / 2048: the host keeps at most MAX_POINTS_PER_LEAF voxels per node)
 MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE = 128
 
 ### The rendering budgets (36 bytes of device memory per element: double buffering + retained evicted copies)
@@ -238,6 +238,9 @@ BACKLOG_VOXELS_PER_UPDATE_POINT = 1.0
 CHUNKS_FILL_RATIO = 0.75
 ### Occupancy grids (one per inner node) per resident node
 GRIDS_PER_RESIDENT_NODE = 0.6
+### Share of the resident nodes counted as inner nodes when sizing the chunk pool: an inner node holds voxels,
+### which take half the chunks of the points of a leaf. Lower = more chunks per node (safer)
+INNER_NODES_FRACTION = 0.3
 ### Node slots per resident node (cheap: never the first pool to run out)
 NODES_PER_RESIDENT_NODE = 4.0
 ### Nodes an update brings in (loaded or created), per MAX_POINTS_PER_LEAF points of the update

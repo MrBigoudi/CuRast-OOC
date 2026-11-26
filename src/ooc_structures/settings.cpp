@@ -183,6 +183,7 @@ void OocSimLodSettings::init_automatic_sizing(){
     BACKLOG_VOXELS_PER_UPDATE_POINT = init_field<double>("BACKLOG_VOXELS_PER_UPDATE_POINT", 1.0);
     CHUNKS_FILL_RATIO = init_field<double>("CHUNKS_FILL_RATIO", 0.75);
     GRIDS_PER_RESIDENT_NODE = init_field<double>("GRIDS_PER_RESIDENT_NODE", 0.6);
+    INNER_NODES_FRACTION = init_field<double>("INNER_NODES_FRACTION", 0.3);
     NODES_PER_RESIDENT_NODE = init_field<double>("NODES_PER_RESIDENT_NODE", 4.0);
     TRANSIENT_NODES_PER_UPDATE_LEAF = init_field<double>("TRANSIENT_NODES_PER_UPDATE_LEAF", 6.0);
     MIN_LRU_UPDATES_CACHE_SIZE = init_field<uint32_t>("MIN_LRU_UPDATES_CACHE_SIZE", 128);
@@ -333,8 +334,12 @@ void OocSimLodSettings::init_default(){
     }
 
     const double leaf = double(std::max(1u, MAX_POINTS_PER_LEAF));
+    // Chunks of a full node: MAX_POINTS_PER_LEAF points, or as many voxels (half the chunks: a voxel
+    // is half a point, see `CVoxel')
     const double leaf_chunks = std::ceil(leaf / NB_POINTS_PER_CHUNK);
+    const double leaf_voxel_chunks = std::ceil(leaf / NB_VOXELS_PER_CHUNK);
     const double point_bytes = sizeof(CPoint);
+    const double voxel_bytes = sizeof(CVoxel);
 
     // ===================================================================================================
     // 1. Device bytes per element of every buffer (as allocated in `GpuVersion::initBuffers' and
@@ -355,14 +360,21 @@ void OocSimLodSettings::init_default(){
     const double node_id_bytes = sizeof(CGlobalVariables::Relationship) + sizeof(uint32_t)
         + 2.0 * (2.0 * sizeof(CIdAABB) + sizeof(float)) + 2.0 * sizeof(uint8_t) + sizeof(CIdAABB);
     // Rendering budget element: the two published buffers (double buffering) + the retained copies of
-    // the evicted nodes (a fraction of the budgets, see `EVICTION_RETAIN_BUDGET_FRACTION')
-    const double rendered_bytes = 2.0 * point_bytes + EVICTION_RETAIN_BUDGET_FRACTION * point_bytes;
-    // Exchanged node: its points (whole chunks), voxels and grid cells (the voxel chunks are capped
-    // like in `GpuVersion::initConstraints'), the small per-slot arrays (ids, parents, AABBs, children,
-    // counters, pointers, eviction snapshot, `temporaryNodeBuffer') and its retained entries
-    const double exchanged_voxel_chunks = std::min<double>(MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE, leaf_chunks);
+    // the evicted nodes (a fraction of the budgets, see `EVICTION_RETAIN_BUDGET_FRACTION'): 36 bytes
+    // per point, 18 per voxel
+    const double rendered_point_bytes = (2.0 + EVICTION_RETAIN_BUDGET_FRACTION) * point_bytes;
+    const double rendered_voxel_bytes = (2.0 + EVICTION_RETAIN_BUDGET_FRACTION) * voxel_bytes;
+    // Node of the rendered voxels: one segment per node drawn (at most one per node id, at most one
+    // per voxel) and one tile entry per RENDERED_VOXELS_TILE_SIZE voxels, double buffered
+    const double rendered_voxel_segment_bytes = 2.0 * sizeof(CVoxelSegment);
+    const double rendered_voxel_tile_bytes = 2.0 * sizeof(uint32_t) / double(RENDERED_VOXELS_TILE_SIZE);
+    // Exchanged node: its points (whole chunks), its voxels for the store and for the load (the voxel
+    // chunks are capped like in `GpuVersion::initConstraints'; their cells also give the occupancy
+    // grid), the small per-slot arrays (ids, parents, AABBs, children, counters, pointers, eviction
+    // snapshot, `temporaryNodeBuffer') and its retained entries
+    const double exchanged_voxel_chunks = std::min<double>(MAX_NB_VOXELS_CHUNKS_TO_EXCHANGE, leaf_voxel_chunks);
     const double exchanged_node_bytes = leaf_chunks * NB_POINTS_PER_CHUNK * point_bytes
-        + exchanged_voxel_chunks * NB_POINTS_PER_CHUNK * (point_bytes + sizeof(uint64_t))
+        + exchanged_voxel_chunks * NB_VOXELS_PER_CHUNK * 2.0 * voxel_bytes
         + 2.0 * sizeof(CIdAABB) + sizeof(CAABB) + 3.0 * sizeof(uint32_t) + 3.0 * sizeof(void*)
         + sizeof(CIdAABB) + 2.0 * sizeof(uint32_t) + sizeof(COctreeNode*)
         + EVICTION_RETAIN_NB_PASSES * sizeof(CEvictedRetainEntry);
@@ -372,7 +384,7 @@ void OocSimLodSettings::init_default(){
     const double spilled_point_bytes = point_bytes + sizeof(uint32_t)
         + (sizeof(uint32_t) + sizeof(CChunk*)) / double(NB_POINTS_PER_CHUNK);
     // Backlog voxel: `backlogVoxels' + `backlogVoxelsNodes'
-    const double backlog_voxel_bytes = point_bytes + sizeof(uint32_t);
+    const double backlog_voxel_bytes = voxel_bytes + sizeof(uint32_t);
 
     // ===================================================================================================
     // 2. Usable device memory
@@ -401,15 +413,16 @@ void OocSimLodSettings::init_default(){
     // 3. Rendering budgets (MAX_NB_RENDERED_*): the toml values, scaled down if they don't fit
     // ===================================================================================================
     // The budgets are a quality choice and they cost memory whatever the dataset: 25M + 8M points and
-    // as many voxels take 2.4 GB (36 bytes per element). They get at most RENDERING_MEMORY_FRACTION
-    // (25%) of the usable memory: on a 16 GB card the toml values fit as they are; on an 8 GB card they
-    // are scaled to about 55% of them, which keeps several points per pixel at 1080p while leaving
-    // most of the memory to the octree. The four budgets are scaled together (their ratios are a
-    // rendering choice) and kept multiples of 1024
-    const double requested_rendered = double(requested.rendered_points) + requested.rendered_large_points
-        + requested.rendered_voxels + requested.rendered_side_voxels;
-    const double rendering_scale = (requested_rendered > 0.0)
-        ? std::min(1.0, RENDERING_MEMORY_FRACTION * usable / (requested_rendered * rendered_bytes))
+    // as many voxels take 1.8 GB (36 bytes per point, 18 per voxel). They get at most
+    // RENDERING_MEMORY_FRACTION (25%) of the usable memory: on a 16 GB card the toml values fit as they
+    // are; on an 8 GB card they are scaled to about 70% of them, which keeps several points per pixel
+    // at 1080p while leaving most of the memory to the octree. The four budgets are scaled together
+    // (their ratios are a rendering choice) and kept multiples of 1024
+    const double requested_rendered_bytes =
+        rendered_point_bytes * (double(requested.rendered_points) + requested.rendered_large_points)
+        + (rendered_voxel_bytes + rendered_voxel_tile_bytes) * (double(requested.rendered_voxels) + requested.rendered_side_voxels);
+    const double rendering_scale = (requested_rendered_bytes > 0.0)
+        ? std::min(1.0, RENDERING_MEMORY_FRACTION * usable / requested_rendered_bytes)
         : 1.0;
     auto scaleBudget = [&](uint32_t budget){
         return toU32(std::max<uint64_t>(budget > 0 ? 1024 : 0, roundDown(budget * rendering_scale, 1024)));
@@ -418,8 +431,9 @@ void OocSimLodSettings::init_default(){
     MAX_NB_RENDERED_LARGE_POINTS = scaleBudget(requested.rendered_large_points);
     MAX_NB_RENDERED_VOXELS = scaleBudget(requested.rendered_voxels);
     MAX_NB_RENDERED_SIDE_VOXELS = scaleBudget(requested.rendered_side_voxels);
-    const double rendering_memory = rendered_bytes * (double(MAX_NB_RENDERED_POINTS) + MAX_NB_RENDERED_LARGE_POINTS
-        + MAX_NB_RENDERED_VOXELS + MAX_NB_RENDERED_SIDE_VOXELS);
+    const double rendered_voxels = double(MAX_NB_RENDERED_VOXELS) + MAX_NB_RENDERED_SIDE_VOXELS;
+    double rendering_memory = rendered_point_bytes * (double(MAX_NB_RENDERED_POINTS) + MAX_NB_RENDERED_LARGE_POINTS)
+        + (rendered_voxel_bytes + rendered_voxel_tile_bytes) * rendered_voxels;
 
     // ===================================================================================================
     // 4. Node ids (MAX_NB_NODES): a power of 2, NODE_IDS_MEMORY_FRACTION of the usable memory
@@ -442,11 +456,13 @@ void OocSimLodSettings::init_default(){
         std::clamp<uint64_t>(derived_ids, MIN_AUTOMATIC_NODE_IDS, MAX_AUTOMATIC_NODE_IDS)
     ));
     const double node_ids_memory = MAX_NB_NODES * node_id_bytes;
+    // The segments of the rendered voxels (see 3.) are bounded by the node ids as well
+    rendering_memory += rendered_voxel_segment_bytes * std::max(1.0, std::min(double(MAX_NB_NODES), rendered_voxels));
 
     // ===================================================================================================
     // 5. Exchange (MAX_NB_NODES_TO_EXCHANGE): the toml value, reduced to EXCHANGE_MEMORY_FRACTION
     // ===================================================================================================
-    // An exchanged node costs ~2.5 MB (65536 points + 64 voxel chunks with their cells). The exchange
+    // An exchanged node costs ~2 MB (65536 points + 65536 voxels each way). The exchange
     // size only sets how many passes loading / storing take (they loop until done): it is a throughput
     // knob, never a limit. 6% of the usable memory keeps 256 on a 16 GB card (the value used so far)
     // and ~100 on an 8 GB one. Multiple of 8, at least 8 (on a 4 GB card, 32 slots would already take
@@ -497,7 +513,11 @@ void OocSimLodSettings::init_default(){
     //    them. Leaves fill from ~25% (just split) to 100% and inner nodes hold ~25-60% of a leaf of
     //    voxels: the average is ~50-60%. CHUNKS_FILL_RATIO = 0.75 (+ 1 partially filled last chunk)
     //    leaves a ~1.3x margin: over thousands of nodes the average hardly varies, the risk is a
-    //    dataset denser than assumed (raise it then, the UI shows the peak number of chunks)
+    //    dataset denser than assumed (raise it then, the UI shows the peak number of chunks).
+    //    A voxel chunk holds twice as many elements as a point chunk, so an inner node needs half the
+    //    chunks of a leaf: INNER_NODES_FRACTION = 0.3 of the resident nodes are counted as inner
+    //    nodes, the low end of the 25-60% above (counting fewer inner nodes than there are is the safe
+    //    side: they are the cheap ones)
     //  - occupancy grids: one per inner node. Inner nodes are ~25-35% of the nodes for surfaces (4
     //    children each), more for sparse or linear data, and the cache keeps the ancestors first.
     //    GRIDS_PER_RESIDENT_NODE = 0.6. The old automatic value (2 x L = 8192 grids, 2 GB) was 4 times
@@ -513,7 +533,9 @@ void OocSimLodSettings::init_default(){
     // one update touched: every update would evict the nodes the next one needs, and the transient
     // nodes would take most of the pools. The update is then made smaller (one batch less at a time:
     // T and the update buffers shrink, L grows) until L >= max(T, MIN_LRU_UPDATES_CACHE_SIZE)
-    const double chunks_per_resident_node = CHUNKS_FILL_RATIO * leaf_chunks + 1.0;
+    const double inner_fraction = std::clamp(INNER_NODES_FRACTION, 0.0, 1.0);
+    const double chunks_per_resident_node = CHUNKS_FILL_RATIO
+        * ((1.0 - inner_fraction) * leaf_chunks + inner_fraction * leaf_voxel_chunks) + 1.0;
     const double resident_node_bytes = chunks_per_resident_node * chunk_bytes
         + GRIDS_PER_RESIDENT_NODE * grid_bytes
         + NODES_PER_RESIDENT_NODE * node_bytes
@@ -574,12 +596,13 @@ void OocSimLodSettings::init_default(){
     // 8. Host memory
     // ===================================================================================================
     // The host cache (`HostStorageNode::init') pins LRU_CPU_CACHE_SIZE + 2 x MAX_NB_NODES_TO_EXCHANGE
-    // nodes of MAX_POINTS_PER_LEAF points + voxels + cell indices (40 bytes per point: 2.6 MB per
-    // node). Pinned memory can't be swapped out, so it is limited to HOST_CACHE_MEMORY_FRACTION (25%)
+    // nodes of MAX_POINTS_PER_LEAF points + as many voxels (24 bytes per point: 1.5 MB per node; the
+    // voxel cells are the occupancy grid, no separate indices). Pinned memory can't be swapped out,
+    // so it is limited to HOST_CACHE_MEMORY_FRACTION (25%)
     // of the physical memory, and to half of what is available at startup. The cache is a cache: a
     // smaller one only means more disk reads, never a failure (the pool holds exactly the cache and
     // the two exchange passes). Multiple of 256, at least 256 nodes
-    const double host_node_bytes = leaf * (2.0 * point_bytes + sizeof(uint64_t));
+    const double host_node_bytes = leaf * (point_bytes + voxel_bytes);
     const double host_cache_budget = std::min(HOST_CACHE_MEMORY_FRACTION * HOST_TOTAL_MEMORY, 0.5 * HOST_AVAILABLE_MEMORY);
     const double host_cache_nodes = host_cache_budget / host_node_bytes - 2.0 * MAX_NB_NODES_TO_EXCHANGE;
     LRU_CPU_CACHE_SIZE = toU32(std::max<uint64_t>(256, roundDown(host_cache_nodes, 256)));
@@ -589,8 +612,8 @@ void OocSimLodSettings::init_default(){
     // Other host memory, for the breakdown: pinned staging of the rendering buffers, pinned preview,
     // per node id arrays (parents, AABBs, mutex, visible lists: ~100 bytes)
     const double host_cache_memory = (double(LRU_CPU_CACHE_SIZE) + 2.0 * MAX_NB_NODES_TO_EXCHANGE) * host_node_bytes;
-    const double host_staging_memory = point_bytes * (double(MAX_NB_RENDERED_POINTS) + MAX_NB_RENDERED_LARGE_POINTS
-        + MAX_NB_RENDERED_VOXELS + MAX_NB_RENDERED_SIDE_VOXELS);
+    const double host_staging_memory = point_bytes * (double(MAX_NB_RENDERED_POINTS) + MAX_NB_RENDERED_LARGE_POINTS)
+        + voxel_bytes * rendered_voxels;
 
     // ===================================================================================================
     // Breakdown (printed by `display')
@@ -728,6 +751,7 @@ void OocSimLodSettings::display(){
     println("    - BACKLOG_VOXELS_PER_UPDATE_POINT: {}", BACKLOG_VOXELS_PER_UPDATE_POINT);
     println("    - CHUNKS_FILL_RATIO: {}", CHUNKS_FILL_RATIO);
     println("    - GRIDS_PER_RESIDENT_NODE: {}", GRIDS_PER_RESIDENT_NODE);
+    println("    - INNER_NODES_FRACTION: {}", INNER_NODES_FRACTION);
     println("    - NODES_PER_RESIDENT_NODE: {}", NODES_PER_RESIDENT_NODE);
     println("    - TRANSIENT_NODES_PER_UPDATE_LEAF: {}", TRANSIENT_NODES_PER_UPDATE_LEAF);
     println("    - MIN_LRU_UPDATES_CACHE_SIZE: {}", MIN_LRU_UPDATES_CACHE_SIZE);

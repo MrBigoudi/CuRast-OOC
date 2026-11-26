@@ -78,47 +78,73 @@ void kernel_bottom_up_update_part_1_counting(){
 }
 
 
-__device__ void addNewVoxels(
+/// Sample a position of the child into the grid of the new parent, and add a voxel to the parent if
+/// its cell was empty
+__device__ void addNewVoxel(
     COctreeNode* new_parent,
-    const CAABB& parent_aabb, 
-    const CChunk* child_chunk_list
+    const CAABB& parent_aabb,
+    const glm::vec3& position,
+    uint32_t color
+){
+    // Sample voxel occupancy grid at this location
+    CPoint point = {};
+    point.position = position;
+    point.color = color;
+    COccupancyGrid::GridIndex index = COccupancyGrid::getCellIndices(parent_aabb, point);
+    bool is_cell_occupied = new_parent->occupancy->markCellAsFilled(index);
+
+    // Fill up voxels chunks
+    // The occupancy grid will be erased later anyways so don't bother filling it here
+    if(is_cell_occupied){return;}
+
+    // Add voxel to voxels chunk list
+    if(!new_parent->voxels){new_parent->voxels = globalAllocator.newVoxelChunk();}
+
+    CVoxelChunk* parent_chunk_list = new_parent->voxels;
+    while(parent_chunk_list->next){parent_chunk_list = parent_chunk_list->next;}
+
+    if(parent_chunk_list->size == OocSimLodSettings::NB_VOXELS_PER_CHUNK){
+        parent_chunk_list->next = globalAllocator.newVoxelChunk();
+        parent_chunk_list = parent_chunk_list->next;
+    }
+    parent_chunk_list->voxels[parent_chunk_list->size] = CVoxel(index.grid, color);
+    parent_chunk_list->size++;
+    new_parent->voxels_counter++;
+}
+
+/// Voxels of the new parent from the points of its child
+__device__ void addNewVoxelsFromPoints(
+    COctreeNode* new_parent,
+    const CAABB& parent_aabb,
+    const CPointChunk* child_chunk_list
 ){
     while(child_chunk_list){
         for(uint32_t j=0; j<child_chunk_list->size; j++){
             const CPoint& point = child_chunk_list->points[j];
-
-            // Sample voxel occupancy grid at this location
-            COccupancyGrid::GridIndex index = COccupancyGrid::getCellIndices(parent_aabb, point);
-            bool is_cell_occupied = new_parent->occupancy->markCellAsFilled(index);
-
-            // Fill up voxels chunks
-            // The occupancy grid will be erased later anyways so don't bother filling it here
-            if(!is_cell_occupied){
-                // Create corresponding voxel using this point
-                vec3 voxel_centroid = COccupancyGrid::getCellCentroid(parent_aabb, index);
-                CPoint new_voxel = {};
-                new_voxel.position = voxel_centroid;
-                new_voxel.color = point.color;
-                
-                // Add voxel to voxels chunk list
-                if(!new_parent->voxels){new_parent->voxels = globalAllocator.newChunk();}
-
-                CChunk* parent_chunk_list = new_parent->voxels;
-                while(parent_chunk_list->next){parent_chunk_list = parent_chunk_list->next;}
-
-                if(parent_chunk_list->size == OocSimLodSettings::NB_POINTS_PER_CHUNK){
-                    parent_chunk_list->next =  globalAllocator.newChunk();
-                    parent_chunk_list = parent_chunk_list->next;
-                }
-                parent_chunk_list->points[parent_chunk_list->size] = new_voxel;
-                parent_chunk_list->size++;
-                new_parent->voxels_counter++;
-            }
+            addNewVoxel(new_parent, parent_aabb, point.position, point.color);
         }
         child_chunk_list = child_chunk_list->next;
     }
     new_parent->voxels_stored = new_parent->voxels_counter;
-};
+}
+
+/// Voxels of the new parent from the voxels of its child (their position: the centre of their cell
+/// in the child)
+__device__ void addNewVoxelsFromVoxels(
+    COctreeNode* new_parent,
+    const CAABB& parent_aabb,
+    const CAABB& child_aabb,
+    const CVoxelChunk* child_chunk_list
+){
+    while(child_chunk_list){
+        for(uint32_t j=0; j<child_chunk_list->size; j++){
+            const CVoxel& voxel = child_chunk_list->voxels[j];
+            addNewVoxel(new_parent, parent_aabb, voxel.getPosition(child_aabb), voxel.color);
+        }
+        child_chunk_list = child_chunk_list->next;
+    }
+    new_parent->voxels_stored = new_parent->voxels_counter;
+}
 
 /// Run on a single thread
 extern "C" __global__
@@ -168,8 +194,9 @@ void kernel_bottom_up_update_part_2_instancing(){
 		new_parent->children[node_position] = cur_child;
 
 		// Sample voxels to fill new occupancy grid
-		addNewVoxels(new_parent, new_parent_aabb, cur_child->points);
-		addNewVoxels(new_parent, new_parent_aabb, cur_child->voxels);
+		addNewVoxelsFromPoints(new_parent, new_parent_aabb, cur_child->points);
+		addNewVoxelsFromVoxels(new_parent, new_parent_aabb,
+			globalVariables.relationshipMap[cur_child->aabb_index].aabb, cur_child->voxels);
 
 		// Update the AABB maps
         globalVariables.relationshipMap[parent_aabb_index].aabb = new_parent_aabb;

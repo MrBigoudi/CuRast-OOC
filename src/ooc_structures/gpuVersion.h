@@ -277,14 +277,15 @@ struct GpuVersion {
     /// rebuilt from the file identically, extended
     /// Owned by the main thread, except the entries of the current tasks, filled by the visibility
     /// workers (one task per node: one worker per entry)
+    template <typename TElement>
     struct VisRamCachedFile {
-        std::vector<CPoint> data = {};   // first min(seen, keep) elements of the permutation
+        std::vector<TElement> data = {}; // first min(seen, keep) elements of the permutation
         uint32_t seen = 0;               // elements of the file processed
         uint32_t keep = 0;               // length of the prefix kept
     };
     struct VisRamCacheEntry {
-        VisRamCachedFile points = {};
-        VisRamCachedFile voxels = {};
+        VisRamCachedFile<CPoint> points = {};
+        VisRamCachedFile<CVoxel> voxels = {};
         uint64_t last_used = 0;   // visibility update that used it last (`visRamCacheGeneration')
     };
     static inline std::unordered_map<CIdAABB, std::unique_ptr<VisRamCacheEntry>> visRamCache = {};
@@ -326,14 +327,9 @@ struct GpuVersion {
         float voxels_priority = 0.0f;   // negative: outside the view (out-of-view fallback, see below)
 
         /// Out-of-view fallback ("Vox", see part 3 in render.cu): only the voxels lying in these
-        /// octants are drawn (bit i: octant of child i); 0 = every voxel (cut node)
+        /// octants are drawn (bit i: octant of child i; the octant of a voxel comes from its cell,
+        /// `CVoxel::getOctant'); 0 = every voxel (cut node)
         uint8_t voxels_child_mask = 0;
-        /// Bounding box of the node, to find the octant of each voxel (copied on the main thread:
-        /// the workers don't read `aabbsMap')
-        CAABB voxels_aabb;
-        /// Size code of the voxels of the node, written into the alpha byte of every voxel copied into
-        /// the staging buffers (see `VOXEL_SIZE_CODE_BIAS'); 0 = unknown (drawn as a point)
-        uint8_t voxels_size_code = 0;
 
         /// Source of the node: its on-disk files (default) or its host RAM copy in `updateNodes'
         /// (node evicted from the device but not written to disk yet, or with newer data than on
@@ -351,12 +347,8 @@ struct GpuVersion {
     /// Voxel splats (see `drawSplat' in render.cu): every voxel is drawn as a camera-facing square of
     /// side `OocSimLodSettings::VOXEL_SPLAT_SCALE' voxel cells (cell = root size /
     /// (GRID_SIZE_PER_DIMENSION * 2^level of its node)), at most `VOXEL_SPLAT_MAX_PIXELS' pixels wide
-    /// The host rendering buffers hold no node id: the size of their voxels is encoded in the alpha
-    /// byte of their color, as the level of their node relative to the initial root (node 0) plus this
-    /// bias (code 0: unknown). Same constant as `VOXEL_SIZE_CODE_BIAS' in render.cu
-    static constexpr int32_t VOXEL_SIZE_CODE_BIAS = 128;
-    /// Size of the initial root (node 0), read from the device by each visibility update
-    static inline float voxelReferenceSize = 0.0f;
+    /// The host rendering buffers come with the node of every voxel (`renderedVoxelSegments', see
+    /// `CGlobalVariables'): its bounding box gives the position and the size of the voxel
 
     /// Draw the batches already on the device but not inserted in the octree yet (see
     /// `kernel_draw_pending_batches' in render.cu): the points near the camera show up as soon as
@@ -366,7 +358,12 @@ struct GpuVersion {
     /// Pinned staging buffers, as large as the device rendering buffers
     /// Written by the visibility workers, read by a single batched copy to the device
     static inline CPoint* visStagingPoints = nullptr;
-    static inline CPoint* visStagingVoxels = nullptr;
+    static inline CVoxel* visStagingVoxels = nullptr;
+    /// Node of every voxel of the staging buffer, once packed (see `CGlobalVariables::renderedVoxelSegments'):
+    /// built on the main thread when the content is published, sent with the voxels
+    static inline CVoxelSegment* visStagingVoxelSegments = nullptr;
+    static inline uint32_t* visStagingVoxelTiles = nullptr;
+    static inline uint32_t* visStagingNbVoxelSegments = nullptr;
 
     /// True between the copy of a new visibility content and its publication to the device
     static inline bool isVisibilityPublishPending = false;
@@ -417,7 +414,7 @@ struct GpuVersion {
 
     static inline std::vector<CUdeviceptr> exchangedPointsPointers = {};
 	static inline std::vector<CUdeviceptr> exchangedVoxelsPointers = {};
-	static inline std::vector<CUdeviceptr> exchangedGridsPointers = {};
+	static inline std::vector<CUdeviceptr> exchangedLoadedVoxelsPointers = {};
 	static inline void* batchesToAddPointsPointers = nullptr;
     static inline void* nbExchangedNodes = nullptr;
     static inline uint32_t curNbNodes = 0;
@@ -672,16 +669,14 @@ struct PinnedMemoryAllocator {
 struct HostStorageNode {
 	COctreeNode node = {};
 	CPoint* points = nullptr;
-	CPoint* voxels = {};
-    uint64_t* occupancy_indices = {};
+	/// Voxels: their cells are also the occupancy grid of the node (no separate indices)
+	CVoxel* voxels = nullptr;
 
     static inline PinnedMemoryAllocator<CPoint> points_allocator_update = {};
-    static inline PinnedMemoryAllocator<CPoint> voxels_allocator_update = {};
-    static inline PinnedMemoryAllocator<uint64_t> indices_allocator_update = {};
+    static inline PinnedMemoryAllocator<CVoxel> voxels_allocator_update = {};
 
     static inline PinnedMemoryAllocator<CPoint> points_allocator_visibility = {};
-    static inline PinnedMemoryAllocator<CPoint> voxels_allocator_visibility = {};
-    static inline PinnedMemoryAllocator<uint64_t> indices_allocator_visibility = {};
+    static inline PinnedMemoryAllocator<CVoxel> voxels_allocator_visibility = {};
 
     HostStorageNodeOwner owner;
 

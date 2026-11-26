@@ -304,14 +304,14 @@ void kernel_fill_new_grids(){
             occupancy->values[i] = 0;
         }
 
-        // Refill the grid on need
+        // Refill the grid on need, from the cells of the voxels the host sent (at most a slot of them)
         if(exchanged_index != -1){
-            uint64_t* grids_indices = globalVariables.exchangedGrids[exchanged_index];
-            for(uint32_t index_id = thread_id; index_id < node->voxels_last_stored; index_id += nb_threads_per_block){
-                uint64_t grid_index = grids_indices[index_id];
-                uint32_t word = uint32_t(grid_index >> 32);
-                uint32_t bit = uint32_t(grid_index);
-                __nv_atomic_fetch_or(&occupancy->values[word], (1u << bit), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_BLOCK);
+            const CVoxel* loaded_voxels = globalVariables.exchangedLoadedVoxels[exchanged_index];
+            const uint32_t nb_voxels = min(node->voxels_last_stored,
+                globalVariables.maxNbVoxelsChunksPerExchangedNode * OocSimLodSettings::NB_VOXELS_PER_CHUNK);
+            for(uint32_t index_id = thread_id; index_id < nb_voxels; index_id += nb_threads_per_block){
+                const COccupancyGrid::GridIndex cell = loaded_voxels[index_id].getGridIndex();
+                __nv_atomic_fetch_or(&occupancy->values[cell.word], (1u << cell.bit), __NV_ATOMIC_RELAXED, __NV_THREAD_SCOPE_BLOCK);
             }
         }
     }
